@@ -145,6 +145,9 @@ wrapped with `backoff.Permanent`, is not retryable — it goes straight to the *
 channel** (§6/§7), never consuming retry attempts and never looping forever (which `MaxAttempts=0`
 would otherwise cause). Sentinels: `ErrPayloadDecode`, `ErrPayloadType`.
 
+> Refined by ADR 0007: msgin uses msgin.Permanent(err) (not backoff.Permanent) as the permanent
+> marker; the runtime redelivery path stays closed-form and cenkalti-free.
+
 ## 6. Adapter SPI (Layer 2 — the contract contributors implement)
 
 ```go

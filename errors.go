@@ -17,4 +17,12 @@ var (
 	ErrInvalidConcurrency = errors.New("msgin: concurrency must be >= 1")
 	// ErrUnsupportedSource is returned when a Source is neither Polling nor Streaming.
 	ErrUnsupportedSource = errors.New("msgin: source implements neither PollingSource nor StreamingSource")
+	// ErrHandlerPanic wraps a value recovered from a panicking handler. It is a
+	// TRANSIENT failure (retried per the RetryPolicy), not permanent.
+	ErrHandlerPanic = errors.New("msgin: handler panicked")
+	// ErrNoDeadLetter is returned when a RetryPolicy has a finite MaxAttempts
+	// (> 0) but no DeadLetter sink to receive exhausted messages.
+	ErrNoDeadLetter = errors.New("msgin: finite MaxAttempts requires a DeadLetter sink")
+	// ErrInvalidMaxAttempts is returned when a RetryPolicy's MaxAttempts is negative.
+	ErrInvalidMaxAttempts = errors.New("msgin: MaxAttempts must be >= 0")
 )

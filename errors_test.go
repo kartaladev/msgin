@@ -22,3 +22,14 @@ func TestSentinels_WrapAndCompare(t *testing.T) {
 		})
 	}
 }
+
+func TestSentinels_Reliability_WrapAndCompare(t *testing.T) {
+	sentinels := []error{
+		msgin.ErrHandlerPanic, msgin.ErrNoDeadLetter, msgin.ErrInvalidMaxAttempts,
+	}
+	for _, s := range sentinels {
+		t.Run(s.Error(), func(t *testing.T) {
+			assert.True(t, errors.Is(fmt.Errorf("context: %w", s), s))
+		})
+	}
+}
