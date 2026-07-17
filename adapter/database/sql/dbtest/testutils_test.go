@@ -13,6 +13,7 @@ package dbtest_test
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -26,17 +27,20 @@ import (
 	// mysql.LeaseDialect(). MariaDB is wire-compatible and uses this same
 	// driver.
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/kartaladev/msgin/adapter/database/sql/sqlite" // for sqlite.DSN (dogfood the builder)
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	tcmariadb "github.com/testcontainers/testcontainers-go/modules/mariadb"
 	tcmysql "github.com/testcontainers/testcontainers-go/modules/mysql"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
+	_ "modernc.org/sqlite" // registers the "sqlite" database/sql driver (pure-Go, cgo-free)
 )
 
 // testConfig holds RunTestDatabase options.
 type testConfig struct {
-	image string
+	image              string
+	sqliteSharedMemory bool
 }
 
 // TestOption customizes a RunTest* helper.
@@ -201,6 +205,43 @@ func RunTestMariaDB(t *testing.T, opts ...TestOption) *sql.DB {
 	require.Eventually(t, func() bool {
 		return db.PingContext(pingCtx) == nil
 	}, 60*time.Second, 500*time.Millisecond, "ping mariadb database")
+
+	return db
+}
+
+// WithSharedMemory selects an in-memory shared-cache SQLite DB instead of the
+// default WAL temp-file, for RunTestSQLite.
+func WithSharedMemory() TestOption {
+	return func(c *testConfig) { c.sqliteSharedMemory = true }
+}
+
+// RunTestSQLite opens an embedded SQLite *sql.DB (modernc.org/sqlite, pure-Go —
+// no Docker) for the conformance run. It builds its DSN via sqlite.DSN (audit
+// F6 — dogfooding the production builder and proving modernc accepts its
+// output). The default is a WAL temp-file (removed with the test's TempDir by
+// the framework) with a busy_timeout so the harness's concurrency cases
+// serialize rather than hitting SQLITE_BUSY; WithSharedMemory selects
+// file::memory:?cache=shared instead. The connection is closed via t.Cleanup.
+func RunTestSQLite(t *testing.T, opts ...TestOption) *sql.DB {
+	t.Helper()
+
+	cfg := &testConfig{}
+	for _, o := range opts {
+		o(cfg)
+	}
+
+	dsn := sqlite.DSN(filepath.Join(t.TempDir(), "msgin.db"))
+	if cfg.sqliteSharedMemory {
+		dsn = sqlite.DSN("", sqlite.WithSharedMemory())
+	}
+
+	db, err := sql.Open("sqlite", dsn)
+	require.NoError(t, err, "open sqlite database")
+	t.Cleanup(func() { _ = db.Close() })
+
+	pingCtx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	require.NoError(t, db.PingContext(pingCtx), "ping sqlite database")
 
 	return db
 }
