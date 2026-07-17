@@ -72,13 +72,34 @@ var (
 	_ LockDialect = mysqlDialect{}
 )
 
-// beginLockTx resolves the transaction that will carry a lock delivery from q:
-// the pool (*sql.DB via txBeginner) begins a NEW transaction on ctx; an
-// already-open *sql.Tx (a defensive/future path — the Source always passes the
-// pool) is carried directly. Neither is an error. ctx drives BeginTx, so the
-// caller controls the transaction's cancellation lifetime (the Source passes a
-// cancellation-detached context — ADR 0010 D5 HIGH 3).
-func beginLockTx(ctx context.Context, q Querier) (*stdsql.Tx, error) {
+// txBeginner is the capability a Querier must have to BEGIN a new transaction:
+// *sql.DB satisfies it (its BeginTx); *sql.Tx does not (a tx cannot nest one),
+// which is exactly how BeginLockTx (and the MySQL two-step Claim) tells the
+// pool apart from an already-open transaction. It lives in the engine (moved
+// from the MySQL dialect) so BeginLockTx is self-contained here; each dialect
+// module declares its own structurally-identical local txBeginner where it
+// needs one (Go interfaces are structural, so no shared type is required).
+type txBeginner interface {
+	BeginTx(ctx context.Context, opts *stdsql.TxOptions) (*stdsql.Tx, error)
+}
+
+// BeginLockTx is part of the LockDialect-author SPI (ADR 0010 D5, ADR 0011): it
+// resolves the transaction that will carry a lock delivery from q, the Querier a
+// dialect's ClaimLock receives. It is the shared helper every LockDialect
+// implementation's ClaimLock calls to open its carried transaction.
+//
+//   - q is the pool (*sql.DB, the txBeginner path — the Source always passes the
+//     pool): begins a NEW transaction on ctx.
+//   - q is already an open *sql.Tx (a defensive/future path): carried directly,
+//     unchanged — the caller retains ownership of committing/rolling it back.
+//   - q is neither: a clear, wrapped error naming the actual type — never a
+//     panic or a silently-nil transaction.
+//
+// Neither of the first two cases is an error. ctx drives BeginTx, so the caller
+// controls the transaction's cancellation lifetime; the Source passes a
+// cancellation-detached context so graceful shutdown does not auto-rollback an
+// in-flight claim before the drain deadline (ADR 0010 D5 HIGH 3).
+func BeginLockTx(ctx context.Context, q Querier) (*stdsql.Tx, error) {
 	if b, ok := q.(txBeginner); ok {
 		return b.BeginTx(ctx, nil)
 	}
@@ -89,15 +110,19 @@ func beginLockTx(ctx context.Context, q Querier) (*stdsql.Tx, error) {
 		"msgin/sql: lock strategy ClaimLock requires a *sql.DB or *sql.Tx Querier, got %T", q)
 }
 
-// settleLockTx runs the settle statement on the carried transaction and commits
-// it, closing the transaction exactly once. This is the lock strategy's
-// ALWAYS-COMMIT settle path (ADR 0010 D5): AckLock (DELETE) and NackLock
-// (clear-lock UPDATE) both commit on success, because the strategy has no
-// business writes to undo — a successful settle persists (the Ack's delete or
-// the Nack's delivery_count++/visible_after) and releases the FOR UPDATE lock. On
-// a statement or commit error it rolls back, releasing the pooled connection, and
-// returns the error (never a leaked connection).
-func settleLockTx(ctx context.Context, tx *stdsql.Tx, query string, args ...any) error {
+// SettleLockTx is part of the LockDialect-author SPI (ADR 0010 D5, ADR 0011): it
+// runs the settle statement on the carried transaction tx (opened by
+// BeginLockTx) and commits it, closing the transaction exactly once. Every
+// LockDialect implementation's AckLock/NackLock calls this to settle.
+//
+// The contract a dialect author relies on: this ALWAYS commits on success and
+// ALWAYS rolls back on any error, so a dialect's AckLock/NackLock never leaks a
+// pooled connection regardless of which statement or commit fails. This is the
+// lock strategy's ALWAYS-COMMIT settle path (ADR 0010 D5): AckLock (DELETE) and
+// NackLock (clear-lock UPDATE) both commit on success, because the strategy has
+// no business writes to undo — a successful settle persists (the Ack's delete or
+// the Nack's delivery_count++/visible_after) and releases the FOR UPDATE lock.
+func SettleLockTx(ctx context.Context, tx *stdsql.Tx, query string, args ...any) error {
 	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
 		_ = tx.Rollback()
 		return err

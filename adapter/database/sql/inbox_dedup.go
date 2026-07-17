@@ -17,13 +17,13 @@ const defaultInboxTable = "msgin_inbox"
 // inboxConfig accumulates InboxOption settings before NewInboxDeduper builds an
 // InboxDeduper.
 type inboxConfig struct {
-	dialect InboxDialect
-	table   string
+	table string
 }
 
 // InboxOption configures an InboxDeduper built by NewInboxDeduper. It is a
 // distinct type from the Source's Option (interface-segregation): a deduper
-// exposes only the dedup-relevant knobs (table, dialect), never claim/lease or
+// exposes only the dedup-relevant knobs (the table; the dialect is a required
+// positional constructor argument, not an option), never claim/lease or
 // transactional-outbox options.
 type InboxOption func(*inboxConfig)
 
@@ -34,21 +34,6 @@ type InboxOption func(*inboxConfig)
 // mistake rather than unknowingly sharing the default table.
 func WithInboxTable(table string) InboxOption {
 	return func(c *inboxConfig) { c.table = table }
-}
-
-// WithInboxDialect selects the InboxDialect explicitly, bypassing driver
-// auto-detect — the guaranteed-correct path (auto-detect is heuristic and may
-// mis-detect a wire-compatible derivative) and the seam for a caller's own
-// InboxDialect. Pass WithInboxDialect(sql.PostgresInboxDialect()) or your own
-// implementation (ADR 0010 D10/D3). A nil dialect is ignored (auto-detect stays
-// in place) rather than deferring a nil-panic to the first MarkProcessed,
-// mirroring WithDialect.
-func WithInboxDialect(d InboxDialect) InboxOption {
-	return func(c *inboxConfig) {
-		if d != nil {
-			c.dialect = d
-		}
-	}
 }
 
 // InboxDeduper is the idempotent-consumer dedup inbox (ADR 0010 D10, durable
@@ -76,14 +61,16 @@ type InboxDeduper struct {
 // NewInboxDeduper builds an InboxDeduper over businessDB — the database the
 // consuming handler writes its business changes to (NOT necessarily the message
 // source's database; that different-DB case is the point of this strategy, ADR
-// 0010 D10). The dedup table defaults to "msgin_inbox" (WithInboxTable) and the
-// dialect auto-detects from businessDB's driver (WithInboxDialect overrides;
-// ErrDialectUndetected if neither resolves).
+// 0010 D10) — using dialect to generate the exact SQL (ADR 0011 — the dialect
+// is a required, explicit constructor argument; there is no driver
+// auto-detect). Pass sql.PostgresInboxDialect(), sql.MySQLInboxDialect(), or
+// your own InboxDialect implementation. The dedup table defaults to
+// "msgin_inbox" (WithInboxTable).
 //
 // A nil businessDB is msgin.ErrNilAdapter; an invalid table identifier is
-// ErrInvalidTableName — both at construction, so misuse fails loudly up front
-// rather than on the first MarkProcessed.
-func NewInboxDeduper(businessDB *stdsql.DB, opts ...InboxOption) (*InboxDeduper, error) {
+// ErrInvalidTableName; a nil dialect is ErrNilDialect — all at construction, so
+// misuse fails loudly up front rather than on the first MarkProcessed.
+func NewInboxDeduper(businessDB *stdsql.DB, dialect InboxDialect, opts ...InboxOption) (*InboxDeduper, error) {
 	if businessDB == nil {
 		return nil, msgin.ErrNilAdapter
 	}
@@ -93,43 +80,14 @@ func NewInboxDeduper(businessDB *stdsql.DB, opts ...InboxOption) (*InboxDeduper,
 		o(&cfg)
 	}
 
-	if err := validateIdent(cfg.table); err != nil {
+	if err := ValidateIdent(cfg.table); err != nil {
 		return nil, err
 	}
-
-	dialect := cfg.dialect
 	if dialect == nil {
-		d, err := resolveInboxDialect(businessDB)
-		if err != nil {
-			return nil, err
-		}
-		dialect = d
+		return nil, ErrNilDialect
 	}
 
 	return &InboxDeduper{db: businessDB, table: cfg.table, dialect: dialect}, nil
-}
-
-// resolveInboxDialect auto-detects a built-in InboxDialect from db's driver,
-// reusing the source's resolveDialect (the built-ins satisfy both LeaseDialect
-// and InboxDialect). It imports no SQL driver (it reflects on db.Driver()), so
-// the "core imports no driver" rule holds (ADR 0003). A non-matching driver
-// surfaces resolveDialect's ErrDialectUndetected naming the driver type.
-func resolveInboxDialect(db *stdsql.DB) (InboxDialect, error) {
-	d, err := resolveDialect(db)
-	if err != nil {
-		return nil, err
-	}
-	id, ok := d.(InboxDialect)
-	if !ok {
-		// Unreachable for the built-ins (resolveDialect only ever returns a
-		// built-in, which satisfies both interfaces); a defensive guard so a
-		// future built-in that forgot the InboxDialect methods fails clearly
-		// rather than nil-panicking later.
-		return nil, fmt.Errorf(
-			"%w: auto-detected dialect %T does not implement InboxDialect; pass WithInboxDialect",
-			ErrDialectUndetected, d)
-	}
-	return id, nil
 }
 
 // MarkProcessed records msgID in the dedup table inside the caller's business
@@ -240,8 +198,8 @@ func (d *InboxDeduper) Purge(ctx context.Context, olderThan time.Duration) (int6
 }
 
 // Compile-time assertions that both built-in dialects satisfy the segregated
-// InboxDialect SPI, so NewInboxDeduper's auto-detect and WithInboxDialect accept
-// them.
+// InboxDialect SPI, so they may be passed as NewInboxDeduper's required dialect
+// argument.
 var (
 	_ InboxDialect = postgresDialect{}
 	_ InboxDialect = mysqlDialect{}

@@ -45,7 +45,6 @@ const (
 
 // config accumulates Option settings before NewPollingSource builds a Source.
 type config struct {
-	dialect     LeaseDialect
 	strategy    Strategy
 	leaseTTL    time.Duration
 	leaseTTLSet bool // distinguishes explicit WithLeaseTTL(0) (rejected) from unset (default)
@@ -59,20 +58,6 @@ type config struct {
 
 // Option configures a Source built by NewPollingSource.
 type Option func(*config)
-
-// WithDialect selects the LeaseDialect explicitly, bypassing driver auto-detect. It
-// is the guaranteed-correct path (auto-detect is heuristic and may mis-detect a
-// wire-compatible derivative) and the escape hatch for a derivative's quirks:
-// pass WithDialect(sql.PostgresDialect()) or your own LeaseDialect implementation
-// (ADR 0010 D3). A nil dialect is ignored (leaves auto-detect in place) rather
-// than deferring a nil-panic to the first Poll.
-func WithDialect(d LeaseDialect) Option {
-	return func(c *config) {
-		if d != nil {
-			c.dialect = d
-		}
-	}
-}
 
 // WithStrategy selects the claim/settle strategy (ADR 0010 D4/D5). Unset, it is
 // StrategyLeaseClaim — the default that scales to batches without pinning a

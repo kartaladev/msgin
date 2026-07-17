@@ -11,11 +11,11 @@ import (
 
 // adapterBase holds the fields and operations shared by every table-backed
 // adapter in this package (Source, Outbound): the db handle, the target
-// table, the resolved LeaseDialect, and the injected logger, plus the fail-fast
-// readiness check, the opt-in schema bootstrap, and the query-error
-// classifier that all of them build on. Factoring this out keeps the dialect
-// auto-detect/validateIdent resolution and the Ready/EnsureSchema/
-// classifyQueryErr bodies defined exactly once (ADR 0010 D2/D3).
+// table, the caller-supplied LeaseDialect, and the injected logger, plus the
+// fail-fast readiness check, the opt-in schema bootstrap, and the query-error
+// classifier that all of them build on. Factoring this out keeps the
+// ValidateIdent validation and the Ready/EnsureSchema/classifyQueryErr bodies
+// defined exactly once (ADR 0010 D2/D3, ADR 0011).
 type adapterBase struct {
 	db      *stdsql.DB
 	table   string
@@ -23,25 +23,21 @@ type adapterBase struct {
 	logger  *slog.Logger
 }
 
-// newAdapterBase validates db and table and resolves the LeaseDialect (WithDialect
-// from cfg, else driver auto-detect, else ErrDialectUndetected — ADR 0010 D3),
-// shared by NewPollingSource and NewOutboundAdapter. A nil db is
-// msgin.ErrNilAdapter; an invalid table identifier is ErrInvalidTableName.
-func newAdapterBase(db *stdsql.DB, table string, cfg config) (adapterBase, error) {
+// newAdapterBase validates db, table, and dialect, shared by NewPollingSource
+// and NewOutboundAdapter. A nil db is msgin.ErrNilAdapter; an invalid table
+// identifier is ErrInvalidTableName (checked via ValidateIdent); a nil dialect
+// is ErrNilDialect (ADR 0011 — the dialect is a required constructor argument,
+// there is no driver auto-detect fallback). Checked in that order, so a nil
+// dialect never masks an invalid db/table mistake.
+func newAdapterBase(db *stdsql.DB, table string, dialect LeaseDialect, cfg config) (adapterBase, error) {
 	if db == nil {
 		return adapterBase{}, msgin.ErrNilAdapter
 	}
-	if err := validateIdent(table); err != nil {
+	if err := ValidateIdent(table); err != nil {
 		return adapterBase{}, err
 	}
-
-	dialect := cfg.dialect
 	if dialect == nil {
-		d, err := resolveDialect(db)
-		if err != nil {
-			return adapterBase{}, err
-		}
-		dialect = d
+		return adapterBase{}, ErrNilDialect
 	}
 
 	return adapterBase{db: db, table: table, dialect: dialect, logger: cfg.logger}, nil

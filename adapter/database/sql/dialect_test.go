@@ -18,7 +18,7 @@ import (
 func TestDialectMethodsRejectInvalidTable(t *testing.T) {
 	t.Parallel()
 
-	const badTable = "bad table; DROP" // space + semicolon fail validateIdent
+	const badTable = "bad table; DROP" // space + semicolon fail ValidateIdent
 
 	type testCase struct {
 		name string
@@ -98,7 +98,7 @@ func TestDialectMethodsRejectInvalidTable(t *testing.T) {
 func TestInboxDialectMethodsRejectInvalidTable(t *testing.T) {
 	t.Parallel()
 
-	const badTable = "bad table; DROP" // space + semicolon fail validateIdent
+	const badTable = "bad table; DROP" // space + semicolon fail ValidateIdent
 
 	type testCase struct {
 		name string

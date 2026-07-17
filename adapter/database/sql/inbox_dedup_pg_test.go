@@ -46,14 +46,14 @@ func (s *InboxSuite) SetupSuite() {
 	s.db = s.engine.openDB(s.T())
 }
 
-// freshDeduper returns an InboxDeduper over a unique, schema-applied inbox table
-// (auto-detecting the dialect from the per-engine driver) plus the table name.
+// freshDeduper returns an InboxDeduper over a unique, schema-applied inbox
+// table (using the per-engine InboxDialect explicitly) plus the table name.
 func (s *InboxSuite) freshDeduper(ctx context.Context, opts ...msginsql.InboxOption) (*msginsql.InboxDeduper, string) {
 	t := s.T()
 	s.counter++
 	name := fmt.Sprintf("msgin_inbox_%d", s.counter)
 	opts = append([]msginsql.InboxOption{msginsql.WithInboxTable(name)}, opts...)
-	d, err := msginsql.NewInboxDeduper(s.db, opts...)
+	d, err := msginsql.NewInboxDeduper(s.db, s.engine.inboxDialect(), opts...)
 	require.NoError(t, err)
 	require.NoError(t, d.EnsureSchema(ctx), "EnsureSchema must provision the inbox table")
 	return d, name
@@ -266,7 +266,7 @@ func (s *InboxSuite) TestReadyAndEnsureSchema() {
 
 	s.counter++
 	table := fmt.Sprintf("msgin_inbox_ready_%d", s.counter)
-	d, err := msginsql.NewInboxDeduper(s.db, msginsql.WithInboxTable(table))
+	d, err := msginsql.NewInboxDeduper(s.db, s.engine.inboxDialect(), msginsql.WithInboxTable(table))
 	require.NoError(t, err)
 
 	// Not provisioned yet → fail fast.
@@ -289,7 +289,7 @@ func (s *InboxSuite) TestReadyAndEnsureSchema() {
 		require.NoError(t, err, "apply reference inbox DDL statement")
 	}
 
-	d2, err := msginsql.NewInboxDeduper(s.db, msginsql.WithInboxTable(ddlTable))
+	d2, err := msginsql.NewInboxDeduper(s.db, s.engine.inboxDialect(), msginsql.WithInboxTable(ddlTable))
 	require.NoError(t, err)
 	require.NoError(t, d2.Ready(ctx), "Ready must pass after applying the reference DDL")
 }
@@ -311,7 +311,7 @@ func (s *InboxSuite) TestReadyRejectsMissingUniqueConstraint() {
 	_, err := s.db.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s (msg_id VARCHAR(255))", s.engine.quote(table)))
 	require.NoError(t, err)
 
-	d, err := msginsql.NewInboxDeduper(s.db, msginsql.WithInboxTable(table))
+	d, err := msginsql.NewInboxDeduper(s.db, s.engine.inboxDialect(), msginsql.WithInboxTable(table))
 	require.NoError(t, err)
 
 	// The table exists (so it is not ErrSchemaNotReady) but lacks the constraint.
@@ -328,7 +328,7 @@ func (s *InboxSuite) TestDefaultTable() {
 	ctx := s.T().Context()
 	t := s.T()
 
-	d, err := msginsql.NewInboxDeduper(s.db) // no WithInboxTable → default
+	d, err := msginsql.NewInboxDeduper(s.db, s.engine.inboxDialect()) // no WithInboxTable → default
 	require.NoError(t, err)
 	require.NoError(t, d.EnsureSchema(ctx))
 	t.Cleanup(func() {

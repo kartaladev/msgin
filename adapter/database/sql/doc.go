@@ -27,14 +27,30 @@
 // # Dialects
 //
 // The exported LeaseDialect SPI owns the complete SQL for every operation, so no
-// cross-dialect statement ever runs. The two built-ins are
-// msginsql.PostgresDialect() and msginsql.MySQLDialect(), and a pq/pgx/postgres
-// or mysql/mariadb driver auto-detects the matching one (WithDialect is the
-// guaranteed-correct override). They are behavior-identical — same lease/claim
+// cross-dialect statement ever runs. Every adapter constructor
+// (NewPollingSource, NewOutboundAdapter, NewInboxDeduper) takes the dialect as
+// an explicit, required argument — there is no driver auto-detect (ADR 0011): a
+// nil dialect is refused at construction with ErrNilDialect, so the wrong SQL
+// is never silently generated for an unrecognized or wire-compatible-derivative
+// driver. The two built-ins are msginsql.PostgresDialect() and
+// msginsql.MySQLDialect() (this task; forthcoming releases move them to their
+// own postgres/mysql packages). They are behavior-identical — same lease/claim
 // predicate, fence semantics, and delivery_count/lease_epoch bumps — over each
 // engine's own SQL (Postgres has RETURNING; MySQL has none, so its claim runs an
 // atomic two-step SELECT ... FOR UPDATE SKIP LOCKED + UPDATE in one transaction).
 // All persisted timestamps use the DB server clock (Postgres now() / MySQL
 // UTC_TIMESTAMP(6)); only scheduling (poll interval, backoff) uses the app clock.
 // This split keeps lease-expiry and visibility comparisons free of app↔DB skew.
+//
+// # Dialect-author SPI
+//
+// A caller implementing their own LeaseDialect/InboxDialect (for a
+// wire-compatible derivative, or a new engine) validates every table (or
+// derived index) identifier with msginsql.ValidateIdent before dialect-quoting
+// and interpolating it into SQL — the sole injection guard, since the
+// identifier cannot be a bound parameter. A LockDialect implementation's
+// ClaimLock/AckLock/NackLock builds its carried transaction with
+// msginsql.BeginLockTx and settles it with msginsql.SettleLockTx, which
+// guarantee the always-commit-on-success / rollback-on-error contract so a
+// pooled connection is never leaked.
 package sql

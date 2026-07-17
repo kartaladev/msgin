@@ -101,7 +101,7 @@ func (s *OutboundSuite) TestProducerSendInsertsRowWithHeadersAndPayload() {
 	t := s.T()
 	table := s.freshTable(ctx)
 
-	out, err := msginsql.NewOutboundAdapter(s.db, table)
+	out, err := msginsql.NewOutboundAdapter(s.db, table, s.dialect)
 	require.NoError(t, err)
 
 	producer, err := msgin.NewProducer[string](out)
@@ -136,7 +136,7 @@ func (s *OutboundSuite) TestRoundTripProduceThenConsume() {
 	t := s.T()
 	table := s.freshTable(ctx)
 
-	out, err := msginsql.NewOutboundAdapter(s.db, table)
+	out, err := msginsql.NewOutboundAdapter(s.db, table, s.dialect)
 	require.NoError(t, err)
 	producer, err := msgin.NewProducer[string](out)
 	require.NoError(t, err)
@@ -144,7 +144,7 @@ func (s *OutboundSuite) TestRoundTripProduceThenConsume() {
 	require.NoError(t, producer.Send(ctx, msgin.New("round-trip-payload", msgin.WithID("rt-1"))))
 	require.Equal(t, 1, s.rowCount(ctx, table), "the produced row is visible before consuming")
 
-	src, err := msginsql.NewPollingSource(s.db, table)
+	src, err := msginsql.NewPollingSource(s.db, table, s.dialect)
 	require.NoError(t, err)
 
 	var mu sync.Mutex
@@ -220,10 +220,10 @@ func (s *OutboundSuite) TestPoisonMessageLandsInSinkTable() {
 
 			s.insertJSON(ctx, table, "poison-1", "bad-payload")
 
-			src, err := msginsql.NewPollingSource(s.db, table)
+			src, err := msginsql.NewPollingSource(s.db, table, s.dialect)
 			require.NoError(t, err)
 
-			dlq, err := msginsql.NewOutboundAdapter(s.db, dlqTable)
+			dlq, err := msginsql.NewOutboundAdapter(s.db, dlqTable, s.dialect)
 			require.NoError(t, err)
 
 			handler := func(_ context.Context, _ msgin.Message[string]) error {
@@ -270,7 +270,7 @@ func (s *OutboundSuite) TestReadyAndSendSurfaceSchemaNotReady() {
 
 	// A valid identifier that was never created.
 	table := fmt.Sprintf("msgin_out_missing_%d", s.counter.Add(1))
-	out, err := msginsql.NewOutboundAdapter(s.db, table)
+	out, err := msginsql.NewOutboundAdapter(s.db, table, s.dialect)
 	require.NoError(t, err)
 
 	require.ErrorIs(t, out.Ready(ctx), msginsql.ErrSchemaNotReady)
@@ -322,7 +322,7 @@ func (s *OutboundSuite) TestSendFramingAndPayloadErrors() {
 		s.Run(tc.name, func() {
 			t := s.T()
 			table := s.freshTable(ctx)
-			out, err := msginsql.NewOutboundAdapter(s.db, table)
+			out, err := msginsql.NewOutboundAdapter(s.db, table, s.dialect)
 			require.NoError(t, err)
 
 			sendErr := out.Send(ctx, tc.msg)

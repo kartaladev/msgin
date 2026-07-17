@@ -22,7 +22,7 @@ import (
 // assertions prove the tx-carried lock delivery works across dialects. It
 // provisions one container per engine for the whole suite (SetupSuite), each test
 // using a freshly-named table for isolation. The lock strategy is selected via
-// WithStrategy(StrategyLockForUpdate); the dialect auto-detects from the driver.
+// WithStrategy(StrategyLockForUpdate); the per-engine dialect is passed explicitly.
 type LockSuite struct {
 	suite.Suite
 	engine  engine
@@ -87,10 +87,10 @@ func (s *LockSuite) requireNoConnLeak(db *sql.DB) {
 	}, 5*time.Second, 20*time.Millisecond, "a lock tx leaked a pooled connection (InUse never returned to 0)")
 }
 
-// newLockSource builds a lock-strategy Source over table on s.db (auto-detecting
-// the dialect, which implements LockDialect), applying opts.
+// newLockSource builds a lock-strategy Source over table on s.db, passing
+// s.dialect (which implements LockDialect) explicitly, applying opts.
 func (s *LockSuite) newLockSource(table string, opts ...msginsql.Option) *msginsql.Source {
-	src, err := msginsql.NewPollingSource(s.db, table,
+	src, err := msginsql.NewPollingSource(s.db, table, s.dialect,
 		append([]msginsql.Option{msginsql.WithStrategy(msginsql.StrategyLockForUpdate)}, opts...)...)
 	require.NoError(s.T(), err)
 	return src
@@ -340,7 +340,7 @@ func (s *LockSuite) TestSeparatePoolDLQDrainsWithoutDeadlock() {
 	dlqDB := s.engine.openDB(t)
 	dlqTable := fmt.Sprintf("msgin_lock_dlq_%d", s.counter.Add(1))
 	require.NoError(t, s.dialect.EnsureSchema(ctx, dlqDB, dlqTable))
-	dlq, err := msginsql.NewOutboundAdapter(dlqDB, dlqTable, msginsql.WithDialect(s.dialect))
+	dlq, err := msginsql.NewOutboundAdapter(dlqDB, dlqTable, s.dialect)
 	require.NoError(t, err)
 
 	src := s.newLockSource(srcTable)

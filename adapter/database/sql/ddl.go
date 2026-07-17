@@ -8,7 +8,7 @@ import "fmt"
 // before building the statement; msgin never runs this on the production path
 // (ADR 0010 D2 — the caller provisions the schema).
 func PostgresDDL(table string) (string, error) {
-	if err := validateIdent(table); err != nil {
+	if err := ValidateIdent(table); err != nil {
 		return "", err
 	}
 	return postgresDialect{}.ddl(table), nil
@@ -46,7 +46,7 @@ func postgresCreateIndex(qt, qidx string) string {
 // validated table name. It is unexported by design: it does not (and a
 // string return cannot) revalidate, so it must never be reachable with an
 // untrusted identifier. The only public entry point is PostgresDDL, which
-// validateIdents first (review finding I1).
+// ValidateIdent first (review finding I1).
 func (postgresDialect) ddl(table string) string {
 	qt := pgQuote(table)
 	qidx := pgQuote(table + "_claim_idx")
@@ -60,7 +60,7 @@ func (postgresDialect) ddl(table string) string {
 // caller provisions the schema). The claim index is declared INLINE (MySQL has
 // no CREATE INDEX IF NOT EXISTS), so the whole schema is a single statement.
 func MySQLDDL(table string) (string, error) {
-	if err := validateIdent(table); err != nil {
+	if err := ValidateIdent(table); err != nil {
 		return "", err
 	}
 	return mysqlDialect{}.ddl(table), nil
@@ -91,7 +91,7 @@ func mysqlCreateTable(qt, qidx string) string {
 // ddl builds the reference DDL (single CREATE TABLE with inline index) for an
 // already-validated table name. Unexported for the same reason as the Postgres
 // builder: a string return cannot revalidate, so the only public entry point is
-// MySQLDDL, which validateIdents first.
+// MySQLDDL, which ValidateIdent first.
 func (mysqlDialect) ddl(table string) string {
 	qt := mysqlQuote(table)
 	qidx := mysqlQuote(table + "_claim_idx")
@@ -109,7 +109,7 @@ func (mysqlDialect) ddl(table string) string {
 // DDL (a caller supplying a custom InboxDialect provisions its inbox schema
 // directly); that is a clear error naming the offending type.
 func InboxDDL(d InboxDialect, table string) (string, error) {
-	if err := validateIdent(table); err != nil {
+	if err := ValidateIdent(table); err != nil {
 		return "", err
 	}
 	switch d.(type) {
@@ -142,7 +142,7 @@ func postgresCreateInboxIndex(qt, qidx string) string {
 
 // postgresInboxDDL builds the combined reference inbox DDL (table + index) for an
 // already-validated table name. Unexported (a string return cannot revalidate);
-// the only public entry point is InboxDDL, which validateIdents first.
+// the only public entry point is InboxDDL, which ValidateIdent first.
 func postgresInboxDDL(table string) string {
 	qt := pgQuote(table)
 	qidx := pgQuote(table + "_processed_idx")

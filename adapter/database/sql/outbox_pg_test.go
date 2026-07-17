@@ -145,7 +145,7 @@ func (s *OutboxSuite) TestAtomicity() {
 			bizTable := s.freshBizTable(ctx)
 			outTable := s.freshTable(ctx)
 
-			out, err := msginsql.NewOutboundAdapter(s.db, outTable, msginsql.WithSharedTransaction(sharedTxResolver))
+			out, err := msginsql.NewOutboundAdapter(s.db, outTable, s.dialect, msginsql.WithSharedTransaction(sharedTxResolver))
 			require.NoError(t, err)
 
 			tx, err := s.db.BeginTx(ctx, nil)
@@ -177,10 +177,10 @@ func (s *OutboxSuite) TestCommitGatesVisibility() {
 	t := s.T()
 
 	outTable := s.freshTable(ctx)
-	out, err := msginsql.NewOutboundAdapter(s.db, outTable, msginsql.WithSharedTransaction(sharedTxResolver))
+	out, err := msginsql.NewOutboundAdapter(s.db, outTable, s.dialect, msginsql.WithSharedTransaction(sharedTxResolver))
 	require.NoError(t, err)
 
-	src, err := msginsql.NewPollingSource(s.db, outTable)
+	src, err := msginsql.NewPollingSource(s.db, outTable, s.dialect)
 	require.NoError(t, err)
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -222,7 +222,7 @@ func (s *OutboxSuite) TestSharedTransactionPolicyBranches() {
 		{
 			name: "resolver unset: standalone pool insert, unchanged from Task 6",
 			build: func(t *testing.T, table string) (*msginsql.Outbound, *syncBuffer) {
-				out, err := msginsql.NewOutboundAdapter(s.db, table)
+				out, err := msginsql.NewOutboundAdapter(s.db, table, s.dialect)
 				require.NoError(t, err)
 				return out, nil
 			},
@@ -235,7 +235,7 @@ func (s *OutboxSuite) TestSharedTransactionPolicyBranches() {
 			name: "resolver error: Send propagates the wrapped error, no insert",
 			build: func(t *testing.T, table string) (*msginsql.Outbound, *syncBuffer) {
 				resolver := func(context.Context) (msginsql.Querier, error) { return nil, errResolverBoom }
-				out, err := msginsql.NewOutboundAdapter(s.db, table, msginsql.WithSharedTransaction(resolver))
+				out, err := msginsql.NewOutboundAdapter(s.db, table, s.dialect, msginsql.WithSharedTransaction(resolver))
 				require.NoError(t, err)
 				return out, nil
 			},
@@ -248,7 +248,7 @@ func (s *OutboxSuite) TestSharedTransactionPolicyBranches() {
 			name: "strict + no shared tx in ctx: ErrNoSharedTransaction, no insert (never dual-writes)",
 			build: func(t *testing.T, table string) (*msginsql.Outbound, *syncBuffer) {
 				resolver := func(context.Context) (msginsql.Querier, error) { return nil, nil }
-				out, err := msginsql.NewOutboundAdapter(s.db, table, msginsql.WithSharedTransaction(resolver))
+				out, err := msginsql.NewOutboundAdapter(s.db, table, s.dialect, msginsql.WithSharedTransaction(resolver))
 				require.NoError(t, err)
 				return out, nil
 			},
@@ -262,7 +262,7 @@ func (s *OutboxSuite) TestSharedTransactionPolicyBranches() {
 			build: func(t *testing.T, table string) (*msginsql.Outbound, *syncBuffer) {
 				resolver := func(context.Context) (msginsql.Querier, error) { return nil, nil }
 				logger, logs := newRecorder()
-				out, err := msginsql.NewOutboundAdapter(s.db, table,
+				out, err := msginsql.NewOutboundAdapter(s.db, table, s.dialect,
 					msginsql.WithOpportunisticSharedTransaction(resolver), msginsql.WithLogger(logger))
 				require.NoError(t, err)
 				return out, logs
@@ -307,7 +307,7 @@ func (s *OutboxSuite) TestBorrowedTxNotCommittedOrRolledBackByMsgin() {
 	bizTable := s.freshBizTable(ctx)
 	outTable := s.freshTable(ctx)
 
-	out, err := msginsql.NewOutboundAdapter(s.db, outTable, msginsql.WithSharedTransaction(sharedTxResolver))
+	out, err := msginsql.NewOutboundAdapter(s.db, outTable, s.dialect, msginsql.WithSharedTransaction(sharedTxResolver))
 	require.NoError(t, err)
 
 	tx, err := s.db.BeginTx(ctx, nil)

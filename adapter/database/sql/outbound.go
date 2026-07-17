@@ -31,12 +31,13 @@ type Outbound struct {
 	txStrict   bool                // meaningful only when txResolver != nil (ADR 0010 D8)
 }
 
-// NewOutboundAdapter builds an Outbound over table on db. It resolves the
-// LeaseDialect (WithDialect, else driver auto-detect, else ErrDialectUndetected —
-// ADR 0010 D3) and validates the table identifier (ErrInvalidTableName), the
-// same resolution NewPollingSource applies. WithLeaseTTL/WithLockedBy are
-// lease-Source-specific and are simply inert here. A nil db is
-// msgin.ErrNilAdapter. A nil TransactionResolver passed to
+// NewOutboundAdapter builds an Outbound over table on db, using dialect to
+// generate the exact SQL (ADR 0011 — the dialect is a required, explicit
+// constructor argument; there is no driver auto-detect), the same explicit
+// argument NewPollingSource takes. It validates the table identifier
+// (ErrInvalidTableName). WithLeaseTTL/WithLockedBy are lease-Source-specific
+// and are simply inert here. A nil db is msgin.ErrNilAdapter; a nil dialect is
+// ErrNilDialect. A nil TransactionResolver passed to
 // WithSharedTransaction/WithOpportunisticSharedTransaction is a construction
 // error (ErrNilResolver), never a deferred nil-func panic on the first Send.
 //
@@ -44,7 +45,7 @@ type Outbound struct {
 // msgin.NewProducer, msgin.RetryPolicy.DeadLetter, or
 // msgin.WithInvalidMessageSink. Call Ready once at boot to fail fast on an
 // un-provisioned schema (ADR 0010 D2).
-func NewOutboundAdapter(db *stdsql.DB, table string, opts ...Option) (*Outbound, error) {
+func NewOutboundAdapter(db *stdsql.DB, table string, dialect LeaseDialect, opts ...Option) (*Outbound, error) {
 	cfg := config{logger: discardLogger()}
 	for _, o := range opts {
 		o(&cfg)
@@ -54,7 +55,7 @@ func NewOutboundAdapter(db *stdsql.DB, table string, opts ...Option) (*Outbound,
 		return nil, ErrNilResolver
 	}
 
-	base, err := newAdapterBase(db, table, cfg)
+	base, err := newAdapterBase(db, table, dialect, cfg)
 	if err != nil {
 		return nil, err
 	}

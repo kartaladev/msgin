@@ -43,10 +43,11 @@ type ClaimedRow struct {
 	LeaseEpoch    int64
 }
 
-// LeaseDialect is the exported SPI a caller supplies (via WithDialect, Task 5) to
-// teach the sql adapter a database's exact SQL — the extension point for
-// wire-compatible derivatives and per-engine quirks. The built-in is
-// PostgresDialect(). Every method fully owns its statement(s) and any
+// LeaseDialect is the exported SPI a caller supplies, as the required dialect
+// argument to NewPollingSource/NewOutboundAdapter, to teach the sql adapter a
+// database's exact SQL — the extension point for wire-compatible derivatives
+// and per-engine quirks. The built-ins are PostgresDialect()/MySQLDialect().
+// Every method fully owns its statement(s) and any
 // multi-statement transaction orchestration; no cross-dialect SQL runs. All
 // persisted timestamps use the DB server clock (now()), never the app clock,
 // and durations are passed as interval-typed parameters, so there is no
@@ -105,9 +106,9 @@ type LeaseDialect interface {
 // (interface-segregation): a derivative author fixing one Claim quirk must not
 // be forced to implement inbox-dedup SQL, and a deduper never needs claim/lease
 // SQL. The built-in PostgresInboxDialect()/MySQLInboxDialect() (the same stateless
-// values as PostgresDialect()/MySQLDialect()) satisfy it, so NewInboxDeduper's
-// driver auto-detect and WithInboxDialect both work out of the box; a caller may
-// also supply their own InboxDialect for a wire-compatible derivative. Like
+// values as PostgresDialect()/MySQLDialect()) satisfy it and are passed as the
+// required dialect argument to NewInboxDeduper; a caller may also supply their
+// own InboxDialect for a wire-compatible derivative. Like
 // LeaseDialect, every method fully owns its SQL and uses the DB server clock for
 // processed_at; no cross-dialect SQL runs.
 //
@@ -155,8 +156,16 @@ type InboxDialect interface {
 // name is safe to dialect-quote and interpolate.
 var identPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// validateIdent returns ErrInvalidTableName unless name matches identPattern.
-func validateIdent(name string) error {
+// ValidateIdent returns ErrInvalidTableName unless name matches identPattern
+// (^[A-Za-z_][A-Za-z0-9_]*$ — no quote, semicolon, or whitespace). It is part
+// of the dialect-author SPI (ADR 0010 D3, ADR 0011): every LeaseDialect/
+// InboxDialect method and every reference-DDL builder validates its table (or
+// derived index) identifier with ValidateIdent BEFORE dialect-quoting and
+// interpolating it into SQL — the identifier cannot be a bound parameter, so
+// this is the sole injection guard. A dialect author implementing a new
+// LeaseDialect/InboxDialect MUST call ValidateIdent first in every method that
+// takes a table name.
+func ValidateIdent(name string) error {
 	if !identPattern.MatchString(name) {
 		return fmt.Errorf("%w: %q", ErrInvalidTableName, name)
 	}

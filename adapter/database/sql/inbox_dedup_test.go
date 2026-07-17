@@ -37,99 +37,87 @@ func (stubInboxDialect) MsgIDUniqueIndexExists(context.Context, msginsql.Querier
 	return false, nil
 }
 
-// TestNewInboxDeduper_ConstructionAndDetection exercises the deduper
-// constructor's validation and dialect-resolution precedence (ADR 0010 D10/D3):
-// WithInboxDialect wins over auto-detect; a pgx/mysql driver auto-detects the
-// matching built-in; an unrecognized driver with no WithInboxDialect is
-// ErrDialectUndetected naming the type; a nil businessDB is ErrNilAdapter. No
-// database connection is made — sql.Open is lazy and dialect resolution only
-// reflects on db.Driver().
-func TestNewInboxDeduper_ConstructionAndDetection(t *testing.T) {
+// TestNewInboxDeduper_Construction exercises the deduper constructor's
+// validation over the explicit-dialect API (ADR 0011 — dialect is now a
+// required, positional constructor argument; there is no driver auto-detect
+// fallback): a nil businessDB is ErrNilAdapter, an invalid/empty table is
+// ErrInvalidTableName, a nil dialect is ErrNilDialect, and a caller's own
+// InboxDialect is accepted like the built-ins. No database connection is
+// made — sql.Open is lazy and construction never dials.
+func TestNewInboxDeduper_Construction(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name   string
-		db     func(t *testing.T) *sql.DB // nil => pass a nil *sql.DB
-		opts   []msginsql.InboxOption
-		assert func(t *testing.T, d *msginsql.InboxDeduper, err error)
+		name    string
+		db      func(t *testing.T) *sql.DB // nil => pass a nil *sql.DB
+		dialect msginsql.InboxDialect
+		opts    []msginsql.InboxOption
+		assert  func(t *testing.T, d *msginsql.InboxDeduper, err error)
 	}
 
 	cases := []testCase{
 		{
-			name: "nil businessDB is ErrNilAdapter",
-			db:   nil,
+			name:    "nil businessDB is ErrNilAdapter",
+			db:      nil,
+			dialect: msginsql.PostgresInboxDialect(),
 			assert: func(t *testing.T, d *msginsql.InboxDeduper, err error) {
 				require.ErrorIs(t, err, msgin.ErrNilAdapter)
 				assert.Nil(t, d)
 			},
 		},
 		{
-			name: "invalid inbox table name is rejected before touching the db",
-			db:   func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
-			opts: []msginsql.InboxOption{msginsql.WithInboxTable("bad table; DROP")},
+			name:    "invalid inbox table name is rejected before touching the db",
+			db:      func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
+			dialect: msginsql.PostgresInboxDialect(),
+			opts:    []msginsql.InboxOption{msginsql.WithInboxTable("bad table; DROP")},
 			assert: func(t *testing.T, d *msginsql.InboxDeduper, err error) {
 				require.ErrorIs(t, err, msginsql.ErrInvalidTableName)
 				assert.Nil(t, d)
 			},
 		},
 		{
-			name: "empty inbox table name is rejected (not silently defaulted)",
-			db:   func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
-			opts: []msginsql.InboxOption{msginsql.WithInboxTable("")},
+			name:    "empty inbox table name is rejected (not silently defaulted)",
+			db:      func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
+			dialect: msginsql.PostgresInboxDialect(),
+			opts:    []msginsql.InboxOption{msginsql.WithInboxTable("")},
 			assert: func(t *testing.T, d *msginsql.InboxDeduper, err error) {
 				require.ErrorIs(t, err, msginsql.ErrInvalidTableName)
 				assert.Nil(t, d)
 			},
 		},
 		{
-			name: "pgx driver auto-detects a dialect",
-			db:   func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
+			name:    "nil dialect is ErrNilDialect",
+			db:      func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
+			dialect: nil,
 			assert: func(t *testing.T, d *msginsql.InboxDeduper, err error) {
-				require.NoError(t, err)
-				assert.NotNil(t, d)
-			},
-		},
-		{
-			name: "mysql driver auto-detects a dialect",
-			db:   func(t *testing.T) *sql.DB { return openDB(t, "mysql") },
-			assert: func(t *testing.T, d *msginsql.InboxDeduper, err error) {
-				require.NoError(t, err)
-				assert.NotNil(t, d)
-			},
-		},
-		{
-			name: "unrecognized driver with no WithInboxDialect is ErrDialectUndetected naming the type",
-			db:   func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
-			assert: func(t *testing.T, d *msginsql.InboxDeduper, err error) {
-				require.ErrorIs(t, err, msginsql.ErrDialectUndetected)
+				require.ErrorIs(t, err, msginsql.ErrNilDialect)
 				assert.Nil(t, d)
-				assert.Contains(t, err.Error(), "fakeDriver", "error names the driver type")
 			},
 		},
 		{
-			name: "WithInboxDialect wins over an unrecognized driver (no auto-detect needed)",
-			db:   func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
-			opts: []msginsql.InboxOption{msginsql.WithInboxDialect(msginsql.PostgresInboxDialect())},
+			name:    "a valid businessDB/dialect (postgres) constructs",
+			db:      func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
+			dialect: msginsql.PostgresInboxDialect(),
 			assert: func(t *testing.T, d *msginsql.InboxDeduper, err error) {
-				require.NoError(t, err, "explicit WithInboxDialect must bypass auto-detect")
+				require.NoError(t, err)
 				assert.NotNil(t, d)
 			},
 		},
 		{
-			name: "a custom InboxDialect is accepted via WithInboxDialect",
-			db:   func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
-			opts: []msginsql.InboxOption{msginsql.WithInboxDialect(stubInboxDialect{})},
+			name:    "a valid businessDB/dialect (mysql) constructs",
+			db:      func(t *testing.T) *sql.DB { return openDB(t, "mysql") },
+			dialect: msginsql.MySQLInboxDialect(),
+			assert: func(t *testing.T, d *msginsql.InboxDeduper, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, d)
+			},
+		},
+		{
+			name:    "a custom InboxDialect is accepted",
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
+			dialect: stubInboxDialect{},
 			assert: func(t *testing.T, d *msginsql.InboxDeduper, err error) {
 				require.NoError(t, err, "a caller's own InboxDialect must be accepted")
-				assert.NotNil(t, d)
-			},
-		},
-		{
-			name: "nil WithInboxDialect is ignored (auto-detect still applies)",
-			db:   func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
-			opts: []msginsql.InboxOption{msginsql.WithInboxDialect(nil)},
-			assert: func(t *testing.T, d *msginsql.InboxDeduper, err error) {
-				require.NoError(t, err, "a nil WithInboxDialect must fall back to auto-detect, not defer a nil panic")
 				assert.NotNil(t, d)
 			},
 		},
@@ -142,7 +130,7 @@ func TestNewInboxDeduper_ConstructionAndDetection(t *testing.T) {
 			if tc.db != nil {
 				db = tc.db(t)
 			}
-			d, err := msginsql.NewInboxDeduper(db, tc.opts...)
+			d, err := msginsql.NewInboxDeduper(db, tc.dialect, tc.opts...)
 			tc.assert(t, d, err)
 		})
 	}
@@ -155,7 +143,7 @@ func TestNewInboxDeduper_ConstructionAndDetection(t *testing.T) {
 func TestInboxDeduper_MarkProcessedNilTx(t *testing.T) {
 	t.Parallel()
 
-	d, err := msginsql.NewInboxDeduper(openDB(t, "pgx"))
+	d, err := msginsql.NewInboxDeduper(openDB(t, "pgx"), msginsql.PostgresInboxDialect())
 	require.NoError(t, err)
 
 	already, err := d.MarkProcessed(t.Context(), nil, "msg-1")
@@ -175,7 +163,7 @@ func TestInboxDeduper_ReadyPassesThroughProbeError(t *testing.T) {
 	db := openDB(t, "pgx")
 	require.NoError(t, db.Close()) // a closed pool makes SchemaExists's query error
 
-	d, err := msginsql.NewInboxDeduper(db)
+	d, err := msginsql.NewInboxDeduper(db, msginsql.PostgresInboxDialect())
 	require.NoError(t, err)
 
 	err = d.Ready(t.Context())
@@ -192,7 +180,7 @@ func TestInboxDeduper_ReadyPassesThroughProbeError(t *testing.T) {
 func TestInboxDeduper_PurgeRejectsNonPositiveRetention(t *testing.T) {
 	t.Parallel()
 
-	d, err := msginsql.NewInboxDeduper(openDB(t, "pgx"))
+	d, err := msginsql.NewInboxDeduper(openDB(t, "pgx"), msginsql.PostgresInboxDialect())
 	require.NoError(t, err)
 
 	type testCase struct {

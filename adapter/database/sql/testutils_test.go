@@ -16,13 +16,12 @@ import (
 
 	// Registers the "pgx" database/sql driver. pgx (jackc/pgx/v5) is chosen
 	// over lib/pq because it is the modern, actively-maintained PostgreSQL
-	// driver, and its driver type PkgPath contains "pgx" — the token the
-	// dialect auto-detect matches — so tests exercise the same detection path
-	// production callers will hit.
+	// driver — the same driver a production caller would inject alongside the
+	// explicit PostgresDialect().
 	_ "github.com/jackc/pgx/v5/stdlib"
-	// Registers the "mysql" database/sql driver (go-sql-driver/mysql). Its
-	// driver type PkgPath contains the "mysql" token, so the MySQL auto-detect
-	// path is exercised the same way a production caller hits it.
+	// Registers the "mysql" database/sql driver (go-sql-driver/mysql) — the
+	// same driver a production caller would inject alongside the explicit
+	// MySQLDialect().
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -162,10 +161,10 @@ func RunTestMySQL(t *testing.T, opts ...TestOption) *sql.DB {
 // parseTime=true is set so DATETIME(6) columns scan back into time.Time (a test
 // probe needs it). It is the MariaDB peer of RunTestMySQL, provisioned ONLY for
 // the inbox suite (inboxEngines) to certify the MySQL-family InboxDialect on
-// MariaDB too — the ADR claims MariaDB as an auto-detected engine, and its
-// INSERT-IGNORE verify read (LOCK IN SHARE MODE) and unique-index probe must hold
-// there. The lease/lock/outbox suites are NOT run on MariaDB here (a separate
-// follow-up).
+// MariaDB too — the ADR claims MariaDB as a supported wire-compatible engine
+// (passed as the explicit MySQLDialect()), and its INSERT-IGNORE verify read
+// (LOCK IN SHARE MODE) and unique-index probe must hold there. The
+// lease/lock/outbox suites are NOT run on MariaDB here (a separate follow-up).
 func RunTestMariaDB(t *testing.T, opts ...TestOption) *sql.DB {
 	t.Helper()
 

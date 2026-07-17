@@ -28,19 +28,18 @@ import (
 type mysqlDialect struct{}
 
 // MySQLDialect returns the built-in MySQL LeaseDialect (lease/claim strategy),
-// behavior-identical to PostgresDialect() over MySQL SQL. Pass it to the adapter
-// constructors via WithDialect for the guaranteed-correct path; a MySQL/MariaDB
-// driver also auto-detects it.
+// behavior-identical to PostgresDialect() over MySQL SQL. Pass it as the
+// required dialect argument to NewPollingSource/NewOutboundAdapter; it also
+// covers MariaDB (wire-compatible).
 func MySQLDialect() LeaseDialect { return mysqlDialect{} }
 
 // MySQLInboxDialect returns the built-in MySQL InboxDialect — the same stateless
 // value as MySQLDialect(), narrowed to the dedup-inbox SPI (ADR 0010 D10). Pass
-// it to NewInboxDeduper via WithInboxDialect to bypass driver auto-detect (a
-// mysql/mariadb driver auto-detects it otherwise).
+// it as the required dialect argument to NewInboxDeduper.
 func MySQLInboxDialect() InboxDialect { return mysqlDialect{} }
 
 // mysqlQuote back-quotes a MySQL identifier. The name must already be validated
-// (validateIdent admits no backtick), so wrapping is safe; doubling any embedded
+// (ValidateIdent admits no backtick), so wrapping is safe; doubling any embedded
 // backtick is defense-in-depth in case this is ever reached without prior
 // validation (mirrors pgQuote).
 func mysqlQuote(name string) string {
@@ -49,18 +48,10 @@ func mysqlQuote(name string) string {
 
 // mysqlQuoteTable validates then quotes a table identifier for interpolation.
 func mysqlQuoteTable(table string) (string, error) {
-	if err := validateIdent(table); err != nil {
+	if err := ValidateIdent(table); err != nil {
 		return "", err
 	}
 	return mysqlQuote(table), nil
-}
-
-// txBeginner is the capability a Querier must have for the MySQL two-step claim:
-// the ability to open a transaction. *sql.DB satisfies it (its BeginTx); *sql.Tx
-// does not (a tx cannot nest one), which is exactly how Claim tells the pool
-// apart from an already-open transaction below.
-type txBeginner interface {
-	BeginTx(ctx context.Context, opts *stdsql.TxOptions) (*stdsql.Tx, error)
 }
 
 // Claim leases up to limit claimable rows for lockedBy, treating any lease older
@@ -267,7 +258,7 @@ func (mysqlDialect) ClaimLock(ctx context.Context, q Querier, table, lockedBy st
 	if err != nil {
 		return nil, err
 	}
-	tx, err := beginLockTx(ctx, q)
+	tx, err := BeginLockTx(ctx, q)
 	if err != nil {
 		return nil, err
 	}
@@ -308,7 +299,7 @@ func (mysqlDialect) AckLock(ctx context.Context, lr *LockedRow, table string) er
 		_ = lr.Tx.Rollback()
 		return err
 	}
-	return settleLockTx(ctx, lr.Tx, fmt.Sprintf("DELETE FROM %s WHERE id = ?", qt), lr.ID)
+	return SettleLockTx(ctx, lr.Tx, fmt.Sprintf("DELETE FROM %s WHERE id = ?", qt), lr.ID)
 }
 
 // NackLock returns lr to the queue by clearing the lock and pushing
@@ -320,7 +311,7 @@ func (mysqlDialect) NackLock(ctx context.Context, lr *LockedRow, table string, d
 		_ = lr.Tx.Rollback()
 		return err
 	}
-	return settleLockTx(ctx, lr.Tx,
+	return SettleLockTx(ctx, lr.Tx,
 		fmt.Sprintf(`UPDATE %s SET locked_by = NULL, locked_at = NULL,
   visible_after = DATE_ADD(UTC_TIMESTAMP(6), INTERVAL ? MICROSECOND)
 WHERE id = ?`, qt),
@@ -330,7 +321,7 @@ WHERE id = ?`, qt),
 func (mysqlDialect) SchemaExists(ctx context.Context, q Querier, table string) (bool, error) {
 	// table is a bound parameter here, but validate it anyway so the exported SPI
 	// never runs on an unvalidated identifier.
-	if err := validateIdent(table); err != nil {
+	if err := ValidateIdent(table); err != nil {
 		return false, err
 	}
 	var one int
@@ -441,7 +432,7 @@ func (mysqlDialect) EnsureInboxSchema(ctx context.Context, q Querier, table stri
 // is a bound parameter, but validated anyway so the exported SPI never runs on an
 // unvalidated identifier.
 func (mysqlDialect) MsgIDUniqueIndexExists(ctx context.Context, q Querier, table string) (bool, error) {
-	if err := validateIdent(table); err != nil {
+	if err := ValidateIdent(table); err != nil {
 		return false, err
 	}
 	var one int

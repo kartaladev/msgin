@@ -76,7 +76,7 @@ func newRecorder() (*slog.Logger, *syncBuffer) {
 // (NewConsumer + Run). TestSourceSuite runs it once per engine (postgres, mysql)
 // so the SAME end-to-end assertions prove the Source works over both dialects.
 // Each test uses a freshly-named, freshly-provisioned table so cases stay
-// isolated. The Source auto-detects the dialect from the per-engine driver.
+// isolated. Each constructor call passes the per-engine dialect explicitly.
 type SourceSuite struct {
 	suite.Suite
 	engine  engine
@@ -142,7 +142,7 @@ func (s *SourceSuite) TestConsumeAllRowsAckedAndDeleted() {
 		s.insertJSON(ctx, table, id, payload)
 	}
 
-	src, err := msginsql.NewPollingSource(s.db, table)
+	src, err := msginsql.NewPollingSource(s.db, table, s.dialect)
 	require.NoError(t, err)
 
 	var mu sync.Mutex
@@ -189,7 +189,7 @@ func (s *SourceSuite) TestHandlerErrorRequeuesAndRedeliversWithClimbingCount() {
 
 	s.insertJSON(ctx, table, "retry-1", "hello")
 
-	src, err := msginsql.NewPollingSource(s.db, table)
+	src, err := msginsql.NewPollingSource(s.db, table, s.dialect)
 	require.NoError(t, err)
 
 	var mu sync.Mutex
@@ -243,7 +243,7 @@ func (s *SourceSuite) TestStaleLeaseFencePreventsDoubleSettle() {
 	s.insertJSON(ctx, table, "slow-1", "hello")
 
 	logger, logs := newRecorder()
-	src, err := msginsql.NewPollingSource(s.db, table,
+	src, err := msginsql.NewPollingSource(s.db, table, s.dialect,
 		msginsql.WithLeaseTTL(1*time.Second), // tiny: the slow handler will outrun it
 		msginsql.WithLogger(logger),
 	)
@@ -297,7 +297,7 @@ func (s *SourceSuite) TestReadyAndPollSurfaceSchemaNotReady() {
 
 	// A valid identifier that was never created.
 	table := fmt.Sprintf("msgin_missing_%d", s.counter.Add(1))
-	src, err := msginsql.NewPollingSource(s.db, table)
+	src, err := msginsql.NewPollingSource(s.db, table, s.dialect)
 	require.NoError(t, err)
 
 	require.ErrorIs(t, src.Ready(ctx), msginsql.ErrSchemaNotReady)
@@ -315,7 +315,7 @@ func (s *SourceSuite) TestReadyOKAndEnsureSchemaIdempotent() {
 	t := s.T()
 
 	table := fmt.Sprintf("msgin_ready_%d", s.counter.Add(1))
-	src, err := msginsql.NewPollingSource(s.db, table)
+	src, err := msginsql.NewPollingSource(s.db, table, s.dialect)
 	require.NoError(t, err)
 
 	require.NoError(t, src.EnsureSchema(ctx))
@@ -348,7 +348,7 @@ func (s *SourceSuite) TestCorruptHeadersRowSkipped() {
 	require.NoError(t, err)
 
 	logger, logs := newRecorder()
-	src, err := msginsql.NewPollingSource(s.db, table, msginsql.WithLogger(logger))
+	src, err := msginsql.NewPollingSource(s.db, table, s.dialect, msginsql.WithLogger(logger))
 	require.NoError(t, err)
 
 	deliveries, pollErr := src.Poll(ctx, 10)
@@ -394,7 +394,7 @@ func (s *SourceSuite) TestNoGoroutineLeakAfterCleanRun() {
 	// goroutine still alive after Run beyond this set is a genuine msgin leak.
 	baseline := goleak.IgnoreCurrent()
 
-	src, err := msginsql.NewPollingSource(s.db, table)
+	src, err := msginsql.NewPollingSource(s.db, table, s.dialect)
 	require.NoError(t, err)
 
 	done := make(chan struct{})
@@ -436,7 +436,7 @@ func (s *SourceSuite) TestNackClosureRequeueFalseCollapsesToImmediate() {
 	table := s.freshTable(ctx)
 	s.insertJSON(ctx, table, "collapse-1", "hello")
 
-	src, err := msginsql.NewPollingSource(s.db, table)
+	src, err := msginsql.NewPollingSource(s.db, table, s.dialect)
 	require.NoError(t, err)
 
 	deliveries, err := src.Poll(ctx, 1)
@@ -486,7 +486,7 @@ func (s *SourceSuite) TestSettleStaleLeaseReturnsErrStaleLease() {
 
 			// A tiny lease TTL so the first claim's lease expires quickly and can be
 			// stolen by a second claim (a different lease_epoch).
-			src, err := msginsql.NewPollingSource(s.db, table, msginsql.WithLeaseTTL(500*time.Millisecond))
+			src, err := msginsql.NewPollingSource(s.db, table, s.dialect, msginsql.WithLeaseTTL(500*time.Millisecond))
 			require.NoError(t, err)
 
 			deliveries, err := src.Poll(ctx, 1) // lease_epoch 1
@@ -520,7 +520,7 @@ func (s *SourceSuite) TestWithLockedByStampsOwner() {
 	s.insertJSON(ctx, table, "owned-1", "hello")
 
 	const owner = "worker-alpha"
-	src, err := msginsql.NewPollingSource(s.db, table, msginsql.WithLockedBy(owner))
+	src, err := msginsql.NewPollingSource(s.db, table, s.dialect, msginsql.WithLockedBy(owner))
 	require.NoError(t, err)
 
 	deliveries, err := src.Poll(ctx, 1)
@@ -548,7 +548,7 @@ func (s *SourceSuite) TestSettleAndProbeUnderCanceledContext() {
 	table := s.freshTable(ctx)
 	s.insertJSON(ctx, table, "cancel-1", "hello")
 
-	src, err := msginsql.NewPollingSource(s.db, table)
+	src, err := msginsql.NewPollingSource(s.db, table, s.dialect)
 	require.NoError(t, err)
 
 	// Claim a delivery on a healthy context so its Ack/Nack closures are bound.

@@ -87,32 +87,35 @@ func TestNewPollingSource_StrategyConstruction(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name   string
-		opts   []msginsql.Option
-		assert func(t *testing.T, src *msginsql.Source, err error)
+		name    string
+		dialect msginsql.LeaseDialect
+		opts    []msginsql.Option
+		assert  func(t *testing.T, src *msginsql.Source, err error)
 	}
 
 	cases := []testCase{
 		{
-			name: "default strategy (unset) constructs a lease Source",
-			opts: nil,
+			name:    "default strategy (unset) constructs a lease Source",
+			dialect: msginsql.PostgresDialect(),
+			opts:    nil,
 			assert: func(t *testing.T, src *msginsql.Source, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, src)
 			},
 		},
 		{
-			name: "explicit StrategyLeaseClaim constructs",
-			opts: []msginsql.Option{msginsql.WithStrategy(msginsql.StrategyLeaseClaim)},
+			name:    "explicit StrategyLeaseClaim constructs",
+			dialect: msginsql.PostgresDialect(),
+			opts:    []msginsql.Option{msginsql.WithStrategy(msginsql.StrategyLeaseClaim)},
 			assert: func(t *testing.T, src *msginsql.Source, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, src)
 			},
 		},
 		{
-			name: "StrategyLockForUpdate with a lock-capable built-in dialect constructs",
+			name:    "StrategyLockForUpdate with a lock-capable built-in dialect constructs",
+			dialect: msginsql.PostgresDialect(),
 			opts: []msginsql.Option{
-				msginsql.WithDialect(msginsql.PostgresDialect()),
 				msginsql.WithStrategy(msginsql.StrategyLockForUpdate),
 			},
 			assert: func(t *testing.T, src *msginsql.Source, err error) {
@@ -121,9 +124,9 @@ func TestNewPollingSource_StrategyConstruction(t *testing.T) {
 			},
 		},
 		{
-			name: "StrategyLockForUpdate with the MySQL built-in dialect constructs",
+			name:    "StrategyLockForUpdate with the MySQL built-in dialect constructs",
+			dialect: msginsql.MySQLDialect(),
 			opts: []msginsql.Option{
-				msginsql.WithDialect(msginsql.MySQLDialect()),
 				msginsql.WithStrategy(msginsql.StrategyLockForUpdate),
 			},
 			assert: func(t *testing.T, src *msginsql.Source, err error) {
@@ -132,9 +135,9 @@ func TestNewPollingSource_StrategyConstruction(t *testing.T) {
 			},
 		},
 		{
-			name: "StrategyLockForUpdate with a lease-only dialect is ErrLockStrategyUnsupported",
+			name:    "StrategyLockForUpdate with a lease-only dialect is ErrLockStrategyUnsupported",
+			dialect: nonLockDialect{},
 			opts: []msginsql.Option{
-				msginsql.WithDialect(nonLockDialect{}),
 				msginsql.WithStrategy(msginsql.StrategyLockForUpdate),
 			},
 			assert: func(t *testing.T, src *msginsql.Source, err error) {
@@ -143,16 +146,18 @@ func TestNewPollingSource_StrategyConstruction(t *testing.T) {
 			},
 		},
 		{
-			name: "an out-of-range Strategy is ErrInvalidStrategy",
-			opts: []msginsql.Option{msginsql.WithStrategy(msginsql.Strategy(99))},
+			name:    "an out-of-range Strategy is ErrInvalidStrategy",
+			dialect: msginsql.PostgresDialect(),
+			opts:    []msginsql.Option{msginsql.WithStrategy(msginsql.Strategy(99))},
 			assert: func(t *testing.T, src *msginsql.Source, err error) {
 				require.ErrorIs(t, err, msginsql.ErrInvalidStrategy)
 				assert.Nil(t, src)
 			},
 		},
 		{
-			name: "a negative Strategy is ErrInvalidStrategy",
-			opts: []msginsql.Option{msginsql.WithStrategy(msginsql.Strategy(-1))},
+			name:    "a negative Strategy is ErrInvalidStrategy",
+			dialect: msginsql.PostgresDialect(),
+			opts:    []msginsql.Option{msginsql.WithStrategy(msginsql.Strategy(-1))},
 			assert: func(t *testing.T, src *msginsql.Source, err error) {
 				require.ErrorIs(t, err, msginsql.ErrInvalidStrategy)
 				assert.Nil(t, src)
@@ -163,10 +168,10 @@ func TestNewPollingSource_StrategyConstruction(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			// A lazy pgx handle (no connection); the built-in dialect is used or
-			// auto-detected, and every assertion here is construction-time only.
+			// A lazy pgx handle (no connection); every assertion here is
+			// construction-time only.
 			db := openDB(t, "pgx")
-			src, err := msginsql.NewPollingSource(db, "msgs", tc.opts...)
+			src, err := msginsql.NewPollingSource(db, "msgs", tc.dialect, tc.opts...)
 			tc.assert(t, src, err)
 		})
 	}

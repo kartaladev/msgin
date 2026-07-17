@@ -67,24 +67,27 @@ type Source struct {
 	lockDialect LockDialect
 }
 
-// NewPollingSource builds a lease/claim Source over table on db. It resolves
-// the LeaseDialect (WithDialect, else driver auto-detect, else ErrDialectUndetected
-// — ADR 0010 D3), validates the table identifier (ErrInvalidTableName), and
+// NewPollingSource builds a lease/claim Source over table on db, using dialect
+// to generate the exact SQL (ADR 0011 — the dialect is a required, explicit
+// constructor argument; there is no driver auto-detect). Pass
+// sql.PostgresDialect(), sql.MySQLDialect(), or your own LeaseDialect
+// implementation. It validates the table identifier (ErrInvalidTableName), and
 // applies the sensible defaults documented on each option (5m lease TTL, a
-// random lease owner, a discard logger). A nil db is msgin.ErrNilAdapter.
+// random lease owner, a discard logger). A nil db is msgin.ErrNilAdapter; a nil
+// dialect is ErrNilDialect.
 //
 // The returned Source implements msgin.PollingSource and
 // msgin.NativeReliability; pass it to msgin.NewConsumer. Call Ready once at boot
 // to fail fast on an un-provisioned schema (ADR 0010 D2), and prefer a non-zero
 // RetryPolicy.Backoff so a repeatedly-failing row idles the poll loop instead of
 // hot-looping the DB (ADR 0010 D1 poison-recycle caveat).
-func NewPollingSource(db *stdsql.DB, table string, opts ...Option) (*Source, error) {
+func NewPollingSource(db *stdsql.DB, table string, dialect LeaseDialect, opts ...Option) (*Source, error) {
 	cfg := config{logger: discardLogger()}
 	for _, o := range opts {
 		o(&cfg)
 	}
 
-	base, err := newAdapterBase(db, table, cfg)
+	base, err := newAdapterBase(db, table, dialect, cfg)
 	if err != nil {
 		return nil, err
 	}

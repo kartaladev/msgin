@@ -14,18 +14,17 @@ import (
 type postgresDialect struct{}
 
 // PostgresDialect returns the built-in PostgreSQL LeaseDialect (lease/claim
-// strategy). It owns the exact PostgreSQL SQL for every operation; pass it to
-// the adapter constructors via WithDialect for the guaranteed-correct path.
+// strategy). It owns the exact PostgreSQL SQL for every operation; pass it as
+// the required dialect argument to NewPollingSource/NewOutboundAdapter.
 func PostgresDialect() LeaseDialect { return postgresDialect{} }
 
 // PostgresInboxDialect returns the built-in PostgreSQL InboxDialect — the same
 // stateless value as PostgresDialect(), narrowed to the dedup-inbox SPI (ADR
-// 0010 D10). Pass it to NewInboxDeduper via WithInboxDialect to bypass driver
-// auto-detect (a pgx/pq/postgres driver auto-detects it otherwise).
+// 0010 D10). Pass it as the required dialect argument to NewInboxDeduper.
 func PostgresInboxDialect() InboxDialect { return postgresDialect{} }
 
 // pgQuote double-quotes a PostgreSQL identifier. The name must already be
-// validated (validateIdent admits no double-quote), so wrapping is safe;
+// validated (ValidateIdent admits no double-quote), so wrapping is safe;
 // doubling any embedded `"` is defense-in-depth (belt-and-suspenders) in case
 // this is ever reached without prior validation.
 func pgQuote(name string) string {
@@ -34,7 +33,7 @@ func pgQuote(name string) string {
 
 // pgQuoteTable validates then quotes a table identifier for interpolation.
 func pgQuoteTable(table string) (string, error) {
-	if err := validateIdent(table); err != nil {
+	if err := ValidateIdent(table); err != nil {
 		return "", err
 	}
 	return pgQuote(table), nil
@@ -170,7 +169,7 @@ func (postgresDialect) ClaimLock(ctx context.Context, q Querier, table, lockedBy
 	if err != nil {
 		return nil, err
 	}
-	tx, err := beginLockTx(ctx, q)
+	tx, err := BeginLockTx(ctx, q)
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +212,7 @@ func (postgresDialect) AckLock(ctx context.Context, lr *LockedRow, table string)
 		_ = lr.Tx.Rollback() // never leave the carried tx open, even on this near-impossible path
 		return err
 	}
-	return settleLockTx(ctx, lr.Tx, fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, qt), lr.ID)
+	return SettleLockTx(ctx, lr.Tx, fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, qt), lr.ID)
 }
 
 // NackLock returns lr to the queue by clearing the lock and pushing
@@ -226,7 +225,7 @@ func (postgresDialect) NackLock(ctx context.Context, lr *LockedRow, table string
 		_ = lr.Tx.Rollback()
 		return err
 	}
-	return settleLockTx(ctx, lr.Tx,
+	return SettleLockTx(ctx, lr.Tx,
 		fmt.Sprintf(`UPDATE %s SET locked_by = NULL, locked_at = NULL,
   visible_after = now() + ($2 * interval '1 microsecond')
 WHERE id = $1`, qt),
@@ -236,7 +235,7 @@ WHERE id = $1`, qt),
 func (postgresDialect) SchemaExists(ctx context.Context, q Querier, table string) (bool, error) {
 	// table is a bound parameter here, but validate it anyway so the exported
 	// SPI never runs on an unvalidated identifier.
-	if err := validateIdent(table); err != nil {
+	if err := ValidateIdent(table); err != nil {
 		return false, err
 	}
 	var one int
@@ -323,7 +322,7 @@ func (postgresDialect) EnsureInboxSchema(ctx context.Context, q Querier, table s
 // table is a bound parameter, but validated anyway so the exported SPI never runs
 // on an unvalidated identifier.
 func (postgresDialect) MsgIDUniqueIndexExists(ctx context.Context, q Querier, table string) (bool, error) {
-	if err := validateIdent(table); err != nil {
+	if err := ValidateIdent(table); err != nil {
 		return false, err
 	}
 	var one int

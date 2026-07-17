@@ -16,13 +16,13 @@ var (
 	// outbound wrap it naming the offending table (ADR 0010 D2).
 	ErrSchemaNotReady = errors.New("msgin/sql: schema not ready")
 
-	// ErrDialectUndetected is a construction error from NewPollingSource (and the
-	// outbound constructor) when no WithDialect was given and the driver type
-	// could not be matched to a built-in dialect. The wrapped message names the
-	// driver type so the caller knows to pass WithDialect explicitly (ADR 0010
-	// D3). Auto-detect is a best-effort convenience; WithDialect is the
-	// guaranteed-correct path.
-	ErrDialectUndetected = errors.New("msgin/sql: could not auto-detect a SQL dialect from the driver")
+	// ErrNilDialect is a construction error from NewPollingSource,
+	// NewOutboundAdapter, and NewInboxDeduper when the required dialect argument
+	// is nil. The dialect is an explicit, required constructor argument (ADR
+	// 0011) — there is no driver auto-detect to fall back on — so a nil dialect
+	// is refused up front rather than deferring a nil-pointer panic to the first
+	// Poll/Send/MarkProcessed.
+	ErrNilDialect = errors.New("msgin/sql: nil dialect")
 
 	// ErrInvalidLeaseTTL is a construction error from NewPollingSource when
 	// WithLeaseTTL is given a non-positive duration. Unset leaves the safe 5m
