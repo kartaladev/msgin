@@ -107,6 +107,36 @@ func TestDecodeHeadersMalformedJSON(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestDecodeHeadersEmptyInput covers DecodeHeaders' zero-length fast path
+// (empty Headers, no JSON parse attempted). EncodeHeaders always emits at
+// least "{}" (never zero bytes), so the round-trip table above can never
+// exercise this branch — it is reachable only via a raw nil/empty []byte, as
+// an inbound adapter would see for a row with no framed headers.
+func TestDecodeHeadersEmptyInput(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		in   []byte
+	}
+	cases := []testCase{
+		{name: "nil", in: nil},
+		{name: "empty slice", in: []byte{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := msginsql.DecodeHeaders(tc.in)
+			require.NoError(t, err)
+			n := 0
+			for range got.All() {
+				n++
+			}
+			assert.Equal(t, 0, n, "empty input must yield empty Headers")
+		})
+	}
+}
+
 func TestPostgresDDLIdentifierValidation(t *testing.T) {
 	t.Parallel()
 
