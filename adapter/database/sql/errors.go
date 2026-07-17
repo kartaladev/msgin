@@ -38,4 +38,12 @@ var (
 	// that re-leased it and will be settled there. It is exported so callers can
 	// errors.Is it in logs/hooks (ADR 0010 D4).
 	ErrStaleLease = errors.New("msgin/sql: stale lease; message was re-claimed by another worker")
+
+	// ErrInvalidPayload is returned by Outbound.Send when the message's payload
+	// is not []byte. The Outbound is a wire adapter, not a LiveValueSource, so
+	// msgin.NewProducer always JSON-encodes T to []byte before calling Send; a
+	// non-[]byte payload here means Send was invoked directly (bypassing the
+	// producer) with the wrong payload shape — a defensive case trusted
+	// producers do not hit (ADR 0010 D8).
+	ErrInvalidPayload = errors.New("msgin/sql: outbound payload must be []byte")
 )

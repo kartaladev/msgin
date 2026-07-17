@@ -552,23 +552,8 @@ func (s *SourceSuite) TestSettleAndProbeUnderCanceledContext() {
 		"a failed probe must not be mis-reported as a missing schema")
 }
 
-// runUntil runs consumer until done is signalled (or the deadline), then cancels
-// and returns Run's error. It joins the Run goroutine so no goroutine outlives
-// the test.
+// runUntil delegates to the package-level runConsumerUntil (shared with
+// OutboundSuite's round-trip test).
 func (s *SourceSuite) runUntil(ctx context.Context, consumer msgin.Consumer[string], done <-chan struct{}, deadline time.Duration) error {
-	s.T().Helper()
-	runCtx, cancel := context.WithCancel(ctx)
-	errCh := make(chan error, 1)
-	go func() { errCh <- consumer.Run(runCtx) }()
-
-	select {
-	case <-done:
-	case <-time.After(deadline):
-		cancel()
-		<-errCh
-		s.T().Fatal("timed out waiting for the consumer to process the expected messages")
-		return nil
-	}
-	cancel()
-	return <-errCh
+	return runConsumerUntil(s.T(), ctx, consumer, done, deadline)
 }
