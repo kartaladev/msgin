@@ -32,7 +32,7 @@ func TestNewOutboundAdapter_Construction(t *testing.T) {
 			name:    "nil db is ErrNilAdapter",
 			db:      nil,
 			table:   "msgs",
-			dialect: msginsql.PostgresDialect(),
+			dialect: newFakeDialect(),
 			assert: func(t *testing.T, out *msginsql.Outbound, err error) {
 				require.ErrorIs(t, err, msgin.ErrNilAdapter)
 				assert.Nil(t, out)
@@ -40,9 +40,9 @@ func TestNewOutboundAdapter_Construction(t *testing.T) {
 		},
 		{
 			name:    "invalid table name is rejected before touching the db",
-			db:      func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
 			table:   "bad table; DROP",
-			dialect: msginsql.PostgresDialect(),
+			dialect: newFakeDialect(),
 			assert: func(t *testing.T, out *msginsql.Outbound, err error) {
 				require.ErrorIs(t, err, msginsql.ErrInvalidTableName)
 				assert.Nil(t, out)
@@ -50,7 +50,7 @@ func TestNewOutboundAdapter_Construction(t *testing.T) {
 		},
 		{
 			name:    "nil dialect is ErrNilDialect",
-			db:      func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
 			table:   "msgs",
 			dialect: nil,
 			assert: func(t *testing.T, out *msginsql.Outbound, err error) {
@@ -60,9 +60,9 @@ func TestNewOutboundAdapter_Construction(t *testing.T) {
 		},
 		{
 			name:    "a valid db/table/dialect constructs",
-			db:      func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
 			table:   "msgs",
-			dialect: msginsql.PostgresDialect(),
+			dialect: newFakeDialect(),
 			assert: func(t *testing.T, out *msginsql.Outbound, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, out)
@@ -70,9 +70,9 @@ func TestNewOutboundAdapter_Construction(t *testing.T) {
 		},
 		{
 			name:    "WithLeaseTTL/WithLockedBy (lease-Source-specific) are inert but do not error",
-			db:      func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
 			table:   "msgs",
-			dialect: msginsql.PostgresDialect(),
+			dialect: newFakeDialect(),
 			opts:    []msginsql.Option{msginsql.WithLeaseTTL(30 * time.Second), msginsql.WithLockedBy("owner")},
 			assert: func(t *testing.T, out *msginsql.Outbound, err error) {
 				require.NoError(t, err)
@@ -81,9 +81,9 @@ func TestNewOutboundAdapter_Construction(t *testing.T) {
 		},
 		{
 			name:    "WithSharedTransaction(nil) is a construction-time ErrNilResolver, not a deferred panic",
-			db:      func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
 			table:   "msgs",
-			dialect: msginsql.PostgresDialect(),
+			dialect: newFakeDialect(),
 			opts:    []msginsql.Option{msginsql.WithSharedTransaction(nil)},
 			assert: func(t *testing.T, out *msginsql.Outbound, err error) {
 				require.ErrorIs(t, err, msginsql.ErrNilResolver)
@@ -92,9 +92,9 @@ func TestNewOutboundAdapter_Construction(t *testing.T) {
 		},
 		{
 			name:    "WithOpportunisticSharedTransaction(nil) is also a construction-time ErrNilResolver",
-			db:      func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
 			table:   "msgs",
-			dialect: msginsql.PostgresDialect(),
+			dialect: newFakeDialect(),
 			opts:    []msginsql.Option{msginsql.WithOpportunisticSharedTransaction(nil)},
 			assert: func(t *testing.T, out *msginsql.Outbound, err error) {
 				require.ErrorIs(t, err, msginsql.ErrNilResolver)
@@ -122,7 +122,7 @@ func TestNewOutboundAdapter_Construction(t *testing.T) {
 func TestOutbound_NotLiveValueSource(t *testing.T) {
 	t.Parallel()
 
-	out, err := msginsql.NewOutboundAdapter(openDB(t, "pgx"), "msgs", msginsql.PostgresDialect())
+	out, err := msginsql.NewOutboundAdapter(openDB(t, fakeDriverName), "msgs", newFakeDialect())
 	require.NoError(t, err)
 
 	_, ok := any(out).(msgin.LiveValueSource)

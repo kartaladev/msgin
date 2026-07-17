@@ -9,6 +9,7 @@ package sql_test
 // package's tests open a *sql.DB without a real connection.
 
 import (
+	"context"
 	"database/sql"
 	"database/sql/driver"
 	"errors"
@@ -16,6 +17,21 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
+
+// fakeQuerier is a msginsql.Querier that is neither *sql.DB nor *sql.Tx, so the
+// engine's BeginLockTx transaction resolution must reject it — the lock
+// strategy needs a real transaction owner. Its methods are never reached
+// (BeginLockTx fails on the type first). Used by locktx_unit_test.go's
+// unsupported-Querier case.
+type fakeQuerier struct{}
+
+func (fakeQuerier) ExecContext(context.Context, string, ...any) (sql.Result, error) {
+	return nil, nil
+}
+func (fakeQuerier) QueryContext(context.Context, string, ...any) (*sql.Rows, error) {
+	return nil, nil
+}
+func (fakeQuerier) QueryRowContext(context.Context, string, ...any) *sql.Row { return nil }
 
 // fakeDriver is an unregistered-shape SQL driver, used by tests that need a
 // *sql.DB whose driver is irrelevant (the dialect is now always passed

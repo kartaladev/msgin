@@ -72,7 +72,9 @@ func TestDialectMethodsRejectInvalidTable(t *testing.T) {
 		name string
 		d    msginsql.LeaseDialect
 	}{
-		{"postgres", msginsql.PostgresDialect()},
+		// The postgres dialect's identical per-method validation now lives in
+		// its own module and is exercised via the dbtest harness run (Plan 006
+		// Task 4); the mysql built-in remains in root until Task 5.
 		{"mysql", msginsql.MySQLDialect()},
 	}
 
@@ -139,7 +141,9 @@ func TestInboxDialectMethodsRejectInvalidTable(t *testing.T) {
 		name string
 		d    msginsql.InboxDialect
 	}{
-		{"postgres", msginsql.PostgresInboxDialect()},
+		// The postgres inbox dialect's identical per-method validation now
+		// lives in its own module and is exercised via the dbtest harness run
+		// (Plan 006 Task 4); the mysql built-in remains in root until Task 5.
 		{"mysql", msginsql.MySQLInboxDialect()},
 	}
 

@@ -20,9 +20,10 @@
 // # Schema ownership
 //
 // The caller provisions the schema; msgin never runs DDL on the production
-// path. Use msginsql.PostgresDDL(table) / msginsql.MySQLDDL(table) to obtain the
-// reference CREATE TABLE (+ index) for your migration tool, or call the optional,
-// idempotent EnsureSchema in dev and tests.
+// path. Use postgres.DDL(table) (adapter/database/sql/postgres) /
+// msginsql.MySQLDDL(table) to obtain the reference CREATE TABLE (+ index) for
+// your migration tool, or call the optional, idempotent EnsureSchema in dev and
+// tests.
 //
 // # Dialects
 //
@@ -32,9 +33,10 @@
 // an explicit, required argument — there is no driver auto-detect (ADR 0011): a
 // nil dialect is refused at construction with ErrNilDialect, so the wrong SQL
 // is never silently generated for an unrecognized or wire-compatible-derivative
-// driver. The two built-ins are msginsql.PostgresDialect() and
-// msginsql.MySQLDialect() (this task; forthcoming releases move them to their
-// own postgres/mysql packages). They are behavior-identical — same lease/claim
+// driver. The built-ins are postgres.LeaseDialect() (adapter/database/sql/
+// postgres, its own module) and msginsql.MySQLDialect() (still in the engine;
+// moving to its own package in a forthcoming increment). They are
+// behavior-identical — same lease/claim
 // predicate, fence semantics, and delivery_count/lease_epoch bumps — over each
 // engine's own SQL (Postgres has RETURNING; MySQL has none, so its claim runs an
 // atomic two-step SELECT ... FOR UPDATE SKIP LOCKED + UPDATE in one transaction).

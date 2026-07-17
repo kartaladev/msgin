@@ -70,7 +70,8 @@ type Source struct {
 // NewPollingSource builds a lease/claim Source over table on db, using dialect
 // to generate the exact SQL (ADR 0011 — the dialect is a required, explicit
 // constructor argument; there is no driver auto-detect). Pass
-// sql.PostgresDialect(), sql.MySQLDialect(), or your own LeaseDialect
+// postgres.LeaseDialect() (adapter/database/sql/postgres), sql.MySQLDialect(),
+// or your own LeaseDialect
 // implementation. It validates the table identifier (ErrInvalidTableName), and
 // applies the sensible defaults documented on each option (5m lease TTL, a
 // random lease owner, a discard logger). A nil db is msgin.ErrNilAdapter; a nil

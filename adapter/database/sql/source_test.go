@@ -34,7 +34,7 @@ func TestNewPollingSource_Construction(t *testing.T) {
 			name:    "nil db is ErrNilAdapter",
 			db:      nil,
 			table:   "msgs",
-			dialect: msginsql.PostgresDialect(),
+			dialect: newFakeDialect(),
 			assert: func(t *testing.T, src *msginsql.Source, err error) {
 				require.ErrorIs(t, err, msgin.ErrNilAdapter)
 				assert.Nil(t, src)
@@ -42,9 +42,9 @@ func TestNewPollingSource_Construction(t *testing.T) {
 		},
 		{
 			name:    "invalid table name is rejected before touching the db",
-			db:      func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
 			table:   "bad table; DROP",
-			dialect: msginsql.PostgresDialect(),
+			dialect: newFakeDialect(),
 			assert: func(t *testing.T, src *msginsql.Source, err error) {
 				require.ErrorIs(t, err, msginsql.ErrInvalidTableName)
 				assert.Nil(t, src)
@@ -52,7 +52,7 @@ func TestNewPollingSource_Construction(t *testing.T) {
 		},
 		{
 			name:    "nil dialect is ErrNilDialect",
-			db:      func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
 			table:   "msgs",
 			dialect: nil,
 			assert: func(t *testing.T, src *msginsql.Source, err error) {
@@ -62,9 +62,9 @@ func TestNewPollingSource_Construction(t *testing.T) {
 		},
 		{
 			name:    "a valid db/table/dialect constructs",
-			db:      func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
 			table:   "msgs",
-			dialect: msginsql.PostgresDialect(),
+			dialect: newFakeDialect(),
 			assert: func(t *testing.T, src *msginsql.Source, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, src)
@@ -72,9 +72,9 @@ func TestNewPollingSource_Construction(t *testing.T) {
 		},
 		{
 			name:    "WithLeaseTTL(0) is ErrInvalidLeaseTTL",
-			db:      func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
 			table:   "msgs",
-			dialect: msginsql.PostgresDialect(),
+			dialect: newFakeDialect(),
 			opts:    []msginsql.Option{msginsql.WithLeaseTTL(0)},
 			assert: func(t *testing.T, src *msginsql.Source, err error) {
 				require.ErrorIs(t, err, msginsql.ErrInvalidLeaseTTL)
@@ -83,9 +83,9 @@ func TestNewPollingSource_Construction(t *testing.T) {
 		},
 		{
 			name:    "WithLeaseTTL(negative) is ErrInvalidLeaseTTL",
-			db:      func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
 			table:   "msgs",
-			dialect: msginsql.PostgresDialect(),
+			dialect: newFakeDialect(),
 			opts:    []msginsql.Option{msginsql.WithLeaseTTL(-time.Second)},
 			assert: func(t *testing.T, src *msginsql.Source, err error) {
 				require.ErrorIs(t, err, msginsql.ErrInvalidLeaseTTL)
@@ -94,9 +94,9 @@ func TestNewPollingSource_Construction(t *testing.T) {
 		},
 		{
 			name:    "WithLeaseTTL(positive) is accepted",
-			db:      func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
 			table:   "msgs",
-			dialect: msginsql.PostgresDialect(),
+			dialect: newFakeDialect(),
 			opts:    []msginsql.Option{msginsql.WithLeaseTTL(30 * time.Second)},
 			assert: func(t *testing.T, src *msginsql.Source, err error) {
 				require.NoError(t, err)
@@ -125,7 +125,7 @@ func TestNewPollingSource_Construction(t *testing.T) {
 func TestSource_NativeReliabilityContract(t *testing.T) {
 	t.Parallel()
 
-	src, err := msginsql.NewPollingSource(openDB(t, "pgx"), "msgs", msginsql.PostgresDialect())
+	src, err := msginsql.NewPollingSource(openDB(t, fakeDriverName), "msgs", newFakeDialect())
 	require.NoError(t, err)
 
 	assert.True(t, src.NativeRedelivery(), "sql source redelivers natively (nacked/expired rows persist)")

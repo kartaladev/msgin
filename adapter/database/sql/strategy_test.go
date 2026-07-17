@@ -2,7 +2,6 @@ package sql_test
 
 import (
 	"context"
-	stdsql "database/sql"
 	"testing"
 	"time"
 
@@ -11,44 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakeQuerier is a Querier that is neither *sql.DB nor *sql.Tx, so ClaimLock's
-// transaction resolution (beginLockTx) must reject it — the lock strategy needs a
-// real transaction owner. Its methods are never reached (beginLockTx fails first).
-type fakeQuerier struct{}
-
-func (fakeQuerier) ExecContext(context.Context, string, ...any) (stdsql.Result, error) {
-	return nil, nil
-}
-func (fakeQuerier) QueryContext(context.Context, string, ...any) (*stdsql.Rows, error) {
-	return nil, nil
-}
-func (fakeQuerier) QueryRowContext(context.Context, string, ...any) *stdsql.Row { return nil }
-
-// TestClaimLock_RequiresDBOrTxQuerier covers beginLockTx's guard on both built-in
-// LockDialects: ClaimLock on a Querier that can neither begin nor be a
-// transaction returns a clear error (no partial claim, no panic), for both
-// dialects. No database connection is made.
-func TestClaimLock_RequiresDBOrTxQuerier(t *testing.T) {
-	t.Parallel()
-
-	type testCase struct {
-		name    string
-		dialect msginsql.LockDialect
-	}
-	cases := []testCase{
-		{name: "postgres", dialect: msginsql.PostgresDialect().(msginsql.LockDialect)},
-		{name: "mysql", dialect: msginsql.MySQLDialect().(msginsql.LockDialect)},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			lr, err := tc.dialect.ClaimLock(t.Context(), fakeQuerier{}, "msgs", "owner")
-			require.Error(t, err)
-			assert.Nil(t, lr, "no LockedRow (and no leaked tx) on the resolution-failure path")
-			assert.Contains(t, err.Error(), "requires a *sql.DB or *sql.Tx")
-		})
-	}
-}
+// The BeginLockTx unsupported-Querier guard (a Querier that is neither *sql.DB
+// nor *sql.Tx is rejected) is covered directly against the engine in
+// locktx_unit_test.go (Plan 006 Task 2, audit R2-4), superseding the former
+// dialect-driven TestClaimLock_RequiresDBOrTxQuerier.
 
 // nonLockDialect implements msginsql.LeaseDialect but deliberately NOT
 // msginsql.LockDialect, so NewPollingSource(WithStrategy(StrategyLockForUpdate))
@@ -96,7 +61,7 @@ func TestNewPollingSource_StrategyConstruction(t *testing.T) {
 	cases := []testCase{
 		{
 			name:    "default strategy (unset) constructs a lease Source",
-			dialect: msginsql.PostgresDialect(),
+			dialect: newFakeDialect(),
 			opts:    nil,
 			assert: func(t *testing.T, src *msginsql.Source, err error) {
 				require.NoError(t, err)
@@ -105,7 +70,7 @@ func TestNewPollingSource_StrategyConstruction(t *testing.T) {
 		},
 		{
 			name:    "explicit StrategyLeaseClaim constructs",
-			dialect: msginsql.PostgresDialect(),
+			dialect: newFakeDialect(),
 			opts:    []msginsql.Option{msginsql.WithStrategy(msginsql.StrategyLeaseClaim)},
 			assert: func(t *testing.T, src *msginsql.Source, err error) {
 				require.NoError(t, err)
@@ -113,13 +78,13 @@ func TestNewPollingSource_StrategyConstruction(t *testing.T) {
 			},
 		},
 		{
-			name:    "StrategyLockForUpdate with a lock-capable built-in dialect constructs",
-			dialect: msginsql.PostgresDialect(),
+			name:    "StrategyLockForUpdate with a lock-capable dialect constructs",
+			dialect: newFakeDialect(),
 			opts: []msginsql.Option{
 				msginsql.WithStrategy(msginsql.StrategyLockForUpdate),
 			},
 			assert: func(t *testing.T, src *msginsql.Source, err error) {
-				require.NoError(t, err, "the built-in PostgresDialect implements LockDialect")
+				require.NoError(t, err, "the fake dialect implements LockDialect")
 				assert.NotNil(t, src)
 			},
 		},
@@ -147,7 +112,7 @@ func TestNewPollingSource_StrategyConstruction(t *testing.T) {
 		},
 		{
 			name:    "an out-of-range Strategy is ErrInvalidStrategy",
-			dialect: msginsql.PostgresDialect(),
+			dialect: newFakeDialect(),
 			opts:    []msginsql.Option{msginsql.WithStrategy(msginsql.Strategy(99))},
 			assert: func(t *testing.T, src *msginsql.Source, err error) {
 				require.ErrorIs(t, err, msginsql.ErrInvalidStrategy)
@@ -156,7 +121,7 @@ func TestNewPollingSource_StrategyConstruction(t *testing.T) {
 		},
 		{
 			name:    "a negative Strategy is ErrInvalidStrategy",
-			dialect: msginsql.PostgresDialect(),
+			dialect: newFakeDialect(),
 			opts:    []msginsql.Option{msginsql.WithStrategy(msginsql.Strategy(-1))},
 			assert: func(t *testing.T, src *msginsql.Source, err error) {
 				require.ErrorIs(t, err, msginsql.ErrInvalidStrategy)
@@ -168,9 +133,9 @@ func TestNewPollingSource_StrategyConstruction(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			// A lazy pgx handle (no connection); every assertion here is
-			// construction-time only.
-			db := openDB(t, "pgx")
+			// A lazy fake-driver handle (no connection); every assertion here
+			// is construction-time only.
+			db := openDB(t, fakeDriverName)
 			src, err := msginsql.NewPollingSource(db, "msgs", tc.dialect, tc.opts...)
 			tc.assert(t, src, err)
 		})

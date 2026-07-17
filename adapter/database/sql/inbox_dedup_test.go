@@ -59,7 +59,7 @@ func TestNewInboxDeduper_Construction(t *testing.T) {
 		{
 			name:    "nil businessDB is ErrNilAdapter",
 			db:      nil,
-			dialect: msginsql.PostgresInboxDialect(),
+			dialect: newFakeDialect(),
 			assert: func(t *testing.T, d *msginsql.InboxDeduper, err error) {
 				require.ErrorIs(t, err, msgin.ErrNilAdapter)
 				assert.Nil(t, d)
@@ -67,8 +67,8 @@ func TestNewInboxDeduper_Construction(t *testing.T) {
 		},
 		{
 			name:    "invalid inbox table name is rejected before touching the db",
-			db:      func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
-			dialect: msginsql.PostgresInboxDialect(),
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
+			dialect: newFakeDialect(),
 			opts:    []msginsql.InboxOption{msginsql.WithInboxTable("bad table; DROP")},
 			assert: func(t *testing.T, d *msginsql.InboxDeduper, err error) {
 				require.ErrorIs(t, err, msginsql.ErrInvalidTableName)
@@ -77,8 +77,8 @@ func TestNewInboxDeduper_Construction(t *testing.T) {
 		},
 		{
 			name:    "empty inbox table name is rejected (not silently defaulted)",
-			db:      func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
-			dialect: msginsql.PostgresInboxDialect(),
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
+			dialect: newFakeDialect(),
 			opts:    []msginsql.InboxOption{msginsql.WithInboxTable("")},
 			assert: func(t *testing.T, d *msginsql.InboxDeduper, err error) {
 				require.ErrorIs(t, err, msginsql.ErrInvalidTableName)
@@ -87,7 +87,7 @@ func TestNewInboxDeduper_Construction(t *testing.T) {
 		},
 		{
 			name:    "nil dialect is ErrNilDialect",
-			db:      func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
 			dialect: nil,
 			assert: func(t *testing.T, d *msginsql.InboxDeduper, err error) {
 				require.ErrorIs(t, err, msginsql.ErrNilDialect)
@@ -95,9 +95,9 @@ func TestNewInboxDeduper_Construction(t *testing.T) {
 			},
 		},
 		{
-			name:    "a valid businessDB/dialect (postgres) constructs",
-			db:      func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
-			dialect: msginsql.PostgresInboxDialect(),
+			name:    "a valid businessDB/dialect (fake) constructs",
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
+			dialect: newFakeDialect(),
 			assert: func(t *testing.T, d *msginsql.InboxDeduper, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, d)
@@ -143,7 +143,7 @@ func TestNewInboxDeduper_Construction(t *testing.T) {
 func TestInboxDeduper_MarkProcessedNilTx(t *testing.T) {
 	t.Parallel()
 
-	d, err := msginsql.NewInboxDeduper(openDB(t, "pgx"), msginsql.PostgresInboxDialect())
+	d, err := msginsql.NewInboxDeduper(openDB(t, fakeDriverName), newFakeDialect())
 	require.NoError(t, err)
 
 	already, err := d.MarkProcessed(t.Context(), nil, "msg-1")
@@ -160,10 +160,14 @@ func TestInboxDeduper_MarkProcessedNilTx(t *testing.T) {
 func TestInboxDeduper_ReadyPassesThroughProbeError(t *testing.T) {
 	t.Parallel()
 
-	db := openDB(t, "pgx")
+	// A real built-in dialect (mysql) is required: its SchemaExists issues an
+	// actual query through the pool, so a closed pool makes it error. The fake
+	// dialect keeps its state in memory and never touches the *sql.DB, so it
+	// could not reproduce a probe error.
+	db := openDB(t, "mysql")
 	require.NoError(t, db.Close()) // a closed pool makes SchemaExists's query error
 
-	d, err := msginsql.NewInboxDeduper(db, msginsql.PostgresInboxDialect())
+	d, err := msginsql.NewInboxDeduper(db, msginsql.MySQLInboxDialect())
 	require.NoError(t, err)
 
 	err = d.Ready(t.Context())
@@ -180,7 +184,7 @@ func TestInboxDeduper_ReadyPassesThroughProbeError(t *testing.T) {
 func TestInboxDeduper_PurgeRejectsNonPositiveRetention(t *testing.T) {
 	t.Parallel()
 
-	d, err := msginsql.NewInboxDeduper(openDB(t, "pgx"), msginsql.PostgresInboxDialect())
+	d, err := msginsql.NewInboxDeduper(openDB(t, fakeDriverName), newFakeDialect())
 	require.NoError(t, err)
 
 	type testCase struct {
@@ -201,11 +205,14 @@ func TestInboxDeduper_PurgeRejectsNonPositiveRetention(t *testing.T) {
 	}
 }
 
-// TestInboxDDL exercises the reference-DDL builder's validation and
+// TestInboxDDL exercises the root reference-DDL dispatcher's validation and
 // dialect-dispatch (ADR 0010 D10, applying the Task-4 identifier-injection
 // discipline): the table is validated first (the sole entry point), then the
-// built-ins produce their exact CREATE TABLE; an unrecognized dialect yields a
-// clear error rather than empty or wrong SQL.
+// built-in mysql dialect produces its exact CREATE TABLE; an unrecognized
+// dialect yields a clear error rather than empty or wrong SQL. (The postgres
+// arm's dispatch is exercised via the postgres module's own DDL builder in the
+// dbtest harness run — Plan 006 Task 4; the whole dispatcher is deleted in
+// favor of per-dialect postgres.InboxDDL/mysql.InboxDDL in Task 5.)
 func TestInboxDDL(t *testing.T) {
 	t.Parallel()
 
@@ -217,18 +224,6 @@ func TestInboxDDL(t *testing.T) {
 	}
 
 	cases := []testCase{
-		{
-			name:    "postgres built-in produces a validated CREATE TABLE",
-			dialect: msginsql.PostgresInboxDialect(),
-			table:   "msgin_inbox",
-			assert: func(t *testing.T, ddl string, err error) {
-				require.NoError(t, err)
-				assert.Contains(t, ddl, "CREATE TABLE")
-				assert.Contains(t, ddl, "msg_id")
-				assert.Contains(t, ddl, "processed_at")
-				assert.Contains(t, ddl, `"msgin_inbox"`, "the table identifier is dialect-quoted")
-			},
-		},
 		{
 			name:    "mysql built-in produces a validated CREATE TABLE",
 			dialect: msginsql.MySQLInboxDialect(),
@@ -243,7 +238,7 @@ func TestInboxDDL(t *testing.T) {
 		},
 		{
 			name:    "invalid identifier is rejected before building any SQL",
-			dialect: msginsql.PostgresInboxDialect(),
+			dialect: msginsql.MySQLInboxDialect(),
 			table:   "bad table; DROP",
 			assert: func(t *testing.T, ddl string, err error) {
 				require.ErrorIs(t, err, msginsql.ErrInvalidTableName)

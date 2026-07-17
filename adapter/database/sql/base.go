@@ -45,7 +45,7 @@ func newAdapterBase(db *stdsql.DB, table string, dialect LeaseDialect, cfg confi
 
 // EnsureSchema idempotently creates the table and its claim index. It is
 // optional and opt-in (dev/test/opt-in callers); production callers provision
-// the schema via the reference DDL (see PostgresDDL) instead — msgin never
+// the schema via the reference DDL (see postgres.DDL / MySQLDDL) instead — msgin never
 // runs DDL implicitly (ADR 0010 D2).
 func (b adapterBase) EnsureSchema(ctx context.Context) error {
 	return b.dialect.EnsureSchema(ctx, b.db, b.table)

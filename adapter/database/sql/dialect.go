@@ -46,7 +46,8 @@ type ClaimedRow struct {
 // LeaseDialect is the exported SPI a caller supplies, as the required dialect
 // argument to NewPollingSource/NewOutboundAdapter, to teach the sql adapter a
 // database's exact SQL — the extension point for wire-compatible derivatives
-// and per-engine quirks. The built-ins are PostgresDialect()/MySQLDialect().
+// and per-engine quirks. The built-ins are postgres.LeaseDialect() (its own
+// module, adapter/database/sql/postgres) and MySQLDialect().
 // Every method fully owns its statement(s) and any
 // multi-statement transaction orchestration; no cross-dialect SQL runs. All
 // persisted timestamps use the DB server clock (now()), never the app clock,
@@ -97,16 +98,17 @@ type LeaseDialect interface {
 // method. A string-returning method structurally cannot return
 // ErrInvalidTableName, so exposing DDL(table) on the interface would be an
 // unvalidated SQL-injection path (the identifier cannot be a bound parameter).
-// The only public reference-DDL entry point is the package-level PostgresDDL,
-// which validates the table first; each dialect keeps its builder unexported
-// (ADR 0010 D3 identifier-safety, review finding I1).
+// The only public reference-DDL entry points are the per-dialect package
+// builders (postgres.DDL / MySQLDDL), which validate the table first; each
+// dialect keeps its builder unexported (ADR 0010 D3 identifier-safety, review
+// finding I1).
 
 // InboxDialect is the narrow, segregated SPI for the idempotent-consumer dedup
 // inbox (ADR 0010 D10). It is deliberately NOT the fat source LeaseDialect
 // (interface-segregation): a derivative author fixing one Claim quirk must not
 // be forced to implement inbox-dedup SQL, and a deduper never needs claim/lease
-// SQL. The built-in PostgresInboxDialect()/MySQLInboxDialect() (the same stateless
-// values as PostgresDialect()/MySQLDialect()) satisfy it and are passed as the
+// SQL. The built-in postgres.InboxDialect() and MySQLInboxDialect() (the same
+// stateless values as postgres.LeaseDialect()/MySQLDialect()) satisfy it and are passed as the
 // required dialect argument to NewInboxDeduper; a caller may also supply their
 // own InboxDialect for a wire-compatible derivative. Like
 // LeaseDialect, every method fully owns its SQL and uses the DB server clock for

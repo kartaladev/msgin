@@ -137,53 +137,9 @@ func TestDecodeHeadersEmptyInput(t *testing.T) {
 	}
 }
 
-func TestPostgresDDLIdentifierValidation(t *testing.T) {
-	t.Parallel()
-
-	type testCase struct {
-		name   string
-		table  string
-		assert func(t *testing.T, ddl string, err error)
-	}
-
-	cases := []testCase{
-		{
-			name:  "valid identifier produces DDL",
-			table: "msg_queue",
-			assert: func(t *testing.T, ddl string, err error) {
-				require.NoError(t, err)
-				assert.Contains(t, ddl, `CREATE TABLE IF NOT EXISTS "msg_queue"`)
-				assert.Contains(t, ddl, `"msg_queue_claim_idx"`)
-			},
-		},
-		{
-			name:  "leading digit rejected",
-			table: "1bad",
-			assert: func(t *testing.T, _ string, err error) {
-				require.ErrorIs(t, err, msginsql.ErrInvalidTableName)
-			},
-		},
-		{
-			name:  "sql injection attempt rejected",
-			table: `t"; DROP TABLE users; --`,
-			assert: func(t *testing.T, _ string, err error) {
-				require.ErrorIs(t, err, msginsql.ErrInvalidTableName)
-			},
-		},
-		{
-			name:  "empty name rejected",
-			table: "",
-			assert: func(t *testing.T, _ string, err error) {
-				require.ErrorIs(t, err, msginsql.ErrInvalidTableName)
-			},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			ddl, err := msginsql.PostgresDDL(tc.table)
-			tc.assert(t, ddl, err)
-		})
-	}
-}
+// PostgreSQL reference-DDL identifier validation now lives in the postgres
+// module and is exercised via the dbtest harness run (Plan 006 Task 4,
+// harness RunDialect InvalidIdentifierRejected). ValidateIdent's exhaustive
+// reject matrix (leading digit, injection, empty) stays covered in root by
+// mysql_test.go's TestMySQLDDLIdentifierValidation, which drives the same
+// engine validator through MySQLDDL.

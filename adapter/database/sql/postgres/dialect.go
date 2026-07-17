@@ -1,45 +1,42 @@
-package sql
+package postgres
 
 import (
 	"context"
 	stdsql "database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
+
+	msginsql "github.com/kartaladev/msgin/adapter/database/sql"
 )
 
 // postgresDialect is the built-in LeaseDialect for PostgreSQL and wire-compatible
 // derivatives. It is stateless; a single value is shared by all callers.
 type postgresDialect struct{}
 
-// PostgresDialect returns the built-in PostgreSQL LeaseDialect (lease/claim
+// Compile-time assertions that the single stateless value satisfies the full
+// SPI: the lease/claim source dialect, the segregated lock SPI (so
+// WithStrategy(StrategyLockForUpdate) accepts it), and the segregated
+// dedup-inbox SPI (so it may be passed as NewInboxDeduper's required dialect).
+var (
+	_ msginsql.LeaseDialect = postgresDialect{}
+	_ msginsql.LockDialect  = postgresDialect{}
+	_ msginsql.InboxDialect = postgresDialect{}
+)
+
+// LeaseDialect returns the built-in PostgreSQL LeaseDialect (lease/claim
 // strategy). It owns the exact PostgreSQL SQL for every operation; pass it as
-// the required dialect argument to NewPollingSource/NewOutboundAdapter.
-func PostgresDialect() LeaseDialect { return postgresDialect{} }
+// the required dialect argument to NewPollingSource/NewOutboundAdapter. The
+// single stateless value also satisfies msginsql.LockDialect (for
+// WithStrategy(StrategyLockForUpdate)) and msginsql.InboxDialect.
+func LeaseDialect() msginsql.LeaseDialect { return postgresDialect{} }
 
-// PostgresInboxDialect returns the built-in PostgreSQL InboxDialect — the same
-// stateless value as PostgresDialect(), narrowed to the dedup-inbox SPI (ADR
+// InboxDialect returns the built-in PostgreSQL InboxDialect — the same
+// stateless value as LeaseDialect(), narrowed to the dedup-inbox SPI (ADR
 // 0010 D10). Pass it as the required dialect argument to NewInboxDeduper.
-func PostgresInboxDialect() InboxDialect { return postgresDialect{} }
+func InboxDialect() msginsql.InboxDialect { return postgresDialect{} }
 
-// pgQuote double-quotes a PostgreSQL identifier. The name must already be
-// validated (ValidateIdent admits no double-quote), so wrapping is safe;
-// doubling any embedded `"` is defense-in-depth (belt-and-suspenders) in case
-// this is ever reached without prior validation.
-func pgQuote(name string) string {
-	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
-}
-
-// pgQuoteTable validates then quotes a table identifier for interpolation.
-func pgQuoteTable(table string) (string, error) {
-	if err := ValidateIdent(table); err != nil {
-		return "", err
-	}
-	return pgQuote(table), nil
-}
-
-func (postgresDialect) Claim(ctx context.Context, q Querier, table string, limit int, lockedBy string, leaseTTL time.Duration) ([]ClaimedRow, error) {
+func (postgresDialect) Claim(ctx context.Context, q msginsql.Querier, table string, limit int, lockedBy string, leaseTTL time.Duration) ([]msginsql.ClaimedRow, error) {
 	qt, err := pgQuoteTable(table)
 	if err != nil {
 		return nil, err
@@ -68,9 +65,9 @@ RETURNING id, msg_id, headers::text, payload, delivery_count, lease_epoch`, qt)
 	}
 	defer rows.Close()
 
-	var out []ClaimedRow
+	var out []msginsql.ClaimedRow
 	for rows.Next() {
-		var r ClaimedRow
+		var r msginsql.ClaimedRow
 		if err := rows.Scan(&r.ID, &r.MsgID, &r.Headers, &r.Payload, &r.DeliveryCount, &r.LeaseEpoch); err != nil {
 			return nil, err
 		}
@@ -82,7 +79,7 @@ RETURNING id, msg_id, headers::text, payload, delivery_count, lease_epoch`, qt)
 	return out, nil
 }
 
-func (postgresDialect) Ack(ctx context.Context, q Querier, table string, id int64, lockedBy string, epoch int64) (bool, error) {
+func (postgresDialect) Ack(ctx context.Context, q msginsql.Querier, table string, id int64, lockedBy string, epoch int64) (bool, error) {
 	qt, err := pgQuoteTable(table)
 	if err != nil {
 		return false, err
@@ -101,7 +98,7 @@ func (postgresDialect) Ack(ctx context.Context, q Querier, table string, id int6
 	return n > 0, nil
 }
 
-func (postgresDialect) Nack(ctx context.Context, q Querier, table string, id int64, lockedBy string, epoch int64, delay time.Duration) (bool, error) {
+func (postgresDialect) Nack(ctx context.Context, q msginsql.Querier, table string, id int64, lockedBy string, epoch int64, delay time.Duration) (bool, error) {
 	qt, err := pgQuoteTable(table)
 	if err != nil {
 		return false, err
@@ -122,7 +119,7 @@ WHERE id = $1 AND locked_by = $2 AND lease_epoch = $3`, qt),
 	return n > 0, nil
 }
 
-func (postgresDialect) Insert(ctx context.Context, q Querier, table, msgID string, headers, payload []byte, delay time.Duration) error {
+func (postgresDialect) Insert(ctx context.Context, q msginsql.Querier, table, msgID string, headers, payload []byte, delay time.Duration) error {
 	qt, err := pgQuoteTable(table)
 	if err != nil {
 		return err
@@ -138,7 +135,7 @@ VALUES ($1, $2, $3, now() + ($4 * interval '1 microsecond'))`, qt),
 	return err
 }
 
-func (d postgresDialect) EnsureSchema(ctx context.Context, q Querier, table string) error {
+func (d postgresDialect) EnsureSchema(ctx context.Context, q msginsql.Querier, table string) error {
 	qt, err := pgQuoteTable(table)
 	if err != nil {
 		return err
@@ -164,12 +161,12 @@ func (d postgresDialect) EnsureSchema(ctx context.Context, q Querier, table stri
 // claimer skip a row this transaction holds), released only by commit or crash.
 // It returns (nil, nil) when nothing is claimable, and rolls the transaction back
 // on that path and on ANY error (no connection leak).
-func (postgresDialect) ClaimLock(ctx context.Context, q Querier, table, lockedBy string) (*LockedRow, error) {
+func (postgresDialect) ClaimLock(ctx context.Context, q msginsql.Querier, table, lockedBy string) (*msginsql.LockedRow, error) {
 	qt, err := pgQuoteTable(table)
 	if err != nil {
 		return nil, err
 	}
-	tx, err := BeginLockTx(ctx, q)
+	tx, err := msginsql.BeginLockTx(ctx, q)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +180,7 @@ ORDER BY visible_after
 FOR UPDATE SKIP LOCKED
 LIMIT 1`, qt)
 
-	var lr LockedRow
+	var lr msginsql.LockedRow
 	err = tx.QueryRowContext(ctx, selectSQL).Scan(&lr.ID, &lr.MsgID, &lr.Headers, &lr.Payload, &lr.DeliveryCount)
 	if errors.Is(err, stdsql.ErrNoRows) {
 		_ = tx.Rollback() // nothing claimable: release the connection
@@ -206,36 +203,36 @@ LIMIT 1`, qt)
 
 // AckLock settles lr by deleting its row on the carried transaction and
 // committing (ADR 0010 D5). On any error it rolls back, releasing the connection.
-func (postgresDialect) AckLock(ctx context.Context, lr *LockedRow, table string) error {
+func (postgresDialect) AckLock(ctx context.Context, lr *msginsql.LockedRow, table string) error {
 	qt, err := pgQuoteTable(table)
 	if err != nil {
 		_ = lr.Tx.Rollback() // never leave the carried tx open, even on this near-impossible path
 		return err
 	}
-	return SettleLockTx(ctx, lr.Tx, fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, qt), lr.ID)
+	return msginsql.SettleLockTx(ctx, lr.Tx, fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, qt), lr.ID)
 }
 
 // NackLock returns lr to the queue by clearing the lock and pushing
 // visible_after out by delay, then ALWAYS commits (ADR 0010 D5): the commit
 // persists the delivery_count++ made at claim and releases the FOR UPDATE lock.
 // On an UPDATE/commit error it rolls back, releasing the connection.
-func (postgresDialect) NackLock(ctx context.Context, lr *LockedRow, table string, delay time.Duration) error {
+func (postgresDialect) NackLock(ctx context.Context, lr *msginsql.LockedRow, table string, delay time.Duration) error {
 	qt, err := pgQuoteTable(table)
 	if err != nil {
 		_ = lr.Tx.Rollback()
 		return err
 	}
-	return SettleLockTx(ctx, lr.Tx,
+	return msginsql.SettleLockTx(ctx, lr.Tx,
 		fmt.Sprintf(`UPDATE %s SET locked_by = NULL, locked_at = NULL,
   visible_after = now() + ($2 * interval '1 microsecond')
 WHERE id = $1`, qt),
 		lr.ID, delay.Microseconds())
 }
 
-func (postgresDialect) SchemaExists(ctx context.Context, q Querier, table string) (bool, error) {
+func (postgresDialect) SchemaExists(ctx context.Context, q msginsql.Querier, table string) (bool, error) {
 	// table is a bound parameter here, but validate it anyway so the exported
 	// SPI never runs on an unvalidated identifier.
-	if err := ValidateIdent(table); err != nil {
+	if err := msginsql.ValidateIdent(table); err != nil {
 		return false, err
 	}
 	var one int
@@ -258,7 +255,7 @@ func (postgresDialect) SchemaExists(ctx context.Context, q Querier, table string
 // (no row → sql.ErrNoRows → already=true) EXACTLY, never trusting rowsAffected.
 // It runs on q — the caller's business transaction — so the dedup row commits
 // atomically with the business writes.
-func (postgresDialect) InsertInboxIfAbsent(ctx context.Context, q Querier, table, msgID string) (bool, error) {
+func (postgresDialect) InsertInboxIfAbsent(ctx context.Context, q msginsql.Querier, table, msgID string) (bool, error) {
 	qt, err := pgQuoteTable(table)
 	if err != nil {
 		return false, err
@@ -282,7 +279,7 @@ RETURNING msg_id`, qt),
 // PurgeInbox implements InboxDialect for PostgreSQL: it deletes rows older than
 // olderThan (DB clock) and returns the count removed. olderThan is passed as a
 // microsecond interval, matching the rest of the dialect's DB-clock arithmetic.
-func (postgresDialect) PurgeInbox(ctx context.Context, q Querier, table string, olderThan time.Duration) (int64, error) {
+func (postgresDialect) PurgeInbox(ctx context.Context, q msginsql.Querier, table string, olderThan time.Duration) (int64, error) {
 	qt, err := pgQuoteTable(table)
 	if err != nil {
 		return 0, err
@@ -301,7 +298,7 @@ func (postgresDialect) PurgeInbox(ctx context.Context, q Querier, table string, 
 // creates the dedup table and its processed_at retention index. The two
 // statements run separately (pgx's extended protocol rejects multi-statement
 // Exec); both are IF NOT EXISTS, so EnsureInboxSchema is idempotent.
-func (postgresDialect) EnsureInboxSchema(ctx context.Context, q Querier, table string) error {
+func (postgresDialect) EnsureInboxSchema(ctx context.Context, q msginsql.Querier, table string) error {
 	qt, err := pgQuoteTable(table)
 	if err != nil {
 		return err
@@ -321,8 +318,8 @@ func (postgresDialect) EnsureInboxSchema(ctx context.Context, q Querier, table s
 // a portable information_schema probe (no driver import, matching SchemaExists).
 // table is a bound parameter, but validated anyway so the exported SPI never runs
 // on an unvalidated identifier.
-func (postgresDialect) MsgIDUniqueIndexExists(ctx context.Context, q Querier, table string) (bool, error) {
-	if err := ValidateIdent(table); err != nil {
+func (postgresDialect) MsgIDUniqueIndexExists(ctx context.Context, q msginsql.Querier, table string) (bool, error) {
+	if err := msginsql.ValidateIdent(table); err != nil {
 		return false, err
 	}
 	var one int

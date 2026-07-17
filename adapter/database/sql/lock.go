@@ -11,7 +11,7 @@ import (
 // (ADR 0010 D5). It is segregated from the core LeaseDialect (interface-segregation:
 // a lease-only custom LeaseDialect is not forced to implement lock SQL) and exported
 // so a wire-compatible derivative can supply its own lock semantics. The
-// built-ins PostgresDialect()/MySQLDialect() implement it, so
+// built-ins postgres.LeaseDialect() and MySQLDialect() implement it, so
 // WithStrategy(StrategyLockForUpdate) works out of the box; a custom LeaseDialect that
 // does not also satisfy LockDialect is rejected at construction with
 // ErrLockStrategyUnsupported.
@@ -65,12 +65,11 @@ type LockedRow struct {
 	Tx            *stdsql.Tx
 }
 
-// Compile-time assertions that both built-in dialects implement the segregated
-// lock SPI, so WithStrategy(StrategyLockForUpdate) accepts them.
-var (
-	_ LockDialect = postgresDialect{}
-	_ LockDialect = mysqlDialect{}
-)
+// Compile-time assertion that the built-in mysql dialect implements the
+// segregated lock SPI, so WithStrategy(StrategyLockForUpdate) accepts it. The
+// postgres dialect's identical assertion lives in its own module
+// (adapter/database/sql/postgres, Plan 006 Task 4).
+var _ LockDialect = mysqlDialect{}
 
 // txBeginner is the capability a Querier must have to BEGIN a new transaction:
 // *sql.DB satisfies it (its BeginTx); *sql.Tx does not (a tx cannot nest one),

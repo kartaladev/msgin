@@ -1,0 +1,24 @@
+// Package postgres is the built-in PostgreSQL dialect for the msgin sql adapter
+// engine (github.com/kartaladev/msgin/adapter/database/sql). It owns the exact
+// PostgreSQL SQL for the lease/claim source, the lock/FOR UPDATE strategy, the
+// outbound INSERT, and the idempotent-consumer dedup inbox.
+//
+// It is a leaf-test dialect module (ADR 0011): it requires the engine ONLY —
+// no SQL driver, no testcontainers, no testify — so a production consumer that
+// imports it pays only the engine's (stdlib + clockwork) dependency cost. The
+// caller injects the PostgreSQL database/sql driver (e.g. jackc/pgx/v5/stdlib)
+// and provisions the *sql.DB; msgin does not import a driver.
+//
+// The public entry points are:
+//
+//   - LeaseDialect() — the msginsql.LeaseDialect passed to
+//     NewPollingSource/NewOutboundAdapter (the single stateless value also
+//     satisfies msginsql.LockDialect for WithStrategy(StrategyLockForUpdate)).
+//   - InboxDialect() — the msginsql.InboxDialect passed to NewInboxDeduper.
+//   - DDL(table) / InboxDDL(table) — the reference CREATE TABLE statements for
+//     callers to fold into their own migration tool (msgin never runs DDL on
+//     the production path; ADR 0010 D2).
+//
+// Behavior is identical to the pre-split built-in: this package MOVED verbatim
+// out of the engine (Plan 006 Task 4); only its module boundary changed.
+package postgres
