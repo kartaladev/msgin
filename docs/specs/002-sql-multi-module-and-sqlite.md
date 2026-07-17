@@ -1,9 +1,10 @@
 # Spec 002 — `sql` multi-module split + SQLite dialect
 
-- **Status:** Draft (2026-07-17) — **audit round 1 folded** (Structure Z / leaf-test modules; `harness` +
-  `dbtest`; exported `BeginLockTx`/`SettleLockTx`; TestKit; `GOWORK=off` CI; created CI/release). User-approved
-  the direction + Structure Z. **PENDING: round-2 re-audit of the reconciled spec+ADR+plan, then approval.**
-  Audit round-1 record: `.superpowers/sdd/plan-006-audit-round-1.md`.
+- **Status:** Draft (2026-07-17) — **audit rounds 1 AND 2 folded.** Round 1 → Structure Z / leaf-test modules;
+  `harness` + `dbtest`; exported `BeginLockTx`/`SettleLockTx`; TestKit; `GOWORK=off` CI; created CI/release.
+  Round 2 (SOUND WITH FIXES, no topology change → no round 3) → R2-1 (BeginLockTx/SettleLockTx covered in root
+  via stub-driver), R2-2 (two-profile coverage methodology), R2-3 (Task-1 test-helper relocation), R2-4/5/6/7.
+  User-approved the direction + Structure Z. Audit records: `.superpowers/sdd/plan-006-audit-round-{1,2}.md`.
 - **Supersedes/amends:** [ADR 0003 — Multi-module layout](../adrs/0003-multi-module-repository-layout.md)
   (the "`database/sql` lives entirely in core" detail) and [ADR 0010 — Poller + SQL adapter](../adrs/0010-poller-sql-adapter.md)
   (constructor signatures + the driver auto-detect, D3). New ADRs will record the decisions:
@@ -87,15 +88,15 @@ github.com/kartaladev/msgin                         (root module — driver-free
   adapter/database/sql/mysql/        (go.mod)        prod dialect — requires the ENGINE ONLY: mysql.LeaseDialect()/…
   adapter/database/sql/sqlite/       (go.mod)        prod dialect — requires the ENGINE ONLY: sqlite.LeaseDialect()/…  [increment B]
   adapter/database/sql/dbtest/       (go.mod)        THE RUNNER (leaf; nobody imports it): requires postgres + mysql
-      (+ sqlite in B) + conformance + pgx + go-sql-driver/mysql (+ modernc.org/sqlite in B) + testcontainers.
+      (+ sqlite in B) + harness + pgx + go-sql-driver/mysql (+ modernc.org/sqlite in B) + testcontainers.
       Provides RunTestDatabase/RunTestMySQL/RunTestMariaDB (+ SQLite in B) and runs the harness per engine
       against real containers. This is where ALL the heavy test-deps live; CI runs it.
-go.work                                              use ./ + conformance + postgres + mysql + dbtest (committed)
+go.work                                              use ./ + harness + postgres + mysql + dbtest (committed)
 ```
 
-Increment A = 5 modules (engine + conformance + postgres + mysql + dbtest). Increment B adds the `sqlite`
+Increment A = 5 modules (engine + harness + postgres + mysql + dbtest). Increment B adds the `sqlite`
 prod module and extends `dbtest`. A consumer importing `…/postgres` inherits **only the engine** (proven-clean
-`go.sum`); a dialect author validates their dialect by importing `…/conformance` (engine + testify) — never
+`go.sum`); a dialect author validates their dialect by importing `…/harness` (engine + testify) — never
 the runner.
 
 ## 5. Engine API changes (increment A)
@@ -118,9 +119,11 @@ the runner.
   `NackLock` impls currently call unexported engine helpers `beginLockTx`/`settleLockTx` (`lock.go`). Rather
   than duplicate them per dialect, export them from the engine as part of the `LockDialect`-author SPI —
   `BeginLockTx(ctx, q Querier) (*sql.Tx, error)`, `SettleLockTx(ctx, tx *sql.Tx, query string, args ...any)
-  error` — with a godoc contract (always-commit-on-success, rollback-on-error). NOTE (audit F6): the tx logic
-  in these helpers is only exercisable against a real DB, so it is covered by the **dbtest** conformance run,
-  not the root fake tests — the plan must assert this so no branch is silently uncovered.
+  error` — with a godoc contract (always-commit-on-success, rollback-on-error). NOTE (audit F6 → revised by
+  R2-1): the tx arms are covered **in root** by stdlib-only fake-`database/sql/driver` unit tests — all three
+  (`BeginLockTx` unsupported-`Querier` error; `SettleLockTx` Exec-error and Commit-error rollbacks) — because
+  the `dbtest` conformance run hits only the happy path and the fake `LockDialect` never routes through them.
+  The plan asserts this so no branch is silently uncovered.
 - **`ddl.go` leaves the root entirely** (audit F3): `PostgresDDL`/`MySQLDDL`, the `(postgresDialect).ddl`
   methods, AND the `InboxDDL(d InboxDialect, table)` **type-switch dispatcher** all move out — the dispatcher
   is **deleted** (it cannot switch on types no longer in root), replaced by per-dialect `postgres.InboxDDL`/
@@ -154,9 +157,18 @@ the runner.
 - **Audit F8 — author the lease conformance (`RunSource`) with correctness-only concurrency assertions**
   (disjoint claims, no double-claim), NOT non-blocking/throughput assumptions, so a single-writer engine
   (SQLite, increment B) passes the SAME contract without a harness redesign.
-- **Coverage accounting:** engine coverage = the root fake-based unit tests; real-SQL + `BeginLockTx`/
-  `SettleLockTx` (audit F6) coverage = the `dbtest` conformance runs. The ≥85%/hot-path gate applies per
-  module; the plan enumerates the fake-covered vs dbtest-covered branch split so none is silently uncovered.
+- **Coverage accounting (revised after audit round 2):** engine-intrinsic coverage = the root fake-based unit
+  tests; the concrete-dialect real-SQL coverage = the `dbtest` conformance runs. **Audit R2-1 (corrects F6):**
+  `BeginLockTx`/`SettleLockTx` stay exported in the engine, so their tx arms — the two `SettleLockTx` rollback
+  branches + `BeginLockTx`'s unsupported-`Querier` error — are covered in **root** via a stdlib-only fake
+  `database/sql/driver` (the `dbtest` happy path never hits the rollback arms; the fake `LockDialect` never
+  routes through them). **Audit R2-2 (coverage methodology under leaf-test modules):** the dialect production
+  modules have no co-located tests (they `require` the engine only → `go test -cover` on them is ~0% by
+  design), so the ≥85%/hot-path gate is measured on **two profiles** — (a) the root fake+stub-driver tests for
+  engine-intrinsic code, and (b) the `dbtest` run with `-coverpkg=…/adapter/database/sql/...` over the merged
+  engine+dialect packages for the dialect SQL — **not** per empty prod-module run. The harness must exercise
+  the dialect **error branches** (`DDL("bad; name")`→`ErrInvalidTableName`, `MsgIDUniqueIndexExists` false)
+  too. The plan enumerates the fake-covered vs dbtest-covered branch split so none is silently uncovered.
 
 ## 7. SQLite dialect (increment B — its own ADR 0012 + plan)
 
@@ -202,7 +214,7 @@ the runner.
 
 1. **Increment A — the split refactor** (ADR 0011 + a plan): create the three dialect modules + `go.work`;
    move the Postgres and MySQL/MariaDB dialect impls, DDL builders, quoting, and real-DB tests into
-   `postgres`/`mysql`; extract `sqlconformance`; add engine fake-dialect unit tests; switch constructors to
+   `postgres`/`mysql`; extract the `harness` module; add engine fake-dialect unit tests; switch constructors to
    explicit dialect + export `ValidateIdent` + delete auto-detect. **Behavior-preserving** for PG/MySQL.
 2. **Increment B — SQLite dialect** (ADR 0012 + a plan): implement `sqlite` against the same conformance
    contract (minus lock-strategy), pure-Go driver, no Docker.

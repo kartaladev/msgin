@@ -1,115 +1,78 @@
 # HANDOVER — msgin
 
 > **Next session: read this first, then trust the referenced files over any memory.** Read, in order:
-> `CLAUDE.md` (note the TWO new hard rules this session — see §4), then the active design bundle
-> `docs/specs/002-sql-multi-module-and-sqlite.md` (§4–§8 are **authoritative, post-audit**),
-> `docs/adrs/0011-sql-engine-dialect-module-split.md` (+ its reconciliation banner),
-> `docs/plans/006-sql-engine-dialect-split.md` (+ its POST-AUDIT REVISION banner), and the audit record
-> `.superpowers/sdd/plan-006-audit-round-1.md`. Also `docs/adrs/0010-poller-sql-adapter.md` (the shipped sql
-> adapter this refactors) and the memory index.
+> `CLAUDE.md`, then the active design bundle — `docs/specs/002-sql-multi-module-and-sqlite.md` (§4–§8
+> authoritative, **both audit rounds folded**), `docs/adrs/0011-sql-engine-dialect-module-split.md`,
+> `docs/plans/006-sql-engine-dialect-split.md` (the 6-task Structure-Z plan being executed), and the audit
+> records `.superpowers/sdd/plan-006-audit-round-{1,2}.md` (gitignored — may not survive a fresh clone; their
+> findings are summarized in the plan's fold-in notes). Also `docs/adrs/0010-poller-sql-adapter.md`.
 >
-> **This is a DESIGN safepoint** (the code tree is green at `e5abe40`; Plan 005 Task 10 is done + committed).
-> The active work is a **design in progress** — the sql multi-module refactor — with audit round 1 folded and
-> round 2 pending. No code has been written for it yet.
+> **This is a DESIGN safepoint** (code tree green at `2974c01`; no refactor code written yet). The design is
+> **settled and twice-audited** — implementation of Plan 006 (increment A) proceeds via SDD.
 
-_Updated: Plan 005 Task 10 committed (through `e5abe40`); PIVOTED to the sql multi-module refactor (spec 002 /
-ADR 0011 / Plan 006), audit round 1 folded into spec 002; resume by finishing the design → round-2 re-audit →
-approval → implement._
+_Updated: reconciled ADR 0011 + Plan 006 to Structure Z; round-2 adversarial audit done (SOUND WITH FIXES,
+R2-1…R2-7 folded, no round 3). Design bundle committed. Next: execute Plan 006 Tasks 1→(2∥3)→4→5→6 via SDD._
 
 ## 1. Objective & roadmap position
 
-`msgin` (`github.com/kartaladev/msgin`) — a Go 1.25 EIP library (minimal deps). Plans 001–004 on `main`
-(@ `86ffa11`). Branch **`feat/poller-sql-adapter`**. **Plan 005 (Poller + `sql` adapter) Tasks 1–10 are
-committed** (HEAD `e5abe40`).
-
-**The user PIVOTED (this session):** Plan 005 **Task 11 (docs/examples) is PENDED**. New goal, in order:
-1. **Increment A — refactor `adapter/database/sql` into a driver-free engine + per-dialect modules**
-   (Plan 006 / ADR 0011 / spec 002). *Why:* a consumer's `go.sum` currently inherits pgx + mysql +
-   testcontainers + docker/moby(24) + otel(10) even though the binary is driver-free (measured; Go 1.17
-   pruning shields the binary, not `go.sum`).
-2. **Increment B — add a SQLite dialect** (Plan 007 + ADR 0012, to be written).
-3. **Resume Plan 005 Task 11** (docs/examples), now across the multi-module layout.
+`msgin` (`github.com/kartaladev/msgin`) — Go 1.25 EIP library, minimal deps. Branch **`feat/poller-sql-adapter`**
+(Plan 005 Tasks 1–10 landed; Task 11 docs/examples PENDED behind this refactor). Active work: **Plan 006 /
+increment A** — refactor `adapter/database/sql` into a driver-free **engine** + **leaf-test dialect modules**
+(Structure Z: engine + `harness` + `postgres` + `mysql` + `dbtest`) so the root module AND every dialect
+*production* consumer carry zero driver/testcontainers deps (measured: co-located = 102 polluted go.sum lines;
+leaf-test = 0). Then increment B (SQLite, ADR 0012 + Plan 007) then Plan 005 Task 11.
 
 ## 2. Exact state
 
-- **Code:** clean green safepoint at `e5abe40` (`git log --oneline`): `e5abe40 docs: SDD+ask rule`,
-  `e401cd4 feat(sql): InboxDeduper`, `0a305ee refactor(sql): rename Dialect→LeaseDialect`, then Plan-005
-  Tasks 1–9. `GOTOOLCHAIN=go1.25.0 go test ./... -race` was green (root 98.9%, sql 91.8% incl. real MariaDB,
-  memory 100%). **No refactor code exists yet.**
-- **Design docs (working tree, likely UNCOMMITTED — commit them first thing, see §5):**
-  `docs/specs/002-sql-multi-module-and-sqlite.md` (§4–§8 **authoritative, Structure Z, audit-folded**),
-  `docs/adrs/0011-sql-engine-dialect-module-split.md` (banner: reconcile Decisions 2/4/5 to Structure Z),
-  `docs/plans/006-sql-engine-dialect-split.md` (banner: revise tasks to Structure Z before running),
-  `.superpowers/sdd/plan-006-audit-round-1.md` (the audit findings) + `.superpowers/sdd/task-10-decisions.md`
-  (both gitignored — do not survive a fresh clone).
-- **Also uncommitted:** `CLAUDE.md` (two new rules — §4), `docs/HANDOVER.md` (this file). Run
-  `git status --short` to see the full set.
+- **Code:** clean green safepoint at `2974c01` (`GOTOOLCHAIN=go1.25.0 go build/vet ./...` clean; Docker up).
+  **No refactor code exists yet.** `git status --short` should show only the design-bundle docs (+ the user's
+  `.claude/settings.json` plugin toggle, left unstaged).
+- **Design (settled, twice-audited):** spec 002, ADR 0011, Plan 006 all reconciled to Structure Z; round-2
+  findings R2-1…R2-7 folded (see the plan's "Audit fold-in (round 2)" note). No further audit round needed.
 
-## 3. The design — SETTLED decisions (do NOT re-litigate; user-approved via AskUserQuestion)
+## 3. The design in one screen (do NOT re-litigate — user-approved + twice-audited)
 
-**Increment A — engine/dialect split (spec 002 §4 = the layout, Structure Z):**
-- **5 modules:** root `github.com/kartaladev/msgin` (the ENGINE — SPIs `LeaseDialect`/`LockDialect`/
-  `InboxDialect`, `Source`/`Outbound`/`InboxDeduper`, framing, options, errors; driver-free) +
-  `adapter/database/sql/harness` (pkg `harness`, requires engine + testify, **reusable conformance suite**
-  `RunSource`/`RunLock`/`RunOutbound`/`RunOutbox`/`RunInbox`/`RunDialect` taking a per-dialect **`TestKit`**
-  `{Lease; Quote func(string)string; Placeholder func(int)string; NowExpr func()string; …}`) +
-  `adapter/database/sql/postgres` + `…/mysql` (prod dialects, **require the ENGINE ONLY** → clean consumer
-  go.sum; `postgres.LeaseDialect()`/`DDL`/`InboxDDL`) + `adapter/database/sql/dbtest` (the **runner** — holds
-  ALL drivers + testcontainers, runs the harness per engine against real containers; **nobody imports it**).
-- **Explicit dialect, drop auto-detect:** constructors take the dialect as a required arg
-  (`NewPollingSource(db, table, postgres.LeaseDialect(), opts…)`); DELETE `detect.go`/`resolveDialect`/
-  `WithDialect`/`WithInboxDialect`/`ErrDialectUndetected`; ADD `ErrNilDialect`; EXPORT `ValidateIdent` +
-  `BeginLockTx`/`SettleLockTx` (dialect impls need them — audit F2). `ddl.go` leaves root entirely incl.
-  DELETING the `InboxDDL(d,table)` type-switch (audit F3); the `var _ …Dialect = …` compile-time assertions
-  move into each dialect module.
-- **`go.work` committed;** CI runs `GOWORK=off`; release = tag root FIRST, then dialect modules swap
-  `replace`→pinned `require` + module-prefixed tags; **CI/release created from scratch** (none exist — audit
-  F5). Author `RunSource` (lease) with correctness-only concurrency assertions so SQLite passes later (F8).
+**Structure Z — 5 modules (increment A):**
+- **engine** (root `adapter/database/sql`, driver-free): SPIs, `Source`/`Outbound`/`InboxDeduper`, framing,
+  options, errors; newly EXPORTED `ValidateIdent` + `BeginLockTx` + `SettleLockTx`; fake-dialect + stub-driver
+  unit tests only (test-deps testify+goleak). Explicit-dialect constructors; auto-detect DELETED.
+- **`harness`** (own go.mod, pkg `harness`, requires engine + testify): `RunSource`/`RunLock`/`RunOutbound`/
+  `RunOutbox`/`RunInbox`/`RunDialect(t, TestKit)`; no driver/testcontainers.
+- **`postgres`** / **`mysql`** (own go.mod, require the ENGINE ONLY — zero test-deps):
+  `postgres.LeaseDialect()`/`DDL`/`InboxDDL`; the single stateless value satisfies all 3 SPIs.
+- **`dbtest`** (own go.mod, leaf — nobody imports): drivers + testcontainers + `RunTestDatabase`/`RunTestMySQL`/
+  `RunTestMariaDB`; runs the harness per engine against real containers. All heavy test-deps live here.
+- **`go.work`** committed (Task 6); CI runs `GOWORK=off`; release = root tagged FIRST then dialect modules swap
+  dev `replace`→pinned `require` + module-prefixed tags.
 
-**Increment B — SQLite (spec 002 §7; ADR 0012 + Plan 007 to be written):** pure-Go `modernc.org/sqlite`
-(cgo-free, no Docker); no `SKIP LOCKED`/`FOR UPDATE` → lease-only (`sqlite.LeaseDialect()` does NOT implement
-`LockDialect` → `ErrLockStrategyUnsupported`); inbox dedup via `ON CONFLICT … RETURNING`.
+## 4. Next actions (resume here — run CONTINUOUSLY & AUTONOMOUSLY per the session directive)
 
-## 4. Process rules ratified THIS session (now hard rules in CLAUDE.md — obey them)
+Execute **Plan 006** task-by-task via `superpowers:subagent-driven-development` (fresh implementer per task,
+TDD red→green; coordinator/main session verifies `-race` green + commits; adversarial reviewer per task).
+Per-task commits are pre-authorized (approved plan). Sequencing **1 → (2 ∥ 3) → 4 → 5 → 6**:
+1. Explicit-dialect engine API + export `ValidateIdent`/`BeginLockTx`/`SettleLockTx` + delete auto-detect
+   (+ relocate the `openDB`/`fakeDriver` test helpers — R2-3).
+2. Engine fake-dialect unit tests + stub-`database/sql/driver` tests for `BeginLockTx`/`SettleLockTx` (R2-1).
+3. `harness` module (TestKit + all `Run*`) — **parallel with Task 2** (both depend only on Task 1).
+4. `postgres` + `dbtest` modules; run the harness vs Postgres (RunSource-first checkpoint — R2-5). Root green.
+5. `mysql` module + extend `dbtest` (MySQL+MariaDB); root goes lean (driver-free). 
+6. Commit `go.work` + `.gitignore` un-ignore + CI/release workflows + `docs/RELEASE.md` + go.sum isolation probe.
 
-- **"Prefer SDD, and ALWAYS ASK before implementation"** — never write implementation code without an explicit
-  user go-ahead stating the execution mode; default to a fresh SDD implementer subagent per task; coordinator
-  (main session) verifies green + commits; adversarial reviewer per task. (The coordinator self-implementing
-  Task 10 without asking is what triggered this rule.)
-- **"Adversarial design audit — AFTER the plan is written, over the whole spec+ADR+plan bundle, BEFORE any
-  code"** — the plan is part of what gets audited (auditing spec+ADR alone misses plan-level flaws). Fold
-  findings; re-audit if destabilized (2 rounds is the norm). **This is why round-2 is pending below.**
+Then the **delivery gate**: whole-branch `/code-review` + `/security-review` (`main..HEAD`), resolve/triage,
+all 5 modules `-race` green, two-profile coverage (root fakes+stub-driver; `dbtest -coverpkg`), go.sum probe
+(102→0). Update this handover + memory. **Push the branch for GitHub MR — do NOT ff-`main`** (`git push` needs
+explicit approval).
 
-## 5. Next actions (resume here — the user wants this run CONTINUOUSLY & AUTONOMOUSLY)
+## 5. Gotchas / environment
 
-1. **Commit the design safepoint first** (ask the user — never commit without approval): the design docs +
-   `CLAUDE.md` rules + this handover, as a standalone `docs:`/`spec:` commit (specs precede code), so a fresh
-   clone survives. Then confirm the code tree is still green: `GOTOOLCHAIN=go1.25.0 go test ./... -race`.
-2. **Finish reconciling ADR 0011 + Plan 006 to Structure Z** — spec 002 §4–§8 is authoritative; the audit
-   record lists every fix. Rewrite ADR Decisions 2/4/5 + Consequences, and REWRITE Plan 006's tasks (≈8 tasks:
-   engine explicit-dialect API; the `harness` module; engine fake-dialect unit tests; `postgres` prod module +
-   its `dbtest` tests; `mysql` prod module + `dbtest` tests; root-goes-lean; CI/release created; go.work).
-3. **Round-2 adversarial Opus audit** over the reconciled spec+ADR+plan (per the CLAUDE.md rule). Fold; a
-   3rd round only if destabilized.
-4. **Get the user's approval of the audited Plan 006 + explicit authorization to execute autonomously** (per
-   the ask-before-implementation rule). Once approved + SDD chosen, per-task commits are pre-authorized
-   (CLAUDE.md exception) — so the session can then run Plan 006 → Plan 007 (write ADR 0012 + Plan 007 for
-   SQLite; audit; implement) → resume Task 11, task-by-task via SDD, without pausing for each commit.
-5. **Delivery:** the user reviews on GitHub — PUSH the branch (per-action approval needed for `git push`), do
-   NOT ff-`main`. Whole-branch `/code-review` + `/security-review` gate before delivery. Update this handover
-   + memory at each safepoint.
-
-## 6. Gotchas / environment
-
-- **Go 1.25 pinned:** always `GOTOOLCHAIN=go1.25.0`. `go.mod` directive is `go 1.25.0`; no `toolchain` line.
-- **Docker MUST run** for the sql tests (Postgres + MySQL + MariaDB via testcontainers; the inbox suite runs
-  all three). SQLite (increment B) needs NO Docker (embedded, `modernc.org/sqlite`).
-- **Multi-module reality (increment A):** `go.work` for local dev; CI is `GOWORK=off`; dialect modules pin the
-  root version (release: root-tagged-first). `go.sum` isolation is the acceptance gate — re-run the
-  throwaway-consumer probe (spec 002 §1 method) and require a dialect-consumer `go.sum` free of
-  testcontainers/docker/otel.
-- **`.superpowers/sdd/` is gitignored** — the audit record + task decisions live there and do NOT survive a
-  fresh clone. If lost, the audit findings are summarized in spec 002's status + this handover; re-run the
-  audit if needed.
+- **Go 1.25 pinned:** always `GOTOOLCHAIN=go1.25.0`. **Docker MUST run** for the `dbtest` module (Postgres +
+  MySQL + MariaDB via testcontainers).
+- **On-branch module resolution:** no published root tag carries the new engine API, so each non-root module's
+  go.mod resolves the engine via `go.work` (local) + a dev `replace github.com/kartaladev/msgin => ../../../..`
+  for `GOWORK=off`. Swap `replace`→pinned `require` only at release (root tagged first).
+- **`go.work` is gitignored until Task 6** un-ignores + commits it; create it locally for dev in Tasks 3–5.
+- **Coverage (R2-2):** NOT per-prod-module (they have no tests → ~0%). Measure two profiles — root
+  fakes+stub-driver, and `dbtest -coverpkg=…/adapter/database/sql/...` over merged engine+dialect packages.
 - **Custom skills (mandatory):** `table-test`, `use-mockgen`, `use-testcontainers`. Start Go work from
-  `cc-skills-golang:golang-how-to`; use `gopls`/`LSP`. Blackbox `_test` packages.
+  `cc-skills-golang:golang-how-to`; blackbox `_test` packages; assert-closure tables; `t.Context()`.
+</content>
