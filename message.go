@@ -131,6 +131,12 @@ func WithHeaders(m map[string]any) MessageOption {
 // New builds an immutable Message wrapping payload, always stamping
 // msgin.id (random unless WithID is given) and msgin.timestamp (from the
 // clock, real by default).
+//
+// New is the PRODUCING-path constructor: it always stamps a fresh id and
+// timestamp. An inbound adapter reconstructing a message that already exists
+// in an external system (its id/timestamp were framed at publish time and
+// decoded back from storage) must use NewMessage instead, which preserves the
+// pre-built Headers verbatim.
 func New[T any](payload T, opts ...MessageOption) Message[T] {
 	cfg := msgConfig{clock: clockwork.NewRealClock()}
 	for _, opt := range opts {
@@ -146,6 +152,21 @@ func New[T any](payload T, opts ...MessageOption) Message[T] {
 	m[HeaderID] = cfg.id
 	m[HeaderTimestamp] = cfg.clock.Now()
 	return Message[T]{payload: payload, headers: Headers{m: m}}
+}
+
+// NewMessage wraps an explicit payload and a pre-built Headers set as a
+// Message, WITHOUT stamping msgin.id/msgin.timestamp — for adapters
+// reconstructing a message that already exists in an external system (its id,
+// timestamp, and custom headers were framed at publish time and decoded back
+// from storage). Contrast New, which STAMPS a fresh id + timestamp for a
+// newly-produced message.
+//
+// The Headers are used verbatim: NewMessage neither adds nor overwrites any
+// reserved key, so a caller building a FRESH message this way (rather than
+// reconstructing a persisted one) is responsible for supplying msgin.id and
+// msgin.timestamp in headers if it needs them — prefer New for that case.
+func NewMessage[T any](payload T, headers Headers) Message[T] {
+	return Message[T]{payload: payload, headers: headers}
 }
 
 // randomID returns a random 128-bit id, hex-encoded, used as the default

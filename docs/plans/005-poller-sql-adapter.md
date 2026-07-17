@@ -204,6 +204,13 @@ int64; MsgID string; Headers, Payload []byte; DeliveryCount int; LeaseEpoch int6
 
 ## Task 5 — Lease/claim `Source` + generic constructor with dialect auto-detect / `WithDialect`
 
+> **Prerequisite (ADR 0010 D11, added during Task 5):** the core gains a public
+> `msgin.NewMessage[T](payload T, headers Headers) Message[T]` (build-from-parts, no id/timestamp
+> stamping) — a wire inbound adapter cannot build `Message[any]` from decoded `(payload, Headers)` outside
+> package `msgin` (the fields are unexported, and `New` re-stamps id/timestamp). `Source.Poll` reconstructs
+> each delivery's `Msg` with it. This is an additive core change (message.go) that lands in the Task 5
+> commit alongside the code + ADR D11.
+
 **Files:** Create `adapter/database/sql/source.go` (shared `Source` body, dialect-agnostic),
 `adapter/database/sql/options.go` (`WithDialect`, `WithLeaseTTL`, `WithStrategy`, `WithLockedBy`),
 `adapter/database/sql/detect.go` (`resolveDialect(db) (Dialect, error)`). Modify

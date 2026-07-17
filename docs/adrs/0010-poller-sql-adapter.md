@@ -756,6 +756,49 @@ func InboxDDL(d InboxDialect, table string) (string, error)    // reference DDL
 **The two strategies are mutually exclusive per consumer** (a given consumer is either same-DB
 transactional or different-DB idempotent), but both may appear in one application for different flows.
 
+### D11 — A public `NewMessage` constructor for wire inbound adapters that reconstruct a persisted envelope
+
+**Problem surfaced by the first wire inbound adapter (Task 5).** `Message[T]` has unexported fields
+(`payload`, `headers`); the only public constructor is `New`, which **stamps** a fresh `msgin.id`
+(random unless `WithID`) and **always overwrites** `msgin.timestamp` with `clock.Now()`. That is correct
+for *producing* a new message, but the `sql` `Source` (and every future wire inbound adapter) does the
+opposite: it **reconstructs** a message that already exists in storage — its `msgin.id`, `msgin.timestamp`,
+and custom headers were framed at publish time (§8) and decoded back by `DecodeHeaders`. The runtime
+builds `Message[T]{payload, headers}` from a `Delivery.Msg` using the *unexported* fields (it is in-package,
+`consumer.go`/`producer.go`), but an adapter in `adapter/database/sql` **cannot** — it is a different
+package. There is no public way to wrap an explicit `(payload, Headers)` as a `Message[any]` without
+re-stamping id/timestamp. The in-memory adapter never hit this (it *passes through* live `Message[any]`
+values it received via `Send`; it never rebuilds one from parts). The first *pulled wire* adapter must
+rebuild from parts, so this is a real gap, not an oversight to work around.
+
+**Rejected — reconstruct via `New` + a backdated fake clock.** `msgin.New(payload, WithID(storedID),
+WithHeaders(mapFromHeaders), WithClock(clockwork.NewFakeClockAt(storedTs)))` *would* preserve the fields,
+but it (a) uses a **test fake clock in production code** to backdate a real timestamp — semantically wrong
+and a debuggability smell; (b) round-trips `Headers → map → New → Headers`; (c) silently corrupts the
+timestamp if `storedTs` is missing/unparseable. A wire adapter reconstructing an envelope is a first-class
+use case the core should support cleanly, not force through the producing-path constructor.
+
+**Decision — add a small, additive public constructor** (SemVer-minor; pre-1.0):
+
+```go
+// NewMessage wraps an explicit payload and a pre-built Headers set as a Message,
+// WITHOUT stamping msgin.id/msgin.timestamp — for adapters reconstructing a
+// message that already exists in an external system (its id, timestamp, and
+// custom headers were framed at publish time and decoded back from storage).
+// Contrast New, which STAMPS a fresh id + timestamp for a newly-produced message.
+func NewMessage[T any](payload T, headers Headers) Message[T]
+```
+
+The `sql` `Source.Poll` builds each delivery's `Msg` with `msgin.NewMessage[any](payloadBytes,
+headers)` (the payload is the raw wire `[]byte`; the runtime decodes it into `T` per ADR 0001), then sets
+the live claim's `delivery_count` on it via `WithHeader(HeaderDeliveryCount, n)`. Additive and
+source-compatible (no existing signature changes; `New` is unchanged). It is general beyond `sql` — every
+wire inbound adapter (`pgx`, `redis`, `nats`, `http`) needs the same reconstruction primitive, so it
+belongs in the core, defined once. Naming parallels `NewHeaders` (build-from-parts) and is deliberately
+distinct from `New` (produce-with-stamping); the two godocs cross-reference to prevent misuse (a caller
+must not use `NewMessage` for a *fresh* message — it would carry no id/timestamp unless the caller
+supplies them in `headers`).
+
 ## Consequences
 
 **Positive**
