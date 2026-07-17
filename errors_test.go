@@ -12,8 +12,9 @@ import (
 func TestSentinels_WrapAndCompare(t *testing.T) {
 	sentinels := []error{
 		msgin.ErrPayloadType, msgin.ErrPayloadDecode, msgin.ErrNilAdapter,
-		msgin.ErrNoPayloadCodec, msgin.ErrUnexpectedCodec,
+		msgin.ErrPayloadTooLarge, msgin.ErrUnexpectedCodec,
 		msgin.ErrInvalidConcurrency, msgin.ErrUnsupportedSource,
+		msgin.ErrInvalidAttemptTTL,
 	}
 	for _, s := range sentinels {
 		t.Run(s.Error(), func(t *testing.T) {

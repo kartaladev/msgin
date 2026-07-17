@@ -115,11 +115,12 @@ func (t *attemptTracker) sweep() {
 	}
 }
 
-// sweepLoop runs the periodic sweep until ctx is done. ttl is always the
-// positive defaultAttemptTTL (NewConsumer's only caller passes it; there is no
-// public opt-out knob — ADR 0008 D8), so there is deliberately NO ttl<=0 guard:
-// it would be uncoverable dead code under the blackbox coverage gate (a knob can
-// be added non-breakingly later if a need appears).
+// sweepLoop runs the periodic sweep until ctx is done. ttl is always > 0:
+// NewConsumer defaults the unset case to defaultAttemptTTL and validates an
+// explicit WithAttemptTTL, rejecting a non-positive value with
+// ErrInvalidAttemptTTL (ADR 0009 D3) — so the tracker always receives a
+// positive ttl and sweepLoop needs no ttl<=0 guard (it would be uncoverable
+// dead code under the blackbox coverage gate).
 func (t *attemptTracker) sweepLoop(ctx context.Context) {
 	ticker := t.clock.NewTicker(t.ttl)
 	defer ticker.Stop()

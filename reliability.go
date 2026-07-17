@@ -25,8 +25,10 @@ func Permanent(err error) error {
 }
 
 // isPermanent reports whether err must skip retry: an explicit Permanent marker,
-// or a decode/type mismatch (ErrPayloadDecode / ErrPayloadType). A recovered
-// handler panic (ErrHandlerPanic) is NOT permanent — it is retried.
+// a decode/type mismatch (ErrPayloadDecode / ErrPayloadType), or an over-size
+// payload (ErrPayloadTooLarge — an over-size message will not shrink on
+// redelivery). A recovered handler panic (ErrHandlerPanic) is NOT permanent — it
+// is retried.
 func isPermanent(err error) bool {
 	if err == nil {
 		return false
@@ -35,7 +37,9 @@ func isPermanent(err error) bool {
 	if errors.As(err, &pe) {
 		return true
 	}
-	return errors.Is(err, ErrPayloadType) || errors.Is(err, ErrPayloadDecode)
+	return errors.Is(err, ErrPayloadType) ||
+		errors.Is(err, ErrPayloadDecode) ||
+		errors.Is(err, ErrPayloadTooLarge)
 }
 
 // noNativeReliability is the NativeReliability default for sources that do not

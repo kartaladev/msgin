@@ -23,11 +23,12 @@ type breaker struct {
 	threshold int
 	cooldown  time.Duration
 
-	mu    sync.Mutex
-	state breakerState
-	fails int
-	wake  chan struct{} // closed on open→half-open; re-minted each open cycle
-	timer clockwork.Timer
+	mu            sync.Mutex
+	state         breakerState
+	fails         int
+	probeInFlight bool          // half-open single-probe gate (ProbeGate; ADR 0009 D2)
+	wake          chan struct{} // closed on open→half-open; re-minted each open cycle
+	timer         clockwork.Timer
 }
 
 // CircuitBreakerOption configures NewCircuitBreaker.
@@ -85,12 +86,35 @@ func NewCircuitBreaker(opts ...CircuitBreakerOption) CircuitBreaker {
 	return b
 }
 
-// Allow reports whether work may proceed now: true when closed or half-open
-// (a probe is admitted), false only when open.
+// Allow reports whether work may proceed now: true when closed or half-open,
+// false only when open. It is the IDEMPOTENT open-check used by the runtime's
+// ingress park (it never consumes a probe); the dispatch gate uses TryProbe.
 func (b *breaker) Allow() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.state != breakerOpen
+}
+
+// TryProbe implements ProbeGate (ADR 0009 D2): the CONSUMING dispatch-gate
+// acquire, paired with a following Record. Closed → true (unlimited, like Allow);
+// open → false; half-open → true for exactly ONE caller (it sets probeInFlight),
+// false for the rest until a Record settles the probe. This bounds half-open to a
+// single canary under WithConcurrency(N>1), instead of admitting every worker.
+func (b *breaker) TryProbe() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	switch b.state {
+	case breakerOpen:
+		return false
+	case breakerHalfOpen:
+		if b.probeInFlight {
+			return false
+		}
+		b.probeInFlight = true
+		return true
+	default: // breakerClosed
+		return true
+	}
 }
 
 // Record feeds the outcome of an allowed dispatch back to the breaker. A success
@@ -104,13 +128,14 @@ func (b *breaker) Record(success bool) {
 		b.fails = 0
 		if b.state == breakerHalfOpen {
 			b.state = breakerClosed
+			b.probeInFlight = false // probe succeeded → close; free the probe slot
 		}
 		// else: state == breakerOpen is reachable under WithConcurrency(N>1) —
 		// a straggler dispatch admitted before another worker's failure opened
 		// the breaker can still Record(true) here. It must NOT re-close an
 		// open breaker (that would undo a just-tripped trip); zeroing fails is
 		// harmless since openLocked/toHalfOpen own the open→half-open→closed
-		// transitions from here on.
+		// transitions from here on. The probe slot is owned by toHalfOpen's reset.
 		return
 	}
 	b.fails++
@@ -120,7 +145,8 @@ func (b *breaker) Record(success bool) {
 			b.openLocked()
 		}
 	case breakerHalfOpen:
-		b.openLocked() // probe failed → reopen (restarts the cooldown)
+		b.probeInFlight = false // probe failed → reopen; free the slot for the next cycle
+		b.openLocked()          // probe failed → reopen (restarts the cooldown)
 	}
 }
 
@@ -153,6 +179,13 @@ func (b *breaker) toHalfOpen() {
 		return
 	}
 	b.state = breakerHalfOpen
+	// UNCONDITIONALLY reset the single-probe gate on every genuine open→half-open
+	// transition (ADR 0009 D2, the wedge fix). Even though the default Record
+	// paths already clear probeInFlight on both half-open exits, resetting here is
+	// the load-bearing guarantee: it makes "probeInFlight true ⟹ state half-open"
+	// hold by construction, so no straggler/interleaving can carry a stuck flag
+	// into a new half-open cycle and deny every probe forever.
+	b.probeInFlight = false
 	close(b.wake)                // explicit wakeup of parked waiters
 	b.wake = make(chan struct{}) // fresh channel for the next open cycle
 }

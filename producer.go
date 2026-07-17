@@ -67,8 +67,13 @@ func isLiveValue(a any) bool {
 
 // resolveCodec applies the codec-pairing rules shared by NewProducer and
 // NewConsumer: a live-value adapter must not be given an explicit codec
-// (ErrUnexpectedCodec); a wire adapter with no codec defaults to JSON. It
-// returns the resolved codec and whether adapter is a live-value adapter.
+// (ErrUnexpectedCodec); a wire adapter with no codec defaults to JSON — this
+// JSON default is a deliberate, documented convenience (matching the
+// WithConsumerCodec/WithProducerCodec "default JSON" contract), NOT an error, so
+// there is no ErrNoPayloadCodec (ADR 0009 D4). A future adapter that needs
+// require-codec semantics would signal it via a capability (e.g. RequiresCodec)
+// plus a returning error path, added with that adapter. It returns the resolved
+// codec and whether adapter is a live-value adapter.
 func resolveCodec[T any](adapter any, codec PayloadCodec[T], codecSet bool) (PayloadCodec[T], bool, error) {
 	live := isLiveValue(adapter)
 	if live && codecSet {

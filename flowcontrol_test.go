@@ -55,6 +55,18 @@ func TestNewConsumer_FlowControlValidation(t *testing.T) {
 				msgin.WithCircuitBreaker[order](stubCircuitBreaker{}),
 			},
 			func(t *testing.T, err error) { assert.NoError(t, err) }},
+		{"zero attempt TTL is rejected",
+			[]msgin.ConsumerOption[order]{msgin.WithAttemptTTL[order](0)},
+			func(t *testing.T, err error) { assert.ErrorIs(t, err, msgin.ErrInvalidAttemptTTL) }},
+		{"negative attempt TTL is rejected",
+			[]msgin.ConsumerOption[order]{msgin.WithAttemptTTL[order](-time.Second)},
+			func(t *testing.T, err error) { assert.ErrorIs(t, err, msgin.ErrInvalidAttemptTTL) }},
+		{"positive attempt TTL is accepted",
+			[]msgin.ConsumerOption[order]{msgin.WithAttemptTTL[order](time.Minute)},
+			func(t *testing.T, err error) { assert.NoError(t, err) }},
+		{"negative max payload bytes disables the cap (accepted)",
+			[]msgin.ConsumerOption[order]{msgin.WithMaxPayloadBytes[order](-1)},
+			func(t *testing.T, err error) { assert.NoError(t, err) }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

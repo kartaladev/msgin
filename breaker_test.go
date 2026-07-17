@@ -89,3 +89,68 @@ func TestCircuitBreaker_RecordSuccessFromOpen_DoesNotReclose(t *testing.T) {
 	b.Record(true) // straggler success, admitted before the breaker opened
 	assert.False(t, b.Allow(), "a straggler success must not re-close an open breaker")
 }
+
+// halfOpen drives b (a fresh default breaker on fake clock clk with the given
+// cooldown) from open into half-open deterministically, returning once the
+// transition has fired. Precondition: b is already open.
+func halfOpen(t *testing.T, clk *clockwork.FakeClock, b msgin.CircuitBreaker, cooldown time.Duration) {
+	t.Helper()
+	wake := b.HalfOpen()
+	require.NoError(t, clk.BlockUntilContext(t.Context(), 1)) // cooldown AfterFunc registered
+	clk.Advance(cooldown)
+	select {
+	case <-wake:
+	case <-time.After(time.Second):
+		t.Fatal("cooldown did not half-open the breaker")
+	}
+}
+
+// TestCircuitBreaker_ProbeGate_SingleProbeInHalfOpen proves the default breaker
+// implements ProbeGate (ADR 0009 D2): TryProbe is unlimited when closed, denied
+// when open, and admits exactly ONE probe in half-open (the rest denied until a
+// Record settles it) — the fix for the N>1 half-open probe storm.
+func TestCircuitBreaker_ProbeGate_SingleProbeInHalfOpen(t *testing.T) {
+	clk := clockwork.NewFakeClock()
+	b := msgin.NewCircuitBreaker(msgin.WithBreakerClock(clk), msgin.WithBreakerThreshold(1), msgin.WithBreakerCooldown(time.Second))
+	pg, ok := b.(msgin.ProbeGate)
+	require.True(t, ok, "NewCircuitBreaker must implement ProbeGate")
+
+	assert.True(t, pg.TryProbe(), "closed: TryProbe unlimited (1)")
+	assert.True(t, pg.TryProbe(), "closed: TryProbe unlimited (2)")
+
+	b.Record(false) // threshold 1 → open
+	require.False(t, b.Allow(), "open")
+	assert.False(t, pg.TryProbe(), "open: TryProbe denied")
+
+	halfOpen(t, clk, b, time.Second)
+	assert.True(t, pg.TryProbe(), "half-open: first probe admitted")
+	assert.False(t, pg.TryProbe(), "half-open: second probe denied while the first is in flight")
+	assert.False(t, pg.TryProbe(), "half-open: still denied")
+
+	b.Record(true) // probe succeeds → close
+	assert.True(t, pg.TryProbe(), "closed again after a successful probe: unlimited")
+}
+
+// TestCircuitBreaker_ProbeGate_ReopenAdmitsFreshProbeNextCycle is the mandatory
+// wedge test (ADR 0009 D2): after a half-open probe FAILS and the breaker
+// reopens, the NEXT half-open cycle must admit a fresh probe. A buggy impl that
+// clears probeInFlight only on the success path (or not in toHalfOpen) leaves the
+// flag stuck true → TryProbe denies every probe forever → permanent half-open
+// wedge. This asserts the flag is reset across cycles.
+func TestCircuitBreaker_ProbeGate_ReopenAdmitsFreshProbeNextCycle(t *testing.T) {
+	clk := clockwork.NewFakeClock()
+	b := msgin.NewCircuitBreaker(msgin.WithBreakerClock(clk), msgin.WithBreakerThreshold(1), msgin.WithBreakerCooldown(time.Second))
+	pg := b.(msgin.ProbeGate)
+
+	b.Record(false) // → open (cycle 1)
+	halfOpen(t, clk, b, time.Second)
+	require.True(t, pg.TryProbe(), "cycle 1: probe admitted")
+	require.False(t, pg.TryProbe(), "cycle 1: single-probe holds")
+
+	b.Record(false) // probe fails → reopen (probeInFlight must be cleared)
+	require.False(t, b.Allow(), "reopened after the failed probe")
+
+	halfOpen(t, clk, b, time.Second) // cycle 2
+	assert.True(t, pg.TryProbe(), "cycle 2: a FRESH probe is admitted (toHalfOpen reset the flag — no wedge)")
+	assert.False(t, pg.TryProbe(), "cycle 2: single-probe still holds")
+}

@@ -2204,3 +2204,116 @@ func TestConsumer_AttemptTracker_NF2_ActiveIdNotSwept(t *testing.T) {
 	cancel()
 	assert.ErrorIs(t, <-runDone, context.Canceled)
 }
+
+// TestConsumer_MaxPayloadBytes_CapsWirePayload proves WithMaxPayloadBytes (ADR
+// 0009 D5): an over-size wire payload is settled as a PERMANENT invalid message
+// (ErrPayloadTooLarge) and diverted to the invalid sink BEFORE the codec runs,
+// while an under-size payload decodes and dispatches normally, and a disabled cap
+// (n<=0) never rejects. Driven over a real []byte StreamingSource.
+func TestConsumer_MaxPayloadBytes_CapsWirePayload(t *testing.T) {
+	tests := []struct {
+		name    string
+		max     int
+		payload []byte
+		assert  func(t *testing.T, sink *recordingSink, hooks *hookRec, handled *atomic.Int64)
+	}{
+		{"over-size payload is diverted to the invalid sink without dispatching",
+			5, []byte(`{"id":"way too long to fit"}`),
+			func(t *testing.T, sink *recordingSink, hooks *hookRec, handled *atomic.Int64) {
+				assert.Equal(t, 1, sink.count(), "over-size payload diverted to invalid sink")
+				assert.Equal(t, 1, hooks.count("invalid"), "OnInvalidMessage fired")
+				assert.Equal(t, int64(0), handled.Load(), "handler never ran on the over-size message")
+			}},
+		{"under-size payload decodes and dispatches",
+			1000, []byte(`{"id":"o"}`),
+			func(t *testing.T, sink *recordingSink, hooks *hookRec, handled *atomic.Int64) {
+				assert.Equal(t, int64(1), handled.Load(), "under-size payload handled")
+				assert.Equal(t, 0, sink.count(), "under-size payload not diverted")
+			}},
+		{"disabled cap never rejects",
+			0, []byte(`{"id":"o"}`),
+			func(t *testing.T, sink *recordingSink, hooks *hookRec, handled *atomic.Int64) {
+				assert.Equal(t, int64(1), handled.Load(), "cap disabled → payload handled regardless")
+				assert.Equal(t, 0, sink.count())
+			}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var handled atomic.Int64
+			sink := &recordingSink{}
+			hooks := newHookRec()
+			src := &byteStreamSource{id: "m1", payload: tc.payload, st: &settle{}}
+			h := func(context.Context, msgin.Message[order]) error { handled.Add(1); return nil }
+
+			c, err := msgin.NewConsumer[order](src, h,
+				msgin.WithMaxPayloadBytes[order](tc.max),
+				msgin.WithInvalidMessageSink[order](sink),
+				msgin.WithHooks[order](hooks.hooks()))
+			require.NoError(t, err)
+
+			ctx, cancel := context.WithCancel(t.Context())
+			runDone := make(chan error, 1)
+			go func() { runDone <- c.Run(ctx) }()
+
+			// Wait on the terminal signal: the invalid hook fires AFTER sink.Send on
+			// the divert path (so sink.count()==1 is already visible), and handled
+			// increments before the Ack on the dispatch path — either is race-free.
+			require.Eventually(t, func() bool {
+				return hooks.count("invalid") >= 1 || handled.Load() >= 1
+			}, 2*time.Second, 5*time.Millisecond)
+
+			tc.assert(t, sink, hooks, &handled)
+			cancel()
+			assert.ErrorIs(t, <-runDone, context.Canceled)
+		})
+	}
+}
+
+// TestConsumer_WithAttemptTTL_UsesConfiguredTTL proves WithAttemptTTL (ADR 0009
+// D3) threads the configured TTL into the sweep ticker: a 1-minute TTL sweeps an
+// idle id after a 90s gap — a gap the default 5m TTL would NOT sweep — so the id
+// reappears as attempt 1 (fresh backoff). Same synctest determinism as the
+// defaultAttemptTTL sweep tests above.
+func TestConsumer_WithAttemptTTL_UsesConfiguredTTL(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk := clockwork.NewFakeClock()
+		src := newControllableSource()
+		const initial = 10 * time.Millisecond
+		h := func(context.Context, msgin.Message[order]) error { return errors.New("always transient") }
+
+		c, err := msgin.NewConsumer[order](src, h,
+			msgin.WithConsumerClock[order](clk),
+			msgin.WithAttemptTTL[order](time.Minute), // << far below the 5m default
+			msgin.WithRetryPolicy[order](msgin.RetryPolicy{
+				Backoff: msgin.ExponentialBackoff{Initial: initial, Mult: 2.0},
+			}))
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		runDone := make(chan error, 1)
+		go func() { runDone <- c.Run(ctx) }()
+
+		st := &settle{}
+		deliverX := func() {
+			src.deliver(ctx, msgin.Delivery{Msg: msgin.New[any](order{ID: "o"}, msgin.WithID("x")), Ack: st.ack, Nack: st.nack})
+		}
+
+		deliverX()
+		synctest.Wait()
+		_, n, delays := st.snapshot()
+		require.Equal(t, 1, n)
+		assert.Equal(t, initial, delays[0], "first attempt for x → Delay(0) = Initial")
+
+		clk.Advance(90 * time.Second) // > configured 1m TTL, < default 5m → sweep evicts idle x
+		synctest.Wait()
+
+		deliverX()
+		synctest.Wait()
+		_, n, delays = st.snapshot()
+		require.Equal(t, 2, n)
+		assert.Equal(t, initial, delays[1], "configured 1m TTL swept idle x within 90s → attempt 1 again (default 5m would not have)")
+
+		cancel()
+		assert.ErrorIs(t, <-runDone, context.Canceled)
+	})
+}

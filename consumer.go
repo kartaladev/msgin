@@ -38,6 +38,9 @@ type consumerConfig[T any] struct {
 	handlerTimeout  time.Duration
 	breaker         CircuitBreaker
 	overflow        OverflowPolicy
+	attemptTTL      time.Duration
+	attemptTTLSet   bool // distinguishes explicit WithAttemptTTL(0) (rejected) from unset (ADR 0009 D3)
+	maxPayloadBytes int  // <= 0 disables the wire-decode size cap (ADR 0009 D5)
 }
 
 // WithConcurrency sets the worker-pool size (default 1).
@@ -108,7 +111,13 @@ type consumer[T any] struct {
 	rateLimiter     RateLimiter
 	handlerTimeout  time.Duration
 	breaker         CircuitBreaker
+	probeGate       ProbeGate // non-nil when breaker also implements ProbeGate (ADR 0009 D2)
 	overflow        OverflowPolicy
+	maxPayloadBytes int
+	// panicLogged deduplicates the ERROR log for a panicking resilience governor
+	// per method, so a deterministic panic under fail-open cannot flood the log
+	// (ADR 0009 D1). Keyed by method name.
+	panicLogged sync.Map
 }
 
 // defaultShutdownTimeout bounds the drain when WithShutdownTimeout is unset or
@@ -143,6 +152,13 @@ func NewConsumer[T any](src any, h Handler[T], opts ...ConsumerOption[T]) (Consu
 	} else if cfg.maxInFlight < 1 {
 		return nil, ErrInvalidMaxInFlight
 	}
+	// ADR 0009 D3: unset → default; explicitly set → must be > 0 (so
+	// WithAttemptTTL(0) is a rejected caller error, not silently defaulted).
+	if !cfg.attemptTTLSet {
+		cfg.attemptTTL = defaultAttemptTTL
+	} else if cfg.attemptTTL <= 0 {
+		return nil, ErrInvalidAttemptTTL
+	}
 	codec, live, err := resolveCodec[T](src, cfg.codec, cfg.codecSet)
 	if err != nil {
 		return nil, err
@@ -160,14 +176,19 @@ func NewConsumer[T any](src any, h Handler[T], opts ...ConsumerOption[T]) (Consu
 	if !ok {
 		native = noNativeReliability{}
 	}
+	// ADR 0009 D2: resolve the optional single-probe capability once. When the
+	// breaker also implements ProbeGate the dispatch gate uses TryProbe (bounded
+	// half-open probes); otherwise it falls back to Allow.
+	probeGate, _ := cfg.breaker.(ProbeGate)
 	return &consumer[T]{
 		src: stream, handler: h, codec: codec, liveValue: live,
 		workers: cfg.concurrency,
 		policy:  cfg.policy, invalidSink: cfg.invalidSink, logger: cfg.logger,
 		hooks: cfg.hooks, shutdownTimeout: cfg.shutdownTimeout, clock: cfg.clock,
-		native: native, tracker: newAttemptTracker(cfg.clock, defaultAttemptTTL),
+		native: native, tracker: newAttemptTracker(cfg.clock, cfg.attemptTTL),
 		maxInFlight: cfg.maxInFlight, rateLimiter: cfg.rateLimiter,
-		handlerTimeout: cfg.handlerTimeout, breaker: cfg.breaker, overflow: cfg.overflow,
+		handlerTimeout: cfg.handlerTimeout, breaker: cfg.breaker, probeGate: probeGate,
+		overflow: cfg.overflow, maxPayloadBytes: cfg.maxPayloadBytes,
 	}, nil
 }
 
@@ -189,6 +210,16 @@ func NewConsumer[T any](src any, h Handler[T], opts ...ConsumerOption[T]) (Consu
 // subsequent settle — but a handler that never returns at all is bounded only by
 // WithHandlerTimeout (Plan 003).
 func (c *consumer[T]) Run(ctx context.Context) error {
+	// ADR 0009 D2: a breaker without ProbeGate admits the whole half-open state,
+	// so under WithConcurrency(N>1) half-open lets every worker probe concurrently
+	// (the probe storm). Warn once so a caller who plugged e.g. a sony/gobreaker
+	// State()-mirror does not hit this silently — the shipped NewCircuitBreaker
+	// implements ProbeGate and is exempt.
+	if c.workers > 1 && c.breaker != nil && c.probeGate == nil {
+		c.logger.Warn("msgin: circuit breaker does not implement ProbeGate; half-open admits concurrent probes under WithConcurrency>1",
+			"workers", c.workers)
+	}
+
 	rawCh := make(chan Delivery) // Stream writes here
 	// ingress -> workers. Buffered to the credit-gate capacity (D3-fix, ADR
 	// 0008): a delivery only reaches here after acquiring a credit, and the
@@ -328,14 +359,15 @@ func (c *consumer[T]) ingest(ctx, settleCtx context.Context, gate *creditGate, i
 // up to the full shutdownTimeout, which is the documented shutdown contract.
 func (c *consumer[T]) admit(ctx, settleCtx context.Context, gate *creditGate, d Delivery, out chan<- managedDelivery) bool {
 	if c.rateLimiter != nil {
-		if err := c.rateLimiter.Wait(ctx); err != nil {
+		if err := c.safeLimiterWait(ctx, d.Msg.ID()); err != nil {
 			// ctx done while parked on the limiter; no credit acquired yet, so
-			// nothing to release.
+			// nothing to release. (A panicking limiter fails open — safeLimiterWait
+			// returns nil — so it never reaches this branch, ADR 0009 D1.)
 			c.finish(d.Nack(settleCtx, true, 0))
 			return false
 		}
 	}
-	if !c.admitBreaker(ctx) {
+	if !c.admitBreaker(ctx, d.Msg.ID()) {
 		// ctx done while parked on an open breaker; no credit acquired yet, so
 		// the held delivery is Nacked (requeue) rather than lost.
 		c.finish(d.Nack(settleCtx, true, 0))
@@ -383,16 +415,22 @@ func (c *consumer[T]) admit(ctx, settleCtx context.Context, gate *creditGate, d 
 // Allow and the park is caught by the re-check (state already half-open) or by
 // the already-closed wake channel — never lost. The wake channel is captured
 // before the re-check, so it is exactly the one toHalfOpen closes.
-func (c *consumer[T]) admitBreaker(ctx context.Context) bool {
+func (c *consumer[T]) admitBreaker(ctx context.Context, id string) bool {
 	if c.breaker == nil {
 		return true
 	}
 	for {
-		if c.breaker.Allow() {
+		if c.safeAllow(id) {
 			return true
 		}
-		wake := c.breaker.HalfOpen() // subscribe BEFORE re-checking
-		if c.breaker.Allow() {       // re-check closes the missed-wakeup window
+		wake, ok := c.safeHalfOpen(id) // subscribe BEFORE re-checking
+		if !ok {
+			// HalfOpen panicked → the breaker is unusable. Fail open (proceed)
+			// rather than park on a nil channel forever (ADR 0009 D1). Must NOT
+			// fall through to the select below.
+			return true
+		}
+		if c.safeAllow(id) { // re-check closes the missed-wakeup window
 			return true
 		}
 		select {
@@ -401,6 +439,83 @@ func (c *consumer[T]) admitBreaker(ctx context.Context) bool {
 			return false
 		}
 	}
+}
+
+// safeLimiterWait invokes the RateLimiter, recovering a panic to FAIL OPEN
+// (proceed, err=nil) — a panicking limiter is a plug-in bug, not backpressure, and
+// the credit gate still bounds in-flight (ADR 0009 D1). A RETURNED error (e.g.
+// ctx.Err() at shutdown) is propagated unchanged; only a panic maps to nil.
+func (c *consumer[T]) safeLimiterWait(ctx context.Context, id string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.governorPanic("RateLimiter.Wait", id, r)
+			err = nil // fail open: proceed as if unpaced
+		}
+	}()
+	return c.rateLimiter.Wait(ctx)
+}
+
+// safeAllow invokes CircuitBreaker.Allow, recovering a panic to FAIL OPEN (treat
+// as not-open → admit): a panicking breaker degrades to the no-breaker baseline
+// (bounded by WithConcurrency), never a crash or an ingress wedge (ADR 0009 D1).
+func (c *consumer[T]) safeAllow(id string) (ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.governorPanic("CircuitBreaker.Allow", id, r)
+			ok = true
+		}
+	}()
+	return c.breaker.Allow()
+}
+
+// safeTryProbe invokes ProbeGate.TryProbe, recovering a panic to FAIL OPEN
+// (admit). Same rationale as safeAllow (ADR 0009 D1).
+func (c *consumer[T]) safeTryProbe(id string) (ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.governorPanic("ProbeGate.TryProbe", id, r)
+			ok = true
+		}
+	}()
+	return c.probeGate.TryProbe()
+}
+
+// safeRecord feeds an outcome back to the breaker, recovering (and swallowing) a
+// panic — Record returns nothing, so there is no fallback value (ADR 0009 D1).
+func (c *consumer[T]) safeRecord(id string, success bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.governorPanic("CircuitBreaker.Record", id, r)
+		}
+	}()
+	c.breaker.Record(success)
+}
+
+// safeHalfOpen invokes CircuitBreaker.HalfOpen, returning (ch, true) normally and
+// (nil, false) on panic. admitBreaker reads ok=false as "breaker unusable → fail
+// open, do NOT park" — parking on a nil channel would wedge forever (ADR 0009 D1).
+func (c *consumer[T]) safeHalfOpen(id string) (ch <-chan struct{}, ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.governorPanic("CircuitBreaker.HalfOpen", id, r)
+			ch, ok = nil, false
+		}
+	}()
+	return c.breaker.HalfOpen(), true
+}
+
+// governorPanic logs a recovered panic from a caller-supplied resilience governor
+// (RateLimiter/CircuitBreaker/ProbeGate) at ERROR — a governor panic silently
+// removes a safety layer the caller configured, so it is louder than a hook panic
+// (safeFire's WARN). It is deduplicated per method via panicLogged so a
+// deterministic panic under fail-open cannot flood the log at one line per
+// message. Message id only, never the payload (ADR 0009 D1).
+func (c *consumer[T]) governorPanic(method, id string, r any) {
+	if _, loaded := c.panicLogged.LoadOrStore(method, struct{}{}); loaded {
+		return
+	}
+	c.logger.Error("msgin: resilience governor panicked; failing open (further occurrences for this method suppressed)",
+		"method", method, "id", id, "panic", r)
 }
 
 // process runs one delivery on a worker: the drain short-circuit (Nack without
@@ -415,10 +530,11 @@ func (c *consumer[T]) process(drainCtx, settleCtx context.Context, md managedDel
 		c.finish(md.Nack(settleCtx, true, 0))
 		return
 	}
-	if c.breaker != nil && !c.breaker.Allow() {
-		// Open: do not drive an already-buffered message into the failing
-		// downstream — Nack it (the wrapped Nack releases its credit) for later
-		// redelivery, so the surplus waits durably in the source (NF-10).
+	if c.breaker != nil && !c.dispatchAllowed(md.Msg.ID()) {
+		// Open (or half-open with the single probe already taken): do not drive
+		// this buffered message into the failing downstream — Nack it (the wrapped
+		// Nack releases its credit) for later redelivery, so the surplus waits in
+		// the source (NF-10). A false TryProbe consumes no probe, so no Record.
 		c.finish(md.Nack(settleCtx, true, 0))
 		return
 	}
@@ -428,8 +544,19 @@ func (c *consumer[T]) process(drainCtx, settleCtx context.Context, md managedDel
 		// failure is unhealthy. err == nil (Ack) or an isPermanent classification
 		// (a poison/undecodable message — the message's fault, not the
 		// downstream's) is healthy, so a burst of poison cannot trip the breaker.
-		c.breaker.Record(err == nil || isPermanent(err))
+		// This Record is the release paired with the dispatchAllowed acquire above.
+		c.safeRecord(md.Msg.ID(), err == nil || isPermanent(err))
 	}
+}
+
+// dispatchAllowed is the breaker's DISPATCH gate: TryProbe (bounded half-open
+// probes) when the breaker implements ProbeGate, else the plain Allow open-check
+// (ADR 0009 D2). Both fail open on a panic (ADR 0009 D1).
+func (c *consumer[T]) dispatchAllowed(id string) bool {
+	if c.probeGate != nil {
+		return c.safeTryProbe(id)
+	}
+	return c.safeAllow(id)
 }
 
 // handlerContext derives the per-handler context from parent (drainCtx):
@@ -636,6 +763,12 @@ func (c *consumer[T]) decode(m Message[any]) (T, error) {
 	if !ok {
 		var zero T
 		return zero, ErrPayloadType
+	}
+	// ADR 0009 D5: cap untrusted wire bytes BEFORE decoding. An over-size payload
+	// is permanent (it will not shrink on redelivery) → invalid sink, not retried.
+	if c.maxPayloadBytes > 0 && len(b) > c.maxPayloadBytes {
+		var zero T
+		return zero, ErrPayloadTooLarge
 	}
 	v, err := c.codec.Decode(b)
 	if err != nil {

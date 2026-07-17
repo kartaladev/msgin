@@ -185,6 +185,27 @@ func (s *controllableSource) deliver(ctx context.Context, d msgin.Delivery) {
 	}
 }
 
+// byteStreamSource is a WIRE StreamingSource: it emits a single []byte payload
+// (it does NOT implement LiveValueSource, so the runtime takes the codec-decode
+// path) then blocks until ctx is done. Used to exercise WithMaxPayloadBytes and
+// other decode-boundary behavior against real []byte payloads (ADR 0009 D5).
+type byteStreamSource struct {
+	id      string
+	payload []byte
+	st      *settle
+}
+
+func (s *byteStreamSource) Stream(ctx context.Context, out chan<- msgin.Delivery) error {
+	d := msgin.Delivery{Msg: msgin.New[any](s.payload, msgin.WithID(s.id)), Ack: s.st.ack, Nack: s.st.nack}
+	select {
+	case out <- d:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 // nativeScriptedSource emits one delivery then blocks; declares no native reliability.
 type nativeScriptedSource struct{ d msgin.Delivery }
 
@@ -300,6 +321,92 @@ func (s *finiteSource) Stream(ctx context.Context, out chan<- msgin.Delivery) er
 		}
 	}
 	return nil // stream complete; Run closes rawCh and ingest exits on the closed read
+}
+
+// panicRateLimiter is a RateLimiter whose Wait always panics — used to prove
+// safeLimiterWait's fail-open recovery (ADR 0009 D1).
+type panicRateLimiter struct{}
+
+func (panicRateLimiter) Wait(context.Context) error { panic("panicRateLimiter.Wait boom") }
+
+// panicAllowBreaker is a CircuitBreaker whose Allow always panics; Record and
+// HalfOpen are benign so only the Allow panic is exercised (ADR 0009 D1). It
+// does NOT implement ProbeGate, so both the ingress admit and the dispatch
+// gate fall back to (panicking) Allow.
+type panicAllowBreaker struct{}
+
+func (panicAllowBreaker) Allow() bool               { panic("panicAllowBreaker.Allow boom") }
+func (panicAllowBreaker) Record(bool)               {}
+func (panicAllowBreaker) HalfOpen() <-chan struct{} { return make(chan struct{}) }
+
+// panicProbeGateBreaker implements CircuitBreaker with a benign
+// Allow/Record/HalfOpen PLUS the optional ProbeGate capability whose TryProbe
+// always panics — used to prove safeTryProbe's fail-open recovery at the
+// dispatch gate (ADR 0009 D1, D2).
+type panicProbeGateBreaker struct{}
+
+func (panicProbeGateBreaker) Allow() bool               { return true }
+func (panicProbeGateBreaker) Record(bool)               {}
+func (panicProbeGateBreaker) HalfOpen() <-chan struct{} { return make(chan struct{}) }
+func (panicProbeGateBreaker) TryProbe() bool            { panic("panicProbeGateBreaker.TryProbe boom") }
+
+// panicRecordBreaker has a benign Allow/HalfOpen but a Record that always
+// panics — used to prove safeRecord's swallow-and-log recovery (ADR 0009 D1):
+// the panic must not unwind past the already-completed settlement.
+type panicRecordBreaker struct{}
+
+func (panicRecordBreaker) Allow() bool               { return true }
+func (panicRecordBreaker) Record(bool)               { panic("panicRecordBreaker.Record boom") }
+func (panicRecordBreaker) HalfOpen() <-chan struct{} { return make(chan struct{}) }
+
+// panicHalfOpenBreaker scripts a two-value Allow sequence (false at the
+// ingress admit, forcing admitBreaker to subscribe via HalfOpen; true at the
+// dispatch gate) paired with a HalfOpen that always panics and a benign
+// Record — the no-park landmine (ADR 0009 D1): admitBreaker must fail open on
+// the HalfOpen panic rather than select on a nil channel forever.
+type panicHalfOpenBreaker struct {
+	mu     sync.Mutex
+	allows []bool
+	idx    int
+}
+
+func newPanicHalfOpenBreaker(allows ...bool) *panicHalfOpenBreaker {
+	return &panicHalfOpenBreaker{allows: allows}
+}
+
+func (b *panicHalfOpenBreaker) Allow() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.idx >= len(b.allows) {
+		return b.allows[len(b.allows)-1] // last scripted value repeats
+	}
+	v := b.allows[b.idx]
+	b.idx++
+	return v
+}
+
+func (*panicHalfOpenBreaker) Record(bool) {}
+
+func (*panicHalfOpenBreaker) HalfOpen() <-chan struct{} { panic("panicHalfOpenBreaker.HalfOpen boom") }
+
+// signalingSource is a StreamingSource that closes ready as soon as Stream is
+// entered, then blocks until ctx is done. Run performs its synchronous
+// pre-loop setup (e.g. the one-time gobreaker-cliff ProbeGate WARN, ADR 0009
+// D2) strictly before ever calling Stream, so receiving from ready gives the
+// test a happens-before guarantee that the setup already ran — without racing
+// on a real delivery or needing a message to flow.
+type signalingSource struct {
+	ready chan struct{}
+}
+
+func newSignalingSource() *signalingSource { return &signalingSource{ready: make(chan struct{})} }
+
+func (s *signalingSource) EmitsLiveValue() bool { return true }
+
+func (s *signalingSource) Stream(ctx context.Context, out chan<- msgin.Delivery) error {
+	close(s.ready)
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 // hookRec records which observability hooks fired, keyed by event name.

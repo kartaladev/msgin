@@ -46,6 +46,32 @@ type CircuitBreaker interface {
 	HalfOpen() <-chan struct{}
 }
 
+// ProbeGate is an OPTIONAL CircuitBreaker capability (ADR 0009 D2). A breaker that
+// also implements it lets the runtime admit a bounded number of half-open probes
+// at the DISPATCH gate rather than the whole half-open state — fixing the probe
+// storm under WithConcurrency(N>1), where otherwise every worker reaching the gate
+// while half-open is admitted instead of a single canary.
+//
+// TryProbe is a CONSUMING acquire (it may set internal probe state) called ONLY at
+// the dispatch gate and ALWAYS paired with a following Record; the runtime's
+// ingress open-check keeps using the idempotent Allow. It reports whether THIS
+// dispatch may proceed: closed → true (unlimited); open → false; half-open → true
+// for one probe, false for the rest until a Record settles it. A returned false
+// consumes nothing (the message is Nacked without a Record).
+//
+// A CircuitBreaker that does NOT implement ProbeGate keeps the prior behavior (the
+// dispatch gate falls back to Allow, admitting the whole half-open state). The
+// default NewCircuitBreaker implements ProbeGate; a sony/gobreaker wrapper SHOULD
+// implement TryProbe (mirroring gobreaker's own half-open MaxRequests) to get
+// single-probe under N>1 — otherwise the runtime logs a one-time warning at Run.
+//
+// Implementations MUST NOT panic (same contract as CircuitBreaker); the runtime
+// fail-opens (admits) on a panic but cannot rescue a plug-in that wedges its own
+// probe state (ADR 0009 D1).
+type ProbeGate interface {
+	TryProbe() bool
+}
+
 // OverflowPolicy selects what a push source's ingress does when the credit pool
 // is exhausted (spec §7.4.6). Block backpressures; the Drop/Reject policies shed.
 type OverflowPolicy int
@@ -126,4 +152,42 @@ func WithCircuitBreaker[T any](b CircuitBreaker) ConsumerOption[T] {
 // default OverflowBlock.
 func WithOverflow[T any](p OverflowPolicy) ConsumerOption[T] {
 	return func(o *consumerConfig[T]) { o.overflow = p }
+}
+
+// WithAttemptTTL overrides how long an idle delivery-attempt-tracker entry
+// survives before the periodic sweep reclaims it (default defaultAttemptTTL, 5m;
+// ADR 0009 D3). The tracker counts redelivery attempts per message id for sources
+// WITHOUT a native msgin.delivery-count header (e.g. memory); the sweep bounds the
+// map so a stream of distinct one-shot ids cannot grow it without limit.
+//
+// d must be > 0, else NewConsumer returns ErrInvalidAttemptTTL.
+//
+// INVARIANT — set d comfortably ABOVE the worst-case redelivery round-trip,
+// INCLUDING handler execution time — not merely your Backoff.Max. lastSeen is
+// refreshed only after the handler returns, so the gap between two observes of a
+// redelivering id spans re-inject + decode + handler + settle. A too-small TTL
+// sweeps an id that is still being retried and restarts it at attempt 1, silently
+// defeating RetryPolicy.MaxAttempts / dead-lettering. This is reachable TODAY on
+// the memory adapter, which ignores the Nack backoff delay and redelivers at once:
+// a Backoff of nil ("0") does NOT make a tiny TTL safe if the handler runs longer
+// than that TTL. When in doubt, leave it at the default.
+func WithAttemptTTL[T any](d time.Duration) ConsumerOption[T] {
+	return func(o *consumerConfig[T]) { o.attemptTTL = d; o.attemptTTLSet = true }
+}
+
+// WithMaxPayloadBytes caps the size of an externally-sourced wire payload
+// ([]byte) BEFORE it is handed to the PayloadCodec for decoding (ADR 0009 D5,
+// spec §7 untrusted-input defense). A payload whose length exceeds n is settled
+// as a PERMANENT invalid message (ErrPayloadTooLarge) — diverted to the
+// invalid-message sink like a decode failure, never retried — since an over-size
+// payload will not shrink on redelivery.
+//
+// n <= 0 disables the cap (the default): a library cannot guess a caller's
+// legitimate maximum, so the cap is opt-in. Wire adapters consuming UNTRUSTED
+// sources SHOULD set it to bound decode-time memory. The live-value (memory) path
+// never carries []byte and is unaffected. Payload structural complexity (deep
+// nesting) is bounded by the codec, not here — encoding/json returns an error on
+// pathologically nested input rather than overflowing the stack.
+func WithMaxPayloadBytes[T any](n int) ConsumerOption[T] {
+	return func(o *consumerConfig[T]) { o.maxPayloadBytes = n }
 }
