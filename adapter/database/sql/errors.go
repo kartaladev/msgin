@@ -48,11 +48,11 @@ var (
 
 	// ErrLockStrategyUnsupported is a construction error from NewPollingSource
 	// when WithStrategy(StrategyLockForUpdate) is selected but the resolved
-	// Dialect does not also implement LockDialect (the segregated lock/FOR UPDATE
+	// LeaseDialect does not also implement LockDialect (the segregated lock/FOR UPDATE
 	// SPI, ADR 0010 D5). The built-in PostgresDialect/MySQLDialect implement it; a
-	// custom lease-only Dialect must add LockDialect to be usable with the lock
+	// custom lease-only LeaseDialect must add LockDialect to be usable with the lock
 	// strategy. The wrapped message names the offending dialect type.
-	ErrLockStrategyUnsupported = errors.New("msgin/sql: lock strategy requires a Dialect that implements LockDialect")
+	ErrLockStrategyUnsupported = errors.New("msgin/sql: lock strategy requires a LeaseDialect that implements LockDialect")
 
 	// ErrInvalidPayload is returned by Outbound.Send when the message's payload
 	// is not []byte. The Outbound is a wire adapter, not a LiveValueSource, so

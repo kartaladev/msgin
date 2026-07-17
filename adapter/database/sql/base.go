@@ -11,7 +11,7 @@ import (
 
 // adapterBase holds the fields and operations shared by every table-backed
 // adapter in this package (Source, Outbound): the db handle, the target
-// table, the resolved Dialect, and the injected logger, plus the fail-fast
+// table, the resolved LeaseDialect, and the injected logger, plus the fail-fast
 // readiness check, the opt-in schema bootstrap, and the query-error
 // classifier that all of them build on. Factoring this out keeps the dialect
 // auto-detect/validateIdent resolution and the Ready/EnsureSchema/
@@ -19,11 +19,11 @@ import (
 type adapterBase struct {
 	db      *stdsql.DB
 	table   string
-	dialect Dialect
+	dialect LeaseDialect
 	logger  *slog.Logger
 }
 
-// newAdapterBase validates db and table and resolves the Dialect (WithDialect
+// newAdapterBase validates db and table and resolves the LeaseDialect (WithDialect
 // from cfg, else driver auto-detect, else ErrDialectUndetected — ADR 0010 D3),
 // shared by NewPollingSource and NewOutboundAdapter. A nil db is
 // msgin.ErrNilAdapter; an invalid table identifier is ErrInvalidTableName.

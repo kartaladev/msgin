@@ -9,14 +9,14 @@ import (
 	"time"
 )
 
-// postgresDialect is the built-in Dialect for PostgreSQL and wire-compatible
+// postgresDialect is the built-in LeaseDialect for PostgreSQL and wire-compatible
 // derivatives. It is stateless; a single value is shared by all callers.
 type postgresDialect struct{}
 
-// PostgresDialect returns the built-in PostgreSQL Dialect (lease/claim
+// PostgresDialect returns the built-in PostgreSQL LeaseDialect (lease/claim
 // strategy). It owns the exact PostgreSQL SQL for every operation; pass it to
 // the adapter constructors via WithDialect for the guaranteed-correct path.
-func PostgresDialect() Dialect { return postgresDialect{} }
+func PostgresDialect() LeaseDialect { return postgresDialect{} }
 
 // pgQuote double-quotes a PostgreSQL identifier. The name must already be
 // validated (validateIdent admits no double-quote), so wrapping is safe;

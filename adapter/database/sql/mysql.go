@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// mysqlDialect is the built-in Dialect for MySQL and wire-compatible
+// mysqlDialect is the built-in LeaseDialect for MySQL and wire-compatible
 // derivatives (MariaDB). It is stateless; a single value is shared by all
 // callers. It is behavior-identical to postgresDialect — same claim predicate,
 // fence semantics, delivery_count/lease_epoch bumps, and visible_after delays —
@@ -27,11 +27,11 @@ import (
 // SELECT's values + 1, computed in Go to mirror Postgres's RETURNING.
 type mysqlDialect struct{}
 
-// MySQLDialect returns the built-in MySQL Dialect (lease/claim strategy),
+// MySQLDialect returns the built-in MySQL LeaseDialect (lease/claim strategy),
 // behavior-identical to PostgresDialect() over MySQL SQL. Pass it to the adapter
 // constructors via WithDialect for the guaranteed-correct path; a MySQL/MariaDB
 // driver also auto-detects it.
-func MySQLDialect() Dialect { return mysqlDialect{} }
+func MySQLDialect() LeaseDialect { return mysqlDialect{} }
 
 // mysqlQuote back-quotes a MySQL identifier. The name must already be validated
 // (validateIdent admits no backtick), so wrapping is safe; doubling any embedded

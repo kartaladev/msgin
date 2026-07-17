@@ -221,6 +221,9 @@ copy-paste starting point compiles. (Renaming to `sqladapter`/`msginsql` was con
 
 ### D3 — `sql` adapter: exported `Dialect` SPI owning **all** SQL; generic constructors with driver auto-detect + `WithDialect` opt-in
 
+> **Rename note (Task 10):** the exported interface named `Dialect` throughout this section was renamed to **`LeaseDialect`** for clarity, paralleling `LockDialect` (D5) and `InboxDialect` (D10) now that three dialect SPIs coexist — a behavior-preserving type rename; the constructors `PostgresDialect()`/`MySQLDialect()` and the `WithDialect` option keep their names.
+
+
 **No cross-dialect SQL string ever executes** (the user's hard constraint). The `Dialect` interface —
 **exported as a public SPI** (the caller-facing extension point for a database *and its derivatives /
 quirks*: CockroachDB / YugabyteDB on the Postgres wire, MariaDB on the MySQL wire, TimescaleDB, …) —

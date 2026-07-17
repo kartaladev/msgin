@@ -68,7 +68,7 @@ type Source struct {
 }
 
 // NewPollingSource builds a lease/claim Source over table on db. It resolves
-// the Dialect (WithDialect, else driver auto-detect, else ErrDialectUndetected
+// the LeaseDialect (WithDialect, else driver auto-detect, else ErrDialectUndetected
 // — ADR 0010 D3), validates the table identifier (ErrInvalidTableName), and
 // applies the sensible defaults documented on each option (5m lease TTL, a
 // random lease owner, a discard logger). A nil db is msgin.ErrNilAdapter.
@@ -93,7 +93,7 @@ func NewPollingSource(db *stdsql.DB, table string, opts ...Option) (*Source, err
 		return nil, fmt.Errorf("%w: %d", ErrInvalidStrategy, cfg.strategy)
 	}
 
-	// StrategyLockForUpdate requires the resolved Dialect to also satisfy the
+	// StrategyLockForUpdate requires the resolved LeaseDialect to also satisfy the
 	// segregated LockDialect SPI (ADR 0010 D5). Resolve it once at construction so
 	// pollLock never type-asserts on the hot path and a lease-only dialect fails
 	// fast rather than at first poll.

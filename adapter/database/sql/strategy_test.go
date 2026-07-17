@@ -50,7 +50,7 @@ func TestClaimLock_RequiresDBOrTxQuerier(t *testing.T) {
 	}
 }
 
-// nonLockDialect implements msginsql.Dialect but deliberately NOT
+// nonLockDialect implements msginsql.LeaseDialect but deliberately NOT
 // msginsql.LockDialect, so NewPollingSource(WithStrategy(StrategyLockForUpdate))
 // must reject it with ErrLockStrategyUnsupported (ADR 0010 D5 — the segregated
 // lock SPI). Every method is a no-op stub: construction fails before any is
@@ -74,13 +74,13 @@ func (nonLockDialect) SchemaExists(context.Context, msginsql.Querier, string) (b
 	return false, nil
 }
 
-// Compile-time proof of intent: nonLockDialect is a Dialect but not a LockDialect.
-var _ msginsql.Dialect = nonLockDialect{}
+// Compile-time proof of intent: nonLockDialect is a LeaseDialect but not a LockDialect.
+var _ msginsql.LeaseDialect = nonLockDialect{}
 
 // TestNewPollingSource_StrategyConstruction exercises the WithStrategy
 // construction contract (ADR 0010 D5): the default is lease/claim; an
 // out-of-range Strategy is ErrInvalidStrategy; StrategyLockForUpdate requires a
-// Dialect that also implements LockDialect (ErrLockStrategyUnsupported when it
+// LeaseDialect that also implements LockDialect (ErrLockStrategyUnsupported when it
 // does not). No database connection is made — sql.Open is lazy and the checks are
 // construction-time only.
 func TestNewPollingSource_StrategyConstruction(t *testing.T) {

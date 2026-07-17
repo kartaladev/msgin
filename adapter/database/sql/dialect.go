@@ -19,7 +19,7 @@ import (
 const RecommendedMaxPayloadBytes = 1 << 20 // 1 MiB
 
 // Querier is the subset of *database/sql.DB and *database/sql.Tx that the
-// Dialect uses. Both *sql.DB and *sql.Tx satisfy it, so a Dialect method runs
+// LeaseDialect uses. Both *sql.DB and *sql.Tx satisfy it, so a LeaseDialect method runs
 // unchanged on the connection pool or inside a caller-supplied transaction
 // (e.g. the transactional-outbox Insert on a *sql.Tx).
 type Querier interface {
@@ -28,7 +28,7 @@ type Querier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *stdsql.Row
 }
 
-// ClaimedRow is one row returned by Dialect.Claim: the persisted envelope plus
+// ClaimedRow is one row returned by LeaseDialect.Claim: the persisted envelope plus
 // the lease bookkeeping. Headers and Payload are the raw framed bytes (JSON
 // headers, wire body); the runtime, not the adapter, decodes the payload into
 // its typed value. DeliveryCount is the post-increment claim count (populates
@@ -43,7 +43,7 @@ type ClaimedRow struct {
 	LeaseEpoch    int64
 }
 
-// Dialect is the exported SPI a caller supplies (via WithDialect, Task 5) to
+// LeaseDialect is the exported SPI a caller supplies (via WithDialect, Task 5) to
 // teach the sql adapter a database's exact SQL — the extension point for
 // wire-compatible derivatives and per-engine quirks. The built-in is
 // PostgresDialect(). Every method fully owns its statement(s) and any
@@ -52,13 +52,13 @@ type ClaimedRow struct {
 // and durations are passed as interval-typed parameters, so there is no
 // app↔DB skew in lease-expiry or visibility comparisons (ADR 0010 D3/D4).
 //
-// The lease/claim strategy this Dialect implements is: Claim leases claimable
+// The lease/claim strategy this LeaseDialect implements is: Claim leases claimable
 // rows (bumping delivery_count and lease_epoch), Ack DELETEs a fenced row, and
 // Nack clears the lock and pushes visible_after out by the requested delay.
 //
 // This is a pre-1.0 (v0) contract that may still evolve; the lock/FOR UPDATE
 // strategy's ClaimLock method is added in a later increment.
-type Dialect interface {
+type LeaseDialect interface {
 	// Claim leases up to limit claimable rows for lockedBy, treating any lease
 	// older than leaseTTL as expired (and therefore claimable again — the
 	// reaper is inlined into the claim predicate). It returns the leased rows
@@ -92,7 +92,7 @@ type Dialect interface {
 	SchemaExists(ctx context.Context, q Querier, table string) (bool, error)
 }
 
-// Note: reference-DDL generation is deliberately NOT a Dialect interface
+// Note: reference-DDL generation is deliberately NOT a LeaseDialect interface
 // method. A string-returning method structurally cannot return
 // ErrInvalidTableName, so exposing DDL(table) on the interface would be an
 // unvalidated SQL-injection path (the identifier cannot be a bound parameter).

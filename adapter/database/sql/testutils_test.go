@@ -156,12 +156,12 @@ func RunTestMySQL(t *testing.T, opts ...TestOption) *sql.DB {
 }
 
 // engine is one database engine the behavior suites run against: its built-in
-// Dialect and the helper that provisions a throwaway container for it. The suites
+// LeaseDialect and the helper that provisions a throwaway container for it. The suites
 // iterate over `engines` so the SAME behavior assertions run on both PostgreSQL
-// and MySQL, proving the Dialect abstraction holds across engines.
+// and MySQL, proving the LeaseDialect abstraction holds across engines.
 type engine struct {
 	name    string
-	dialect msginsql.Dialect
+	dialect msginsql.LeaseDialect
 	openDB  func(t *testing.T, opts ...TestOption) *sql.DB
 }
 

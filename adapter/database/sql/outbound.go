@@ -32,7 +32,7 @@ type Outbound struct {
 }
 
 // NewOutboundAdapter builds an Outbound over table on db. It resolves the
-// Dialect (WithDialect, else driver auto-detect, else ErrDialectUndetected —
+// LeaseDialect (WithDialect, else driver auto-detect, else ErrDialectUndetected —
 // ADR 0010 D3) and validates the table identifier (ErrInvalidTableName), the
 // same resolution NewPollingSource applies. WithLeaseTTL/WithLockedBy are
 // lease-Source-specific and are simply inert here. A nil db is
@@ -63,7 +63,7 @@ func NewOutboundAdapter(db *stdsql.DB, table string, opts ...Option) (*Outbound,
 }
 
 // Send frames msg's headers (EncodeHeaders) and INSERTs a new,
-// immediately-visible row (delay 0) via the resolved Dialect. msg's payload
+// immediately-visible row (delay 0) via the resolved LeaseDialect. msg's payload
 // MUST be []byte — Outbound is a wire adapter (not a LiveValueSource), so
 // msgin.NewProducer always JSON-encodes T to []byte before calling Send; a
 // non-[]byte payload here is a defensive case (ErrInvalidPayload) that trusted

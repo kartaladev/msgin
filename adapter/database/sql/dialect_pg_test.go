@@ -23,15 +23,15 @@ const (
 )
 
 // DialectSuite provisions one container per engine for the whole suite (per
-// use-testcontainers) and exercises that engine's built-in Dialect against it.
+// use-testcontainers) and exercises that engine's built-in LeaseDialect against it.
 // TestDialectSuite runs it once per engine (postgres, mysql) so the SAME
-// behavior assertions prove the Dialect abstraction holds across both. Each test
+// behavior assertions prove the LeaseDialect abstraction holds across both. Each test
 // method uses a freshly-named table so cases stay isolated.
 type DialectSuite struct {
 	suite.Suite
 	engine  engine
 	db      *sql.DB
-	dialect msginsql.Dialect
+	dialect msginsql.LeaseDialect
 	counter atomic.Int64
 }
 

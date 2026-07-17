@@ -14,7 +14,7 @@ import (
 // # On-wire header format (stability contract)
 //
 // This is public API: the JSON shape below is a stability contract that a
-// custom Dialect, an external tool, or a direct reader of the headers column
+// custom LeaseDialect, an external tool, or a direct reader of the headers column
 // may depend on. A single JSON object maps each header key to its value, with
 // two reserved keys normalized so they round-trip losslessly:
 //

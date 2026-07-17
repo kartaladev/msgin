@@ -7,12 +7,12 @@ import (
 	"time"
 )
 
-// LockDialect is the OPTIONAL lock/FOR-UPDATE strategy extension of Dialect
-// (ADR 0010 D5). It is segregated from the core Dialect (interface-segregation:
-// a lease-only custom Dialect is not forced to implement lock SQL) and exported
+// LockDialect is the OPTIONAL lock/FOR-UPDATE strategy extension of LeaseDialect
+// (ADR 0010 D5). It is segregated from the core LeaseDialect (interface-segregation:
+// a lease-only custom LeaseDialect is not forced to implement lock SQL) and exported
 // so a wire-compatible derivative can supply its own lock semantics. The
 // built-ins PostgresDialect()/MySQLDialect() implement it, so
-// WithStrategy(StrategyLockForUpdate) works out of the box; a custom Dialect that
+// WithStrategy(StrategyLockForUpdate) works out of the box; a custom LeaseDialect that
 // does not also satisfy LockDialect is rejected at construction with
 // ErrLockStrategyUnsupported.
 //

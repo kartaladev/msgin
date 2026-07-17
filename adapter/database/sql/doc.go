@@ -26,7 +26,7 @@
 //
 // # Dialects
 //
-// The exported Dialect SPI owns the complete SQL for every operation, so no
+// The exported LeaseDialect SPI owns the complete SQL for every operation, so no
 // cross-dialect statement ever runs. The two built-ins are
 // msginsql.PostgresDialect() and msginsql.MySQLDialect(), and a pq/pgx/postgres
 // or mysql/mariadb driver auto-detects the matching one (WithDialect is the

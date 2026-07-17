@@ -37,7 +37,7 @@ const (
 	// token. It gives stronger crash safety than the lease strategy at the cost of
 	// one pinned pooled connection per in-flight message, so it requires care with
 	// the DB pool topology — see WithStrategy for the mandatory pool invariants.
-	// Requires a Dialect that also implements LockDialect (ErrLockStrategyUnsupported
+	// Requires a LeaseDialect that also implements LockDialect (ErrLockStrategyUnsupported
 	// otherwise); the built-ins satisfy it. Under this strategy WithLeaseTTL is
 	// inert (there is no lease). (ADR 0010 D5.)
 	StrategyLockForUpdate
@@ -45,7 +45,7 @@ const (
 
 // config accumulates Option settings before NewPollingSource builds a Source.
 type config struct {
-	dialect     Dialect
+	dialect     LeaseDialect
 	strategy    Strategy
 	leaseTTL    time.Duration
 	leaseTTLSet bool // distinguishes explicit WithLeaseTTL(0) (rejected) from unset (default)
@@ -60,13 +60,13 @@ type config struct {
 // Option configures a Source built by NewPollingSource.
 type Option func(*config)
 
-// WithDialect selects the Dialect explicitly, bypassing driver auto-detect. It
+// WithDialect selects the LeaseDialect explicitly, bypassing driver auto-detect. It
 // is the guaranteed-correct path (auto-detect is heuristic and may mis-detect a
 // wire-compatible derivative) and the escape hatch for a derivative's quirks:
-// pass WithDialect(sql.PostgresDialect()) or your own Dialect implementation
+// pass WithDialect(sql.PostgresDialect()) or your own LeaseDialect implementation
 // (ADR 0010 D3). A nil dialect is ignored (leaves auto-detect in place) rather
 // than deferring a nil-panic to the first Poll.
-func WithDialect(d Dialect) Option {
+func WithDialect(d LeaseDialect) Option {
 	return func(c *config) {
 		if d != nil {
 			c.dialect = d
@@ -80,7 +80,7 @@ func WithDialect(d Dialect) Option {
 // rolls back the carried FOR UPDATE tx, releasing the row immediately, with no
 // lease-expiry double-processing window). An out-of-range value is a
 // construction error (ErrInvalidStrategy); StrategyLockForUpdate additionally
-// requires the resolved Dialect to implement LockDialect (ErrLockStrategyUnsupported).
+// requires the resolved LeaseDialect to implement LockDialect (ErrLockStrategyUnsupported).
 //
 // # Lock strategy: mandatory DB-pool topology (read before choosing it)
 //

@@ -8,7 +8,7 @@ import (
 	"unicode"
 )
 
-// resolveDialect best-effort auto-detects a built-in Dialect from db's driver
+// resolveDialect best-effort auto-detects a built-in LeaseDialect from db's driver
 // type, for the common zero-config case where the caller did not pass
 // WithDialect (ADR 0010 D3). It reflects on the value returned by the stdlib
 // driver.Driver accessor — it imports NO SQL driver, so the "core imports no
@@ -24,7 +24,7 @@ import (
 // pass WithDialect. Auto-detect is heuristic (a Postgres-wire derivative with
 // different SKIP LOCKED/RETURNING semantics is mis-detected as vanilla
 // Postgres); WithDialect is the only guaranteed-correct path.
-func resolveDialect(db *stdsql.DB) (Dialect, error) {
+func resolveDialect(db *stdsql.DB) (LeaseDialect, error) {
 	drv := db.Driver()
 	rt := reflect.TypeOf(drv)
 

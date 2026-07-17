@@ -30,7 +30,7 @@ type OutboundSuite struct {
 	suite.Suite
 	engine  engine
 	db      *sql.DB
-	dialect msginsql.Dialect
+	dialect msginsql.LeaseDialect
 	counter atomic.Int64
 }
 

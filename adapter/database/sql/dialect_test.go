@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestDialectMethodsRejectInvalidTable verifies every Dialect method (on BOTH
+// TestDialectMethodsRejectInvalidTable verifies every LeaseDialect method (on BOTH
 // built-in dialects) validates its table identifier up front and returns
 // ErrInvalidTableName before touching the database. Validation is the first
 // statement of each method — for MySQL's Claim it precedes even the
@@ -22,46 +22,46 @@ func TestDialectMethodsRejectInvalidTable(t *testing.T) {
 
 	type testCase struct {
 		name string
-		call func(d msginsql.Dialect) error
+		call func(d msginsql.LeaseDialect) error
 	}
 
 	cases := []testCase{
 		{
 			name: "Claim",
-			call: func(d msginsql.Dialect) error {
+			call: func(d msginsql.LeaseDialect) error {
 				_, err := d.Claim(t.Context(), nil, badTable, 1, "w", time.Minute)
 				return err
 			},
 		},
 		{
 			name: "Ack",
-			call: func(d msginsql.Dialect) error {
+			call: func(d msginsql.LeaseDialect) error {
 				_, err := d.Ack(t.Context(), nil, badTable, 1, "w", 1)
 				return err
 			},
 		},
 		{
 			name: "Nack",
-			call: func(d msginsql.Dialect) error {
+			call: func(d msginsql.LeaseDialect) error {
 				_, err := d.Nack(t.Context(), nil, badTable, 1, "w", 1, time.Second)
 				return err
 			},
 		},
 		{
 			name: "Insert",
-			call: func(d msginsql.Dialect) error {
+			call: func(d msginsql.LeaseDialect) error {
 				return d.Insert(t.Context(), nil, badTable, "m", []byte("{}"), []byte("p"), 0)
 			},
 		},
 		{
 			name: "EnsureSchema",
-			call: func(d msginsql.Dialect) error {
+			call: func(d msginsql.LeaseDialect) error {
 				return d.EnsureSchema(t.Context(), nil, badTable)
 			},
 		},
 		{
 			name: "SchemaExists",
-			call: func(d msginsql.Dialect) error {
+			call: func(d msginsql.LeaseDialect) error {
 				_, err := d.SchemaExists(t.Context(), nil, badTable)
 				return err
 			},
@@ -70,7 +70,7 @@ func TestDialectMethodsRejectInvalidTable(t *testing.T) {
 
 	dialects := []struct {
 		name string
-		d    msginsql.Dialect
+		d    msginsql.LeaseDialect
 	}{
 		{"postgres", msginsql.PostgresDialect()},
 		{"mysql", msginsql.MySQLDialect()},
