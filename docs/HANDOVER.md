@@ -5,16 +5,16 @@
 > `docs/plans/006-sql-engine-dialect-split.md`, and `docs/RELEASE.md`. Audit records:
 > `.superpowers/sdd/plan-006-audit-round-{1,2}.md` (gitignored). Per-task SDD ledger: `.superpowers/sdd/progress.md`.
 
-_Updated: **Plan 006 (increment A — sql engine/dialect module split) is COMPLETE, whole-branch-gated, and
-pushed to `origin/feat/poller-sql-adapter` (@ `8f419c7`) for MR review** — the PR itself still needs opening
-(`gh` was unauthenticated; see §5.1). NOT merged to `main` (per the session directive). Next increments:
-B (SQLite, ADR 0012 + Plan 007) → resume Plan 005 Task 11 (docs/examples)._
+_Updated: **Plan 005 (Tasks 1–10) + Plan 006 (increment A — sql engine/dialect module split) are MERGED to
+`main` and pushed** (`origin/main` @ `83beb34`, fast-forwarded from `86ffa11`). Whole-branch-gated before the
+merge. Next increments: B (SQLite, ADR 0012 + Plan 007) → resume **Plan 005 Task 11** (docs/examples — the only
+Plan-005 task still outstanding). Start each new increment from a fresh branch off `main`._
 
 ## 1. Objective & roadmap position
 
-`msgin` (`github.com/kartaladev/msgin`) — Go 1.25 EIP library, minimal deps. Branch `feat/poller-sql-adapter`
-carries **Plan 005 (Poller + sql adapter, Tasks 1–10)** and now **Plan 006 (increment A, complete)**. `main` is
-at `86ffa116` (Plans 001–004). The branch is pushed for the user's GitHub MR; do NOT ff-`main` without approval.
+`msgin` (`github.com/kartaladev/msgin`) — Go 1.25 EIP library, minimal deps. `main` is now at `83beb34`:
+**Plans 001–004** + **Plan 005 (Poller + sql adapter, Tasks 1–10)** + **Plan 006 (sql engine/dialect split,
+increment A)** all landed. Plan 005 **Task 11** (docs/examples) is the only outstanding Plan-005 work.
 
 ## 2. What Plan 006 delivered (Structure Z — 5 modules, driver-free root)
 
@@ -60,11 +60,9 @@ vulnerabilities.
 
 ## 5. Next actions
 
-1. **Open the PR, then await the user's MR review.** The branch IS pushed (`origin/feat/poller-sql-adapter` @
-   `8f419c7`) but the PR was NOT created — `gh` is unauthenticated in the session. Create it once `gh auth login`
-   is done (`gh pr create --base main --head feat/poller-sql-adapter`) or via
-   `https://github.com/kartaladev/msgin/compare/main...feat/poller-sql-adapter`. Address MR feedback on-branch.
-   Do NOT ff-`main` without approval.
+1. **Merged.** Plan 005+006 are on `origin/main` @ `83beb34`. The `feat/poller-sql-adapter` branch is merged;
+   delete it when convenient (`git branch -d feat/poller-sql-adapter` + `git push origin --delete
+   feat/poller-sql-adapter`). Start increment B from a fresh branch off `main`.
 2. **Increment B — SQLite** (spec 002 §7): brainstorm → update spec → write ADR 0012 + Plan 007 → adversarial
    audit → SDD. Pure-Go `modernc.org/sqlite` (cgo-free, no Docker); lease-only (`sqlite.LeaseDialect()` does NOT
    implement `LockDialect` → `ErrLockStrategyUnsupported`); inbox via `ON CONFLICT … RETURNING`. Adds a `sqlite`
