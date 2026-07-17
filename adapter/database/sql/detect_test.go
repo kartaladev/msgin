@@ -26,12 +26,18 @@ const fakeDriverName = "msgin-detect-fake"
 
 func init() { sql.Register(fakeDriverName, fakeDriver{}) }
 
-// openDB opens a *sql.DB on driverName WITHOUT connecting (sql.Open is lazy),
-// closing it via t.Cleanup so the connectionOpener goroutine does not outlive
-// the test (goleak).
+// openDB opens a *sql.DB on driverName WITHOUT connecting (sql.Open is lazy for
+// the connection), closing it via t.Cleanup so the connectionOpener goroutine
+// does not outlive the test (goleak). The DSN is only parsed, never dialed:
+// go-sql-driver/mysql validates DSN shape eagerly in Open, so the "mysql" driver
+// needs a well-formed (but unreachable) DSN, whereas pgx/fake accept any string.
 func openDB(t *testing.T, driverName string) *sql.DB {
 	t.Helper()
-	db, err := sql.Open(driverName, "unused-dsn")
+	dsn := "unused-dsn"
+	if driverName == "mysql" {
+		dsn = "user:pass@tcp(127.0.0.1:3306)/db"
+	}
+	db, err := sql.Open(driverName, dsn)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
 	return db
@@ -76,6 +82,18 @@ func TestNewPollingSource_ConstructionAndDetection(t *testing.T) {
 		{
 			name:  "pgx driver auto-detects a dialect",
 			db:    func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
+			table: "msgs",
+			assert: func(t *testing.T, src *msginsql.Source, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, src)
+			},
+		},
+		{
+			// The go-sql-driver/mysql driver's type PkgPath carries the "mysql"
+			// token, so auto-detect resolves MySQLDialect. sql.Open is lazy — no
+			// connection is made; resolveDialect only reflects on db.Driver().
+			name:  "mysql driver auto-detects a dialect",
+			db:    func(t *testing.T) *sql.DB { return openDB(t, "mysql") },
 			table: "msgs",
 			assert: func(t *testing.T, src *msginsql.Source, err error) {
 				require.NoError(t, err)

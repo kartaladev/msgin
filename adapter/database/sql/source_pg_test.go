@@ -71,22 +71,31 @@ func newRecorder() (*slog.Logger, *syncBuffer) {
 
 // ---- suite --------------------------------------------------------------
 
-// SourceSuite provisions one PostgreSQL container for the whole suite and
+// SourceSuite provisions one container per engine for the whole suite and
 // exercises the lease/claim Source end-to-end through the real msgin runtime
-// (NewConsumer + Run). Each test uses a freshly-named, freshly-provisioned
-// table so cases stay isolated.
+// (NewConsumer + Run). TestSourceSuite runs it once per engine (postgres, mysql)
+// so the SAME end-to-end assertions prove the Source works over both dialects.
+// Each test uses a freshly-named, freshly-provisioned table so cases stay
+// isolated. The Source auto-detects the dialect from the per-engine driver.
 type SourceSuite struct {
 	suite.Suite
+	engine  engine
 	db      *sql.DB
 	dialect msginsql.Dialect
 	counter atomic.Int64
 }
 
-func TestSourceSuite(t *testing.T) { suite.Run(t, new(SourceSuite)) }
+func TestSourceSuite(t *testing.T) {
+	for _, e := range engines {
+		t.Run(e.name, func(t *testing.T) {
+			suite.Run(t, &SourceSuite{engine: e})
+		})
+	}
+}
 
 func (s *SourceSuite) SetupSuite() {
-	s.db = RunTestDatabase(s.T())
-	s.dialect = msginsql.PostgresDialect()
+	s.db = s.engine.openDB(s.T())
+	s.dialect = s.engine.dialect
 }
 
 // freshTable returns a unique, schema-applied table name for a single test.
@@ -111,7 +120,7 @@ func (s *SourceSuite) insertJSON(ctx context.Context, table, id string, v any) {
 // rowCount returns the number of rows in table.
 func (s *SourceSuite) rowCount(ctx context.Context, table string) int {
 	var n int
-	require.NoError(s.T(), s.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT count(*) FROM %q`, table)).Scan(&n))
+	require.NoError(s.T(), s.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT count(*) FROM %s`, s.engine.quote(table))).Scan(&n))
 	return n
 }
 
@@ -326,11 +335,14 @@ func (s *SourceSuite) TestCorruptHeadersRowSkipped() {
 	t := s.T()
 	table := s.freshTable(ctx)
 
-	// Raw INSERT of a JSON array into the JSONB headers column: valid JSONB (so
-	// the DB accepts it), but DecodeHeaders cannot unmarshal it into a
-	// map[string]any — the defensive corrupt/foreign-row path.
+	// Raw INSERT of a JSON array into the JSON/JSONB headers column: valid JSON
+	// (so the DB accepts it), but DecodeHeaders cannot unmarshal it into a
+	// map[string]any — the defensive corrupt/foreign-row path. visible_after uses
+	// the engine's UTC-now expression so the row is immediately claimable under
+	// the dialect's own (UTC) visibility predicate.
 	_, err := s.db.ExecContext(ctx,
-		fmt.Sprintf(`INSERT INTO %q (msg_id, headers, payload, visible_after) VALUES ($1, $2, $3, now())`, table),
+		fmt.Sprintf(`INSERT INTO %s (msg_id, headers, payload, visible_after) VALUES (%s, %s, %s, %s)`,
+			s.engine.quote(table), s.engine.ph(1), s.engine.ph(2), s.engine.ph(3), s.engine.nowExpr()),
 		"corrupt-1", `[1,2,3]`, []byte(`"x"`),
 	)
 	require.NoError(t, err)
@@ -352,7 +364,8 @@ func (s *SourceSuite) TestCorruptHeadersRowSkipped() {
 		futureVisible bool
 	)
 	require.NoError(t, s.db.QueryRowContext(ctx,
-		fmt.Sprintf(`SELECT locked_at, visible_after > now() FROM %q WHERE msg_id = $1`, table), "corrupt-1").
+		fmt.Sprintf(`SELECT locked_at, visible_after > %s FROM %s WHERE msg_id = %s`,
+			s.engine.nowExpr(), s.engine.quote(table), s.engine.ph(1)), "corrupt-1").
 		Scan(&lockedAt, &futureVisible))
 	require.False(t, lockedAt.Valid, "the skipped row's lease must be released")
 	require.True(t, futureVisible, "the corrupt row must be penalized into the future, not re-claimable now")
@@ -398,7 +411,18 @@ func (s *SourceSuite) TestNoGoroutineLeakAfterCleanRun() {
 
 	require.ErrorIs(t, s.runUntil(ctx, consumer, done, 30*time.Second), context.Canceled)
 
-	goleak.VerifyNone(t, baseline)
+	opts := []goleak.Option{baseline}
+	if s.engine.isMySQL() {
+		// go-sql-driver/mysql starts a per-connection context-watcher goroutine
+		// that lives as long as its pooled connection. msgin does NOT (and must
+		// not) close the caller-owned *sql.DB pool on Run exit, and the pool may
+		// open connections during Run that outlive the baseline snapshot — so this
+		// watcher is driver connection-pool plumbing, not a msgin leak. Ignore it
+		// precisely (a real leaked msgin poll/worker/sweep goroutine is still
+		// caught by the baseline), mirroring the TestMain container-plumbing guard.
+		opts = append(opts, goleak.IgnoreAnyFunction("github.com/go-sql-driver/mysql.(*mysqlConn).startWatcher.func1"))
+	}
+	goleak.VerifyNone(t, opts...)
 }
 
 // TestNackClosureRequeueFalseCollapsesToImmediate proves the D4 contract on the
@@ -505,7 +529,7 @@ func (s *SourceSuite) TestWithLockedByStampsOwner() {
 
 	var lockedBy string
 	require.NoError(t, s.db.QueryRowContext(ctx,
-		fmt.Sprintf(`SELECT locked_by FROM %q WHERE msg_id = $1`, table), "owned-1").Scan(&lockedBy))
+		fmt.Sprintf(`SELECT locked_by FROM %s WHERE msg_id = %s`, s.engine.quote(table), s.engine.ph(1)), "owned-1").Scan(&lockedBy))
 	require.Equal(t, owner, lockedBy, "WithLockedBy must stamp the lease owner")
 
 	// The fenced Ack under the same owner settles cleanly.

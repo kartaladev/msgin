@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"unicode"
 )
 
 // resolveDialect best-effort auto-detects a built-in Dialect from db's driver
@@ -13,11 +14,14 @@ import (
 // driver.Driver accessor — it imports NO SQL driver, so the "core imports no
 // driver" rule (ADR 0003) holds.
 //
-// Detection is a substring match on the driver's package path (or, as a
-// fallback, its type name): "pq"/"pgx"/"postgres" -> PostgresDialect(). The
-// MySQL branch is added in a later increment. A non-matching driver returns
-// ErrDialectUndetected naming the driver type, telling the caller to pass
-// WithDialect. Auto-detect is heuristic (a Postgres-wire derivative with
+// Detection tokenizes the driver's package path (or, as a fallback, its type
+// name) into identifier segments and matches a segment EXACTLY against a known
+// marker: "pq"/"pgx"/"postgres"/"postgresql" -> PostgresDialect();
+// "mysql"/"mariadb" -> MySQLDialect(). Matching whole segments (not a loose
+// substring) avoids a false positive from an unrelated path that merely contains
+// "pq"/"mysql" as a substring (e.g. ".../superpq/..."). A non-matching driver
+// returns ErrDialectUndetected naming the driver type, telling the caller to
+// pass WithDialect. Auto-detect is heuristic (a Postgres-wire derivative with
 // different SKIP LOCKED/RETURNING semantics is mis-detected as vanilla
 // Postgres); WithDialect is the only guaranteed-correct path.
 func resolveDialect(db *stdsql.DB) (Dialect, error) {
@@ -26,7 +30,7 @@ func resolveDialect(db *stdsql.DB) (Dialect, error) {
 
 	// The driver is typically a pointer (e.g. *stdlib.Driver for pgx), and a
 	// pointer type has an empty PkgPath, so dereference to the named element
-	// type whose package path carries the "pgx"/"pq" marker.
+	// type whose package path carries the "pgx"/"pq"/"mysql" marker.
 	et := rt
 	for et != nil && et.Kind() == reflect.Ptr {
 		et = et.Elem()
@@ -41,17 +45,29 @@ func resolveDialect(db *stdsql.DB) (Dialect, error) {
 	if haystack == "" && rt != nil {
 		haystack = rt.String()
 	}
-	lower := strings.ToLower(haystack)
 
-	switch {
-	case strings.Contains(lower, "pgx"),
-		strings.Contains(lower, "postgres"),
-		strings.Contains(lower, "pq"):
-		return PostgresDialect(), nil
-	default:
-		return nil, fmt.Errorf("%w: driver type %s; pass WithDialect to select one explicitly",
-			ErrDialectUndetected, driverTypeName(rt))
+	for _, tok := range driverTokens(haystack) {
+		switch tok {
+		case "pgx", "pq", "postgres", "postgresql":
+			return PostgresDialect(), nil
+		case "mysql", "mariadb":
+			return MySQLDialect(), nil
+		}
 	}
+	return nil, fmt.Errorf("%w: driver type %s; pass WithDialect to select one explicitly",
+		ErrDialectUndetected, driverTypeName(rt))
+}
+
+// driverTokens splits a driver package path or type name into lowercase
+// identifier segments on any non-alphanumeric boundary ("/", ".", "*", "-"),
+// so a marker matches a whole segment rather than an arbitrary substring. E.g.
+// "github.com/jackc/pgx/v5/stdlib" -> [..., "pgx", "v5", "stdlib"];
+// "github.com/lib/pq" -> [..., "lib", "pq"]; "*mysql.MySQLDriver" ->
+// ["mysql", "mysqldriver"].
+func driverTokens(s string) []string {
+	return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
 }
 
 // driverTypeName renders a driver type for the ErrDialectUndetected message,

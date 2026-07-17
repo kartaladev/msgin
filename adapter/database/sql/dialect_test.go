@@ -8,11 +8,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestDialectMethodsRejectInvalidTable verifies every Dialect method validates
-// its table identifier up front and returns ErrInvalidTableName before touching
-// the database. Validation is the first statement of each method, so the nil
-// Querier below is never dereferenced — the reject branch returns first. This
-// is the typed-error surface the CLAUDE.md coverage gate requires to be tested.
+// TestDialectMethodsRejectInvalidTable verifies every Dialect method (on BOTH
+// built-in dialects) validates its table identifier up front and returns
+// ErrInvalidTableName before touching the database. Validation is the first
+// statement of each method — for MySQL's Claim it precedes even the
+// transaction-capability check — so the nil Querier below is never dereferenced:
+// the reject branch returns first. This is the typed-error surface the CLAUDE.md
+// coverage gate requires to be tested, per dialect.
 func TestDialectMethodsRejectInvalidTable(t *testing.T) {
 	t.Parallel()
 
@@ -66,11 +68,21 @@ func TestDialectMethodsRejectInvalidTable(t *testing.T) {
 		},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			err := tc.call(msginsql.PostgresDialect())
-			require.ErrorIs(t, err, msginsql.ErrInvalidTableName)
-		})
+	dialects := []struct {
+		name string
+		d    msginsql.Dialect
+	}{
+		{"postgres", msginsql.PostgresDialect()},
+		{"mysql", msginsql.MySQLDialect()},
+	}
+
+	for _, dl := range dialects {
+		for _, tc := range cases {
+			t.Run(dl.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				err := tc.call(dl.d)
+				require.ErrorIs(t, err, msginsql.ErrInvalidTableName)
+			})
+		}
 	}
 }

@@ -22,40 +22,47 @@ const (
 	longLeaseTTL = 5 * time.Minute
 )
 
-// PostgresDialectSuite provisions one PostgreSQL container for the whole suite
-// (per use-testcontainers) and exercises PostgresDialect() against it. Each
-// test method uses a freshly-named table so cases stay isolated.
-type PostgresDialectSuite struct {
+// DialectSuite provisions one container per engine for the whole suite (per
+// use-testcontainers) and exercises that engine's built-in Dialect against it.
+// TestDialectSuite runs it once per engine (postgres, mysql) so the SAME
+// behavior assertions prove the Dialect abstraction holds across both. Each test
+// method uses a freshly-named table so cases stay isolated.
+type DialectSuite struct {
 	suite.Suite
+	engine  engine
 	db      *sql.DB
 	dialect msginsql.Dialect
 	counter atomic.Int64
 }
 
-func TestPostgresDialectSuite(t *testing.T) {
-	suite.Run(t, new(PostgresDialectSuite))
+func TestDialectSuite(t *testing.T) {
+	for _, e := range engines {
+		t.Run(e.name, func(t *testing.T) {
+			suite.Run(t, &DialectSuite{engine: e})
+		})
+	}
 }
 
-func (s *PostgresDialectSuite) SetupSuite() {
-	s.db = RunTestDatabase(s.T())
-	s.dialect = msginsql.PostgresDialect()
+func (s *DialectSuite) SetupSuite() {
+	s.db = s.engine.openDB(s.T())
+	s.dialect = s.engine.dialect
 }
 
 // freshTable returns a unique, schema-applied table name for a single test.
-func (s *PostgresDialectSuite) freshTable(ctx context.Context) string {
+func (s *DialectSuite) freshTable(ctx context.Context) string {
 	name := fmt.Sprintf("msgin_msgs_%d", s.counter.Add(1))
 	require.NoError(s.T(), s.dialect.EnsureSchema(ctx, s.db, name))
 	return name
 }
 
 // insert frames empty headers and inserts one immediately-visible message.
-func (s *PostgresDialectSuite) insert(ctx context.Context, table, msgID string, payload []byte) {
+func (s *DialectSuite) insert(ctx context.Context, table, msgID string, payload []byte) {
 	headers, err := msginsql.EncodeHeaders(msgin.NewHeaders(map[string]any{msgin.HeaderID: msgID}))
 	require.NoError(s.T(), err)
 	require.NoError(s.T(), s.dialect.Insert(ctx, s.db, table, msgID, headers, payload, 0))
 }
 
-func (s *PostgresDialectSuite) TestSchemaExistsAndEnsureSchemaIdempotent() {
+func (s *DialectSuite) TestSchemaExistsAndEnsureSchemaIdempotent() {
 	ctx := s.T().Context()
 	t := s.T()
 
@@ -75,16 +82,18 @@ func (s *PostgresDialectSuite) TestSchemaExistsAndEnsureSchemaIdempotent() {
 	require.NoError(t, s.dialect.EnsureSchema(ctx, s.db, name), "EnsureSchema must be idempotent")
 }
 
-func (s *PostgresDialectSuite) TestReferenceDDLApplies() {
+func (s *DialectSuite) TestReferenceDDLApplies() {
 	ctx := s.T().Context()
 	t := s.T()
 
 	name := fmt.Sprintf("msgin_refddl_%d", s.counter.Add(1))
-	ddl, err := msginsql.PostgresDDL(name)
+	ddl, err := s.engine.referenceDDL(name)
 	require.NoError(t, err)
 
-	// The reference DDL is two statements; apply each (pgx's extended protocol
-	// rejects multi-statement Exec), mirroring what a migration tool does.
+	// The reference DDL is one or two statements (Postgres: table + index; MySQL:
+	// a single CREATE TABLE with inline index); apply each on its own, mirroring
+	// what a migration tool does (pgx's extended protocol rejects multi-statement
+	// Exec).
 	for _, stmt := range splitStatements(ddl) {
 		_, err := s.db.ExecContext(ctx, stmt)
 		require.NoError(t, err, "apply reference DDL statement")
@@ -95,7 +104,7 @@ func (s *PostgresDialectSuite) TestReferenceDDLApplies() {
 	require.True(t, exists)
 }
 
-func (s *PostgresDialectSuite) TestClaimBumpsCountsAndLocks() {
+func (s *DialectSuite) TestClaimBumpsCountsAndLocks() {
 	ctx := s.T().Context()
 	t := s.T()
 
@@ -123,7 +132,7 @@ func (s *PostgresDialectSuite) TestClaimBumpsCountsAndLocks() {
 	require.Empty(t, rows, "a live-leased row is not re-claimable")
 }
 
-func (s *PostgresDialectSuite) TestClaimEmptyWhenNoRows() {
+func (s *DialectSuite) TestClaimEmptyWhenNoRows() {
 	ctx := s.T().Context()
 	t := s.T()
 
@@ -133,7 +142,7 @@ func (s *PostgresDialectSuite) TestClaimEmptyWhenNoRows() {
 	require.Empty(t, rows)
 }
 
-func (s *PostgresDialectSuite) TestAckFenced() {
+func (s *DialectSuite) TestAckFenced() {
 	ctx := s.T().Context()
 
 	type testCase struct {
@@ -192,7 +201,7 @@ func (s *PostgresDialectSuite) TestAckFenced() {
 	}
 }
 
-func (s *PostgresDialectSuite) TestNackDelaysVisibility() {
+func (s *DialectSuite) TestNackDelaysVisibility() {
 	ctx := s.T().Context()
 	t := s.T()
 
@@ -223,7 +232,7 @@ func (s *PostgresDialectSuite) TestNackDelaysVisibility() {
 	require.Equal(t, int64(2), rows[0].LeaseEpoch)
 }
 
-func (s *PostgresDialectSuite) TestExpiredLeaseReclaim() {
+func (s *DialectSuite) TestExpiredLeaseReclaim() {
 	ctx := s.T().Context()
 	t := s.T()
 
@@ -252,7 +261,7 @@ func (s *PostgresDialectSuite) TestExpiredLeaseReclaim() {
 	require.Equal(t, int64(2), rows[0].LeaseEpoch, "reclaim bumps lease_epoch")
 }
 
-func (s *PostgresDialectSuite) TestInsertDelayHidesUntilVisible() {
+func (s *DialectSuite) TestInsertDelayHidesUntilVisible() {
 	ctx := s.T().Context()
 	t := s.T()
 

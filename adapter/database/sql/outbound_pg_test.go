@@ -17,25 +17,34 @@ import (
 	"github.com/stretchr/testify/suite"
 )
 
-// OutboundSuite provisions one PostgreSQL container for the whole suite and
+// OutboundSuite provisions one container per engine for the whole suite and
 // exercises the Outbound INSERT adapter end-to-end — as a direct
-// msgin.NewProducer target, paired with a Task-5 Source for the
-// produce/consume round-trip, and as a msgin.RetryPolicy.DeadLetter /
-// msgin.WithInvalidMessageSink target. Each test uses a freshly-named,
-// freshly-provisioned table so cases stay isolated. TestMain (goroutine-leak
-// check) is declared once for the whole package in source_pg_test.go.
+// msgin.NewProducer target, paired with a Source for the produce/consume
+// round-trip, and as a msgin.RetryPolicy.DeadLetter / msgin.WithInvalidMessageSink
+// target. TestOutboundSuite runs it once per engine (postgres, mysql) so the SAME
+// assertions prove the Outbound works over both dialects. Each test uses a
+// freshly-named, freshly-provisioned table so cases stay isolated. TestMain
+// (goroutine-leak check) is declared once for the whole package in
+// source_pg_test.go.
 type OutboundSuite struct {
 	suite.Suite
+	engine  engine
 	db      *sql.DB
 	dialect msginsql.Dialect
 	counter atomic.Int64
 }
 
-func TestOutboundSuite(t *testing.T) { suite.Run(t, new(OutboundSuite)) }
+func TestOutboundSuite(t *testing.T) {
+	for _, e := range engines {
+		t.Run(e.name, func(t *testing.T) {
+			suite.Run(t, &OutboundSuite{engine: e})
+		})
+	}
+}
 
 func (s *OutboundSuite) SetupSuite() {
-	s.db = RunTestDatabase(s.T())
-	s.dialect = msginsql.PostgresDialect()
+	s.db = s.engine.openDB(s.T())
+	s.dialect = s.engine.dialect
 }
 
 // freshTable returns a unique, schema-applied table name for a single test.
@@ -65,7 +74,8 @@ func (s *OutboundSuite) rowByMsgID(ctx context.Context, table, msgID string) (he
 	var h string
 	var p []byte
 	err := s.db.QueryRowContext(ctx,
-		fmt.Sprintf(`SELECT headers::text, payload FROM %q WHERE msg_id = $1`, table), msgID).Scan(&h, &p)
+		fmt.Sprintf(`SELECT %s, payload FROM %s WHERE msg_id = %s`,
+			s.engine.headersTextExpr("headers"), s.engine.quote(table), s.engine.ph(1)), msgID).Scan(&h, &p)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil, false
 	}
@@ -76,7 +86,7 @@ func (s *OutboundSuite) rowByMsgID(ctx context.Context, table, msgID string) (he
 // rowCount returns the number of rows in table.
 func (s *OutboundSuite) rowCount(ctx context.Context, table string) int {
 	var n int
-	require.NoError(s.T(), s.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT count(*) FROM %q`, table)).Scan(&n))
+	require.NoError(s.T(), s.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT count(*) FROM %s`, s.engine.quote(table))).Scan(&n))
 	return n
 }
 

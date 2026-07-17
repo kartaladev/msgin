@@ -1,39 +1,47 @@
 package sql_test
 
-// This helper lives in a _test.go file (not the plain testutils.go the brief
-// names) on purpose: it imports a SQL driver and testcontainers-go, which the
+// These helpers live in a _test.go file (not the plain testutils.go the brief
+// names) on purpose: they import SQL drivers and testcontainers-go, which the
 // msgin dependency policy (ADR 0003) forbids in non-test production code. Go
-// does not force _test.go-only imports onto consumers, so keeping the helper
+// does not force _test.go-only imports onto consumers, so keeping the helpers
 // here keeps those heavy deps out of every consumer's build while still making
-// RunTestDatabase reachable from sibling _test packages.
+// RunTestDatabase / RunTestMySQL reachable from sibling _test packages.
 
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 	"time"
 
 	// Registers the "pgx" database/sql driver. pgx (jackc/pgx/v5) is chosen
 	// over lib/pq because it is the modern, actively-maintained PostgreSQL
-	// driver, and its driver type PkgPath contains "pgx" — the substring
-	// Task 5's dialect auto-detect matches — so tests exercise the same
-	// detection path production callers will hit.
+	// driver, and its driver type PkgPath contains "pgx" — the token the
+	// dialect auto-detect matches — so tests exercise the same detection path
+	// production callers will hit.
 	_ "github.com/jackc/pgx/v5/stdlib"
+	// Registers the "mysql" database/sql driver (go-sql-driver/mysql). Its
+	// driver type PkgPath contains the "mysql" token, so the MySQL auto-detect
+	// path is exercised the same way a production caller hits it.
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
+	tcmysql "github.com/testcontainers/testcontainers-go/modules/mysql"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
+
+	msginsql "github.com/kartaladev/msgin/adapter/database/sql"
 )
 
-// testConfig holds RunTestDatabase options.
+// testConfig holds RunTestDatabase / RunTestMySQL options.
 type testConfig struct {
 	image string
 }
 
-// TestOption customizes RunTestDatabase.
+// TestOption customizes a RunTest* helper.
 type TestOption func(*testConfig)
 
-// WithImage overrides the pinned PostgreSQL image.
+// WithImage overrides the pinned container image.
 func WithImage(image string) TestOption {
 	return func(c *testConfig) { c.image = image }
 }
@@ -88,4 +96,130 @@ func RunTestDatabase(t *testing.T, opts ...TestOption) *sql.DB {
 	require.NoError(t, db.PingContext(pingCtx), "ping postgres database")
 
 	return db
+}
+
+// RunTestMySQL starts a throwaway MySQL container and returns an open *sql.DB
+// (go-sql-driver/mysql) pointed at it. The container and connection are torn
+// down via t.Cleanup. parseTime=true is set so DATETIME(6) columns scan back
+// into time.Time / sql.NullTime (a test probe needs it); the dialect itself
+// never scans a timestamp. It is the single MySQL provisioning helper for this
+// package's tests (per the use-testcontainers skill), the MySQL peer of
+// RunTestDatabase.
+func RunTestMySQL(t *testing.T, opts ...TestOption) *sql.DB {
+	t.Helper()
+
+	// MySQL 8.0.40: SELECT ... FOR UPDATE SKIP LOCKED (8.0.1+) and expression
+	// column DEFAULT (UTC_TIMESTAMP(6)) (8.0.13+) are both required by the
+	// dialect, and are available here.
+	cfg := &testConfig{image: "mysql:8.0.40"}
+	for _, o := range opts {
+		o(cfg)
+	}
+
+	ctx := t.Context()
+
+	container, err := tcmysql.Run(ctx, cfg.image,
+		tcmysql.WithDatabase("msgin"),
+		tcmysql.WithUsername("msgin"),
+		tcmysql.WithPassword("msgin"),
+		testcontainers.WithWaitStrategy(
+			wait.ForLog("port: 3306  MySQL Community Server").
+				WithStartupTimeout(120*time.Second),
+		),
+	)
+	require.NoError(t, err, "start mysql test container")
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := container.Terminate(cleanupCtx); err != nil {
+			t.Errorf("terminate mysql test container: %v", err)
+		}
+	})
+
+	dsn, err := container.ConnectionString(ctx, "parseTime=true")
+	require.NoError(t, err, "mysql connection string")
+
+	db, err := sql.Open("mysql", dsn)
+	require.NoError(t, err, "open mysql database")
+	t.Cleanup(func() { _ = db.Close() })
+
+	// The wait-for-log strategy can fire a moment before the server accepts
+	// connections, so ping with a short retry loop rather than a single shot.
+	pingCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	require.Eventually(t, func() bool {
+		return db.PingContext(pingCtx) == nil
+	}, 60*time.Second, 500*time.Millisecond, "ping mysql database")
+
+	return db
+}
+
+// engine is one database engine the behavior suites run against: its built-in
+// Dialect and the helper that provisions a throwaway container for it. The suites
+// iterate over `engines` so the SAME behavior assertions run on both PostgreSQL
+// and MySQL, proving the Dialect abstraction holds across engines.
+type engine struct {
+	name    string
+	dialect msginsql.Dialect
+	openDB  func(t *testing.T, opts ...TestOption) *sql.DB
+}
+
+// engines is the dialect-parameterized table every behavior suite runs over.
+var engines = []engine{
+	{name: "postgres", dialect: msginsql.PostgresDialect(), openDB: RunTestDatabase},
+	{name: "mysql", dialect: msginsql.MySQLDialect(), openDB: RunTestMySQL},
+}
+
+// isMySQL reports whether this engine speaks MySQL SQL, so a test helper can pick
+// the right identifier quoting / placeholder / time expression.
+func (e engine) isMySQL() bool { return e.name == "mysql" }
+
+// quote wraps a raw identifier for the engine (backticks for MySQL, double
+// quotes for Postgres) — used by the raw SQL the test helpers issue directly
+// (row counts, probes), NOT by the dialect (which quotes its own).
+func (e engine) quote(ident string) string {
+	if e.isMySQL() {
+		return "`" + ident + "`"
+	}
+	return `"` + ident + `"`
+}
+
+// ph renders the nth bind placeholder for the engine ("?" for MySQL, "$n" for
+// Postgres).
+func (e engine) ph(n int) string {
+	if e.isMySQL() {
+		return "?"
+	}
+	return fmt.Sprintf("$%d", n)
+}
+
+// nowExpr is the engine's current-UTC-time SQL expression. MySQL persists all
+// timestamps as UTC via UTC_TIMESTAMP(6), so a test-side comparison MUST use the
+// same expression (not NOW(), which is session-timezone dependent) to match the
+// dialect's own predicates. Postgres uses now() (a timestamptz, absolute).
+func (e engine) nowExpr() string {
+	if e.isMySQL() {
+		return "UTC_TIMESTAMP(6)"
+	}
+	return "now()"
+}
+
+// headersTextExpr is the SELECT expression that returns the framed headers as
+// clean text bytes for the engine. Postgres casts jsonb to text (avoids the
+// binary-format prefix); MySQL's JSON column already returns text bytes.
+func (e engine) headersTextExpr(col string) string {
+	if e.isMySQL() {
+		return col
+	}
+	return col + "::text"
+}
+
+// referenceDDL returns the engine's reference DDL for table (PostgresDDL /
+// MySQLDDL), so TestReferenceDDLApplies drives the right builder.
+func (e engine) referenceDDL(table string) (string, error) {
+	if e.isMySQL() {
+		return msginsql.MySQLDDL(table)
+	}
+	return msginsql.PostgresDDL(table)
 }
