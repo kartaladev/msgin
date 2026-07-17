@@ -13,6 +13,7 @@ publishes a GitHub Release with auto-generated notes, nothing is compiled or upl
 | harness | `github.com/kartaladev/msgin/adapter/database/sql/harness` | `adapter/database/sql/harness/go.mod` |
 | postgres | `github.com/kartaladev/msgin/adapter/database/sql/postgres` | `adapter/database/sql/postgres/go.mod` |
 | mysql | `github.com/kartaladev/msgin/adapter/database/sql/mysql` | `adapter/database/sql/mysql/go.mod` |
+| sqlite | `github.com/kartaladev/msgin/adapter/database/sql/sqlite` | `adapter/database/sql/sqlite/go.mod` |
 | dbtest (runner, never published/tagged — nobody imports it) | `github.com/kartaladev/msgin/adapter/database/sql/dbtest` | `adapter/database/sql/dbtest/go.mod` |
 
 `dbtest` is a leaf test-only runner (spec 002 §4, "Structure Z") that a real consumer never imports, so it is
@@ -29,19 +30,18 @@ published tag to pin to. Hence the fixed order:
 
 1. **Tag the root module first:** `git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z`. The `release`
    workflow fires on the `v[0-9]+.[0-9]+.[0-9]+*` tag pattern and publishes the GitHub Release for the engine.
-2. **For each dialect/harness module being released** (`harness`, `postgres`, `mysql` — `sqlite` joins this
-   list in increment B, ADR 0012):
+2. **For each dialect/harness module being released** (`harness`, `postgres`, `mysql`, `sqlite`):
    - Edit that module's `go.mod`: remove the dev-time
      `replace github.com/kartaladev/msgin => ../../../..` line, and change
      `require github.com/kartaladev/msgin v0.0.0` to the pinned, just-published version, e.g.
      `require github.com/kartaladev/msgin vX.Y.Z`.
    - Run `GOWORK=off go mod tidy` inside that module directory and commit the updated `go.mod`/`go.sum`.
    - Tag it with its **module-path-prefixed** SemVer, matching its module path exactly:
-     `git tag -a adapter/database/sql/postgres/vA.B.C -m "postgres vA.B.C"` (same pattern for `mysql` and
-     `harness`), then `git push origin adapter/database/sql/postgres/vA.B.C`.
+     `git tag -a adapter/database/sql/postgres/vA.B.C -m "postgres vA.B.C"` (same pattern for `mysql`,
+     `sqlite`, and `harness`), then `git push origin adapter/database/sql/postgres/vA.B.C`.
    - The `release` workflow's module-prefixed tag patterns
-     (`adapter/database/sql/{postgres,mysql,harness}/v[0-9]+.[0-9]+.[0-9]+*`) pick this up and publish a
-     GitHub Release titled with the module path and version.
+     (`adapter/database/sql/{postgres,mysql,sqlite,harness}/v[0-9]+.[0-9]+.[0-9]+*`) pick this up and publish
+     a GitHub Release titled with the module path and version.
 3. A tag with a `-` suffix in its version (e.g. `v0.0.1-rc.1`, `adapter/database/sql/postgres/v0.1.0-rc.1`) is
    published as a **pre-release** — the workflow detects the `-` and passes `--prerelease` to
    `gh release create`.
@@ -55,7 +55,7 @@ convenience of the local `go.work` workspace.
 ## `go.work`
 
 The repo-root `go.work` is **committed** (unlike the historical default of gitignoring it) — it ties the
-5 modules (root + harness + postgres + mysql + dbtest) together for local development, so a contributor gets
+6 modules (root + harness + postgres + mysql + sqlite + dbtest) together for local development, so a contributor gets
 one coherent workspace with `go build ./...` resolving across all of them without hand-editing `replace`
 directives. `go.work.sum` is deliberately **not** committed (still gitignored): it accumulates whatever the
 workspace happens to have built locally (including `dbtest`'s heavy testcontainers/Docker/OTel closure) and is

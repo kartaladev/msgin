@@ -1,7 +1,8 @@
 name: CI
 
 # msgin is a multi-module monorepo (ADR 0003 / ADR 0011): the engine (repo
-# root) plus four sql-adapter modules (harness, postgres, mysql, dbtest). Each
+# root) plus five sql-adapter modules (harness, postgres, mysql, sqlite,
+# dbtest). Each
 # module MUST build and test standalone against its own go.mod, so the
 # per-module jobs below force GOWORK=off (audit F5, spec 002 §8) -- the local
 # go.work workspace is exercised only by the separate `workspace` job.
@@ -38,6 +39,8 @@ jobs:
             dir: adapter/database/sql/postgres
           - name: mysql
             dir: adapter/database/sql/mysql
+          - name: sqlite
+            dir: adapter/database/sql/sqlite
           - name: dbtest
             dir: adapter/database/sql/dbtest
     env:
@@ -82,12 +85,12 @@ jobs:
 
       - name: govulncheck
         working-directory: ${{ matrix.module.dir }}
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: v2.12.2
           working-directory: ${{ matrix.module.dir }}
           args: --timeout=5m
 
@@ -103,7 +106,7 @@ jobs:
     runs-on: ubuntu-latest
     # No GOWORK=off here: this job deliberately lets `go` auto-discover the
     # committed repo-root go.work, proving the workspace itself still resolves
-    # coherently across all 5 modules (spec 002 §8 "one separate
+    # coherently across all 6 modules (spec 002 §8 "one separate
     # workspace-build job for the aggregate").
     steps:
       - uses: actions/checkout@v6
@@ -116,7 +119,7 @@ jobs:
       - name: Build every workspace member
         run: |
           set -e
-          for dir in . adapter/database/sql/harness adapter/database/sql/postgres adapter/database/sql/mysql adapter/database/sql/dbtest; do
+          for dir in . adapter/database/sql/harness adapter/database/sql/postgres adapter/database/sql/mysql adapter/database/sql/sqlite adapter/database/sql/dbtest; do
             echo "== $dir =="
             (cd "$dir" && go build ./...)
           done

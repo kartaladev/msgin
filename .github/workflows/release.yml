@@ -14,6 +14,7 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+*"
       - "adapter/database/sql/postgres/v[0-9]+.[0-9]+.[0-9]+*"
       - "adapter/database/sql/mysql/v[0-9]+.[0-9]+.[0-9]+*"
+      - "adapter/database/sql/sqlite/v[0-9]+.[0-9]+.[0-9]+*"
       - "adapter/database/sql/harness/v[0-9]+.[0-9]+.[0-9]+*"
 
 permissions:
