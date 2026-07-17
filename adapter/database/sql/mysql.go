@@ -246,6 +246,81 @@ func (mysqlDialect) EnsureSchema(ctx context.Context, q Querier, table string) e
 	return nil
 }
 
+// ClaimLock implements LockDialect for MySQL (ADR 0010 D5), the MySQL peer of
+// postgresDialect.ClaimLock. Because MySQL's FOR UPDATE SKIP LOCKED row lock only
+// holds for the life of a transaction, the claim transaction is the SAME one
+// carried to settle: it begins a transaction on ctx, SELECTs one claimable row
+// (LIMIT before FOR UPDATE, the MySQL clause order) and scans it, bumps
+// delivery_count in that transaction, and returns the row with the OPEN
+// transaction carried in LockedRow.Tx. There is no lease-expiry disjunct — the
+// open transaction is the exclusive lock. It returns (nil, nil) when nothing is
+// claimable, rolling the transaction back on that path and on ANY error (no
+// connection leak).
+func (mysqlDialect) ClaimLock(ctx context.Context, q Querier, table, lockedBy string) (*LockedRow, error) {
+	qt, err := mysqlQuoteTable(table)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := beginLockTx(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+
+	selectSQL := fmt.Sprintf(`SELECT id, msg_id, headers, payload, delivery_count
+FROM %[1]s
+WHERE visible_after <= UTC_TIMESTAMP(6) AND locked_at IS NULL
+ORDER BY visible_after
+LIMIT 1
+FOR UPDATE SKIP LOCKED`, qt)
+
+	var lr LockedRow
+	err = tx.QueryRowContext(ctx, selectSQL).Scan(&lr.ID, &lr.MsgID, &lr.Headers, &lr.Payload, &lr.DeliveryCount)
+	if errors.Is(err, stdsql.ErrNoRows) {
+		_ = tx.Rollback() // nothing claimable: release the connection
+		return nil, nil
+	}
+	if err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf("UPDATE %s SET delivery_count = delivery_count + 1 WHERE id = ?", qt), lr.ID); err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	lr.DeliveryCount++ // post-increment, mirroring Postgres
+	lr.Tx = tx
+	return &lr, nil
+}
+
+// AckLock settles lr by deleting its row on the carried transaction and
+// committing (ADR 0010 D5). On any error it rolls back, releasing the connection.
+func (mysqlDialect) AckLock(ctx context.Context, lr *LockedRow, table string) error {
+	qt, err := mysqlQuoteTable(table)
+	if err != nil {
+		_ = lr.Tx.Rollback()
+		return err
+	}
+	return settleLockTx(ctx, lr.Tx, fmt.Sprintf("DELETE FROM %s WHERE id = ?", qt), lr.ID)
+}
+
+// NackLock returns lr to the queue by clearing the lock and pushing
+// visible_after out by delay, then ALWAYS commits (ADR 0010 D5). On an
+// UPDATE/commit error it rolls back, releasing the connection.
+func (mysqlDialect) NackLock(ctx context.Context, lr *LockedRow, table string, delay time.Duration) error {
+	qt, err := mysqlQuoteTable(table)
+	if err != nil {
+		_ = lr.Tx.Rollback()
+		return err
+	}
+	return settleLockTx(ctx, lr.Tx,
+		fmt.Sprintf(`UPDATE %s SET locked_by = NULL, locked_at = NULL,
+  visible_after = DATE_ADD(UTC_TIMESTAMP(6), INTERVAL ? MICROSECOND)
+WHERE id = ?`, qt),
+		delay.Microseconds(), lr.ID)
+}
+
 func (mysqlDialect) SchemaExists(ctx context.Context, q Querier, table string) (bool, error) {
 	// table is a bound parameter here, but validate it anyway so the exported SPI
 	// never runs on an unvalidated identifier.

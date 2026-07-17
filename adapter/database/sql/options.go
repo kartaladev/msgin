@@ -15,9 +15,37 @@ import (
 // invariant (ADR 0010 D4).
 const defaultLeaseTTL = 5 * time.Minute
 
+// Strategy selects how a Source claims and settles rows (ADR 0010 D4/D5). The
+// zero value is StrategyLeaseClaim, so an unset strategy is the safe default.
+type Strategy int
+
+const (
+	// StrategyLeaseClaim (the default) claims rows with a short, committed lease
+	// tx (bumping delivery_count and a fence token) and settles each delivery in
+	// a separate fenced tx. It scales to batches without pinning a connection per
+	// in-flight message; an expired lease is reclaimed by the next poll (the
+	// inlined reaper). See WithLeaseTTL (ADR 0010 D4).
+	StrategyLeaseClaim Strategy = iota
+
+	// StrategyLockForUpdate claims a single row inside a SELECT ... FOR UPDATE
+	// SKIP LOCKED transaction that is CARRIED in the Delivery and owned by the
+	// worker from claim to settle: Ack = DELETE + commit; Nack = clear-lock
+	// UPDATE + commit (always commits — it persists delivery_count++ and releases
+	// the lock; there are no business writes to roll back). A process crash (only)
+	// auto-releases the row via tx rollback — no lease-expiry reaper, no fence
+	// token. It gives stronger crash safety than the lease strategy at the cost of
+	// one pinned pooled connection per in-flight message, so it requires care with
+	// the DB pool topology — see WithStrategy for the mandatory pool invariants.
+	// Requires a Dialect that also implements LockDialect (ErrLockStrategyUnsupported
+	// otherwise); the built-ins satisfy it. Under this strategy WithLeaseTTL is
+	// inert (there is no lease). (ADR 0010 D5.)
+	StrategyLockForUpdate
+)
+
 // config accumulates Option settings before NewPollingSource builds a Source.
 type config struct {
 	dialect     Dialect
+	strategy    Strategy
 	leaseTTL    time.Duration
 	leaseTTLSet bool // distinguishes explicit WithLeaseTTL(0) (rejected) from unset (default)
 	lockedBy    string
@@ -39,6 +67,40 @@ func WithDialect(d Dialect) Option {
 			c.dialect = d
 		}
 	}
+}
+
+// WithStrategy selects the claim/settle strategy (ADR 0010 D4/D5). Unset, it is
+// StrategyLeaseClaim — the default that scales to batches without pinning a
+// connection. Pass StrategyLockForUpdate for stronger crash safety (a crash
+// rolls back the carried FOR UPDATE tx, releasing the row immediately, with no
+// lease-expiry double-processing window). An out-of-range value is a
+// construction error (ErrInvalidStrategy); StrategyLockForUpdate additionally
+// requires the resolved Dialect to implement LockDialect (ErrLockStrategyUnsupported).
+//
+// # Lock strategy: mandatory DB-pool topology (read before choosing it)
+//
+// StrategyLockForUpdate pins ONE pooled connection per in-flight message for the
+// whole message lifetime (claim → settle). Two invariants follow, neither
+// statically enforceable (the Source cannot see the consumer's pool sizing or a
+// sink's separate pool), so both are the caller's responsibility:
+//
+//   - Separate DLQ pool (mandate). On a permanent failure the runtime calls the
+//     DLQ/invalid sink's Send BEFORE it Acks (freeing the claim connection), so a
+//     sink that is itself a sql adapter on the SAME *sql.DB needs an ADDITIONAL
+//     connection while every claim connection is pinned — the divert INSERT then
+//     blocks on the exhausted pool and the flow stalls until the shutdown
+//     deadline. A lock-strategy consumer whose DLQ/invalid sink is a sql adapter
+//     MUST give that sink a SEPARATE *sql.DB (separate pool), or size one shared
+//     pool with headroom poolSize >= maxInFlight + divert-concurrency.
+//   - Pool-coupling. Effective in-flight = min(WithMaxInFlight, WithConcurrency,
+//     poolSize - headroom). If the requested in-flight exceeds the pool, the
+//     poller stalls on an exhausted pool. Pair the lock strategy with
+//     db.SetMaxOpenConns(...), WithPollMaxBatch(1) (the lock claim returns at most
+//     one row regardless), and a separate DLQ pool.
+//
+// WithLeaseTTL is inert under StrategyLockForUpdate (there is no lease).
+func WithStrategy(s Strategy) Option {
+	return func(c *config) { c.strategy = s }
 }
 
 // WithLeaseTTL sets how long a claim's lease is held before it is treated as

@@ -58,8 +58,13 @@ var (
 // (ADR 0010 D7).
 type Source struct {
 	adapterBase
+	strategy Strategy
 	leaseTTL time.Duration
 	lockedBy string
+	// lockDialect is the resolved LockDialect, non-nil only under
+	// StrategyLockForUpdate (asserted at construction). The lease path never
+	// touches it.
+	lockDialect LockDialect
 }
 
 // NewPollingSource builds a lease/claim Source over table on db. It resolves
@@ -84,6 +89,23 @@ func NewPollingSource(db *stdsql.DB, table string, opts ...Option) (*Source, err
 		return nil, err
 	}
 
+	if cfg.strategy != StrategyLeaseClaim && cfg.strategy != StrategyLockForUpdate {
+		return nil, fmt.Errorf("%w: %d", ErrInvalidStrategy, cfg.strategy)
+	}
+
+	// StrategyLockForUpdate requires the resolved Dialect to also satisfy the
+	// segregated LockDialect SPI (ADR 0010 D5). Resolve it once at construction so
+	// pollLock never type-asserts on the hot path and a lease-only dialect fails
+	// fast rather than at first poll.
+	var lockDialect LockDialect
+	if cfg.strategy == StrategyLockForUpdate {
+		ld, ok := base.dialect.(LockDialect)
+		if !ok {
+			return nil, fmt.Errorf("%w: dialect %T", ErrLockStrategyUnsupported, base.dialect)
+		}
+		lockDialect = ld
+	}
+
 	leaseTTL := defaultLeaseTTL
 	if cfg.leaseTTLSet {
 		if cfg.leaseTTL <= 0 {
@@ -99,23 +121,36 @@ func NewPollingSource(db *stdsql.DB, table string, opts ...Option) (*Source, err
 
 	return &Source{
 		adapterBase: base,
+		strategy:    cfg.strategy,
 		leaseTTL:    leaseTTL,
 		lockedBy:    lockedBy,
+		lockDialect: lockDialect,
 	}, nil
 }
 
-// Poll leases up to max claimable rows and returns them as settleable
-// deliveries (msgin.PollingSource). It upholds the Poll contract: at most max
-// deliveries, and none alongside a non-nil error. A claim query error is
-// surfaced as ErrSchemaNotReady iff a follow-up portable probe finds the table
-// missing (a table dropped mid-run is diagnosed clearly, no driver import),
-// otherwise the raw error propagates to the poll-loop backoff.
+// Poll fetches up to max claimable rows as settleable deliveries
+// (msgin.PollingSource), dispatching on the configured Strategy: the default
+// lease/claim path (pollLease) or the lock/FOR UPDATE path (pollLock). Either way
+// it upholds the Poll contract: at most max deliveries, and none alongside a
+// non-nil error (each strategy owns rollback of its claim work on the error
+// path). A claim query error is surfaced as ErrSchemaNotReady iff a follow-up
+// portable probe finds the table missing, otherwise the raw error propagates to
+// the poll-loop backoff.
+func (s *Source) Poll(ctx context.Context, max int) ([]msgin.Delivery, error) {
+	if s.strategy == StrategyLockForUpdate {
+		return s.pollLock(ctx, max)
+	}
+	return s.pollLease(ctx, max)
+}
+
+// pollLease is the lease/claim strategy Poll (ADR 0010 D4): it leases up to max
+// claimable rows in a short committed tx and returns them as fenced deliveries.
 //
 // A row whose framed headers cannot be decoded (a corrupt or foreign row — a
 // defensive case trusted producers do not hit) is logged, has its lease
 // released so at-least-once does not lose it, and is skipped, rather than
 // failing the whole batch.
-func (s *Source) Poll(ctx context.Context, max int) ([]msgin.Delivery, error) {
+func (s *Source) pollLease(ctx context.Context, max int) ([]msgin.Delivery, error) {
 	rows, err := s.dialect.Claim(ctx, s.db, s.table, max, s.lockedBy, s.leaseTTL)
 	if err != nil {
 		return nil, s.classifyQueryErr(ctx, err)
@@ -160,6 +195,92 @@ func (s *Source) Poll(ctx context.Context, max int) ([]msgin.Delivery, error) {
 		})
 	}
 	return out, nil
+}
+
+// pollLock is the lock/FOR UPDATE strategy Poll (ADR 0010 D5). It claims at most
+// ONE row (each in-flight lock message pins one pooled connection), regardless of
+// max — the poll loop releases the surplus credits. The claim tx is begun on a
+// cancellation-DETACHED context (context.WithoutCancel) so graceful shutdown
+// (parent-cancel) does NOT auto-rollback in-flight lock txs before the drain
+// deadline (HIGH 3): the tx lives until the worker settles (Ack/Nack on the
+// runtime's settleCtx) or the drain-deadline Nack closes it.
+//
+// A corrupt/foreign row (undecodable headers) is NackLocked — which commits and
+// closes its carried tx (no connection leak) with an escalating penalty keyed off
+// delivery_count, the same throttle the lease path uses — then skipped (returns
+// empty), never delivered.
+func (s *Source) pollLock(ctx context.Context, max int) ([]msgin.Delivery, error) {
+	// Detached context: the claim tx must survive parent-cancel so in-flight work
+	// finishes within the drain deadline (ADR 0010 D5, HIGH 3). ClaimLock owns
+	// rolling this tx back on any error/empty path (no partial result, no leak).
+	lr, err := s.lockDialect.ClaimLock(context.WithoutCancel(ctx), s.db, s.table, s.lockedBy)
+	if err != nil {
+		return nil, s.classifyQueryErr(ctx, err)
+	}
+	if lr == nil {
+		return nil, nil // nothing claimable (tx already rolled back by ClaimLock)
+	}
+
+	headers, derr := DecodeHeaders(lr.Headers)
+	if derr != nil {
+		// Corrupt/foreign row (defensive): NackLock it to COMMIT/close the carried
+		// tx (never leak the connection) with an escalating penalty so a row that
+		// can never decode is pushed out of the hot claim window instead of churning
+		// the DB / spamming this log. Then skip it (empty batch). Same policy as the
+		// lease path's corrupt-row Nack.
+		penalty := msgin.ExponentialBackoff{
+			Initial: corruptRowInitialBackoff,
+			Max:     corruptRowMaxBackoff,
+			Mult:    2,
+		}.Delay(lr.DeliveryCount - 1) // 0-based: first corrupt claim → Initial
+		s.logger.Error("msgin/sql: skipping row with undecodable headers; penalizing and releasing its lock",
+			"table", s.table, "id", lr.ID, "delivery_count", lr.DeliveryCount, "penalty", penalty, "err", derr)
+		// NackLock runs on the parent poll ctx (not detached/settleCtx) by design:
+		// on shutdown mid-poll the penalty UPDATE rolls back rather than commits,
+		// which is SAFE — the FOR UPDATE lock is released, the delivery_count++ is
+		// reverted, and the row is re-claimable (and re-penalized) next run. No
+		// connection leak, no message loss.
+		if nerr := s.lockDialect.NackLock(ctx, lr, s.table, penalty); nerr != nil {
+			s.logger.Error("msgin/sql: failed to penalize/close the tx on an undecodable lock row",
+				"table", s.table, "id", lr.ID, "err", nerr)
+		}
+		return nil, nil
+	}
+
+	// Reconstruct the persisted envelope verbatim, overlaying the live claim's
+	// delivery_count (same as the lease path) so the runtime's native attempt
+	// count is driven by the durable row.
+	msg := msgin.NewMessage[any](lr.Payload, headers).
+		WithHeader(msgin.HeaderDeliveryCount, lr.DeliveryCount)
+
+	return []msgin.Delivery{{
+		Msg:  msg,
+		Ack:  s.ackLockClosure(lr),
+		Nack: s.nackLockClosure(lr),
+	}}, nil
+}
+
+// ackLockClosure returns the lock-strategy Ack for lr: it DELETEs the row and
+// commits the carried tx (AckLock). There is no fence/ErrStaleLease — the open
+// FOR UPDATE tx exclusively owns the row, so the settle always applies.
+func (s *Source) ackLockClosure(lr *LockedRow) func(context.Context) error {
+	return func(ctx context.Context) error {
+		return s.lockDialect.AckLock(ctx, lr, s.table)
+	}
+}
+
+// nackLockClosure returns the lock-strategy Nack for lr: it clears the lock,
+// pushes visible_after out by delay, and ALWAYS commits (NackLock), persisting
+// the delivery_count++. As on the lease path, requeue=false collapses to a
+// delayed requeue with delay 0 (an at-least-once source cannot drop).
+func (s *Source) nackLockClosure(lr *LockedRow) func(context.Context, bool, time.Duration) error {
+	return func(ctx context.Context, requeue bool, delay time.Duration) error {
+		d := delay
+		if !requeue {
+			d = 0 // requeue=false ≡ requeue=true with delay 0 (ADR 0010 D4/D5)
+		}
+		return s.lockDialect.NackLock(ctx, lr, s.table, d)
+	}
 }
 
 // ackClosure returns the fenced Ack for the row leased at (id, epoch): it

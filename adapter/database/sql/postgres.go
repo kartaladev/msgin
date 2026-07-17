@@ -151,6 +151,82 @@ func (d postgresDialect) EnsureSchema(ctx context.Context, q Querier, table stri
 	return nil
 }
 
+// ClaimLock implements LockDialect for PostgreSQL (ADR 0010 D5): it begins a
+// transaction on ctx, claims one visible/unlocked row FOR UPDATE SKIP LOCKED,
+// bumps its delivery_count in that transaction, and returns the row with the
+// OPEN transaction carried in LockedRow.Tx. There is NO lease-expiry disjunct —
+// the open transaction is the exclusive lock (SKIP LOCKED makes a concurrent
+// claimer skip a row this transaction holds), released only by commit or crash.
+// It returns (nil, nil) when nothing is claimable, and rolls the transaction back
+// on that path and on ANY error (no connection leak).
+func (postgresDialect) ClaimLock(ctx context.Context, q Querier, table, lockedBy string) (*LockedRow, error) {
+	qt, err := pgQuoteTable(table)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := beginLockTx(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+
+	// headers is cast to text so the framed JSON returns as clean bytes across
+	// drivers (no jsonb binary-format prefix), matching Claim.
+	selectSQL := fmt.Sprintf(`SELECT id, msg_id, headers::text, payload, delivery_count
+FROM %[1]s
+WHERE visible_after <= now() AND locked_at IS NULL
+ORDER BY visible_after
+FOR UPDATE SKIP LOCKED
+LIMIT 1`, qt)
+
+	var lr LockedRow
+	err = tx.QueryRowContext(ctx, selectSQL).Scan(&lr.ID, &lr.MsgID, &lr.Headers, &lr.Payload, &lr.DeliveryCount)
+	if errors.Is(err, stdsql.ErrNoRows) {
+		_ = tx.Rollback() // nothing claimable: release the connection
+		return nil, nil
+	}
+	if err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf(`UPDATE %s SET delivery_count = delivery_count + 1 WHERE id = $1`, qt), lr.ID); err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	lr.DeliveryCount++ // post-increment, mirroring the lease Claim's RETURNING
+	lr.Tx = tx
+	return &lr, nil
+}
+
+// AckLock settles lr by deleting its row on the carried transaction and
+// committing (ADR 0010 D5). On any error it rolls back, releasing the connection.
+func (postgresDialect) AckLock(ctx context.Context, lr *LockedRow, table string) error {
+	qt, err := pgQuoteTable(table)
+	if err != nil {
+		_ = lr.Tx.Rollback() // never leave the carried tx open, even on this near-impossible path
+		return err
+	}
+	return settleLockTx(ctx, lr.Tx, fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, qt), lr.ID)
+}
+
+// NackLock returns lr to the queue by clearing the lock and pushing
+// visible_after out by delay, then ALWAYS commits (ADR 0010 D5): the commit
+// persists the delivery_count++ made at claim and releases the FOR UPDATE lock.
+// On an UPDATE/commit error it rolls back, releasing the connection.
+func (postgresDialect) NackLock(ctx context.Context, lr *LockedRow, table string, delay time.Duration) error {
+	qt, err := pgQuoteTable(table)
+	if err != nil {
+		_ = lr.Tx.Rollback()
+		return err
+	}
+	return settleLockTx(ctx, lr.Tx,
+		fmt.Sprintf(`UPDATE %s SET locked_by = NULL, locked_at = NULL,
+  visible_after = now() + ($2 * interval '1 microsecond')
+WHERE id = $1`, qt),
+		lr.ID, delay.Microseconds())
+}
+
 func (postgresDialect) SchemaExists(ctx context.Context, q Querier, table string) (bool, error) {
 	// table is a bound parameter here, but validate it anyway so the exported
 	// SPI never runs on an unvalidated identifier.

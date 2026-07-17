@@ -39,6 +39,21 @@ var (
 	// errors.Is it in logs/hooks (ADR 0010 D4).
 	ErrStaleLease = errors.New("msgin/sql: stale lease; message was re-claimed by another worker")
 
+	// ErrInvalidStrategy is a construction error from NewPollingSource when
+	// WithStrategy is given a value outside the defined Strategy range
+	// (StrategyLeaseClaim, StrategyLockForUpdate). Unset leaves the safe
+	// lease/claim default in place; an out-of-range value is a caller mistake,
+	// not a request for the default (ADR 0010 D5).
+	ErrInvalidStrategy = errors.New("msgin/sql: invalid strategy")
+
+	// ErrLockStrategyUnsupported is a construction error from NewPollingSource
+	// when WithStrategy(StrategyLockForUpdate) is selected but the resolved
+	// Dialect does not also implement LockDialect (the segregated lock/FOR UPDATE
+	// SPI, ADR 0010 D5). The built-in PostgresDialect/MySQLDialect implement it; a
+	// custom lease-only Dialect must add LockDialect to be usable with the lock
+	// strategy. The wrapped message names the offending dialect type.
+	ErrLockStrategyUnsupported = errors.New("msgin/sql: lock strategy requires a Dialect that implements LockDialect")
+
 	// ErrInvalidPayload is returned by Outbound.Send when the message's payload
 	// is not []byte. The Outbound is a wire adapter, not a LiveValueSource, so
 	// msgin.NewProducer always JSON-encodes T to []byte before calling Send; a
