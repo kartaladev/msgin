@@ -88,7 +88,11 @@ Use **Conventional Commits**: `type(scope): summary`, where `type` names the act
 - `spec` — a new/updated spec (from brainstorming), committed **standalone** since specs precede code
 - also allowed: `test`, `docs`, `chore`, `perf`, `build`, `ci`
 
-**Couple plans and ADRs with the code that realizes them.** Do *not* make separate plan/ADR commits. Because plans and ADRs are routinely revised during implementation, the plan/ADR changes ride in the **same commit** as the `feat`/`fix`/`refactor` code — keeping the artifact and its implementation atomic and never out of sync. (Specs are the exception: they're authored before code, so a `spec` commit stands alone.)
+**Couple plans and ADRs with the code that realizes them — one coherent commit.** By default, do *not* make separate plan/ADR commits. The plan/ADR changes ride in the **same commit** as the `feat`/`fix`/`refactor` code that delivers what they planned, so a single commit carries **coherent information — the plan *and* the code that realizes it** — atomic and never out of sync. (Specs are the exception: they're authored before code, so a `spec` commit stands alone.)
+
+**Amend, don't pile on, when the plan changes during implementation.** Plans and ADRs are routinely revised as the code teaches you something — when that happens, **amend** the coherent commit so the revised plan and its code stay in one unit, rather than adding a follow-up `fix:`/`docs:` commit that splits the artifact from its implementation. (This is the in-branch amend preference: keep logical-feature commits coherent; consolidate to them before landing.)
+
+**Exception — commit a completed plan/ADR standalone for a cross-machine or fresh-session handoff.** When the user asks to commit the plan/ADR separately, *or* signals they will continue the implementation elsewhere — on **another machine**, a **fresh clone**, or a new session where the working tree may not survive — commit the finished, audited plan/ADR (with its companion ADR/spec/`docs/HANDOVER.md` edits) as a standalone **`docs:`** (or `spec:`) commit **ahead of** the code, so the design survives a tree wipe / clone. This is a deliberate, user-triggered deviation from the couple-with-code default, not the norm: it applies only to a *complete, gate-cleared* design at a clean safepoint, and the still-uncommitted **code** for each task then lands in its own `feat`/`fix` commit as usual (carrying the `Plan:`/`ADR:` trailers back to the already-committed artifact). The never-commit-without-approval rule still governs — confirm before committing.
 
 **Recommended refinement — traceability trailers.** To make the hard traceability requirement machine-checkable rather than prose-only, put the links in Conventional-Commit **footer trailers** instead of freeform text:
 
@@ -200,6 +204,14 @@ Minimal dependencies is a **hard requirement** for this library — every direct
 ## Core quality criterion: debuggability
 
 Treat "can I debug this with a normal Go debugger and readable errors?" as a first-class design constraint on every decision. Keep the library **pure Go** (no cgo) so a developer can set a breakpoint, step through, and read a plain Go stack trace. Prefer typed, wrapping errors that name the offending field/input over opaque failures — the typed-error surface is what callers rely on to diagnose problems.
+
+## Sensible defaults (opinionated, but overridable)
+
+Every configurable knob ships an **opinionated, production-safe default** — the library should *just work* for the common case without the caller wiring every option — **while staying fully customizable** for consumer needs via functional options (`WithX`). This is a design gate, not a nicety:
+
+- **Default to the safe, conservative value**, not the permissive one. When a wrong default could silently corrupt (duplicate messages, lose data, unbounded growth, a DoS lever), pick the value that fails safe, and size it with generous margin (e.g. a lease/visibility timeout defaults *comfortably above* any plausible handler round-trip, not to a tight value that footguns a slow handler). If **no** value can be safe for an unknown caller (e.g. a byte cap that depends on the caller's legitimate payload size), make it **explicit/opt-in with a clear typed error or documented off state** rather than guessing a default that lulls the caller into a false guarantee — and say so in the godoc.
+- **Every default is overridable** through a `WithX` option; never hard-code a policy the caller cannot change. Prefer the established option pattern (a `set`-flag distinguishing "unset → default" from an explicit invalid value → typed error, per `WithMaxInFlight`/`WithAttemptTTL`).
+- **Document the default and its rationale** on the option's godoc (the value, *why* it's safe, and the invariant that makes a custom value safe), so a caller changing it understands the trade-off. Defaults are part of the API contract — changing one later is a behavioral change subject to the SemVer gate.
 
 ## License & release
 

@@ -1,119 +1,101 @@
 # HANDOVER — msgin
 
-> **Next session: read this first.** Before acting, read `CLAUDE.md`, then the governing artifacts:
-> `docs/specs/001-messaging-core.md` (§9 for the next increment), ADRs `docs/adrs/0001`–`0009`, and the
-> completed plans `docs/plans/001`–`004`. **Trust those files over any memory.** Written at a clean
-> safepoint: Plans 001–004 complete, race-green, and landed on `main`.
+> **Next session: read this first.** Before acting, read `CLAUDE.md`, then the governing artifacts for
+> the active increment: `docs/specs/001-messaging-core.md` (§7.4.1, §7, §8, §9), **`docs/adrs/0010-poller-sql-adapter.md`**,
+> and **`docs/plans/005-poller-sql-adapter.md`**. **Trust those files over any memory.** Written at a
+> clean safepoint: **design for Plan 005 is COMPLETE, two-round-audited, and reconciled — but NOT yet
+> implemented, and the design docs are UNCOMMITTED** (see §2). `main` builds and is race-green (no code
+> changed this session — only docs).
 
-_Updated: Plan 004 (resilience hardening — cleared the ADR 0008 D10 backlog) complete and merged to
-`main`._
+_Updated: Plan 005 design finalized (Poller + `sql` adapter + outbox + dedup-inbox), both adversarial
+audit rounds folded in, D9 deferred. Ready to start SDD at Task 1._
 
 ## 1. Objective & roadmap position
 
 `msgin` (`github.com/kartaladev/msgin`) — a Go 1.25 Enterprise Integration Patterns library (minimal
-deps). Design ratified in spec 001 + ADRs 0001–0009.
+deps). Plans 001–004 landed on `main`. **Active increment: Plan 005 — Poller + `database/sql` adapter.**
 
-- **DONE & on `main`:**
-  - **Plan 001** — core (`Message[T]`, `Headers`, `PayloadCodec`, adapter SPI) + in-memory adapter +
-    minimal `Producer[T]`/`Consumer[T]`.
-  - **Plan 002** — reliability: guarded settlement switch, `RetryPolicy` + backoff, invalid-message +
-    dead-letter routing, `Permanent`/`ErrHandlerPanic`, panic-safe hooks, bounded graceful shutdown.
-  - **Plan 003** — resilience/flow-control: `WithMaxInFlight` credit gate, `WithRateLimit`,
-    `WithHandlerTimeout`, `WithCircuitBreaker`, `WithOverflow`, TTL-swept attempt tracker.
-  - **Plan 004** — resilience hardening (ADR 0009), clearing 5 of 6 tracked follow-ups (see §4):
-    - **D1** SPI-plug-in panic isolation — `safe{LimiterWait,Allow,TryProbe,Record,HalfOpen}` fail open
-      on a panicking plug-in; ERROR-logged once per method (`governorPanic` `sync.Map` dedup).
-    - **D2** breaker probe-storm — optional `ProbeGate{TryProbe() bool}` capability; the default breaker
-      admits a single half-open probe under `WithConcurrency(N>1)`; one-time `Run` WARN when an N>1
-      breaker lacks `ProbeGate`; `toHalfOpen` unconditionally resets `probeInFlight` (wedge-safe).
-    - **D3** `WithAttemptTTL` + `ErrInvalidAttemptTTL`; TTL invariant reframed (round-trip incl. handler
-      time, not just `Backoff.Max`).
-    - **D4** dropped the unused `ErrNoPayloadCodec`; ratified wire+no-codec→JSON default.
-    - **D5** `WithMaxPayloadBytes` caps untrusted `[]byte` before `codec.Decode` (`ErrPayloadTooLarge`,
-      permanent → invalid sink).
-- **NEXT: Plan 005 — Poller + SQL adapter (spec §9).** The shared **Poller** (interval/fixed-delay,
-  max-per-poll, backoff, clockwork, cancellable) driving `PollingSource` **with credit-at-FETCH** (spec
-  §7.4.1 — the credit gate is currently streaming-source only; Plan 005 wires the pull side: fetch
-  `k = min(maxBatch, n − inFlight)`, acquire k credits at claim). Plus the `adapter/database/sql` adapter
-  (generic `database/sql`, `SELECT … FOR UPDATE SKIP LOCKED` inbound + `INSERT` outbound, at-least-once,
-  v1 PostgreSQL + MySQL dialects via a `Dialect` seam; driver injected by the caller). **Use
-  `use-testcontainers`** (real Postgres/MySQL — Docker IS available) via a `database.RunTestDatabase(t,
-  opts...)` helper. First **wire** adapter → first place `PayloadCodec.Decode` runs on external bytes,
-  where **the D5 byte-cap should get a sensible adapter default** and follow-up #5-complexity is revisited.
-- Then Plan 006 (http, `cenkalti/backoff/v4` enters via `adapter/http`), 007–009 (pgx/redis/nats —
-  **separate Go modules**, `go.work`; ADR 0003).
+- **Design phase: DONE.** ADR 0010 (D1–D8, D10; **D9 deferred**) + Plan 005 (**11 tasks**) drafted,
+  hardened by **two rounds** of independent adversarial Opus audits, and fully reconciled.
+- **Implementation phase: NOT STARTED.** No source code written; no branch created. **Resume at Plan 005
+  Task 1** via SDD (`superpowers:subagent-driven-development`).
 
-## 2. Exact state
+**Scope (Plan 005):** the shared **Poller** with credit-at-fetch (spec §7.4.1) + the **`sql` adapter**
+(lease/claim + lock strategies × PostgreSQL + MySQL, at-least-once) + transactional **outbox** (D8) +
+different-DB **idempotent dedup-inbox** (D10). **Deferred to a follow-up plan:** transactional consume
+(D9) + the `Delivery.BindContext` core hook (the audit proved the single-carried-tx model needs a
+redesign — see ADR 0010 D9 "Why deferred" / "Intended Plan-006 redesign").
 
-- **`main` fast-forwarded to include Plan 004; pushed to `origin/main`.** Feature branch
-  `feat/resilience-hardening` deleted after landing. Commit history is logical-feature commits: per plan,
-  1 `feat(...)` commit + a `docs: handover` commit, each an independently-green unit with
-  `Spec:/Plan:/ADR:` + Co-Authored-By + Claude-Session trailers.
-- **Whole module green:** `GOTOOLCHAIN=go1.25.0 go test ./... -race` passes (stable `-count=3`+); vet,
-  gofmt, `CGO_ENABLED=0` build, `go mod tidy` (no-op), `go mod verify`, `govulncheck`, `golangci-lint`
-  all clean. Coverage ~99% core, 100% memory.
-- **Deps:** core non-test = stdlib + `clockwork` ONLY. `cenkalti/backoff/v4` (ADR 0005) still NOT a dep —
-  it enters with `adapter/http` (Plan 006). Test-only: `testify`, `goleak`.
+## 2. Exact state — DESIGN COMMITTED on branch `feat/poller-sql-adapter` (for cross-machine handoff)
 
-## 3. Method (established, working extremely well)
+The design phase's output is committed **standalone** (per CLAUDE.md's new cross-machine-handoff exception
+to couple-with-code) on branch **`feat/poller-sql-adapter`** (off `main` @ `86ffa11`), and pushed to
+`origin` — so it survives a fresh clone on another machine. The commit is a `docs:` commit containing:
 
-Per increment: draft the plan (opus) from the spec → **two independent adversarial Opus audits of the
-design** (Plan 004: a concurrency-correctness pass caught the `toHalfOpen` wedge landmine + the TTL
-round-trip-vs-Backoff.Max reframe; an API/policy pass caught the silent gobreaker-cliff and pulled
-finding #5's byte-cap back in-scope) → reconcile into the ADR → **SDD** (fresh implementer + reviewers
-per unit; subagents write code, the coordinator session stays clean and does only the consolidated
-commit) → whole-branch `/code-review` + `/security-review` + an independent Opus whole-branch review →
-fold gate fixes → consolidate to logical-feature commits → fast-forward `main` + push + delete branch.
-Live recovery map: `.superpowers/sdd/progress.md` (git-ignored). Landing to `main` was user-authorized.
+```
+CLAUDE.md                              # "Sensible defaults" principle + the cross-machine commit exception
+docs/HANDOVER.md                       # this file
+docs/specs/001-messaging-core.md       # §9 status-column reconciled → ADR 0010 D4
+docs/adrs/0010-poller-sql-adapter.md   # the design of record (D1–D8, D10; D9 deferred)
+docs/plans/005-poller-sql-adapter.md   # the 11-task implementation plan
+```
 
-## 4. TRACKED FOLLOW-UPS (backlog)
+**No source code is committed** — implementation has not started. On the other machine: `git fetch &&
+git checkout feat/poller-sql-adapter`, then resume at Task 1 (§5). Each task's **code** lands in its own
+`feat`/`fix` commit on this branch, carrying `Plan: 005` / `ADR: 0010` trailers back to this design commit.
 
-**CLEARED in Plan 004 (ADR 0009):** #1 SPI-panic isolation → D1; #2 breaker half-open probe storm → D2;
-#3 `Backoff.Max`/TTL → D3 (`WithAttemptTTL` escape hatch + reframed invariant doc; best-effort concrete
-enforcement still deferred, below); #4 `ErrNoPayloadCodec` decision → D4; #5 untrusted wire-decode
-**byte cap** → D5 (`WithMaxPayloadBytes`).
+## 3. Traceability pointers (read first, in order)
 
-**STILL OPEN:**
-1. **(#6) Overflow-drop at-least-once redeliver semantics — Plan 007+.** `DropNewest` uses
-   `requeue=false` (correct for at-most-once memory). Revisit redeliver-on-drop when redis/nats land
-   (ADR 0008 D9, ADR 0009 D6) — needs a real at-least-once source to model/test.
-2. **(#3-residual) Best-effort `ExponentialBackoff`-vs-attempt-TTL enforcement — Plan 007+.** D3 shipped
-   the `WithAttemptTTL` escape hatch + a prominent godoc invariant, but does NOT statically enforce that
-   a caller's `Backoff.Max`/handler round-trip stays below the TTL. Revisit a concrete-type guard when
-   the first **delay-honoring** source lands (memory ignores the Nack delay, so it is not reachable via
-   memory beyond the documented tiny-TTL footgun).
-3. **(#5-complexity) Payload structural-complexity limits — Plan 005+.** D5 caps payload *bytes*; deep
-   nesting is currently bounded only by the codec (`encoding/json` errors on pathological nesting). If a
-   custom/binary codec adapter lands, consider a codec-level complexity knob.
-4. **(NEW — from the Plan 004 whole-branch review, out-of-scope observation) Dispatch-boundary panic
-   recovery.** `dispatch` does NOT `recover` a panic from `codec.Decode`, `sink.Send`, or an adapter
-   `Ack`/`Nack` — such a panic crashes the process (the worker loop has no recover; only `safeHandle`
-   and the new `safe*` governor wrappers recover). Pre-existing (not introduced by Plan 004). Consider a
-   `safeHandle`-style guard at the decode/settle boundary when the first wire adapter (Plan 005) makes an
-   adapter `Ack`/`Nack`/`Decode` panic realistic. Track alongside Plan 005.
+1. `CLAUDE.md` — workflow, gates, conventions, the new **sensible-defaults** principle.
+2. `docs/specs/001-messaging-core.md` — §7.4.1 (credit-at-fetch), §7 (settlement), §8 (framing), §9 (`sql`).
+3. `docs/adrs/0010-poller-sql-adapter.md` — decisions D1–D10 (D9 **DEFERRED**); read Consequences for the
+   full audit-fix list and the retraction.
+4. `docs/plans/005-poller-sql-adapter.md` — 11 tasks with interfaces, hot-path branches, test targets;
+   read "Self-review notes (post-audit, 2 rounds)" at the end.
+
+## 4. Decisions this session, deviations, pending approvals
+
+**Key decisions (user-ratified):** generic `sql` constructors with driver auto-detect + `WithDialect`
+opt-in + **exported `Dialect` SPI** (correctness-for-flexibility trade-off, ADR 0010 D3); keep package
+name `sql` + documented alias convention; explicit clear names (`NewPollingSource`/`NewOutboundAdapter`);
+lease default TTL **5m**; **outbox strict-by-default** (`WithSharedTransaction` strict /
+`WithOpportunisticSharedTransaction` + WARN); durable publishing = **outbox only** (cross-DB needs 2PC →
+rejected; CDC adapter = backlog); durable consume = two opt-in strategies, **D10 dedup ships / D9
+transactional-consume deferred**; **full lock+lease matrix kept** with all audit fixes.
+
+**Deviations / retractions:** the round-1 "lock-strategy `delivery_count` is restart-durable" claim was
+**retracted** (round-2 CRITICAL 2); fixed by **Nack-always-commits** + **detached claim-tx** (ADR 0010
+D5, Plan Task 8).
+
+**Pending approvals (blockers for the next session):**
+1. **SDD execution mode** — subagent-driven (recommended) vs inline (`executing-plans`).
+2. **Commit strategy for the uncommitted design** — leave it to ride with Task 1's first `feat` (default,
+   couple-with-code), OR commit the design docs now for durability (deliberate deviation — needs explicit
+   OK). CLAUDE.md's never-commit-without-approval rule applies.
+3. Branch creation (`feat/poller-sql-adapter` off `main`) — the per-task commits enumerated in Plan 005
+   become pre-authorized only after the plan is approved AND an SDD mode is chosen.
 
 ## 5. Next actions (resume here)
 
-1. Confirm `main` green: `GOTOOLCHAIN=go1.25.0 go test ./... -race`.
-2. Draft `docs/plans/005-*.md` from spec §9 (sql) + §7.4.1 (credit-at-fetch) + the Poller design (opus)
-   → two adversarial Opus audits (credit-at-fetch over-pull/lease-expiry is the highest-risk piece) →
-   SDD with `use-testcontainers` (Postgres/MySQL) → whole-branch gate → consolidate → land. Fold in the
-   D5 adapter-default byte-cap and revisit follow-ups #3-complexity and #4 (dispatch-panic recovery)
-   there.
+1. Read the artifacts in §3. Confirm `main` green: `GOTOOLCHAIN=go1.25.0 go test ./... -race`.
+2. Resolve §4 pending approvals with the user (SDD mode; commit-now-or-with-Task-1).
+3. Create branch `feat/poller-sql-adapter` off `main`.
+4. Drive **Task 1** (poll-pacing options + sentinels + config plumbing — small, pure config/errors, no
+   DB), red→green TDD, then its per-task commit. Proceed through Tasks 2–11.
+5. Whole-branch gate (CLAUDE.md §5) before landing; then fast-forward `main` + push + delete branch.
 
 ## 6. Gotchas / environment
 
-- **Go 1.25 pinned**; always `GOTOOLCHAIN=go1.25.0` (local default is newer). No `toolchain` directive.
-- **gopls@latest can't run under 1.25**; subagents use `go build`/`vet`/`gofmt` + tests as diagnostics.
-- **Fake-clock (`clockwork`) `BlockUntilContext(ctx, N)` counts ALL registered waiters** — the always-on
-  attempt-tracker sweep ticker is a permanent consumer-clock waiter, so consumer-fake-clock tests that
-  wait for a drain/timeout/breaker timer use `N = (real timers) + 1`. `WithAttemptTTL` changes the sweep
-  ticker's *period*, NOT the waiter *count* — the `+1` invariant is unchanged (ADR 0008 D8 C1 / ADR 0009).
-- **Custom test skills (mandatory):** `table-test` (assert-closure), `use-mockgen`, `use-testcontainers`
-  (Plan 005+). Blackbox tests only; one goleak `TestMain` per goroutine-starting test package.
-- **Docker is RUNNING** — Plan 005+ testcontainers are feasible.
-- **Multi-module (ADR 0003):** pgx/redis/nats (Plans 007–009) are SEPARATE Go modules with a `go.work`;
-  release tags are module-path-prefixed. Core + memory + sql + http stay in the root module.
-- **Breaker single-probe residuals (ADR 0009 D2, documented, accepted):** single-probe is best-effort
-  under `N>1` cross-cycle stragglers; half-open under `N>1` hot-spins on immediate-redelivery sources
-  (memory ignores the Nack delay) — not present on delay-honoring wire adapters.
+- **Go 1.25 pinned:** always `GOTOOLCHAIN=go1.25.0` (local default is newer). No `toolchain` directive.
+- **Docker IS running** — Plan 005 Tasks 4–11 use `use-testcontainers` (real Postgres + MySQL). Add
+  test-only deps then (`testcontainers-go`, a Postgres driver, `go-sql-driver/mysql`) — **never a driver
+  in non-test code** (dependency policy; ADR 0010 D2 uses a portable `information_schema` probe, not
+  driver-error sniffing, precisely to avoid this).
+- **No core SPI change in Plan 005** — the `Delivery.BindContext` hook is deferred with D9. `spi.go`'s
+  `Delivery` is unchanged this increment.
+- **Task 1 is DB-free** (options/errors) — a safe, fast first unit to validate the SDD loop.
+- **Two audit rounds already done** on the design; don't re-audit the design pre-implementation. The
+  per-task SDD reviews + the whole-branch `/code-review`+`/security-review` gate still apply to the code.
+- **`gopls@latest` can't run under 1.25** — subagents use `go build`/`vet`/`gofmt` + tests as diagnostics.
+- Custom test skills (mandatory): `table-test` (assert-closure), `use-mockgen`, `use-testcontainers`.
+  Blackbox `_test` packages only; one `goleak` `TestMain` per goroutine-starting package.

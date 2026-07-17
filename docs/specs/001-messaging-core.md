@@ -386,18 +386,23 @@ type BackoffStrategy interface { Delay(attempt int) time.Duration } // stateless
   requeue; reference adapter and test double.
 - **sql** (`database/sql`, generic; v1 dialects **PostgreSQL + MySQL** via a `Dialect` seam) — two
   **selectable consumption strategies** (audit H3/H4):
-  - **lease/claim (default)** — columns `status`, `locked_by`, `locked_at`, `visible_after`,
-    **`delivery_count`**, and a **`lease_epoch`** fence token. A batch is claimed in a **short**
-    transaction (`… FOR UPDATE SKIP LOCKED LIMIT max` → `UPDATE … SET lease_epoch = lease_epoch+1,
-    delivery_count = delivery_count+1, locked_at = now() … RETURNING`), committed, then fanned out to
-    the worker pool. `Ack`/`Nack` are separate short transactions and are **fenced** (audit NF-8):
-    `… WHERE id = ? AND locked_by = ? AND lease_epoch = ?` — if the reaper already re-leased the row
-    (because the handler outran the lease TTL), the conditional settle is a no-op + logged, so a stale
-    worker cannot delete/settle a row another worker now owns. `Nack(delay)` sets
-    `visible_after = now()+delay` (server-side delay, no held lock/connection). The **reaper** reclaims
-    rows whose `locked_at` lease expired. `delivery_count` populates the `msgin.delivery-count` header
-    (audit NF-2), so attempt counting never relies on the ephemeral runtime tracker. **Invariant: lease
-    TTL must exceed `WithHandlerTimeout`** (config-validated).
+  - **lease/claim (default)** — columns `locked_by`, `locked_at`, `visible_after`, **`delivery_count`**,
+    and a **`lease_epoch`** fence token. *(Refined by [ADR 0010](../adrs/0010-poller-sql-adapter.md) D4:
+    the earlier `status` column is dropped — readiness is encoded by `locked_at` + `visible_after` +
+    lease expiry, one source of truth; the "reaper" is inlined into the claim predicate, not a separate
+    goroutine.)* A batch is claimed in a **short** transaction (`… FOR UPDATE SKIP LOCKED LIMIT max` →
+    `UPDATE … SET lease_epoch = lease_epoch+1, delivery_count = delivery_count+1, locked_at = now() …
+    RETURNING`), committed, then fanned out to the worker pool. `Ack`/`Nack` are separate short
+    transactions and are **fenced** (audit NF-8): `… WHERE id = ? AND locked_by = ? AND lease_epoch = ?`
+    — if an expired lease was already re-claimed (because the handler outran the lease TTL), the
+    conditional settle is a no-op (returns `ErrStaleLease`, suppressing a phantom `OnAck`) + logged, so a
+    stale worker cannot delete/settle a row another worker now owns. `Nack(delay)` sets
+    `visible_after = now()+delay` (server-side delay, no held lock/connection). Expired leases are
+    reclaimed **inline by the claim predicate** (`locked_at <= now() − leaseTTL`), no reaper goroutine.
+    `delivery_count` populates the `msgin.delivery-count` header (audit NF-2) — for **both** strategies
+    (ADR 0010 D5: the lock strategy persists it in its per-message tx too), so attempt counting never
+    relies on the ephemeral runtime tracker. **Invariant: lease TTL must exceed the handler round-trip
+    (handler + settle latency + margin), not merely `WithHandlerTimeout`; default 5m** (ADR 0010 D4).
   - **lock/`FOR UPDATE`** — one `SELECT … FOR UPDATE SKIP LOCKED LIMIT 1` transaction **carried in the
     `Delivery` and owned exclusively by the worker** after hand-off; the tx (and its pooled connection +
     row lock) lives from claim to `Ack`. Crash-auto-releases via tx rollback (no reaper); minimal
