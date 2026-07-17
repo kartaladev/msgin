@@ -1,6 +1,7 @@
 package sql
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"io"
@@ -50,6 +51,10 @@ type config struct {
 	leaseTTLSet bool // distinguishes explicit WithLeaseTTL(0) (rejected) from unset (default)
 	lockedBy    string
 	logger      *slog.Logger
+
+	txResolver    TransactionResolver
+	txResolverSet bool // distinguishes "no shared-tx option given" from an explicit-but-nil resolver (ErrNilResolver)
+	txStrict      bool // meaningful only when txResolverSet: true = WithSharedTransaction, false = WithOpportunisticSharedTransaction
 }
 
 // Option configures a Source built by NewPollingSource.
@@ -150,6 +155,89 @@ func WithLogger(l *slog.Logger) Option {
 		if l != nil {
 			c.logger = l
 		}
+	}
+}
+
+// TransactionResolver resolves the caller's active business transaction from
+// ctx as a Querier — a *sql.Tx satisfies Querier, so a caller storing a raw
+// *sql.Tx, an sqlx wrapper, or a unit-of-work/repository layer's tx can all be
+// adapted to msgin's Querier with a one-line resolver. Returning (nil, nil)
+// means no shared transaction is present in ctx (the outbox falls back to its
+// configured no-tx policy — see WithSharedTransaction /
+// WithOpportunisticSharedTransaction); a non-nil error aborts Send, which
+// wraps and returns it without attempting any insert (ADR 0010 D8).
+type TransactionResolver func(ctx context.Context) (Querier, error)
+
+// WithSharedTransaction enlists Outbound.Send's INSERT in the caller's active
+// business transaction, resolved from ctx by r — the transactional-outbox
+// pattern (ADR 0010 D8): a business write and the outbox INSERT then commit or
+// roll back atomically, so a crash between them can neither lose the message
+// nor publish one for a change that never committed. This is the STRICT,
+// recommended default: if r reports no transaction present in ctx
+// ((nil, nil)), Send returns ErrNoSharedTransaction rather than silently
+// falling back to a standalone (non-atomic) insert — it never silently
+// dual-writes. Use WithOpportunisticSharedTransaction for the explicit
+// fallback-and-log variant instead.
+//
+// A nil r is a construction error (ErrNilResolver) from NewOutboundAdapter —
+// never a deferred nil-func panic on the first Send.
+//
+// # msgin never commits or rolls back the borrowed transaction
+//
+// The Querier r returns is BORROWED: Outbound only ever calls
+// ExecContext/QueryContext/QueryRowContext on it for the INSERT. It never
+// calls Commit or Rollback — the caller retains full ownership of the
+// transaction's lifecycle and decides when (and whether) it commits.
+//
+// # Same-database invariant (unenforceable — read before using)
+//
+// The transaction r resolves MUST be open on the SAME database as this
+// Outbound's table. A *sql.Tx does not expose the *sql.DB it was opened
+// against, so this cannot be verified at runtime; a mismatched database
+// silently defeats the atomicity this option exists to provide. There is no
+// way to make this safe automatically — verify it by construction (e.g. build
+// the Outbound's *sql.DB and the caller's transaction from the same pool).
+//
+// # Do not use as a DLQ / invalid-message sink (LOW audit)
+//
+// A strict shared-transaction Outbound must NOT be passed as a
+// msgin.RetryPolicy.DeadLetter or msgin.WithInvalidMessageSink target. The
+// runtime's divert path calls Send on a settlement-scoped context that never
+// carries the caller's business transaction, so r would report (nil, nil) on
+// every poison message, Send would return ErrNoSharedTransaction, and the
+// divert would treat that as "sink failed" and retry forever — the poison
+// message never actually reaches the dead-letter table. Use a plain,
+// non-shared-transaction Outbound (built without this option) as a DLQ/invalid
+// sink.
+func WithSharedTransaction(r TransactionResolver) Option {
+	return func(c *config) {
+		c.txResolver = r
+		c.txResolverSet = true
+		c.txStrict = true
+	}
+}
+
+// WithOpportunisticSharedTransaction is the explicitly-named UNSAFE variant of
+// WithSharedTransaction: Send uses the caller's transaction (resolved from ctx
+// by r) when present, but falls back to a standalone, auto-commit insert on
+// the pool when r reports none present — logging the fallback at WARN
+// ("no shared transaction in context; standalone insert — atomicity NOT
+// achieved", with the message id only, never the payload) so the atomicity
+// loss is observable rather than silent. Prefer WithSharedTransaction (strict)
+// unless a caller genuinely needs Send to succeed even when no business
+// transaction is active; opportunistic fallback reintroduces the exact
+// dual-write the outbox pattern exists to prevent, so it is deliberately named
+// to make that trade-off visible at the call site rather than hidden behind a
+// boolean flag.
+//
+// A nil r is a construction error (ErrNilResolver) from NewOutboundAdapter.
+// The same "never Commit/Rollback the borrowed tx", same-database invariant,
+// and DLQ-sink caveat documented on WithSharedTransaction apply here too.
+func WithOpportunisticSharedTransaction(r TransactionResolver) Option {
+	return func(c *config) {
+		c.txResolver = r
+		c.txResolverSet = true
+		c.txStrict = false
 	}
 }
 

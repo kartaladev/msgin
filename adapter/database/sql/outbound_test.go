@@ -85,6 +85,26 @@ func TestNewOutboundAdapter_ConstructionAndDetection(t *testing.T) {
 				assert.NotNil(t, out)
 			},
 		},
+		{
+			name:  "WithSharedTransaction(nil) is a construction-time ErrNilResolver, not a deferred panic",
+			db:    func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
+			table: "msgs",
+			opts:  []msginsql.Option{msginsql.WithSharedTransaction(nil)},
+			assert: func(t *testing.T, out *msginsql.Outbound, err error) {
+				require.ErrorIs(t, err, msginsql.ErrNilResolver)
+				assert.Nil(t, out)
+			},
+		},
+		{
+			name:  "WithOpportunisticSharedTransaction(nil) is also a construction-time ErrNilResolver",
+			db:    func(t *testing.T) *sql.DB { return openDB(t, "pgx") },
+			table: "msgs",
+			opts:  []msginsql.Option{msginsql.WithOpportunisticSharedTransaction(nil)},
+			assert: func(t *testing.T, out *msginsql.Outbound, err error) {
+				require.ErrorIs(t, err, msginsql.ErrNilResolver)
+				assert.Nil(t, out)
+			},
+		},
 	}
 
 	for _, tc := range cases {

@@ -61,4 +61,22 @@ var (
 	// producer) with the wrong payload shape — a defensive case trusted
 	// producers do not hit (ADR 0010 D8).
 	ErrInvalidPayload = errors.New("msgin/sql: outbound payload must be []byte")
+
+	// ErrNoSharedTransaction is returned by Outbound.Send, under
+	// WithSharedTransaction (the strict mode), when the injected
+	// TransactionResolver reports no caller transaction present in ctx
+	// ((nil, nil)). Strict mode never silently dual-writes: it refuses the
+	// standalone insert and returns this error instead, so a caller that
+	// forgot to thread its business tx into ctx fails loudly rather than
+	// silently losing the outbox's atomicity guarantee. Use
+	// WithOpportunisticSharedTransaction to fall back to a standalone insert
+	// instead (ADR 0010 D8).
+	ErrNoSharedTransaction = errors.New("msgin/sql: no shared transaction in context")
+
+	// ErrNilResolver is a construction error from NewOutboundAdapter when
+	// WithSharedTransaction or WithOpportunisticSharedTransaction is given a
+	// nil TransactionResolver. Caught at construction time rather than
+	// deferred to the first Send, which would otherwise panic on a nil-func
+	// call (ADR 0010 D8).
+	ErrNilResolver = errors.New("msgin/sql: nil TransactionResolver")
 )

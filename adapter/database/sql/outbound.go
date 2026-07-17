@@ -22,9 +22,13 @@ var _ msgin.OutboundAdapter = (*Outbound)(nil)
 // a Task-5 Source polling the SAME table, it forms a durable, at-least-once
 // produce/consume queue; Outbound is also usable directly as a
 // msgin.RetryPolicy.DeadLetter sink or a msgin.WithInvalidMessageSink target,
-// since both are just an OutboundAdapter.
+// since both are just an OutboundAdapter (but see WithSharedTransaction's
+// DLQ-sink caveat before using a strict shared-tx Outbound that way).
 type Outbound struct {
 	adapterBase
+
+	txResolver TransactionResolver // nil ⇒ no shared-tx option was given; always insert on the pool db
+	txStrict   bool                // meaningful only when txResolver != nil (ADR 0010 D8)
 }
 
 // NewOutboundAdapter builds an Outbound over table on db. It resolves the
@@ -32,7 +36,9 @@ type Outbound struct {
 // ADR 0010 D3) and validates the table identifier (ErrInvalidTableName), the
 // same resolution NewPollingSource applies. WithLeaseTTL/WithLockedBy are
 // lease-Source-specific and are simply inert here. A nil db is
-// msgin.ErrNilAdapter.
+// msgin.ErrNilAdapter. A nil TransactionResolver passed to
+// WithSharedTransaction/WithOpportunisticSharedTransaction is a construction
+// error (ErrNilResolver), never a deferred nil-func panic on the first Send.
 //
 // The returned Outbound implements msgin.OutboundAdapter; pass it to
 // msgin.NewProducer, msgin.RetryPolicy.DeadLetter, or
@@ -44,12 +50,16 @@ func NewOutboundAdapter(db *stdsql.DB, table string, opts ...Option) (*Outbound,
 		o(&cfg)
 	}
 
+	if cfg.txResolverSet && cfg.txResolver == nil {
+		return nil, ErrNilResolver
+	}
+
 	base, err := newAdapterBase(db, table, cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Outbound{adapterBase: base}, nil
+	return &Outbound{adapterBase: base, txResolver: cfg.txResolver, txStrict: cfg.txStrict}, nil
 }
 
 // Send frames msg's headers (EncodeHeaders) and INSERTs a new,
@@ -57,9 +67,16 @@ func NewOutboundAdapter(db *stdsql.DB, table string, opts ...Option) (*Outbound,
 // MUST be []byte — Outbound is a wire adapter (not a LiveValueSource), so
 // msgin.NewProducer always JSON-encodes T to []byte before calling Send; a
 // non-[]byte payload here is a defensive case (ErrInvalidPayload) that trusted
-// producers do not hit. An INSERT failure is wrapped as ErrSchemaNotReady iff
-// a follow-up portable probe finds the table missing, otherwise the raw error
-// propagates.
+// producers do not hit.
+//
+// With no shared-transaction option configured, Send inserts on the pool db,
+// unchanged from the plain wire-adapter behavior. With WithSharedTransaction
+// or WithOpportunisticSharedTransaction configured, Send resolves the
+// caller's transaction from ctx and applies the ADR 0010 D8 policy — see
+// resolveQuerier.
+//
+// An INSERT failure is wrapped as ErrSchemaNotReady iff a follow-up portable
+// probe finds the table missing, otherwise the raw error propagates.
 func (o *Outbound) Send(ctx context.Context, msg msgin.Message[any]) error {
 	msgID := msg.ID()
 
@@ -73,8 +90,49 @@ func (o *Outbound) Send(ctx context.Context, msg msgin.Message[any]) error {
 		return fmt.Errorf("%w: got %T", ErrInvalidPayload, msg.Payload())
 	}
 
-	if err := o.dialect.Insert(ctx, o.db, o.table, msgID, headers, payload, 0); err != nil {
+	q, err := o.resolveQuerier(ctx, msgID)
+	if err != nil {
+		return err
+	}
+
+	if err := o.dialect.Insert(ctx, q, o.table, msgID, headers, payload, 0); err != nil {
 		return o.classifyQueryErr(ctx, err)
 	}
 	return nil
+}
+
+// resolveQuerier picks the Querier Send inserts on (ADR 0010 D8):
+//
+//   - No shared-tx option configured (txResolver == nil): the pool db,
+//     unchanged from the Task-6 plain-Outbound behavior.
+//   - A resolver is configured: q, err := txResolver(ctx).
+//   - err != nil: wrapped and returned; Send attempts no insert.
+//   - q != nil: the caller's transaction — BORROWED. Send only ever issues
+//     the INSERT on it; it never calls Commit or Rollback (the caller
+//     owns the transaction's lifecycle).
+//   - q == nil (no shared transaction present in ctx): strict mode
+//     (WithSharedTransaction) refuses the dual-write and returns
+//     ErrNoSharedTransaction; opportunistic mode
+//     (WithOpportunisticSharedTransaction) logs the fallback at WARN (message
+//     id only, never the payload) and falls back to the pool db.
+func (o *Outbound) resolveQuerier(ctx context.Context, msgID string) (Querier, error) {
+	if o.txResolver == nil {
+		return o.db, nil
+	}
+
+	q, err := o.txResolver(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("msgin/sql: resolving shared transaction: %w", err)
+	}
+	if q != nil {
+		return q, nil
+	}
+
+	if o.txStrict {
+		return nil, ErrNoSharedTransaction
+	}
+
+	o.logger.Warn("msgin/sql: no shared transaction in context; standalone insert — atomicity NOT achieved",
+		"id", msgID)
+	return o.db, nil
 }
