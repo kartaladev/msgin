@@ -5,5 +5,6 @@ use (
 	./adapter/database/sql/harness
 	./adapter/database/sql/postgres
 	./adapter/database/sql/mysql
+	./adapter/database/sql/sqlite
 	./adapter/database/sql/dbtest
 )

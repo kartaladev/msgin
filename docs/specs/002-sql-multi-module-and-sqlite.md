@@ -172,21 +172,56 @@ the runner.
 
 ## 7. SQLite dialect (increment B — its own ADR 0012 + plan)
 
+_All decisions below are RESOLVED (brainstorm 2026-07-18); the details are ratified in **ADR 0012**._
+
 - **Driver (test-only):** **`modernc.org/sqlite`** — pure-Go, **cgo-free** (aligns with the no-cgo gate);
-  no `testcontainers`/Docker (SQLite is embedded — tests use an in-memory or temp-file DB). **Open item O-3:**
-  confirm `modernc.org/sqlite` (vs the cgo `mattn/go-sqlite3`, which would violate the no-cgo ethos).
+  no `testcontainers`/Docker (SQLite is embedded — tests use a temp-file or shared-cache in-memory DB). It
+  lives in the **`dbtest` leaf runner ONLY**; the `sqlite` prod module stays engine-only (O-3 resolved).
 - **Capability differences (SQLite is single-writer, no row-level locks):**
-  - **No `SELECT … FOR UPDATE SKIP LOCKED`** and **no `FOR UPDATE`.** The **lease/claim** strategy is adapted
-    (SQLite serializes writers, so a claim is a plain `UPDATE … RETURNING` in a transaction — `RETURNING` is
-    supported in SQLite ≥3.35; the fence/`delivery_count`/`visible_after` columns are unchanged). The
-    **lock/`FOR UPDATE` strategy is not implementable** → `sqlite.LeaseDialect()` does **not** implement
-    `LockDialect`, so `WithStrategy(StrategyLockForUpdate)` returns the existing `ErrLockStrategyUnsupported`.
+  - **No `SELECT … FOR UPDATE SKIP LOCKED`** and **no `FOR UPDATE`.** The **lease/claim** strategy is adapted:
+    because SQLite serializes writers (a write statement holds the DB write lock for its whole duration), the
+    claim is a **one-shot** `UPDATE "t" SET … WHERE id IN (SELECT id … ORDER BY visible_after LIMIT ?)
+    RETURNING …` — atomic without `SKIP LOCKED`, mirroring Postgres's one-shot RETURNING (no MySQL-style
+    two-step tx needed). `RETURNING` needs SQLite ≥3.35; the fence/`delivery_count`/`visible_after` columns
+    are unchanged. The **lock/`FOR UPDATE` strategy is not implementable** → `sqlite.LeaseDialect()` does
+    **not** implement `LockDialect`, so `WithStrategy(StrategyLockForUpdate)` returns the existing
+    `ErrLockStrategyUnsupported`. (This requires **two small, behavior-preserving `harness` changes** — see
+    the test-provisioning bullet.)
   - **Inbox dedup works:** `INSERT … ON CONFLICT(msg_id) DO NOTHING RETURNING` (SQLite supports it) — exact,
-    like Postgres; no `INSERT IGNORE`-style demotion problem. The `MsgIDUniqueIndexExists` probe uses SQLite's
-    `pragma_index_list`/`sqlite_master`.
-  - Time: SQLite has no server "now()" with sub-second UTC by default the same way — use
-    `strftime('%Y-%m-%d %H:%M:%f','now')` (UTC) for `visible_after`/`processed_at`; **DB-clock invariant
-    preserved** (still no app-clock for row times). Details settled in ADR 0012.
+    like Postgres; no `INSERT IGNORE`-style demotion problem (so `TestKit.MySQLFamily=false`). The
+    `MsgIDUniqueIndexExists` probe uses SQLite's `pragma_index_list`/`pragma_index_info` (msg_id is
+    `TEXT PRIMARY KEY` → an autoindex with `"unique"=1`); `SchemaExists` probes `sqlite_master`.
+  - **Time → INTEGER unix micros.** SQLite has no native datetime type. `visible_after`/`locked_at`/
+    `created_at`/`processed_at` are `INTEGER` epoch-microsecond columns; the DB clock is
+    `CAST(unixepoch('now','subsec')*1000000 AS INTEGER)`, and delays/lease-TTL are plain integer ±µs — exact
+    parity with the PG/MySQL dialects' `.Microseconds()` interval math (resolution is milliseconds expressed
+    in µs, ample for a queue). `'subsec'` needs SQLite ≥3.42; `modernc.org/sqlite` bundles ≥3.45. **DB-clock
+    invariant preserved** (no app-clock for row times).
+- **Production DSN guidance (opinionated, overridable).** SQLite serializes writers, so concurrent
+  consumers require WAL + a `busy_timeout` (else `SQLITE_BUSY`). msgin never owns the caller's `*sql.DB`
+  (driver/DSN are the caller's, like PG/MySQL), so the `sqlite` prod module ships a **driver-free** DSN
+  builder `sqlite.DSN(path string, opts ...DSNOption) string` — default
+  `file:<path>?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)`, overridable via `WithJournalMode`/
+  `WithBusyTimeout`/`WithSharedMemory` — plus `doc.go` explaining why. It emits `modernc.org/sqlite`-flavored
+  pragmas (the recommended driver); a different driver → the caller builds their own DSN.
+- **Test provisioning (dbtest, no Docker).** `RunTestSQLite(t, opts ...)` defaults to a **WAL temp-file**
+  (`t.TempDir()`, torn down by `t.Cleanup`), with `WithSharedMemory()` selecting `file::memory:?cache=shared`
+  — both modes, opinionated default; it builds its DSN via `sqlite.DSN(...)` (dogfooding the builder).
+  Conformance runs `RunSource/RunOutbound/RunOutbox/RunInbox/RunDialect` (**omitting `RunLock`**, no
+  `LockDialect`) plus a lock-strategy-unsupported assertion.
+- **Two behavior-preserving `harness` changes (both gated so PG/MySQL are unaffected; audit round 1):**
+  1. `RunDialect`'s per-SPI-method invalid-identifier coverage hard-requires `LockDialect` for its
+     `ClaimLock` case → make **only that case** conditional on the type-assertion (runs for PG/MySQL, skipped
+     for a lease-only dialect).
+  2. A new `TestKit.SingleWriter bool` flag gates **only** `RunOutbox`'s `CommitGatesVisibility` subtest.
+     That subtest holds an **open, uncommitted write transaction** and then issues a concurrent
+     `Source.Poll` on the pool — on PG/MySQL the uncommitted row is MVCC/`SKIP LOCKED`-invisible so the poll
+     returns empty cleanly, but on **single-writer SQLite** the pool's claim `UPDATE` blocks on the held
+     writer lock for the full `busy_timeout` and then fails `SQLITE_BUSY` (**empirically confirmed**, audit
+     F1). It is NOT an F8 correctness-only case; a single-writer engine cannot satisfy it. `sqliteKit` sets
+     `SingleWriter=true`, skipping it; the rest of `RunOutbox` (Atomicity, policy branches, borrowed-tx) and
+     all of `RunSource`'s genuinely-concurrent cases **do** pass on SQLite (autocommit claims serialize
+     safely — empirically confirmed: 8 workers × 200 rows, zero double-claims).
 - **Guarantee:** at-least-once, same as the other engines (single-writer concurrency, but the queue semantics
   hold). Documented per-dialect.
 
