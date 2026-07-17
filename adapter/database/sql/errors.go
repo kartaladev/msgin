@@ -79,4 +79,44 @@ var (
 	// deferred to the first Send, which would otherwise panic on a nil-func
 	// call (ADR 0010 D8).
 	ErrNilResolver = errors.New("msgin/sql: nil TransactionResolver")
+
+	// ErrNilTx is returned by InboxDeduper.MarkProcessed when the caller's
+	// business transaction is nil. MarkProcessed records the dedup row inside
+	// the caller's tx by design (ADR 0010 D10) — the concrete *sql.Tx type
+	// already bars passing the auto-committing pool — so a nil tx is refused up
+	// front with this typed error rather than dereferenced into a panic
+	// (upholding the no-panic-on-caller-input rule).
+	ErrNilTx = errors.New("msgin/sql: nil transaction")
+
+	// ErrInvalidRetention is returned by InboxDeduper.Purge when olderThan is
+	// non-positive. A non-positive retention would set the delete cutoff to
+	// now() (or the future), purging the ENTIRE inbox — after which every id
+	// reads already=false on redelivery and is double-processed, the exact
+	// failure the deduper exists to prevent. So it is refused up front (before
+	// any DB call) rather than executed. A positive olderThan is still the
+	// caller's responsibility to size above the source's max redelivery window
+	// (see Purge's godoc). It is exported so callers can errors.Is it (ADR 0010
+	// D10 MEDIUM, hardened per the Task 10 review).
+	ErrInvalidRetention = errors.New("msgin/sql: retention (olderThan) must be > 0")
+
+	// ErrInboxNoUniqueConstraint is returned by InboxDeduper.Ready when the inbox
+	// table exists but its msg_id column carries NO unique/primary-key
+	// constraint. Without it, MySQL/MariaDB's INSERT IGNORE never detects a
+	// conflict, so the dedup silently never works (Postgres would already fail
+	// loudly on ON CONFLICT). Ready probes for the constraint and fails fast with
+	// this error (naming the table) so a mis-provisioned schema is caught at boot,
+	// not after messages have been silently double-processed. The reference DDL
+	// (see InboxDDL) provides the constraint. It is exported so callers can
+	// errors.Is it (ADR 0010 D10, added per the Task 10 review, the user's robust
+	// choice).
+	ErrInboxNoUniqueConstraint = errors.New("msgin/sql: inbox msg_id column has no unique constraint")
+
+	// ErrInboxInsertFailed is returned by the MySQL InboxDialect when an inbox
+	// INSERT IGNORE affected no row AND a verifying SELECT finds no matching row
+	// — meaning INSERT IGNORE demoted a genuine (non-duplicate) data error to a
+	// warning (ADR 0010 D10 MEDIUM 6). The message is NOT deduplicated (which
+	// would silently drop it); the error surfaces so the caller retries. It is
+	// exported so callers can errors.Is it. Postgres has no equivalent path (its
+	// ON CONFLICT ... RETURNING distinguishes insert from conflict exactly).
+	ErrInboxInsertFailed = errors.New("msgin/sql: inbox insert did not take effect and is not a duplicate")
 )

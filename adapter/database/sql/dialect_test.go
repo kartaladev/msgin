@@ -86,3 +86,70 @@ func TestDialectMethodsRejectInvalidTable(t *testing.T) {
 		}
 	}
 }
+
+// TestInboxDialectMethodsRejectInvalidTable is the InboxDialect peer of
+// TestDialectMethodsRejectInvalidTable: every InboxDialect method (on BOTH
+// built-in inbox dialects) validates its table identifier up front and returns
+// ErrInvalidTableName before touching the database. Validation is the first
+// statement of each method, so the nil Querier below is never dereferenced — the
+// reject branch returns first. This covers the typed-error surface the CLAUDE.md
+// coverage gate requires, giving the inbox methods parity with the lease ones.
+// (SchemaExists is shared with LeaseDialect and already covered above.)
+func TestInboxDialectMethodsRejectInvalidTable(t *testing.T) {
+	t.Parallel()
+
+	const badTable = "bad table; DROP" // space + semicolon fail validateIdent
+
+	type testCase struct {
+		name string
+		call func(d msginsql.InboxDialect) error
+	}
+
+	cases := []testCase{
+		{
+			name: "InsertInboxIfAbsent",
+			call: func(d msginsql.InboxDialect) error {
+				_, err := d.InsertInboxIfAbsent(t.Context(), nil, badTable, "m")
+				return err
+			},
+		},
+		{
+			name: "PurgeInbox",
+			call: func(d msginsql.InboxDialect) error {
+				_, err := d.PurgeInbox(t.Context(), nil, badTable, time.Minute)
+				return err
+			},
+		},
+		{
+			name: "EnsureInboxSchema",
+			call: func(d msginsql.InboxDialect) error {
+				return d.EnsureInboxSchema(t.Context(), nil, badTable)
+			},
+		},
+		{
+			name: "MsgIDUniqueIndexExists",
+			call: func(d msginsql.InboxDialect) error {
+				_, err := d.MsgIDUniqueIndexExists(t.Context(), nil, badTable)
+				return err
+			},
+		},
+	}
+
+	dialects := []struct {
+		name string
+		d    msginsql.InboxDialect
+	}{
+		{"postgres", msginsql.PostgresInboxDialect()},
+		{"mysql", msginsql.MySQLInboxDialect()},
+	}
+
+	for _, dl := range dialects {
+		for _, tc := range cases {
+			t.Run(dl.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				err := tc.call(dl.d)
+				require.ErrorIs(t, err, msginsql.ErrInvalidTableName)
+			})
+		}
+	}
+}

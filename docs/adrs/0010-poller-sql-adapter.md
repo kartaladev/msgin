@@ -755,6 +755,16 @@ func InboxDDL(d InboxDialect, table string) (string, error)    // reference DDL
   source's schema story (D2). The consumer stays plain at-least-once unless the handler adopts the deduper.
 - **Composability:** strategy 2 works with **any** source strategy (lease or lock) and any at-least-once
   source; it is the fallback when strategy 1's same-DB precondition does not hold.
+- **Implementation refinements (Plan 005 Task 10, folded in from the per-task adversarial review):**
+  (a) the MySQL/MariaDB duplicate-verify uses `LOCK IN SHARE MODE`, not MySQL-8-only `FOR SHARE`, so the
+  MariaDB derivative the auto-detect claims actually parses; (b) `Purge` refuses a non-positive `olderThan`
+  with **`ErrInvalidRetention`** (a non-positive cutoff deletes the whole inbox → double-process — a
+  categorically-invalid input distinct from the retention-window judgment); (c) `Ready` fails fast with
+  **`ErrInboxNoUniqueConstraint`** when `msg_id` carries no unique/PK constraint, via a portable
+  `InboxDialect.MsgIDUniqueIndexExists` `information_schema` probe — because on MySQL/MariaDB a missing
+  constraint makes `INSERT IGNORE` never conflict, silently disabling dedup (Postgres fails loudly on
+  `ON CONFLICT`). The exported inbox surface therefore also carries `ErrInvalidRetention`,
+  `ErrInboxNoUniqueConstraint`, and the `MsgIDUniqueIndexExists` method.
 
 **The two strategies are mutually exclusive per consumer** (a given consumer is either same-DB
 transactional or different-DB idempotent), but both may appear in one application for different flows.

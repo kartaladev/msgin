@@ -100,6 +100,56 @@ type LeaseDialect interface {
 // which validates the table first; each dialect keeps its builder unexported
 // (ADR 0010 D3 identifier-safety, review finding I1).
 
+// InboxDialect is the narrow, segregated SPI for the idempotent-consumer dedup
+// inbox (ADR 0010 D10). It is deliberately NOT the fat source LeaseDialect
+// (interface-segregation): a derivative author fixing one Claim quirk must not
+// be forced to implement inbox-dedup SQL, and a deduper never needs claim/lease
+// SQL. The built-in PostgresInboxDialect()/MySQLInboxDialect() (the same stateless
+// values as PostgresDialect()/MySQLDialect()) satisfy it, so NewInboxDeduper's
+// driver auto-detect and WithInboxDialect both work out of the box; a caller may
+// also supply their own InboxDialect for a wire-compatible derivative. Like
+// LeaseDialect, every method fully owns its SQL and uses the DB server clock for
+// processed_at; no cross-dialect SQL runs.
+//
+// Reference-DDL generation is deliberately NOT a method here, for the same
+// identifier-injection reason as LeaseDialect (above): the sole public entry point is
+// the package-level InboxDDL, which validates the table first and dispatches to
+// the built-in for its exact CREATE TABLE.
+type InboxDialect interface {
+	// InsertInboxIfAbsent records msgID in the dedup table on q (the caller's
+	// business transaction) and reports whether it was ALREADY present. The
+	// verdict is derived precisely, never from rowsAffected: Postgres via
+	// INSERT ... ON CONFLICT (msg_id) DO NOTHING RETURNING (exact), MySQL via
+	// INSERT IGNORE plus a verifying SELECT (INSERT IGNORE demotes non-duplicate
+	// data errors to rowsAffected==0, which the SELECT distinguishes from a
+	// genuine duplicate — ErrInboxInsertFailed on the demoted case). So
+	// already==true means genuinely a duplicate, nothing else (ADR 0010 D10).
+	InsertInboxIfAbsent(ctx context.Context, q Querier, table, msgID string) (already bool, err error)
+
+	// PurgeInbox deletes dedup rows whose processed_at is older than olderThan
+	// (evaluated on the DB clock) and returns the number removed.
+	PurgeInbox(ctx context.Context, q Querier, table string, olderThan time.Duration) (int64, error)
+
+	// EnsureInboxSchema idempotently creates the dedup table (and its
+	// processed_at retention index) — CREATE ... IF NOT EXISTS. It is optional
+	// and opt-in; msgin never runs DDL implicitly on the production path (D2).
+	EnsureInboxSchema(ctx context.Context, q Querier, table string) error
+
+	// SchemaExists reports whether the table exists, via the same portable
+	// information_schema probe LeaseDialect uses (no SQL driver import, D2). It is
+	// shared with LeaseDialect — a built-in satisfies both with one implementation.
+	SchemaExists(ctx context.Context, q Querier, table string) (bool, error)
+
+	// MsgIDUniqueIndexExists reports whether the table's msg_id column
+	// participates in a unique or primary-key index — the constraint the dedup
+	// relies on (without it MySQL/MariaDB's INSERT IGNORE never conflicts and the
+	// dedup silently never works). It is a portable information_schema probe (no
+	// SQL driver import, matching SchemaExists) and is used by InboxDeduper.Ready
+	// to fail fast on a mis-provisioned schema (ErrInboxNoUniqueConstraint). Added
+	// per the Task 10 review (ADR 0010 D10).
+	MsgIDUniqueIndexExists(ctx context.Context, q Querier, table string) (bool, error)
+}
+
 // identPattern is the only accepted shape for a table (or derived index)
 // identifier. It admits no quote, semicolon, or whitespace, so a validated
 // name is safe to dialect-quote and interpolate.

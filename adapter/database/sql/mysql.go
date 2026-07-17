@@ -33,6 +33,12 @@ type mysqlDialect struct{}
 // driver also auto-detects it.
 func MySQLDialect() LeaseDialect { return mysqlDialect{} }
 
+// MySQLInboxDialect returns the built-in MySQL InboxDialect — the same stateless
+// value as MySQLDialect(), narrowed to the dedup-inbox SPI (ADR 0010 D10). Pass
+// it to NewInboxDeduper via WithInboxDialect to bypass driver auto-detect (a
+// mysql/mariadb driver auto-detects it otherwise).
+func MySQLInboxDialect() InboxDialect { return mysqlDialect{} }
+
 // mysqlQuote back-quotes a MySQL identifier. The name must already be validated
 // (validateIdent admits no backtick), so wrapping is safe; doubling any embedded
 // backtick is defense-in-depth in case this is ever reached without prior
@@ -330,6 +336,122 @@ func (mysqlDialect) SchemaExists(ctx context.Context, q Querier, table string) (
 	var one int
 	err := q.QueryRowContext(ctx,
 		"SELECT 1 FROM information_schema.tables WHERE table_name = ? AND table_schema = DATABASE()",
+		table,
+	).Scan(&one)
+	if errors.Is(err, stdsql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// InsertInboxIfAbsent implements InboxDialect for MySQL (ADR 0010 D10). MySQL has
+// no ON CONFLICT ... RETURNING, so it INSERT IGNOREs then VERIFIES the outcome
+// with a locking SELECT, never trusting rowsAffected (MEDIUM 6): INSERT IGNORE
+// turns a duplicate-key into a no-op (rowsAffected==0) but ALSO demotes genuine
+// data errors (CHECK/FK/truncation/range) to warnings with rowsAffected==0 — so
+// rowsAffected==0 is NOT proof of a duplicate. A freshly inserted row
+// (rowsAffected==1) is the first sighting (already=false); otherwise a
+// SELECT ... LOCK IN SHARE MODE (which reads the current committed state,
+// bypassing this transaction's REPEATABLE READ snapshot, and serializes
+// concurrent same-id inserts) decides: a row present is a genuine duplicate
+// (already=true), a row
+// absent means INSERT IGNORE swallowed a real error and recorded nothing —
+// ErrInboxInsertFailed, so the message is retried rather than silently dropped.
+// It runs on q — the caller's business transaction — so the dedup row commits
+// atomically with the business writes.
+func (mysqlDialect) InsertInboxIfAbsent(ctx context.Context, q Querier, table, msgID string) (bool, error) {
+	qt, err := mysqlQuoteTable(table)
+	if err != nil {
+		return false, err
+	}
+	res, err := q.ExecContext(ctx,
+		fmt.Sprintf("INSERT IGNORE INTO %s (msg_id, processed_at) VALUES (?, UTC_TIMESTAMP(6))", qt),
+		msgID,
+	)
+	if err != nil {
+		return false, err // a non-demoted error still surfaces normally
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if n == 1 {
+		return false, nil // freshly inserted: first time this id is seen
+	}
+	// n==0: a genuine duplicate OR a demoted data error — verify with a locking
+	// read of the current committed state. LOCK IN SHARE MODE (not the MySQL-8-only
+	// FOR SHARE) is used so the read runs on BOTH MySQL 8 and MariaDB, which
+	// rejects FOR SHARE as a parse error.
+	var found string
+	err = q.QueryRowContext(ctx,
+		fmt.Sprintf("SELECT msg_id FROM %s WHERE msg_id = ? LOCK IN SHARE MODE", qt),
+		msgID,
+	).Scan(&found)
+	if errors.Is(err, stdsql.ErrNoRows) {
+		return false, fmt.Errorf("%w: msg_id %q (INSERT IGNORE affected no row and none exists)",
+			ErrInboxInsertFailed, msgID)
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil // verified genuine duplicate
+}
+
+// PurgeInbox implements InboxDialect for MySQL: it deletes rows older than
+// olderThan (DB clock) and returns the count removed. olderThan is passed as a
+// microsecond interval, matching the rest of the dialect's DB-clock arithmetic.
+func (mysqlDialect) PurgeInbox(ctx context.Context, q Querier, table string, olderThan time.Duration) (int64, error) {
+	qt, err := mysqlQuoteTable(table)
+	if err != nil {
+		return 0, err
+	}
+	res, err := q.ExecContext(ctx,
+		fmt.Sprintf("DELETE FROM %s WHERE processed_at < DATE_SUB(UTC_TIMESTAMP(6), INTERVAL ? MICROSECOND)", qt),
+		olderThan.Microseconds(),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// EnsureInboxSchema implements InboxDialect for MySQL: it idempotently creates
+// the dedup table with its processed_at retention index declared INLINE (MySQL
+// has no CREATE INDEX IF NOT EXISTS), so the whole schema is one idempotent
+// statement.
+func (mysqlDialect) EnsureInboxSchema(ctx context.Context, q Querier, table string) error {
+	qt, err := mysqlQuoteTable(table)
+	if err != nil {
+		return err
+	}
+	qidx := mysqlQuote(table + "_processed_idx")
+	if _, err := q.ExecContext(ctx, mysqlCreateInboxTable(qt, qidx)); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MsgIDUniqueIndexExists implements InboxDialect for MySQL/MariaDB: it reports
+// whether msg_id participates in a unique index (a PRIMARY KEY is a unique index
+// in information_schema.statistics) on table, via a portable probe (no driver
+// import, matching SchemaExists). non_unique = 0 selects unique/PK indexes. table
+// is a bound parameter, but validated anyway so the exported SPI never runs on an
+// unvalidated identifier.
+func (mysqlDialect) MsgIDUniqueIndexExists(ctx context.Context, q Querier, table string) (bool, error) {
+	if err := validateIdent(table); err != nil {
+		return false, err
+	}
+	var one int
+	err := q.QueryRowContext(ctx,
+		`SELECT 1 FROM information_schema.statistics
+WHERE table_schema = DATABASE()
+  AND table_name = ?
+  AND column_name = 'msg_id'
+  AND non_unique = 0
+LIMIT 1`,
 		table,
 	).Scan(&one)
 	if errors.Is(err, stdsql.ErrNoRows) {

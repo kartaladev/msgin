@@ -18,6 +18,12 @@ type postgresDialect struct{}
 // the adapter constructors via WithDialect for the guaranteed-correct path.
 func PostgresDialect() LeaseDialect { return postgresDialect{} }
 
+// PostgresInboxDialect returns the built-in PostgreSQL InboxDialect — the same
+// stateless value as PostgresDialect(), narrowed to the dedup-inbox SPI (ADR
+// 0010 D10). Pass it to NewInboxDeduper via WithInboxDialect to bypass driver
+// auto-detect (a pgx/pq/postgres driver auto-detects it otherwise).
+func PostgresInboxDialect() InboxDialect { return postgresDialect{} }
+
 // pgQuote double-quotes a PostgreSQL identifier. The name must already be
 // validated (validateIdent admits no double-quote), so wrapping is safe;
 // doubling any embedded `"` is defense-in-depth (belt-and-suspenders) in case
@@ -236,6 +242,103 @@ func (postgresDialect) SchemaExists(ctx context.Context, q Querier, table string
 	var one int
 	err := q.QueryRowContext(ctx,
 		`SELECT 1 FROM information_schema.tables WHERE table_name = $1 AND table_schema = current_schema()`,
+		table,
+	).Scan(&one)
+	if errors.Is(err, stdsql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// InsertInboxIfAbsent implements InboxDialect for PostgreSQL (ADR 0010 D10). It
+// records msgID via INSERT ... ON CONFLICT (msg_id) DO NOTHING RETURNING, which
+// distinguishes an insert (a row is RETURNed → already=false) from a duplicate
+// (no row → sql.ErrNoRows → already=true) EXACTLY, never trusting rowsAffected.
+// It runs on q — the caller's business transaction — so the dedup row commits
+// atomically with the business writes.
+func (postgresDialect) InsertInboxIfAbsent(ctx context.Context, q Querier, table, msgID string) (bool, error) {
+	qt, err := pgQuoteTable(table)
+	if err != nil {
+		return false, err
+	}
+	var returned string
+	err = q.QueryRowContext(ctx,
+		fmt.Sprintf(`INSERT INTO %s (msg_id, processed_at) VALUES ($1, now())
+ON CONFLICT (msg_id) DO NOTHING
+RETURNING msg_id`, qt),
+		msgID,
+	).Scan(&returned)
+	if errors.Is(err, stdsql.ErrNoRows) {
+		return true, nil // conflict: msgID already recorded (a genuine duplicate)
+	}
+	if err != nil {
+		return false, err
+	}
+	return false, nil // inserted: first time this id is seen
+}
+
+// PurgeInbox implements InboxDialect for PostgreSQL: it deletes rows older than
+// olderThan (DB clock) and returns the count removed. olderThan is passed as a
+// microsecond interval, matching the rest of the dialect's DB-clock arithmetic.
+func (postgresDialect) PurgeInbox(ctx context.Context, q Querier, table string, olderThan time.Duration) (int64, error) {
+	qt, err := pgQuoteTable(table)
+	if err != nil {
+		return 0, err
+	}
+	res, err := q.ExecContext(ctx,
+		fmt.Sprintf(`DELETE FROM %s WHERE processed_at < now() - ($1 * interval '1 microsecond')`, qt),
+		olderThan.Microseconds(),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// EnsureInboxSchema implements InboxDialect for PostgreSQL: it idempotently
+// creates the dedup table and its processed_at retention index. The two
+// statements run separately (pgx's extended protocol rejects multi-statement
+// Exec); both are IF NOT EXISTS, so EnsureInboxSchema is idempotent.
+func (postgresDialect) EnsureInboxSchema(ctx context.Context, q Querier, table string) error {
+	qt, err := pgQuoteTable(table)
+	if err != nil {
+		return err
+	}
+	if _, err := q.ExecContext(ctx, postgresCreateInboxTable(qt)); err != nil {
+		return err
+	}
+	qidx := pgQuote(table + "_processed_idx")
+	if _, err := q.ExecContext(ctx, postgresCreateInboxIndex(qt, qidx)); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MsgIDUniqueIndexExists implements InboxDialect for PostgreSQL: it reports
+// whether msg_id participates in a PRIMARY KEY or UNIQUE constraint on table, via
+// a portable information_schema probe (no driver import, matching SchemaExists).
+// table is a bound parameter, but validated anyway so the exported SPI never runs
+// on an unvalidated identifier.
+func (postgresDialect) MsgIDUniqueIndexExists(ctx context.Context, q Querier, table string) (bool, error) {
+	if err := validateIdent(table); err != nil {
+		return false, err
+	}
+	var one int
+	err := q.QueryRowContext(ctx,
+		`SELECT 1
+FROM information_schema.table_constraints tc
+JOIN information_schema.key_column_usage kcu
+  ON tc.constraint_name = kcu.constraint_name
+ AND tc.table_schema = kcu.table_schema
+ AND tc.table_name = kcu.table_name
+WHERE tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE')
+  AND kcu.column_name = 'msg_id'
+  AND tc.table_name = $1
+  AND tc.table_schema = current_schema()
+LIMIT 1`,
 		table,
 	).Scan(&one)
 	if errors.Is(err, stdsql.ErrNoRows) {

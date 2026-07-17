@@ -26,6 +26,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
+	tcmariadb "github.com/testcontainers/testcontainers-go/modules/mariadb"
 	tcmysql "github.com/testcontainers/testcontainers-go/modules/mysql"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -155,6 +156,61 @@ func RunTestMySQL(t *testing.T, opts ...TestOption) *sql.DB {
 	return db
 }
 
+// RunTestMariaDB starts a throwaway MariaDB container and returns an open *sql.DB
+// (go-sql-driver/mysql — MariaDB is wire-compatible and uses the same driver)
+// pointed at it. The container and connection are torn down via t.Cleanup.
+// parseTime=true is set so DATETIME(6) columns scan back into time.Time (a test
+// probe needs it). It is the MariaDB peer of RunTestMySQL, provisioned ONLY for
+// the inbox suite (inboxEngines) to certify the MySQL-family InboxDialect on
+// MariaDB too — the ADR claims MariaDB as an auto-detected engine, and its
+// INSERT-IGNORE verify read (LOCK IN SHARE MODE) and unique-index probe must hold
+// there. The lease/lock/outbox suites are NOT run on MariaDB here (a separate
+// follow-up).
+func RunTestMariaDB(t *testing.T, opts ...TestOption) *sql.DB {
+	t.Helper()
+
+	// MariaDB 11.4 (LTS): SELECT ... FOR UPDATE SKIP LOCKED, LOCK IN SHARE MODE,
+	// and expression column DEFAULT (UTC_TIMESTAMP(6)) are all supported.
+	cfg := &testConfig{image: "mariadb:11.4"}
+	for _, o := range opts {
+		o(cfg)
+	}
+
+	ctx := t.Context()
+
+	container, err := tcmariadb.Run(ctx, cfg.image,
+		tcmariadb.WithDatabase("msgin"),
+		tcmariadb.WithUsername("msgin"),
+		tcmariadb.WithPassword("msgin"),
+	)
+	require.NoError(t, err, "start mariadb test container")
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := container.Terminate(cleanupCtx); err != nil {
+			t.Errorf("terminate mariadb test container: %v", err)
+		}
+	})
+
+	dsn, err := container.ConnectionString(ctx, "parseTime=true")
+	require.NoError(t, err, "mariadb connection string")
+
+	db, err := sql.Open("mysql", dsn)
+	require.NoError(t, err, "open mariadb database")
+	t.Cleanup(func() { _ = db.Close() })
+
+	// The wait-for-log strategy can fire a moment before the server accepts
+	// connections, so ping with a short retry loop rather than a single shot.
+	pingCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	require.Eventually(t, func() bool {
+		return db.PingContext(pingCtx) == nil
+	}, 60*time.Second, 500*time.Millisecond, "ping mariadb database")
+
+	return db
+}
+
 // engine is one database engine the behavior suites run against: its built-in
 // LeaseDialect and the helper that provisions a throwaway container for it. The suites
 // iterate over `engines` so the SAME behavior assertions run on both PostgreSQL
@@ -165,15 +221,29 @@ type engine struct {
 	openDB  func(t *testing.T, opts ...TestOption) *sql.DB
 }
 
-// engines is the dialect-parameterized table every behavior suite runs over.
+// engines is the dialect-parameterized table the lease/lock/outbox/dialect
+// behavior suites run over (PostgreSQL + MySQL). MariaDB is deliberately NOT here
+// — it is scoped to inboxEngines (see below).
 var engines = []engine{
 	{name: "postgres", dialect: msginsql.PostgresDialect(), openDB: RunTestDatabase},
 	{name: "mysql", dialect: msginsql.MySQLDialect(), openDB: RunTestMySQL},
 }
 
-// isMySQL reports whether this engine speaks MySQL SQL, so a test helper can pick
-// the right identifier quoting / placeholder / time expression.
-func (e engine) isMySQL() bool { return e.name == "mysql" }
+// inboxEngines is the engine table the InboxSuite runs over: the shared engines
+// PLUS MariaDB. MariaDB is a MySQL-family engine (same driver, MySQLDialect), and
+// the inbox path uses MySQL-specific SQL that MariaDB must also accept (the
+// INSERT-IGNORE + LOCK IN SHARE MODE verify read, the unique-index probe), so the
+// dedup suite certifies it there. Certifying the lease/lock/outbox suites on
+// MariaDB is a separate follow-up, so those keep using engines.
+var inboxEngines = append(append([]engine{}, engines...),
+	engine{name: "mariadb", dialect: msginsql.MySQLDialect(), openDB: RunTestMariaDB},
+)
+
+// isMySQL reports whether this engine speaks MySQL-family SQL (MySQL or the
+// wire-compatible MariaDB), so a test helper can pick the right identifier
+// quoting / placeholder / time expression. MariaDB uses the same driver and
+// MySQLDialect, so it is treated identically here.
+func (e engine) isMySQL() bool { return e.name == "mysql" || e.name == "mariadb" }
 
 // quote wraps a raw identifier for the engine (backticks for MySQL, double
 // quotes for Postgres) — used by the raw SQL the test helpers issue directly
@@ -222,4 +292,14 @@ func (e engine) referenceDDL(table string) (string, error) {
 		return msginsql.MySQLDDL(table)
 	}
 	return msginsql.PostgresDDL(table)
+}
+
+// inboxDialect returns the engine's built-in InboxDialect (the narrow dedup-inbox
+// SPI), so the inbox suite can drive InboxDDL and dialect methods for the right
+// engine.
+func (e engine) inboxDialect() msginsql.InboxDialect {
+	if e.isMySQL() {
+		return msginsql.MySQLInboxDialect()
+	}
+	return msginsql.PostgresInboxDialect()
 }
