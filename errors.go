@@ -39,4 +39,9 @@ var (
 	// ErrOverflowDropped is the cause carried to OnRetry/logs when an overflow
 	// policy sheds a message; it is not returned from any exported function.
 	ErrOverflowDropped = errors.New("msgin: message dropped by overflow policy")
+	// ErrInvalidPollInterval is returned when WithPollInterval is given a
+	// non-positive duration.
+	ErrInvalidPollInterval = errors.New("msgin: poll interval must be > 0")
+	// ErrInvalidPollMaxBatch is returned when WithPollMaxBatch is given n < 1.
+	ErrInvalidPollMaxBatch = errors.New("msgin: poll max batch must be >= 1")
 )

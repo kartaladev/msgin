@@ -67,6 +67,24 @@ func TestNewConsumer_FlowControlValidation(t *testing.T) {
 		{"negative max payload bytes disables the cap (accepted)",
 			[]msgin.ConsumerOption[order]{msgin.WithMaxPayloadBytes[order](-1)},
 			func(t *testing.T, err error) { assert.NoError(t, err) }},
+		{"zero poll interval is rejected",
+			[]msgin.ConsumerOption[order]{msgin.WithPollInterval[order](0)},
+			func(t *testing.T, err error) { assert.ErrorIs(t, err, msgin.ErrInvalidPollInterval) }},
+		{"negative poll interval is rejected",
+			[]msgin.ConsumerOption[order]{msgin.WithPollInterval[order](-time.Second)},
+			func(t *testing.T, err error) { assert.ErrorIs(t, err, msgin.ErrInvalidPollInterval) }},
+		{"poll max batch below 1 is rejected",
+			[]msgin.ConsumerOption[order]{msgin.WithPollMaxBatch[order](0)},
+			func(t *testing.T, err error) { assert.ErrorIs(t, err, msgin.ErrInvalidPollMaxBatch) }},
+		{"negative poll max batch is rejected",
+			[]msgin.ConsumerOption[order]{msgin.WithPollMaxBatch[order](-1)},
+			func(t *testing.T, err error) { assert.ErrorIs(t, err, msgin.ErrInvalidPollMaxBatch) }},
+		{"valid poll options construct cleanly over a streaming source (ignored, no behavior change)",
+			[]msgin.ConsumerOption[order]{
+				msgin.WithPollInterval[order](5 * time.Second),
+				msgin.WithPollMaxBatch[order](50),
+			},
+			func(t *testing.T, err error) { assert.NoError(t, err) }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -115,6 +115,21 @@ const defaultMaxInFlight = 1024
 // is never swept mid-flight (NF-2).
 const defaultAttemptTTL = 5 * time.Minute
 
+// defaultPollInterval is the idle wait between polls when a PollingSource's
+// poll returns no messages, and WithPollInterval is unset. It paces the
+// Poller so an empty backlog does not busy-loop the source.
+const defaultPollInterval = 1 * time.Second
+
+// defaultPollMaxBatch bounds the number of rows/messages fetched per poll
+// when WithPollMaxBatch is unset. It keeps a single poll bounded so a large
+// backlog is drained incrementally rather than in one unbounded fetch.
+const defaultPollMaxBatch = 100
+
+// maxPollErrorBackoff caps the Poller's backoff delay after consecutive
+// polling errors, so a persistently failing source is retried at a bounded
+// cadence rather than backing off unboundedly.
+const maxPollErrorBackoff = 30 * time.Second
+
 // WithMaxInFlight bounds claimed-but-unsettled messages to n (n >= 1). This is
 // the load-bearing flood defense (spec §7.4.1); default defaultMaxInFlight.
 // Setting the flag lets NewConsumer tell an explicit WithMaxInFlight(0) (a
@@ -190,4 +205,26 @@ func WithAttemptTTL[T any](d time.Duration) ConsumerOption[T] {
 // pathologically nested input rather than overflowing the stack.
 func WithMaxPayloadBytes[T any](n int) ConsumerOption[T] {
 	return func(o *consumerConfig[T]) { o.maxPayloadBytes = n }
+}
+
+// WithPollInterval sets how long the Poller idles after an EMPTY poll of a
+// PollingSource before polling again (default defaultPollInterval, 1s). It
+// has no effect on a StreamingSource. Setting the flag lets NewConsumer tell
+// an explicit WithPollInterval(0) (a caller error → ErrInvalidPollInterval)
+// apart from "unset" (→ default), mirroring WithAttemptTTL (C2).
+//
+// d must be > 0, else NewConsumer returns ErrInvalidPollInterval.
+func WithPollInterval[T any](d time.Duration) ConsumerOption[T] {
+	return func(o *consumerConfig[T]) { o.pollInterval = d; o.pollIntervalSet = true }
+}
+
+// WithPollMaxBatch caps the number of rows/messages the Poller fetches per
+// poll of a PollingSource (default defaultPollMaxBatch, 100). It has no
+// effect on a StreamingSource. Setting the flag lets NewConsumer tell an
+// explicit WithPollMaxBatch(0) (a caller error → ErrInvalidPollMaxBatch)
+// apart from "unset" (→ default), mirroring WithAttemptTTL (C2).
+//
+// n must be >= 1, else NewConsumer returns ErrInvalidPollMaxBatch.
+func WithPollMaxBatch[T any](n int) ConsumerOption[T] {
+	return func(o *consumerConfig[T]) { o.pollMaxBatch = n; o.pollMaxBatchSet = true }
 }

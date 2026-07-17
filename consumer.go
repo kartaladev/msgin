@@ -41,6 +41,10 @@ type consumerConfig[T any] struct {
 	attemptTTL      time.Duration
 	attemptTTLSet   bool // distinguishes explicit WithAttemptTTL(0) (rejected) from unset (ADR 0009 D3)
 	maxPayloadBytes int  // <= 0 disables the wire-decode size cap (ADR 0009 D5)
+	pollInterval    time.Duration
+	pollIntervalSet bool // distinguishes explicit WithPollInterval(0) (rejected) from unset (C2)
+	pollMaxBatch    int
+	pollMaxBatchSet bool // distinguishes explicit WithPollMaxBatch(0) (rejected) from unset (C2)
 }
 
 // WithConcurrency sets the worker-pool size (default 1).
@@ -158,6 +162,22 @@ func NewConsumer[T any](src any, h Handler[T], opts ...ConsumerOption[T]) (Consu
 		cfg.attemptTTL = defaultAttemptTTL
 	} else if cfg.attemptTTL <= 0 {
 		return nil, ErrInvalidAttemptTTL
+	}
+	// C2: unset → default; explicitly set → must be > 0 (so WithPollInterval(0)
+	// is a rejected caller error, not silently defaulted). Poll fields are
+	// validated here for both source kinds (a StreamingSource simply ignores
+	// them); the Poller itself is wired in a later task.
+	if !cfg.pollIntervalSet {
+		cfg.pollInterval = defaultPollInterval
+	} else if cfg.pollInterval <= 0 {
+		return nil, ErrInvalidPollInterval
+	}
+	// C2: unset → default; explicitly set → must be >= 1 (so WithPollMaxBatch(0)
+	// is a rejected caller error, not silently defaulted).
+	if !cfg.pollMaxBatchSet {
+		cfg.pollMaxBatch = defaultPollMaxBatch
+	} else if cfg.pollMaxBatch < 1 {
+		return nil, ErrInvalidPollMaxBatch
 	}
 	codec, live, err := resolveCodec[T](src, cfg.codec, cfg.codecSet)
 	if err != nil {

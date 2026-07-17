@@ -14,7 +14,8 @@ func TestSentinels_WrapAndCompare(t *testing.T) {
 		msgin.ErrPayloadType, msgin.ErrPayloadDecode, msgin.ErrNilAdapter,
 		msgin.ErrPayloadTooLarge, msgin.ErrUnexpectedCodec,
 		msgin.ErrInvalidConcurrency, msgin.ErrUnsupportedSource,
-		msgin.ErrInvalidAttemptTTL,
+		msgin.ErrInvalidAttemptTTL, msgin.ErrInvalidPollInterval,
+		msgin.ErrInvalidPollMaxBatch,
 	}
 	for _, s := range sentinels {
 		t.Run(s.Error(), func(t *testing.T) {
