@@ -11,9 +11,10 @@ var (
 	ErrInvalidTableName = errors.New("msgin/sql: invalid table name")
 
 	// ErrSchemaNotReady reports that the adapter's table is not initialized —
-	// the caller has not applied the reference DDL (see postgres.DDL / MySQLDDL) or called
-	// EnsureSchema. It is exported so callers can errors.Is it; the source and
-	// outbound wrap it naming the offending table (ADR 0010 D2).
+	// the caller has not applied the reference DDL (see postgres.DDL /
+	// mysql.DDL) or called EnsureSchema. It is exported so callers can
+	// errors.Is it; the source and outbound wrap it naming the offending table
+	// (ADR 0010 D2).
 	ErrSchemaNotReady = errors.New("msgin/sql: schema not ready")
 
 	// ErrNilDialect is a construction error from NewPollingSource,
@@ -48,10 +49,11 @@ var (
 
 	// ErrLockStrategyUnsupported is a construction error from NewPollingSource
 	// when WithStrategy(StrategyLockForUpdate) is selected but the resolved
-	// LeaseDialect does not also implement LockDialect (the segregated lock/FOR UPDATE
-	// SPI, ADR 0010 D5). The built-in postgres.LeaseDialect()/MySQLDialect implement it; a
-	// custom lease-only LeaseDialect must add LockDialect to be usable with the lock
-	// strategy. The wrapped message names the offending dialect type.
+	// LeaseDialect does not also implement LockDialect (the segregated lock/FOR
+	// UPDATE SPI, ADR 0010 D5). The built-in postgres.LeaseDialect()/
+	// mysql.LeaseDialect() implement it; a custom lease-only LeaseDialect must
+	// add LockDialect to be usable with the lock strategy. The wrapped message
+	// names the offending dialect type.
 	ErrLockStrategyUnsupported = errors.New("msgin/sql: lock strategy requires a LeaseDialect that implements LockDialect")
 
 	// ErrInvalidPayload is returned by Outbound.Send when the message's payload

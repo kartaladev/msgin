@@ -1,19 +1,20 @@
-package sql
+package mysql
 
 import (
 	"context"
 	stdsql "database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
+
+	msginsql "github.com/kartaladev/msgin/adapter/database/sql"
 )
 
 // mysqlDialect is the built-in LeaseDialect for MySQL and wire-compatible
 // derivatives (MariaDB). It is stateless; a single value is shared by all
-// callers. It is behavior-identical to postgresDialect — same claim predicate,
-// fence semantics, delivery_count/lease_epoch bumps, and visible_after delays —
-// expressed in MySQL SQL (ADR 0010 D3/D4).
+// callers. It is behavior-identical to the postgres dialect — same claim
+// predicate, fence semantics, delivery_count/lease_epoch bumps, and
+// visible_after delays — expressed in MySQL SQL (ADR 0010 D3/D4).
 //
 // # The two-step, atomic claim (correctness-critical)
 //
@@ -27,31 +28,39 @@ import (
 // SELECT's values + 1, computed in Go to mirror Postgres's RETURNING.
 type mysqlDialect struct{}
 
-// MySQLDialect returns the built-in MySQL LeaseDialect (lease/claim strategy),
-// behavior-identical to PostgresDialect() over MySQL SQL. Pass it as the
+// Compile-time assertions that the single stateless value satisfies the full
+// SPI: the lease/claim source dialect, the segregated lock SPI (so
+// WithStrategy(StrategyLockForUpdate) accepts it), and the segregated
+// dedup-inbox SPI (so it may be passed as NewInboxDeduper's required dialect).
+var (
+	_ msginsql.LeaseDialect = mysqlDialect{}
+	_ msginsql.LockDialect  = mysqlDialect{}
+	_ msginsql.InboxDialect = mysqlDialect{}
+)
+
+// LeaseDialect returns the built-in MySQL LeaseDialect (lease/claim strategy),
+// behavior-identical to postgres.LeaseDialect() over MySQL SQL. Pass it as the
 // required dialect argument to NewPollingSource/NewOutboundAdapter; it also
-// covers MariaDB (wire-compatible).
-func MySQLDialect() LeaseDialect { return mysqlDialect{} }
+// covers MariaDB (wire-compatible). The single stateless value also satisfies
+// msginsql.LockDialect (for WithStrategy(StrategyLockForUpdate)) and
+// msginsql.InboxDialect.
+func LeaseDialect() msginsql.LeaseDialect { return mysqlDialect{} }
 
-// MySQLInboxDialect returns the built-in MySQL InboxDialect — the same stateless
-// value as MySQLDialect(), narrowed to the dedup-inbox SPI (ADR 0010 D10). Pass
+// InboxDialect returns the built-in MySQL InboxDialect — the same stateless
+// value as LeaseDialect(), narrowed to the dedup-inbox SPI (ADR 0010 D10). Pass
 // it as the required dialect argument to NewInboxDeduper.
-func MySQLInboxDialect() InboxDialect { return mysqlDialect{} }
+func InboxDialect() msginsql.InboxDialect { return mysqlDialect{} }
 
-// mysqlQuote back-quotes a MySQL identifier. The name must already be validated
-// (ValidateIdent admits no backtick), so wrapping is safe; doubling any embedded
-// backtick is defense-in-depth in case this is ever reached without prior
-// validation (mirrors pgQuote).
-func mysqlQuote(name string) string {
-	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
-}
-
-// mysqlQuoteTable validates then quotes a table identifier for interpolation.
-func mysqlQuoteTable(table string) (string, error) {
-	if err := ValidateIdent(table); err != nil {
-		return "", err
-	}
-	return mysqlQuote(table), nil
+// txBeginner is the capability a Querier must have to BEGIN a new transaction:
+// *sql.DB satisfies it (its BeginTx); *sql.Tx does not (a tx cannot nest one).
+// This is a MODULE-LOCAL declaration (Go interfaces are structural, so no
+// shared type with the engine's own unexported txBeginner is required): the
+// engine's BeginLockTx handles the LockDialect path directly; this local
+// interface is only for the MySQL two-step lease Claim below, which must
+// distinguish the pool (*sql.DB, begin a new tx) from an already-open *sql.Tx
+// (run on it directly) the SAME way BeginLockTx does.
+type txBeginner interface {
+	BeginTx(ctx context.Context, opts *stdsql.TxOptions) (*stdsql.Tx, error)
 }
 
 // Claim leases up to limit claimable rows for lockedBy, treating any lease older
@@ -65,7 +74,7 @@ func mysqlQuoteTable(table string) (string, error) {
 //     inside their own tx): run the two-step directly on it, leaving commit to the
 //     caller who owns the tx.
 //   - q is neither: a clear error (Claim cannot be atomic without a transaction).
-func (mysqlDialect) Claim(ctx context.Context, q Querier, table string, limit int, lockedBy string, leaseTTL time.Duration) ([]ClaimedRow, error) {
+func (mysqlDialect) Claim(ctx context.Context, q msginsql.Querier, table string, limit int, lockedBy string, leaseTTL time.Duration) ([]msginsql.ClaimedRow, error) {
 	qt, err := mysqlQuoteTable(table)
 	if err != nil {
 		return nil, err
@@ -92,7 +101,7 @@ func (mysqlDialect) Claim(ctx context.Context, q Querier, table string, limit in
 		return mysqlClaimInTx(ctx, tx, qt, limit, lockedBy, leaseTTL)
 	}
 	return nil, fmt.Errorf(
-		"msgin/sql: mysql Claim requires a *sql.DB or *sql.Tx Querier (its two-step claim must be atomic), got %T", q)
+		"msgin/sql/mysql: mysql Claim requires a *sql.DB or *sql.Tx Querier (its two-step claim must be atomic), got %T", q)
 }
 
 // mysqlClaimInTx runs the atomic two-step claim on q (a transaction): SELECT the
@@ -100,7 +109,7 @@ func (mysqlDialect) Claim(ctx context.Context, q Querier, table string, limit in
 // SELECT's rows are fully read and closed BEFORE the UPDATE (a tx holds a single
 // connection, so the result set must be drained first). Returned rows carry the
 // post-increment delivery_count/lease_epoch computed in Go, matching Postgres.
-func mysqlClaimInTx(ctx context.Context, q Querier, qt string, limit int, lockedBy string, leaseTTL time.Duration) ([]ClaimedRow, error) {
+func mysqlClaimInTx(ctx context.Context, q msginsql.Querier, qt string, limit int, lockedBy string, leaseTTL time.Duration) ([]msginsql.ClaimedRow, error) {
 	// Claim predicate identical to Postgres: visible now, and unlocked or lease
 	// expired (the inlined reaper). leaseTTL is passed as a microsecond interval.
 	// Note the clause order: MySQL requires LIMIT BEFORE the locking clause
@@ -143,7 +152,7 @@ WHERE id IN (%s)`, qt, placeholders(len(ids)))
 // delivery_count/lease_epoch already incremented in Go) plus their ids for the
 // follow-up UPDATE. It closes the result set before returning, so the caller may
 // immediately run the UPDATE on the same single-connection transaction.
-func mysqlScanClaim(ctx context.Context, q Querier, query string, args ...any) ([]ClaimedRow, []int64, error) {
+func mysqlScanClaim(ctx context.Context, q msginsql.Querier, query string, args ...any) ([]msginsql.ClaimedRow, []int64, error) {
 	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, nil, err
@@ -151,11 +160,11 @@ func mysqlScanClaim(ctx context.Context, q Querier, query string, args ...any) (
 	defer rows.Close()
 
 	var (
-		out []ClaimedRow
+		out []msginsql.ClaimedRow
 		ids []int64
 	)
 	for rows.Next() {
-		var r ClaimedRow
+		var r msginsql.ClaimedRow
 		if err := rows.Scan(&r.ID, &r.MsgID, &r.Headers, &r.Payload, &r.DeliveryCount, &r.LeaseEpoch); err != nil {
 			return nil, nil, err
 		}
@@ -172,7 +181,7 @@ func mysqlScanClaim(ctx context.Context, q Querier, query string, args ...any) (
 	return out, ids, nil
 }
 
-func (mysqlDialect) Ack(ctx context.Context, q Querier, table string, id int64, lockedBy string, epoch int64) (bool, error) {
+func (mysqlDialect) Ack(ctx context.Context, q msginsql.Querier, table string, id int64, lockedBy string, epoch int64) (bool, error) {
 	qt, err := mysqlQuoteTable(table)
 	if err != nil {
 		return false, err
@@ -191,7 +200,7 @@ func (mysqlDialect) Ack(ctx context.Context, q Querier, table string, id int64, 
 	return n > 0, nil
 }
 
-func (mysqlDialect) Nack(ctx context.Context, q Querier, table string, id int64, lockedBy string, epoch int64, delay time.Duration) (bool, error) {
+func (mysqlDialect) Nack(ctx context.Context, q msginsql.Querier, table string, id int64, lockedBy string, epoch int64, delay time.Duration) (bool, error) {
 	qt, err := mysqlQuoteTable(table)
 	if err != nil {
 		return false, err
@@ -212,7 +221,7 @@ WHERE id = ? AND locked_by = ? AND lease_epoch = ?`, qt),
 	return n > 0, nil
 }
 
-func (mysqlDialect) Insert(ctx context.Context, q Querier, table, msgID string, headers, payload []byte, delay time.Duration) error {
+func (mysqlDialect) Insert(ctx context.Context, q msginsql.Querier, table, msgID string, headers, payload []byte, delay time.Duration) error {
 	qt, err := mysqlQuoteTable(table)
 	if err != nil {
 		return err
@@ -228,7 +237,7 @@ VALUES (?, ?, ?, DATE_ADD(UTC_TIMESTAMP(6), INTERVAL ? MICROSECOND))`, qt),
 	return err
 }
 
-func (mysqlDialect) EnsureSchema(ctx context.Context, q Querier, table string) error {
+func (mysqlDialect) EnsureSchema(ctx context.Context, q msginsql.Querier, table string) error {
 	qt, err := mysqlQuoteTable(table)
 	if err != nil {
 		return err
@@ -244,21 +253,21 @@ func (mysqlDialect) EnsureSchema(ctx context.Context, q Querier, table string) e
 }
 
 // ClaimLock implements LockDialect for MySQL (ADR 0010 D5), the MySQL peer of
-// postgresDialect.ClaimLock. Because MySQL's FOR UPDATE SKIP LOCKED row lock only
-// holds for the life of a transaction, the claim transaction is the SAME one
-// carried to settle: it begins a transaction on ctx, SELECTs one claimable row
-// (LIMIT before FOR UPDATE, the MySQL clause order) and scans it, bumps
-// delivery_count in that transaction, and returns the row with the OPEN
+// the postgres dialect's ClaimLock. Because MySQL's FOR UPDATE SKIP LOCKED row
+// lock only holds for the life of a transaction, the claim transaction is the
+// SAME one carried to settle: it begins a transaction on ctx, SELECTs one
+// claimable row (LIMIT before FOR UPDATE, the MySQL clause order) and scans it,
+// bumps delivery_count in that transaction, and returns the row with the OPEN
 // transaction carried in LockedRow.Tx. There is no lease-expiry disjunct — the
 // open transaction is the exclusive lock. It returns (nil, nil) when nothing is
 // claimable, rolling the transaction back on that path and on ANY error (no
 // connection leak).
-func (mysqlDialect) ClaimLock(ctx context.Context, q Querier, table, lockedBy string) (*LockedRow, error) {
+func (mysqlDialect) ClaimLock(ctx context.Context, q msginsql.Querier, table, lockedBy string) (*msginsql.LockedRow, error) {
 	qt, err := mysqlQuoteTable(table)
 	if err != nil {
 		return nil, err
 	}
-	tx, err := BeginLockTx(ctx, q)
+	tx, err := msginsql.BeginLockTx(ctx, q)
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +279,7 @@ ORDER BY visible_after
 LIMIT 1
 FOR UPDATE SKIP LOCKED`, qt)
 
-	var lr LockedRow
+	var lr msginsql.LockedRow
 	err = tx.QueryRowContext(ctx, selectSQL).Scan(&lr.ID, &lr.MsgID, &lr.Headers, &lr.Payload, &lr.DeliveryCount)
 	if errors.Is(err, stdsql.ErrNoRows) {
 		_ = tx.Rollback() // nothing claimable: release the connection
@@ -293,35 +302,35 @@ FOR UPDATE SKIP LOCKED`, qt)
 
 // AckLock settles lr by deleting its row on the carried transaction and
 // committing (ADR 0010 D5). On any error it rolls back, releasing the connection.
-func (mysqlDialect) AckLock(ctx context.Context, lr *LockedRow, table string) error {
+func (mysqlDialect) AckLock(ctx context.Context, lr *msginsql.LockedRow, table string) error {
 	qt, err := mysqlQuoteTable(table)
 	if err != nil {
 		_ = lr.Tx.Rollback()
 		return err
 	}
-	return SettleLockTx(ctx, lr.Tx, fmt.Sprintf("DELETE FROM %s WHERE id = ?", qt), lr.ID)
+	return msginsql.SettleLockTx(ctx, lr.Tx, fmt.Sprintf("DELETE FROM %s WHERE id = ?", qt), lr.ID)
 }
 
 // NackLock returns lr to the queue by clearing the lock and pushing
 // visible_after out by delay, then ALWAYS commits (ADR 0010 D5). On an
 // UPDATE/commit error it rolls back, releasing the connection.
-func (mysqlDialect) NackLock(ctx context.Context, lr *LockedRow, table string, delay time.Duration) error {
+func (mysqlDialect) NackLock(ctx context.Context, lr *msginsql.LockedRow, table string, delay time.Duration) error {
 	qt, err := mysqlQuoteTable(table)
 	if err != nil {
 		_ = lr.Tx.Rollback()
 		return err
 	}
-	return SettleLockTx(ctx, lr.Tx,
+	return msginsql.SettleLockTx(ctx, lr.Tx,
 		fmt.Sprintf(`UPDATE %s SET locked_by = NULL, locked_at = NULL,
   visible_after = DATE_ADD(UTC_TIMESTAMP(6), INTERVAL ? MICROSECOND)
 WHERE id = ?`, qt),
 		delay.Microseconds(), lr.ID)
 }
 
-func (mysqlDialect) SchemaExists(ctx context.Context, q Querier, table string) (bool, error) {
+func (mysqlDialect) SchemaExists(ctx context.Context, q msginsql.Querier, table string) (bool, error) {
 	// table is a bound parameter here, but validate it anyway so the exported SPI
 	// never runs on an unvalidated identifier.
-	if err := ValidateIdent(table); err != nil {
+	if err := msginsql.ValidateIdent(table); err != nil {
 		return false, err
 	}
 	var one int
@@ -353,7 +362,7 @@ func (mysqlDialect) SchemaExists(ctx context.Context, q Querier, table string) (
 // ErrInboxInsertFailed, so the message is retried rather than silently dropped.
 // It runs on q — the caller's business transaction — so the dedup row commits
 // atomically with the business writes.
-func (mysqlDialect) InsertInboxIfAbsent(ctx context.Context, q Querier, table, msgID string) (bool, error) {
+func (mysqlDialect) InsertInboxIfAbsent(ctx context.Context, q msginsql.Querier, table, msgID string) (bool, error) {
 	qt, err := mysqlQuoteTable(table)
 	if err != nil {
 		return false, err
@@ -383,7 +392,7 @@ func (mysqlDialect) InsertInboxIfAbsent(ctx context.Context, q Querier, table, m
 	).Scan(&found)
 	if errors.Is(err, stdsql.ErrNoRows) {
 		return false, fmt.Errorf("%w: msg_id %q (INSERT IGNORE affected no row and none exists)",
-			ErrInboxInsertFailed, msgID)
+			msginsql.ErrInboxInsertFailed, msgID)
 	}
 	if err != nil {
 		return false, err
@@ -394,7 +403,7 @@ func (mysqlDialect) InsertInboxIfAbsent(ctx context.Context, q Querier, table, m
 // PurgeInbox implements InboxDialect for MySQL: it deletes rows older than
 // olderThan (DB clock) and returns the count removed. olderThan is passed as a
 // microsecond interval, matching the rest of the dialect's DB-clock arithmetic.
-func (mysqlDialect) PurgeInbox(ctx context.Context, q Querier, table string, olderThan time.Duration) (int64, error) {
+func (mysqlDialect) PurgeInbox(ctx context.Context, q msginsql.Querier, table string, olderThan time.Duration) (int64, error) {
 	qt, err := mysqlQuoteTable(table)
 	if err != nil {
 		return 0, err
@@ -413,7 +422,7 @@ func (mysqlDialect) PurgeInbox(ctx context.Context, q Querier, table string, old
 // the dedup table with its processed_at retention index declared INLINE (MySQL
 // has no CREATE INDEX IF NOT EXISTS), so the whole schema is one idempotent
 // statement.
-func (mysqlDialect) EnsureInboxSchema(ctx context.Context, q Querier, table string) error {
+func (mysqlDialect) EnsureInboxSchema(ctx context.Context, q msginsql.Querier, table string) error {
 	qt, err := mysqlQuoteTable(table)
 	if err != nil {
 		return err
@@ -431,8 +440,8 @@ func (mysqlDialect) EnsureInboxSchema(ctx context.Context, q Querier, table stri
 // import, matching SchemaExists). non_unique = 0 selects unique/PK indexes. table
 // is a bound parameter, but validated anyway so the exported SPI never runs on an
 // unvalidated identifier.
-func (mysqlDialect) MsgIDUniqueIndexExists(ctx context.Context, q Querier, table string) (bool, error) {
-	if err := ValidateIdent(table); err != nil {
+func (mysqlDialect) MsgIDUniqueIndexExists(ctx context.Context, q msginsql.Querier, table string) (bool, error) {
+	if err := msginsql.ValidateIdent(table); err != nil {
 		return false, err
 	}
 	var one int
@@ -452,13 +461,4 @@ LIMIT 1`,
 		return false, err
 	}
 	return true, nil
-}
-
-// placeholders returns "?, ?, ..." with n placeholders, for a MySQL IN (...)
-// clause built from a known-length id slice.
-func placeholders(n int) string {
-	if n <= 0 {
-		return ""
-	}
-	return strings.Repeat("?, ", n-1) + "?"
 }

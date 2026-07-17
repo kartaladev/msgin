@@ -104,15 +104,6 @@ func TestNewInboxDeduper_Construction(t *testing.T) {
 			},
 		},
 		{
-			name:    "a valid businessDB/dialect (mysql) constructs",
-			db:      func(t *testing.T) *sql.DB { return openDB(t, "mysql") },
-			dialect: msginsql.MySQLInboxDialect(),
-			assert: func(t *testing.T, d *msginsql.InboxDeduper, err error) {
-				require.NoError(t, err)
-				assert.NotNil(t, d)
-			},
-		},
-		{
 			name:    "a custom InboxDialect is accepted",
 			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
 			dialect: stubInboxDialect{},
@@ -151,31 +142,6 @@ func TestInboxDeduper_MarkProcessedNilTx(t *testing.T) {
 	assert.False(t, already, "a refused MarkProcessed must not report a duplicate")
 }
 
-// TestInboxDeduper_ReadyPassesThroughProbeError pins the error-passthrough branch
-// of InboxDeduper.Ready (ADR 0010 D2): when SchemaExists itself ERRORS (as
-// opposed to reporting the table simply absent), Ready returns that raw error
-// unchanged — it does NOT mask a real infrastructure failure as
-// ErrSchemaNotReady. Closing the pool before the probe makes SchemaExists's query
-// fail deterministically, no container needed.
-func TestInboxDeduper_ReadyPassesThroughProbeError(t *testing.T) {
-	t.Parallel()
-
-	// A real built-in dialect (mysql) is required: its SchemaExists issues an
-	// actual query through the pool, so a closed pool makes it error. The fake
-	// dialect keeps its state in memory and never touches the *sql.DB, so it
-	// could not reproduce a probe error.
-	db := openDB(t, "mysql")
-	require.NoError(t, db.Close()) // a closed pool makes SchemaExists's query error
-
-	d, err := msginsql.NewInboxDeduper(db, msginsql.MySQLInboxDialect())
-	require.NoError(t, err)
-
-	err = d.Ready(t.Context())
-	require.Error(t, err, "a probe error must surface, not be swallowed")
-	assert.NotErrorIs(t, err, msginsql.ErrSchemaNotReady,
-		"a genuine probe error must NOT be reported as a not-ready schema")
-}
-
 // TestInboxDeduper_PurgeRejectsNonPositiveRetention pins the retention guard (ADR
 // 0010 D10, Task 10 review #2): a non-positive olderThan would purge the ENTIRE
 // inbox (cutoff = now()-0 or the future) → every id double-processed, so Purge
@@ -201,67 +167,6 @@ func TestInboxDeduper_PurgeRejectsNonPositiveRetention(t *testing.T) {
 			n, err := d.Purge(t.Context(), tc.olderThan)
 			require.ErrorIs(t, err, msginsql.ErrInvalidRetention)
 			assert.Zero(t, n, "a refused Purge must delete nothing")
-		})
-	}
-}
-
-// TestInboxDDL exercises the root reference-DDL dispatcher's validation and
-// dialect-dispatch (ADR 0010 D10, applying the Task-4 identifier-injection
-// discipline): the table is validated first (the sole entry point), then the
-// built-in mysql dialect produces its exact CREATE TABLE; an unrecognized
-// dialect yields a clear error rather than empty or wrong SQL. (The postgres
-// arm's dispatch is exercised via the postgres module's own DDL builder in the
-// dbtest harness run — Plan 006 Task 4; the whole dispatcher is deleted in
-// favor of per-dialect postgres.InboxDDL/mysql.InboxDDL in Task 5.)
-func TestInboxDDL(t *testing.T) {
-	t.Parallel()
-
-	type testCase struct {
-		name    string
-		dialect msginsql.InboxDialect
-		table   string
-		assert  func(t *testing.T, ddl string, err error)
-	}
-
-	cases := []testCase{
-		{
-			name:    "mysql built-in produces a validated CREATE TABLE",
-			dialect: msginsql.MySQLInboxDialect(),
-			table:   "msgin_inbox",
-			assert: func(t *testing.T, ddl string, err error) {
-				require.NoError(t, err)
-				assert.Contains(t, ddl, "CREATE TABLE")
-				assert.Contains(t, ddl, "msg_id")
-				assert.Contains(t, ddl, "processed_at")
-				assert.Contains(t, ddl, "`msgin_inbox`", "the table identifier is back-quoted for MySQL")
-			},
-		},
-		{
-			name:    "invalid identifier is rejected before building any SQL",
-			dialect: msginsql.MySQLInboxDialect(),
-			table:   "bad table; DROP",
-			assert: func(t *testing.T, ddl string, err error) {
-				require.ErrorIs(t, err, msginsql.ErrInvalidTableName)
-				assert.Empty(t, ddl)
-			},
-		},
-		{
-			name:    "an unrecognized dialect has no reference DDL",
-			dialect: stubInboxDialect{},
-			table:   "msgin_inbox",
-			assert: func(t *testing.T, ddl string, err error) {
-				require.Error(t, err)
-				assert.Empty(t, ddl)
-				assert.Contains(t, err.Error(), "stubInboxDialect", "the error names the offending dialect type")
-			},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			ddl, err := msginsql.InboxDDL(tc.dialect, tc.table)
-			tc.assert(t, ddl, err)
 		})
 	}
 }

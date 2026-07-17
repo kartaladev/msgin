@@ -3,17 +3,22 @@ module github.com/kartaladev/msgin/adapter/database/sql/dbtest
 go 1.25.0
 
 require (
+	github.com/go-sql-driver/mysql v1.10.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/kartaladev/msgin/adapter/database/sql/harness v0.0.0
+	github.com/kartaladev/msgin/adapter/database/sql/mysql v0.0.0
 	github.com/kartaladev/msgin/adapter/database/sql/postgres v0.0.0
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.43.0
+	github.com/testcontainers/testcontainers-go/modules/mariadb v0.43.0
+	github.com/testcontainers/testcontainers-go/modules/mysql v0.43.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.43.0
 	go.uber.org/goleak v1.3.0
 )
 
 require (
 	dario.cat/mergo v1.0.2 // indirect
+	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
@@ -78,5 +83,6 @@ require (
 replace (
 	github.com/kartaladev/msgin => ../../../..
 	github.com/kartaladev/msgin/adapter/database/sql/harness => ../harness
+	github.com/kartaladev/msgin/adapter/database/sql/mysql => ../mysql
 	github.com/kartaladev/msgin/adapter/database/sql/postgres => ../postgres
 )

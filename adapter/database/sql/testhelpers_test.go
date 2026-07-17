@@ -48,16 +48,12 @@ func init() { sql.Register(fakeDriverName, fakeDriver{}) }
 
 // openDB opens a *sql.DB on driverName WITHOUT connecting (sql.Open is lazy for
 // the connection), closing it via t.Cleanup so the connectionOpener goroutine
-// does not outlive the test (goleak). The DSN is only parsed, never dialed:
-// go-sql-driver/mysql validates DSN shape eagerly in Open, so the "mysql" driver
-// needs a well-formed (but unreachable) DSN, whereas pgx/fake accept any string.
+// does not outlive the test (goleak). Root no longer registers any real SQL
+// driver (Plan 006 Task 5 — the engine is driver-free), so every root test
+// opens the fakeDriverName driver above; the DSN is never parsed or dialed.
 func openDB(t *testing.T, driverName string) *sql.DB {
 	t.Helper()
-	dsn := "unused-dsn"
-	if driverName == "mysql" {
-		dsn = "user:pass@tcp(127.0.0.1:3306)/db"
-	}
-	db, err := sql.Open(driverName, dsn)
+	db, err := sql.Open(driverName, "unused-dsn")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
 	return db

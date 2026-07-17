@@ -127,6 +127,24 @@ func TestInboxDeduper_Ready(t *testing.T) {
 					"a genuine probe error must not be reported as the no-unique-constraint case")
 			},
 		},
+		{
+			// The FIRST probe (SchemaExists) erroring, as opposed to reporting the
+			// table simply absent: Ready must return that raw error unchanged, never
+			// masking a real infrastructure failure as ErrSchemaNotReady. Moved here
+			// from root's mysql-backed TestInboxDeduper_ReadyPassesThroughProbeError
+			// (Plan 006 Task 5) since no built-in dialect remains in root to
+			// reproduce it against a real closed pool.
+			name: "the schema-exists probe itself erroring surfaces raw, not masked as not-ready",
+			setup: func(fd *fakeDialect) {
+				fd.schemaExistsErr = errors.New("probe boom")
+			},
+			assert: func(t *testing.T, err error) {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "probe boom")
+				assert.NotErrorIs(t, err, msginsql.ErrSchemaNotReady,
+					"a genuine probe error must not be reported as a not-ready schema")
+			},
+		},
 	}
 
 	for _, tc := range cases {

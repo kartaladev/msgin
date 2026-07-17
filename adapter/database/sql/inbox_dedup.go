@@ -64,9 +64,8 @@ type InboxDeduper struct {
 // 0010 D10) — using dialect to generate the exact SQL (ADR 0011 — the dialect
 // is a required, explicit constructor argument; there is no driver
 // auto-detect). Pass postgres.InboxDialect() (adapter/database/sql/postgres),
-// sql.MySQLInboxDialect(), or
-// your own InboxDialect implementation. The dedup table defaults to
-// "msgin_inbox" (WithInboxTable).
+// mysql.InboxDialect() (adapter/database/sql/mysql), or your own InboxDialect
+// implementation. The dedup table defaults to "msgin_inbox" (WithInboxTable).
 //
 // A nil businessDB is msgin.ErrNilAdapter; an invalid table identifier is
 // ErrInvalidTableName; a nil dialect is ErrNilDialect — all at construction, so
@@ -197,9 +196,3 @@ func (d *InboxDeduper) Purge(ctx context.Context, olderThan time.Duration) (int6
 	}
 	return d.dialect.PurgeInbox(ctx, d.db, d.table, olderThan)
 }
-
-// Compile-time assertion that the built-in mysql dialect satisfies the
-// segregated InboxDialect SPI, so it may be passed as NewInboxDeduper's
-// required dialect argument. The postgres dialect's identical assertion lives
-// in its own module (adapter/database/sql/postgres, Plan 006 Task 4).
-var _ InboxDialect = mysqlDialect{}

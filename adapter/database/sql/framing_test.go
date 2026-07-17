@@ -137,9 +137,12 @@ func TestDecodeHeadersEmptyInput(t *testing.T) {
 	}
 }
 
-// PostgreSQL reference-DDL identifier validation now lives in the postgres
-// module and is exercised via the dbtest harness run (Plan 006 Task 4,
-// harness RunDialect InvalidIdentifierRejected). ValidateIdent's exhaustive
-// reject matrix (leading digit, injection, empty) stays covered in root by
-// mysql_test.go's TestMySQLDDLIdentifierValidation, which drives the same
-// engine validator through MySQLDDL.
+// Reference-DDL identifier validation now lives in the postgres and mysql
+// leaf-test dialect modules and is exercised via the dbtest harness run (Plan
+// 006 Tasks 4-5, harness RunDialect InvalidIdentifierRejected). ValidateIdent's
+// exhaustive reject matrix (leading digit, injection, empty) is covered
+// directly against the engine's shared validator by the mysql module's own
+// TestMySQLDDLIdentifierValidation/TestMySQLInboxDDLIdentifierValidation
+// (adapter/database/sql/mysql/dialect_test.go), which drive it through
+// mysql.DDL/mysql.InboxDDL — no built-in dialect remains in root to test this
+// through.

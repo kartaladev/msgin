@@ -77,6 +77,15 @@ type fakeDialect struct {
 	// InboxDeduper.Ready's second-probe error-passthrough branch.
 	uniqueIndexErr error
 
+	// schemaExistsErr forces SchemaExists to error, covering
+	// InboxDeduper.Ready's FIRST-probe error-passthrough branch (Ready must
+	// return a genuine infrastructure error unchanged, never masking it as
+	// ErrSchemaNotReady — moved here from the root mysql-backed
+	// TestInboxDeduper_ReadyPassesThroughProbeError, Plan 006 Task 5, since no
+	// built-in dialect remains in root to reproduce it against a real closed
+	// pool).
+	schemaExistsErr error
+
 	// lastInsertQuerier records the Querier the most recent Insert call
 	// received, so Outbound's resolveQuerier branches (pool vs resolved tx)
 	// are directly assertable.
@@ -287,6 +296,9 @@ func (f *fakeDialect) EnsureSchema(_ context.Context, _ msginsql.Querier, table 
 func (f *fakeDialect) SchemaExists(_ context.Context, _ msginsql.Querier, table string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.schemaExistsErr != nil {
+		return false, f.schemaExistsErr
+	}
 	return f.tables[table], nil
 }
 

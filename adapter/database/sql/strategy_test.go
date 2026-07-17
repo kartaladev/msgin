@@ -89,17 +89,6 @@ func TestNewPollingSource_StrategyConstruction(t *testing.T) {
 			},
 		},
 		{
-			name:    "StrategyLockForUpdate with the MySQL built-in dialect constructs",
-			dialect: msginsql.MySQLDialect(),
-			opts: []msginsql.Option{
-				msginsql.WithStrategy(msginsql.StrategyLockForUpdate),
-			},
-			assert: func(t *testing.T, src *msginsql.Source, err error) {
-				require.NoError(t, err, "the built-in MySQLDialect implements LockDialect")
-				assert.NotNil(t, src)
-			},
-		},
-		{
 			name:    "StrategyLockForUpdate with a lease-only dialect is ErrLockStrategyUnsupported",
 			dialect: nonLockDialect{},
 			opts: []msginsql.Option{
