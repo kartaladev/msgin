@@ -1,85 +1,93 @@
 # HANDOVER — msgin
 
 > **Next session: read this first, then trust the referenced files over any memory.** Read, in order:
-> `CLAUDE.md`, then `docs/specs/002-sql-multi-module-and-sqlite.md`, `docs/adrs/0011-sql-engine-dialect-module-split.md`,
-> `docs/plans/006-sql-engine-dialect-split.md`, and `docs/RELEASE.md`. Audit records:
-> `.superpowers/sdd/plan-006-audit-round-{1,2}.md` (gitignored). Per-task SDD ledger: `.superpowers/sdd/progress.md`.
+> `CLAUDE.md`, then `docs/specs/001-messaging-core.md` (§9 sql adapter) and `docs/specs/002-sql-multi-module-and-sqlite.md`,
+> `docs/adrs/0010-poller-sql-adapter.md` + `0011-sql-engine-dialect-module-split.md` + `0012-sqlite-dialect.md`,
+> and `docs/plans/005-poller-sql-adapter.md` (Task 11 is the outstanding one). Audit records (gitignored):
+> `.superpowers/sdd/plan-007-audit-round-{1,2}.md`. SDD ledger: `.superpowers/sdd/progress.md`.
 
-_Updated: **Plan 005 (Tasks 1–10) + Plan 006 (increment A — sql engine/dialect module split) are MERGED to
-`main` and pushed** (`origin/main` @ `83beb34`, fast-forwarded from `86ffa11`). Whole-branch-gated before the
-merge. Next increments: B (SQLite, ADR 0012 + Plan 007) → resume **Plan 005 Task 11** (docs/examples — the only
-Plan-005 task still outstanding). Start each new increment from a fresh branch off `main`._
+_Updated: **Plan 007 (SQLite dialect, increment B) is COMPLETE and MERGED to `main`, and pushed** to
+`origin/main`. Whole-branch-gated before merge (all green). The `feat/sqlite-dialect` branch has been deleted.
+Next: **Plan 005 Task 11** (docs/examples across the multi-module layout + the SQLite story) — the only
+outstanding Plan-005 work — folding the small follow-ups listed in §4._
 
 ## 1. Objective & roadmap position
 
-`msgin` (`github.com/kartaladev/msgin`) — Go 1.25 EIP library, minimal deps. `main` is now at `83beb34`:
-**Plans 001–004** + **Plan 005 (Poller + sql adapter, Tasks 1–10)** + **Plan 006 (sql engine/dialect split,
-increment A)** all landed. Plan 005 **Task 11** (docs/examples) is the only outstanding Plan-005 work.
+`msgin` (`github.com/kartaladev/msgin`) — Go 1.25 EIP library, minimal deps, multi-module monorepo (Structure Z).
+`main` now carries: **Plans 001–004** + **Plan 005 (Poller + sql adapter, Tasks 1–10)** + **Plan 006 (sql
+engine/dialect split, increment A)** + **Plan 007 (SQLite dialect, increment B)**. The roadmap's remaining
+item is **Plan 005 Task 11** (docs/examples), pended since Plan 006.
 
-## 2. What Plan 006 delivered (Structure Z — 5 modules, driver-free root)
+## 2. What Plan 007 delivered (increment B — the SQLite dialect)
 
-`adapter/database/sql` is split into leaf-test modules so the root module AND every dialect *production*
-consumer carry zero driver/testcontainers deps (**empirically 102 → 0 polluted go.sum lines**):
-- **engine** (root `adapter/database/sql`, driver-free): SPIs, `Source`/`Outbound`/`InboxDeduper`, framing,
-  options, errors; **explicit-dialect constructors** (auto-detect deleted); newly EXPORTED `ValidateIdent` +
-  `BeginLockTx` + `SettleLockTx`; new `ErrNilDialect`. Tests: fake dialect + stub-`database/sql/driver` only.
-- **`harness`** (own module, pkg `harness`, requires engine + testify): `RunSource`/`RunLock`/`RunOutbound`/
-  `RunOutbox`/`RunInbox`/`RunDialect(t, TestKit, db)` — the reusable conformance suite.
-- **`postgres`** / **`mysql`** (own modules, require the ENGINE ONLY): `postgres.LeaseDialect()`/`InboxDialect()`/
-  `DDL`/`InboxDDL`, same for `mysql.*`. Dialect SQL moved VERBATIM (byte-verified).
-- **`dbtest`** (leaf runner, nobody imports): drivers + testcontainers; runs the harness against real Postgres,
-  MySQL, and MariaDB.
-- **`go.work`** committed; CI (`.github/workflows/ci.yml`) runs `GOWORK=off` per-module matrix + an aggregate
-  workspace job; `release.yml` handles root + module-prefixed tags; `docs/RELEASE.md` documents the
-  root-tagged-first, replace→pin choreography.
+A sixth shipped adapter surface: the **`adapter/database/sql/sqlite`** module — a driver-free (engine-only)
+SQLite `LeaseDialect` + `InboxDialect`, certified against the reusable `harness` conformance suite via an
+embedded, **Docker-free** run in `dbtest` (pure-Go `modernc.org/sqlite`, confined to `dbtest`).
+- **Lease-only** (ADR 0012 D1): no `LockDialect`; `WithStrategy(StrategyLockForUpdate)` returns the existing
+  `ErrLockStrategyUnsupported`. Claim is a **one-shot atomic** `UPDATE … WHERE id IN (SELECT … LIMIT ?)
+  RETURNING …` (SQLite serializes writers — no `SKIP LOCKED`/two-step needed; empirically proven double-claim-safe).
+- **INTEGER unix-µs timestamps** via `CAST(unixepoch('now','subsec')*1000000 AS INTEGER)` — exact parity with
+  the PG/MySQL `.Microseconds()` interval math; DB-clock invariant preserved.
+- **Exact inbox** (`ON CONFLICT(msg_id) DO NOTHING RETURNING`, like Postgres) → `MySQLFamily=false`.
+  `sqlite_master` / `pragma_index_list(?)` probes.
+- **Driver-free `sqlite.DSN(path, opts…)`** builder (WAL + busy_timeout defaults; `WithJournalMode`/
+  `WithBusyTimeout`/`WithSharedMemory`) — opinionated, overridable connection guidance (the module never opens
+  the caller's `*sql.DB`). `doc.go` explains why WAL + busy_timeout are required for concurrent consumers.
+- **Two gated, behavior-preserving `harness` changes** (ADR 0012 D8): the `RunDialect` `ClaimLock`
+  invalid-ident case is conditional on `LockDialect`; a new `TestKit.SingleWriter` skips only
+  `RunOutbox/CommitGatesVisibility` (which needs MVCC non-blocking reads SQLite lacks — pool claim during an
+  open write tx blocks → `SQLITE_BUSY`, confirmed by spike). Both default off → PG/MySQL fully unaffected.
+- **CI fix (the "CI problem"):** pinned the two non-reproducible `@latest` tools — `govulncheck` →
+  `golang.org/x/vuln@v1.6.0`, `golangci-lint` → `v2.12.2`. Plus sqlite in the CI matrix + aggregate job,
+  release.yml sqlite prefixed-tag, and RELEASE.md tag-order.
 
-## 3. Exact state (commits on the branch, this increment)
+## 3. Exact state (commits — all on `main` now)
 
-`2974c01`(prev design) → `7d1b16e` docs: reconcile design to Structure Z + round-2 audit → `27b5ab6` T1
-explicit-dialect API + exports → `f6ee0f1` T2 engine fake+stub-driver tests → `6d92e84` T3 harness module →
-`ba959bb` T4 postgres + dbtest → `626ca85` T5 mysql + root goes lean → `2d7c794` T5-fix per-SPI invalid-ident
-coverage → `0d4024d` T6 go.work + CI/release + isolation probe. Each task: SDD implementer → coordinator
-verify+commit → adversarial reviewer → fix. Working tree clean except the user's unstaged `.claude/settings.json`
-(plugin toggle, deliberately left alone).
+Branch `feat/sqlite-dialect` (off `main` @ `0e20df3`), 4 task commits, fast-forward merged to `main` + pushed:
+`5119117` T1 scaffold + DSN builder (+ spec/ADR/plan coupled) → `6f5c9a2` T2 harness gates →
+`a88b590` T3 dialect + dbtest conformance → `65f53cc` T4 CI matrix/pins + release + RELEASE.md
+(+ a final `docs:` HANDOVER commit). Each task: SDD implementer → coordinator verify+commit → adversarial
+reviewer (T3 on Opus). Working tree clean except the user's unstaged `.claude/settings.json` (left alone).
 
-**Whole-branch gate — CLEAN:** all 5 modules build/vet/gofmt/`CGO_ENABLED=0`/`go mod tidy`-stable (GOWORK=off,
-go1.25.12); root+mysql+dbtest `-race` green (dbtest = real PG+MySQL+MariaDB, goleak-clean); engine coverage
-93.8%; govulncheck clean; isolation probe 0/0; `/code-review` no correctness findings; `/security-review` no
-vulnerabilities.
+**Design-time gate:** two adversarial Opus audits (round 1 NEEDS REVISION → F1 blocker + F2–F7; a no-Docker
+spike against real SQLite (modernc 3.53.3) confirmed F1 and proved claim-safety/inbox/pragma; round 2 SOUND
+WITH FIXES; no round 3). **Whole-branch gate — CLEAN:** all 6 modules build/vet/gofmt/`CGO_ENABLED=0`/
+`tidy`-stable (GOWORK=off, go1.25.12); `-race` green incl. dbtest 4-engine conformance (goleak-clean); merged
+sqlite coverage 92.1%; `govulncheck@v1.6.0` clean; `golangci-lint v2.12.2` 0 issues; isolation probe 0/0 (a
+sqlite consumer inherits no driver/testcontainers); `/code-review` no correctness findings; `/security-review`
+no vulnerabilities.
 
-## 4. Follow-ups (Minor, non-blocking — for the MR discussion or a later increment)
+## 4. Follow-ups (Minor, non-blocking — for Plan 005 Task 11 or a later increment)
 
-1. **CI pins `@latest`** (`govulncheck@latest`, `golangci-lint-action version: latest`) → pin explicit versions
-   for reproducibility.
-2. **Wider golangci linters** (`errcheck`/`gosec`/`revive`) deferred — `.golangci.yml` is intentionally minimal
-   (govet/staticcheck/ineffassign/misspell, 0-issue); enabling the rest surfaces pre-existing findings.
-3. Pre-existing cosmetic: `NewOutboundAdapter(nil, table, dialect, WithSharedTransaction(nil))` returns
-   `ErrNilResolver` before `ErrNilAdapter` (arbitrary precedence, both errors).
-4. **Plan-005 backlog (NOT Plan 006):** `TransactionResolver` typed-nil guard + godoc (Plan 005 Task 9 review) —
-   address in Plan 005 Task 11.
+1. **New (Plan 007 code-review Minors):** (a) surface the SQLite ≥3.42 version floor on the exported
+   `sqlite.DDL`/`InboxDDL` godoc (currently only on `doc.go` + the internal `nowMicros` const); (b) `sqlite.DSN`
+   — a filesystem `path` containing a literal `?` flips the pragma separator to `&` (malformed URI); doc already
+   directs exotic cases to a hand-built DSN — consider a doc note or `?`-guard.
+2. **Carried from Plan 006 §4:** wider golangci linters (`errcheck`/`gosec`/`revive`) still deferred (config is
+   the minimal govet/staticcheck/ineffassign/misspell set); `NewOutboundAdapter` `ErrNilResolver`-before-
+   `ErrNilAdapter` precedence (cosmetic). (The `@latest` CI-pin follow-up is now DONE.)
+3. **Plan-005 backlog:** `TransactionResolver` typed-nil guard + godoc (Plan 005 Task 9 review) — address in
+   Plan 005 Task 11.
 
 ## 5. Next actions
 
-1. **Merged.** Plan 005+006 are on `origin/main` @ `83beb34`. The `feat/poller-sql-adapter` branch is merged;
-   delete it when convenient (`git branch -d feat/poller-sql-adapter` + `git push origin --delete
-   feat/poller-sql-adapter`). Start increment B from a fresh branch off `main`.
-2. **Increment B — SQLite** (spec 002 §7): brainstorm → update spec → write ADR 0012 + Plan 007 → adversarial
-   audit → SDD. Pure-Go `modernc.org/sqlite` (cgo-free, no Docker); lease-only (`sqlite.LeaseDialect()` does NOT
-   implement `LockDialect` → `ErrLockStrategyUnsupported`); inbox via `ON CONFLICT … RETURNING`. Adds a `sqlite`
-   prod module + extends `dbtest`; the `harness` already runs correctness-only concurrency assertions (F8) so a
-   single-writer engine passes the same contract.
-3. **Resume Plan 005 Task 11** (docs/examples across the multi-module layout) + fold the §4 follow-ups.
+1. **Start Plan 005 Task 11** (docs/examples) from a fresh branch off `main` — runnable `Example…` tests across
+   the multi-module layout (memory/sql engine + postgres/mysql/**sqlite** dialects), the transactional-outbox
+   and dedup-inbox stories, and the SQLite embedded/no-Docker story. Fold the §4 follow-ups where they touch
+   the same files.
+2. Follow the full workflow: brainstorm → (Task 11 is already specced in Plan 005; confirm scope) → SDD
+   implementer + reviewer → whole-branch gate → merge.
 
 ## 6. Gotchas / environment
 
-- **Go 1.25 pinned, patch = go1.25.12:** always `GOTOOLCHAIN=go1.25.12` (bumped from 1.25.0 after govulncheck
-  flagged GO-2025-4007; the `go` directive stays `1.25.0`). CI sets it.
-- **Multi-module:** `go.work` for local dev; **CI runs `GOWORK=off`**; each non-root module has a dev-time
-  `replace github.com/kartaladev/msgin => ../../../..` swapped for a pinned `require` only at release (root
-  tagged FIRST — `docs/RELEASE.md`). The dev `replace` pulls the engine's testify/goleak into the dialect
-  modules' go.sum (~11 lines, non-heavy) — resolves at release.
-- **Docker MUST run** for the `dbtest` module (PG+MySQL+MariaDB via testcontainers). Root/harness/postgres/mysql
-  need no Docker.
+- **Go 1.25 pinned, patch = go1.25.12:** always `GOTOOLCHAIN=go1.25.12` (the `go` directive stays `1.25.0`).
+  CI sets it and now pins `govulncheck@v1.6.0` + `golangci-lint v2.12.2` (no more `@latest`).
+- **Multi-module (6 members):** `go.work` for local dev; **CI runs `GOWORK=off`** per module; each non-root
+  module has a dev-time `replace github.com/kartaladev/msgin => ../../../..` swapped for a pinned `require`
+  only at release (root tagged FIRST — `docs/RELEASE.md`, which now lists `sqlite`).
+- **Docker** is needed only for the `dbtest` module (PG+MySQL+MariaDB via testcontainers). **SQLite conformance
+  needs NO Docker** (embedded `modernc.org/sqlite`, in `dbtest` only). Root/harness/postgres/mysql/sqlite need
+  no Docker.
+- **modernc.org/sqlite** bundles SQLite ≥3.45 (satisfies the ≥3.42 floor for `unixepoch('now','subsec')`).
 - **Custom skills (mandatory):** `table-test`, `use-mockgen`, `use-testcontainers`. Start Go work from
   `cc-skills-golang:golang-how-to`; blackbox `_test` packages; assert-closure tables; `t.Context()`.
-</content>
