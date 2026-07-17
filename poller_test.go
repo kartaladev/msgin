@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -496,4 +497,53 @@ func TestPoller_HandoffCtxDoneBoundedNoLeak(t *testing.T) {
 	}
 	acks, nacks, _ := st.snapshot()
 	assert.LessOrEqual(t, acks+nacks, n, "no double-settle across the hand-off ctx-done arm")
+}
+
+// TestPoller_SafePoll_PollPanicEngagesBackoffNoCrash proves safePoll's panic
+// recovery (ADR 0010 D6 extension): a PollingSource whose Poll panics — a
+// realistic failure mode for a wire adapter (e.g. the sql adapter this plan
+// ships) — must not crash the process. safePoll recovers the panic into an
+// error, and pollLoop's EXISTING error path (the "poll failed" ERROR log +
+// backoff) handles it identically to a returned error: no second/duplicate
+// ERROR log is added by safePoll itself.
+func TestPoller_SafePoll_PollPanicEngagesBackoffNoCrash(t *testing.T) {
+	var logbuf lockedBuffer
+	logger := slog.New(slog.NewTextHandler(&logbuf, &slog.HandlerOptions{Level: slog.LevelError}))
+	clk := clockwork.NewFakeClock()
+	var polls atomic.Int64
+	src := &fakePolling{pollFn: func(context.Context, int) ([]msgin.Delivery, error) {
+		polls.Add(1)
+		panic("fakePolling.Poll boom")
+	}}
+	h := func(context.Context, msgin.Message[order]) error { return nil }
+
+	c, err := msgin.NewConsumer[order](src, h,
+		msgin.WithLogger[order](logger),
+		msgin.WithConsumerClock[order](clk),
+		msgin.WithMaxInFlight[order](2),
+		msgin.WithPollInterval[order](time.Second))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	runDone := make(chan error, 1)
+	go func() { runDone <- c.Run(ctx) }()
+
+	require.NoError(t, clk.BlockUntilContext(ctx, 2)) // first poll panicked → parked in the error backoff sleepCtx
+	assert.Equal(t, int64(1), polls.Load())
+	logged := logbuf.String()
+	assert.Contains(t, logged, "poll failed", "pollLoop's existing error path logs the recovered panic loudly")
+	assert.Contains(t, logged, "Poll panicked", "the recovered panic detail is carried in the error")
+	assert.Equal(t, 1, strings.Count(logged, "poll failed"), "safePoll adds no second/duplicate ERROR log of its own")
+
+	clk.Advance(time.Second) // fire the backoff timer → poll again → panics again → still no crash
+	require.NoError(t, clk.BlockUntilContext(ctx, 2))
+	assert.Equal(t, int64(2), polls.Load())
+
+	cancel()
+	select {
+	case err := <-runDone:
+		assert.ErrorIs(t, err, context.Canceled)
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return after cancel during poll-panic backoff — safePoll must recover, not crash or hang")
+	}
 }

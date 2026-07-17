@@ -149,6 +149,14 @@ the worker pool + drain in `Run`. **Produces:** a wired `PollingSource` consumer
   `OnInvalidMessage`+`errors.Is ErrPayloadDecode`; send-panic in a nil-vs-configured invalid sink →
   retried; ack/nack-panic → ERROR logged, credit released, no goleak, run drains). A codec double that
   panics is paired with a `[]byte` `StreamingSource` (not `LiveValueSource`).
+- **Extensions folded in during the Task 2/Task 3 whole-branch reviews (ADR 0010 D6 updated to match):**
+  (1) **`safePoll`** guards the D1 Poller's new `PollingSource.Poll` call site (panic → `pollLoop`'s
+  existing error-backoff; no new sentinel, no double-log). (2) The `safeNack` guard is applied to **every**
+  adapter-`Nack` call site, not only `dispatch`/`divert` — the `admit` shutdown/overflow Nacks, the
+  `process` drain/breaker Nacks, and the poll loop's ctx-done-handoff + `clampExcess` Nacks — because a
+  panicking wire-adapter `Nack` on ordinary graceful shutdown would otherwise crash the process. A
+  deterministic overflow-shed panic test proves the newly-wrapped shed site; the shutdown-race sites are
+  covered by the same (100%-covered) wrapper.
 
 ## Task 4 — `sql` scaffold: exported `Dialect` SPI, framing, identifiers, schema, PostgreSQL dialect
 

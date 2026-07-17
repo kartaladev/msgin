@@ -431,11 +431,28 @@ existing settlement switch handles it, never a crash (CLAUDE.md fault-isolation)
   settle error → `finish` logs it (ERROR). The credit is **already released** before the panic (the
   `manage` wrapper releases *before* calling the underlying Ack/Nack), so a panicking settle never pins
   a credit; the worker's deferred `md.release` OnceFunc is the panic-safe net.
+- `safePoll(ctx, max) ([]Delivery, error)` → a panic in `PollingSource.Poll` (a new adapter-SPI call
+  site introduced by the D1 Poller in this same plan) maps to a synthetic error → `pollLoop`'s existing
+  poll-error backoff path (which already ERROR-logs "poll failed"), so a panicking wire-adapter poll
+  degrades to a bounded retry instead of unwinding the poll goroutine. Added during Task 3 (Plan 005
+  whole-branch review of Task 2 surfaced the gap); no new exported sentinel.
+
+**Guard EVERY adapter-`Nack` call site, not only the two on the `dispatch`/`divert` settlement path
+(broadened during the Task 3 review).** `Delivery.Nack` is also invoked on the shutdown/overflow/poll
+machinery — `admit`'s limiter/breaker/acquire/handoff ctx-done Nacks and its overflow-shed Nack,
+`process`'s drain short-circuit and breaker-blocked Nacks, and the poll loop's ctx-done handoff and
+`clampExcess` Nacks. Each is an adapter-supplied closure that, for a wire adapter doing real DB I/O
+(`sql`), can panic and unwind its owning ingress/worker/poll goroutine → **crash the process on ordinary
+graceful shutdown** (the drain Nacks fire on essentially every shutdown with in-flight work). D6's
+*principle* is fault-isolation at the adapter boundary, so **all** of these route through `safeNack` too;
+the four-func enumeration above named the primary settlement path, and the guard is applied uniformly to
+every call site. (`safeAck` symmetrically covers the two Ack sites, both already on the settlement path.)
 
 Each logs at **ERROR** (an adapter panic is a serious bug — louder than a hook's WARN), message id only,
-never the payload — consistent with `governorPanic`. This is a small, mechanical, high-value hardening;
-it does **not** add per-method dedup (an adapter panic is not the deterministic-per-message governor
-case), but the poll-loop/error-backoff and the settlement switch already bound any repeat.
+never the payload — consistent with `governorPanic` (`safePoll` excepted: `pollLoop`'s error path emits
+the single loud log, so `safePoll` does not double-log). This is a small, mechanical, high-value
+hardening; it does **not** add per-method dedup (an adapter panic is not the deterministic-per-message
+governor case), but the poll-loop/error-backoff and the settlement switch already bound any repeat.
 
 ### D7 — The D5 byte-cap at a real wire source: runtime-owned, `sql`-documented (no forced default)
 

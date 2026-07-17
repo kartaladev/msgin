@@ -2,6 +2,7 @@ package msgin
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -37,7 +38,7 @@ func (c *consumer[T]) pollLoop(ctx, settleCtx context.Context, gate *creditGate,
 		// 3. Fetch up to `held` rows. Poll's contract (spi.go): at most `held`
 		//    deliveries, none alongside a non-nil error, and it owns rollback of
 		//    any partial work on the error/cancel path.
-		rows, err := c.pollSrc.Poll(ctx, held)
+		rows, err := c.safePoll(ctx, held)
 		if err != nil {
 			// The promised loud log (ADR 0010 D2); rows (if any, a contract
 			// violation) are discarded — Poll owns their rollback.
@@ -73,7 +74,7 @@ func (c *consumer[T]) pollLoop(ctx, settleCtx context.Context, gate *creditGate,
 				// rows[i+1:] (rows[:i] rode off with earlier handoffs). An
 				// over-count here blocks the loop before close(workerCh) → the
 				// pool never joins (C1 violation), so the count must be exact.
-				c.finish(md.Nack(settleCtx, true, 0))
+				c.finish(c.safeNack(settleCtx, md.Delivery, true, 0))
 				releaseN(gate, len(rows)-i-1)
 				return
 			}
@@ -89,6 +90,27 @@ func (c *consumer[T]) pollLoop(ctx, settleCtx context.Context, gate *creditGate,
 	}
 }
 
+// safePoll invokes PollingSource.Poll, recovering a panic so a faulty pull
+// adapter (a realistic failure mode for a wire adapter, e.g. the sql adapter
+// this plan ships) cannot crash the process (fault isolation, ADR 0010 D6 —
+// extending the same "guard adapter SPI calls" principle from the settlement
+// path to the poll call itself). A recovered panic is mapped to an error, so
+// the caller (pollLoop) treats it identically to a returned Poll error: it
+// discards any rows (none, by construction of the recover — a panic never
+// reaches the return statement), releases every held credit, and engages the
+// existing poll-error backoff. safePoll does NOT log — pollLoop's existing
+// error path already logs "msgin: poll failed" loudly (with this error, whose
+// text carries the recovered panic value) and then backs off, which correctly
+// handles a panicked poll without a second, duplicate ERROR log line.
+func (c *consumer[T]) safePoll(ctx context.Context, max int) (rows []Delivery, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			rows, err = nil, fmt.Errorf("msgin: PollingSource.Poll panicked: %v", r)
+		}
+	}()
+	return c.pollSrc.Poll(ctx, max)
+}
+
 // clampExcess enforces the Poll(max) <= max contract defensively (ADR 0010 D1):
 // it logs the violation at ERROR and Nacks (requeue) the excess rows[held:]
 // UNWRAPPED — they hold no credit, so they must not release one — then returns
@@ -97,7 +119,7 @@ func (c *consumer[T]) clampExcess(settleCtx context.Context, rows []Delivery, he
 	c.logger.Error("msgin: PollingSource returned more deliveries than requested; dropping the excess",
 		"returned", len(rows), "requested", held)
 	for _, d := range rows[held:] {
-		c.finish(d.Nack(settleCtx, true, 0)) // unwrapped: these rows hold no credit
+		c.finish(c.safeNack(settleCtx, d, true, 0)) // unwrapped: these rows hold no credit
 	}
 	return rows[:held]
 }

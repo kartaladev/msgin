@@ -2323,3 +2323,276 @@ func TestConsumer_WithAttemptTTL_UsesConfiguredTTL(t *testing.T) {
 		assert.ErrorIs(t, <-runDone, context.Canceled)
 	})
 }
+
+// TestConsumer_SafeDecode_CodecPanicRoutesToInvalidWithErrPayloadDecode proves
+// safeDecode's panic recovery (ADR 0010 D6, fold-in #4): a codec whose Decode
+// panics on a WIRE ([]byte) payload must be classified EXACTLY like a real
+// decode error — ErrPayloadDecode, permanent → invalid sink — never crash the
+// process. byteStreamSource is a genuine wire StreamingSource (not a
+// LiveValueSource), so the codec-decode branch of c.decode (not the
+// live-value type assert) is the one exercised.
+func TestConsumer_SafeDecode_CodecPanicRoutesToInvalidWithErrPayloadDecode(t *testing.T) {
+	buf := &lockedBuffer{}
+	st := &settle{}
+	src := &byteStreamSource{id: "x", payload: []byte(`{"id":"o1"}`), st: st}
+
+	var causeMu sync.Mutex
+	var cause error
+	var invalidCalls atomic.Int64
+	hooks := msgin.Hooks{
+		OnInvalidMessage: func(_ context.Context, _ msgin.Message[any], err error) {
+			causeMu.Lock()
+			cause = err
+			causeMu.Unlock()
+			invalidCalls.Add(1)
+		},
+	}
+	var handlerCalls atomic.Int64
+	h := func(context.Context, msgin.Message[order]) error { handlerCalls.Add(1); return nil }
+
+	c, err := msgin.NewConsumer[order](src, h,
+		msgin.WithConsumerCodec[order](panicDecodeCodec{}),
+		msgin.WithHooks[order](hooks),
+		msgin.WithLogger[order](slog.New(slog.NewTextHandler(buf, nil))))
+	require.NoError(t, err)
+
+	stop := runConsumer(t, c)
+	defer stop()
+
+	require.Eventually(t, func() bool { return invalidCalls.Load() >= 1 }, time.Second, 5*time.Millisecond,
+		"a panicking codec must still settle the message (invalid sink), not hang or crash")
+
+	causeMu.Lock()
+	gotCause := cause
+	causeMu.Unlock()
+	assert.ErrorIs(t, gotCause, msgin.ErrPayloadDecode, "a panicking codec classifies exactly like a real decode error")
+	assert.Equal(t, int64(0), handlerCalls.Load(), "the handler must not run: decode failed before dispatch")
+
+	acks, nacks, _ := st.snapshot()
+	assert.Equal(t, 1, acks, "nil invalid sink discards (acks) the permanent decode failure")
+	assert.Equal(t, 0, nacks)
+
+	logged := buf.String()
+	assert.Contains(t, logged, "PayloadCodec.Decode panicked", "the panic is logged")
+	assert.Contains(t, logged, "id=x", "the ERROR log names the message id, never the payload")
+}
+
+// TestConsumer_SafeSend_SinkPanicRetriesInsteadOfLosingMessage proves
+// safeSend's panic recovery (ADR 0010 D6): a configured invalid-message sink
+// whose Send panics must be routed EXACTLY as a real sink.Send error is today
+// — the message was NOT diverted, so it is retried (Nack), never lost.
+func TestConsumer_SafeSend_SinkPanicRetriesInsteadOfLosingMessage(t *testing.T) {
+	buf := &lockedBuffer{}
+	st := &settle{}
+	src := &scriptedSource{deliveries: []msgin.Delivery{newSettleDelivery(order{ID: "bad"}, "x", st)}}
+	h := func(context.Context, msgin.Message[order]) error { return msgin.Permanent(errors.New("bad")) }
+
+	c, err := msgin.NewConsumer[order](src, h,
+		msgin.WithInvalidMessageSink[order](panicSendSink{}),
+		msgin.WithLogger[order](slog.New(slog.NewTextHandler(buf, nil))))
+	require.NoError(t, err)
+
+	stop := runConsumer(t, c)
+	defer stop()
+
+	require.Eventually(t, func() bool { _, nacks, _ := st.snapshot(); return nacks >= 1 }, time.Second, 5*time.Millisecond,
+		"a panicking sink must retry (Nack) the message, not lose it")
+
+	acks, nacks, _ := st.snapshot()
+	assert.Equal(t, 0, acks, "the message was never terminally diverted (sink panicked, not accepted)")
+	assert.GreaterOrEqual(t, nacks, 1)
+
+	logged := buf.String()
+	assert.Contains(t, logged, "OutboundAdapter.Send panicked", "the panic is logged")
+	assert.Contains(t, logged, "id=x", "the ERROR log names the message id, never the payload")
+}
+
+// TestConsumer_SafeSend_NilSinkPassthroughUnaffected proves the safeSend
+// rewiring left the nil-sink discard path (which never calls sink.Send)
+// unaffected: a permanent classification with NO invalid sink configured
+// still discards (Acks) exactly as before.
+func TestConsumer_SafeSend_NilSinkPassthroughUnaffected(t *testing.T) {
+	st := &settle{}
+	src := &scriptedSource{deliveries: []msgin.Delivery{newSettleDelivery(order{ID: "bad"}, "x", st)}}
+	h := func(context.Context, msgin.Message[order]) error { return msgin.Permanent(errors.New("bad")) }
+
+	c, err := msgin.NewConsumer[order](src, h) // no WithInvalidMessageSink → nil sink
+	require.NoError(t, err)
+
+	stop := runConsumer(t, c)
+	defer stop()
+
+	require.Eventually(t, func() bool { acks, _, _ := st.snapshot(); return acks >= 1 }, time.Second, 5*time.Millisecond)
+	acks, nacks, _ := st.snapshot()
+	assert.Equal(t, 1, acks, "nil sink discards (acks) unaffected by the safeSend rewiring")
+	assert.Equal(t, 0, nacks)
+}
+
+// TestConsumer_SafeAck_PanicLogsAndReleasesCredit proves safeAck's panic
+// recovery (ADR 0010 D6): a Delivery whose Ack panics on the success path
+// must be ERROR-logged (id only, never the payload), settled via finish, and
+// — crucially — must still have released its credit BEFORE the panicking call
+// (the manage wrapper releases first), so the flood defense is never
+// compromised by a misbehaving adapter. WithMaxInFlight(1) makes the second
+// message's admission a direct proof of the first credit's release: if the
+// panic pinned the credit, the second message would never be admitted and
+// the test would time out. It also proves NO per-method dedup (ADR 0009 D1's
+// governor dedup does NOT apply here — the brief says an adapter panic is not
+// the deterministic-per-message governor case): both ids are logged.
+func TestConsumer_SafeAck_PanicLogsAndReleasesCredit(t *testing.T) {
+	buf := &lockedBuffer{}
+	ps := &panicSettle{ackPanics: true}
+	deliveries := []msgin.Delivery{
+		{Msg: msgin.New[any](order{ID: "o"}, msgin.WithID("a")), Ack: ps.ack, Nack: ps.nack},
+		{Msg: msgin.New[any](order{ID: "o"}, msgin.WithID("b")), Ack: ps.ack, Nack: ps.nack},
+	}
+	src := &scriptedSource{deliveries: deliveries}
+	var handled atomic.Int64
+	h := func(context.Context, msgin.Message[order]) error { handled.Add(1); return nil }
+
+	c, err := msgin.NewConsumer[order](src, h,
+		msgin.WithMaxInFlight[order](1),
+		msgin.WithLogger[order](slog.New(slog.NewTextHandler(buf, nil))))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+
+	require.Eventually(t, func() bool { return handled.Load() >= 2 }, 2*time.Second, 5*time.Millisecond,
+		"a panicking Ack must still release its credit (release-first, via manage) so the 2nd message is admitted")
+
+	cancel()
+	select {
+	case runErr := <-done:
+		assert.ErrorIs(t, runErr, context.Canceled)
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return: a panicking Ack must not hang the drain")
+	}
+
+	logged := buf.String()
+	assert.Contains(t, logged, "Delivery.Ack panicked", "the panic is logged")
+	assert.Contains(t, logged, "id=a", "both messages' panics are logged (no per-method dedup)")
+	assert.Contains(t, logged, "id=b", "both messages' panics are logged (no per-method dedup)")
+	assert.Contains(t, logged, "settle failed", "finish logs the synthetic settle error too")
+}
+
+// TestConsumer_SafeNack_PanicLogsAndReleasesCredit is safeAck's sibling for
+// the transient (Nack) path (ADR 0010 D6): a Delivery whose Nack panics must
+// be ERROR-logged and must still release its credit, proven the same way —
+// WithMaxInFlight(1) plus a 2nd message that can only be admitted if the
+// 1st's credit was released despite the panic.
+func TestConsumer_SafeNack_PanicLogsAndReleasesCredit(t *testing.T) {
+	buf := &lockedBuffer{}
+	ps := &panicSettle{nackPanics: true}
+	deliveries := []msgin.Delivery{
+		{Msg: msgin.New[any](order{ID: "o"}, msgin.WithID("a")), Ack: ps.ack, Nack: ps.nack},
+		{Msg: msgin.New[any](order{ID: "o"}, msgin.WithID("b")), Ack: ps.ack, Nack: ps.nack},
+	}
+	src := &scriptedSource{deliveries: deliveries}
+	var handled atomic.Int64
+	h := func(context.Context, msgin.Message[order]) error {
+		handled.Add(1)
+		return errors.New("transient boom")
+	}
+
+	c, err := msgin.NewConsumer[order](src, h,
+		msgin.WithMaxInFlight[order](1),
+		msgin.WithLogger[order](slog.New(slog.NewTextHandler(buf, nil))))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+
+	require.Eventually(t, func() bool { return handled.Load() >= 2 }, 2*time.Second, 5*time.Millisecond,
+		"a panicking Nack must still release its credit so the 2nd message is admitted")
+
+	cancel()
+	select {
+	case runErr := <-done:
+		assert.ErrorIs(t, runErr, context.Canceled)
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return: a panicking Nack must not hang the drain")
+	}
+
+	logged := buf.String()
+	assert.Contains(t, logged, "Delivery.Nack panicked", "the panic is logged")
+	assert.Contains(t, logged, "id=a", "both messages' panics are logged (no per-method dedup)")
+	assert.Contains(t, logged, "id=b", "both messages' panics are logged (no per-method dedup)")
+	assert.Contains(t, logged, "settle failed", "finish logs the synthetic settle error too")
+}
+
+// TestConsumer_Overflow_DropNewest_ShedPanicRecovers proves review finding I-1's
+// fix: admit's overflow-shed Nack (the OverflowDropNewest/DropOldest/Reject
+// branch in admit, consumer.go) is now routed through safeNack. A shed
+// delivery whose Nack panics — a realistic adapter bug — must not crash the
+// process. WithMaxInFlight(1) plus a handler that blocks after signaling entry
+// makes the shed deterministic: by the time the 2nd delivery is forwarded, the
+// 1st has already acquired (and is holding) the sole credit, so the 2nd
+// unconditionally takes the tryAcquire-fails shed path in admit.
+func TestConsumer_Overflow_DropNewest_ShedPanicRecovers(t *testing.T) {
+	buf := &lockedBuffer{}
+	src := newControllableSource()
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	var processed atomic.Int64
+	h := func(context.Context, msgin.Message[order]) error {
+		close(entered) // signals the sole credit is now held (past admit's acquire)
+		<-release
+		processed.Add(1)
+		return nil
+	}
+	c, err := msgin.NewConsumer[order](src, h,
+		msgin.WithMaxInFlight[order](1),
+		msgin.WithOverflow[order](msgin.OverflowDropNewest),
+		msgin.WithLogger[order](slog.New(slog.NewTextHandler(buf, nil))))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+
+	held := &settle{}
+	src.deliver(ctx, msgin.Delivery{Msg: msgin.New[any](order{ID: "o"}, msgin.WithID("held")), Ack: held.ack, Nack: held.nack})
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler for the held delivery never entered; the sole credit was never observably acquired")
+	}
+
+	var shedAcked atomic.Bool
+	nackCalled := make(chan struct{})
+	shedNack := func(context.Context, bool, time.Duration) error {
+		close(nackCalled)
+		panic("shed-nack boom")
+	}
+	src.deliver(ctx, msgin.Delivery{
+		Msg:  msgin.New[any](order{ID: "o"}, msgin.WithID("shed")),
+		Ack:  func(context.Context) error { shedAcked.Store(true); return nil },
+		Nack: shedNack,
+	})
+
+	select {
+	case <-nackCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the shed delivery's (panicking) Nack was never invoked")
+	}
+	assert.False(t, shedAcked.Load(), "a shed delivery is Nacked, never Acked")
+
+	close(release) // let the held handler finish
+	require.Eventually(t, func() bool { return processed.Load() >= 1 }, time.Second, 5*time.Millisecond)
+
+	cancel()
+	select {
+	case runErr := <-done:
+		assert.ErrorIs(t, runErr, context.Canceled)
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return: a panicking overflow-shed Nack must not hang the drain")
+	}
+
+	logged := buf.String()
+	assert.Contains(t, logged, "Delivery.Nack panicked", "the panic is logged")
+	assert.Contains(t, logged, "id=shed", "the ERROR log names the message id, never the payload")
+}

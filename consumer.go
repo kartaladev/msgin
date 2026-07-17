@@ -428,14 +428,14 @@ func (c *consumer[T]) admit(ctx, settleCtx context.Context, gate *creditGate, d 
 			// ctx done while parked on the limiter; no credit acquired yet, so
 			// nothing to release. (A panicking limiter fails open — safeLimiterWait
 			// returns nil — so it never reaches this branch, ADR 0009 D1.)
-			c.finish(d.Nack(settleCtx, true, 0))
+			c.finish(c.safeNack(settleCtx, d, true, 0))
 			return false
 		}
 	}
 	if !c.admitBreaker(ctx, d.Msg.ID()) {
 		// ctx done while parked on an open breaker; no credit acquired yet, so
 		// the held delivery is Nacked (requeue) rather than lost.
-		c.finish(d.Nack(settleCtx, true, 0))
+		c.finish(c.safeNack(settleCtx, d, true, 0))
 		return false
 	}
 	// Credit acquisition, per the overflow policy (composition order: after
@@ -448,14 +448,14 @@ func (c *consumer[T]) admit(ctx, settleCtx context.Context, gate *creditGate, d 
 		// ADR 0008 D9). requeue=false: a genuine drop, never a re-enqueue (I2).
 		if !gate.tryAcquire() {
 			c.safeFire(c.hooks.OnRetry, settleCtx, d.Msg, ErrOverflowDropped)
-			c.finish(d.Nack(settleCtx, false, 0)) // genuine drop; no credit held to release
-			return true                           // keep ingesting
+			c.finish(c.safeNack(settleCtx, d, false, 0)) // genuine drop; no credit held to release
+			return true                                  // keep ingesting
 		}
 	default: // OverflowBlock and any out-of-range OverflowPolicy → backpressure
 		if err := gate.acquire(ctx); err != nil {
 			// ctx done before a credit was free; no credit held, so nothing to
 			// release. The Nack may block until cancelSettle (I4).
-			c.finish(d.Nack(settleCtx, true, 0))
+			c.finish(c.safeNack(settleCtx, d, true, 0))
 			return false
 		}
 	}
@@ -464,7 +464,7 @@ func (c *consumer[T]) admit(ctx, settleCtx context.Context, gate *creditGate, d 
 	case out <- md:
 		return true
 	case <-ctx.Done():
-		c.finish(md.Nack(settleCtx, true, 0)) // wrapped: releases the credit + re-enqueues
+		c.finish(c.safeNack(settleCtx, md.Delivery, true, 0)) // wrapped: releases the credit + re-enqueues
 		return false
 	}
 }
@@ -592,7 +592,7 @@ func (c *consumer[T]) process(drainCtx, settleCtx context.Context, md managedDel
 	if drainCtx.Err() != nil {
 		// Deadline already expired: don't start new work, Nack it. settleCtx is
 		// cancelled too, so this returns promptly.
-		c.finish(md.Nack(settleCtx, true, 0))
+		c.finish(c.safeNack(settleCtx, md.Delivery, true, 0))
 		return
 	}
 	if c.breaker != nil && !c.dispatchAllowed(md.Msg.ID()) {
@@ -600,7 +600,7 @@ func (c *consumer[T]) process(drainCtx, settleCtx context.Context, md managedDel
 		// this buffered message into the failing downstream — Nack it (the wrapped
 		// Nack releases its credit) for later redelivery, so the surplus waits in
 		// the source (NF-10). A false TryProbe consumes no probe, so no Record.
-		c.finish(md.Nack(settleCtx, true, 0))
+		c.finish(c.safeNack(settleCtx, md.Delivery, true, 0))
 		return
 	}
 	err := c.dispatch(drainCtx, settleCtx, md.Delivery)
@@ -700,7 +700,7 @@ func (c *consumer[T]) dispatch(ctx, settleCtx context.Context, d Delivery) error
 		// eviction below): an Ack that fails must NOT drop the attempt count,
 		// so a source that redelivers an unacked message keeps climbing toward
 		// MaxAttempts instead of silently restarting from 1.
-		ackErr := d.Ack(settleCtx)
+		ackErr := c.safeAck(settleCtx, d)
 		c.finish(ackErr)
 		if ackErr == nil {
 			c.safeFire(c.hooks.OnAck, settleCtx, d.Msg, nil)
@@ -727,7 +727,7 @@ func (c *consumer[T]) dispatch(ctx, settleCtx context.Context, d Delivery) error
 		}
 	default:
 		c.safeFire(c.hooks.OnRetry, settleCtx, d.Msg, err)
-		c.finish(d.Nack(settleCtx, true, c.policy.delayFor(n)))
+		c.finish(c.safeNack(settleCtx, d, true, c.policy.delayFor(n)))
 	}
 	return err // transient → unhealthy signal (M4): the only path that trips the breaker
 }
@@ -764,23 +764,24 @@ func (c *consumer[T]) divert(ctx context.Context, sink OutboundAdapter, d Delive
 		// nil sink: discarding is the terminal invalid event (ADR 0007 D7).
 		c.logger.Warn("msgin: discarding message; no invalid-message sink configured", "id", d.Msg.ID())
 		c.safeFire(terminalHook, ctx, d.Msg, cause)
-		ackErr := d.Ack(ctx)
+		ackErr := c.safeAck(ctx, d)
 		c.finish(ackErr)
 		// Gate eviction on the Ack, mirroring the dispatch success-path Ack-gating:
 		// a failed source-Ack must not drop the attempt count.
 		return ackErr == nil
 	}
-	if err := sink.Send(ctx, d.Msg); err != nil {
-		// Sink down: the message was NOT diverted → retry it. Do NOT fire the
-		// terminal hook (no terminal event happened) and do NOT surface the send
-		// error to a hook; fire OnRetry with the classification cause instead.
+	if err := c.safeSend(ctx, sink, d.Msg); err != nil {
+		// Sink down (including a panicking sink, recovered by safeSend): the
+		// message was NOT diverted → retry it. Do NOT fire the terminal hook (no
+		// terminal event happened) and do NOT surface the send error to a hook;
+		// fire OnRetry with the classification cause instead.
 		c.safeFire(c.hooks.OnRetry, ctx, d.Msg, cause)
-		c.finish(d.Nack(ctx, true, c.policy.delayFor(attempt))) // non-zero backoff (I6)
-		return false                                            // not terminally settled → keep the tracker entry
+		c.finish(c.safeNack(ctx, d, true, c.policy.delayFor(attempt))) // non-zero backoff (I6)
+		return false                                                   // not terminally settled → keep the tracker entry
 	}
 	// Sink accepted → the terminal divert happened.
 	c.safeFire(terminalHook, ctx, d.Msg, cause)
-	ackErr := d.Ack(ctx)
+	ackErr := c.safeAck(ctx, d)
 	c.finish(ackErr)
 	// Gate eviction on source-Ack success, mirroring the dispatch success-path
 	// Ack-gating: worst case a duplicate-to-sink on redelivery (acceptable
@@ -815,6 +816,12 @@ func (c *consumer[T]) safeFire(hook func(context.Context, Message[any], error), 
 	hook(ctx, msg, cause)
 }
 
+// decode resolves m's payload to T: the live-value type assertion (memory
+// adapter) or, for a wire ([]byte) payload, the size cap (ADR 0009 D5)
+// followed by the codec decode — the only branch that calls into
+// caller-supplied adapter/codec code, so it is the one routed through
+// safeDecode (ADR 0010 D6). The live-value type assertion above it cannot
+// panic and is therefore left unguarded.
 func (c *consumer[T]) decode(m Message[any]) (T, error) {
 	if c.liveValue {
 		v, ok := m.payload.(T)
@@ -835,12 +842,85 @@ func (c *consumer[T]) decode(m Message[any]) (T, error) {
 		var zero T
 		return zero, ErrPayloadTooLarge
 	}
-	v, err := c.codec.Decode(b)
+	return c.safeDecode(m.ID(), b)
+}
+
+// safeDecode invokes the payload codec's Decode, recovering a panic so a
+// faulty PayloadCodec cannot crash the process (fault isolation, ADR 0010 D6,
+// fold-in #4 — the adapter-SPI call sites in the settlement path). A
+// recovered panic is mapped to the SAME classification a returned decode
+// error already gets — ErrPayloadDecode wrapping the cause — so the
+// settlement switch treats a panicking codec exactly like a real decode
+// failure: PERMANENT → invalid sink (never retried against a codec that will
+// panic again on redelivery). Logs ERROR with the message id only, never the
+// payload.
+func (c *consumer[T]) safeDecode(id string, b []byte) (v T, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			var zero T
+			c.logger.Error("msgin: PayloadCodec.Decode panicked", "id", id, "panic", r)
+			v, err = zero, fmt.Errorf("%w: %v", ErrPayloadDecode, r)
+		}
+	}()
+	v, err = c.codec.Decode(b)
 	if err != nil {
 		var zero T
 		return zero, fmt.Errorf("%w: %v", ErrPayloadDecode, err)
 	}
 	return v, nil
+}
+
+// safeSend invokes sink.Send, recovering a panic so a faulty outbound adapter
+// (an invalid-message sink or DeadLetter) cannot crash the process (fault
+// isolation, ADR 0010 D6). A recovered panic is synthesized into an error and
+// routed by divert EXACTLY as a real sink.Send error is today: the message
+// was NOT diverted, so divert retries it (OnRetry + Nack with backoff) rather
+// than treating it as lost. Logs ERROR with the message id only, never the
+// payload.
+func (c *consumer[T]) safeSend(ctx context.Context, sink OutboundAdapter, msg Message[any]) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.Error("msgin: OutboundAdapter.Send panicked", "id", msg.ID(), "panic", r)
+			err = fmt.Errorf("msgin: OutboundAdapter.Send panicked: %v", r)
+		}
+	}()
+	return sink.Send(ctx, msg)
+}
+
+// safeAck invokes d.Ack, recovering a panic so a faulty source adapter's
+// settlement call cannot crash the process (fault isolation, ADR 0010 D6).
+// d is always a managedDelivery's wrapped Delivery here (dispatch/divert
+// operate on the delivery handed to process, whose Ack/Nack already release
+// this delivery's flow-control credit BEFORE invoking the original closure —
+// the manage wrapper in credit.go), so a panicking Ack has already released
+// its credit; the worker's deferred release is an idempotent net, never a
+// leak. A recovered panic is synthesized into an error, settled by the
+// caller's c.finish exactly like a real Ack error (ERROR-logged there too),
+// and the caller's success-gating (tracker eviction, OnAck) is skipped just
+// as it is for a real Ack failure. Deliberately NOT deduplicated per method
+// (unlike governorPanic): an adapter panic is not the deterministic
+// per-message resilience-governor case (ADR 0009 D1), so each occurrence is
+// logged. Logs ERROR with the message id only, never the payload.
+func (c *consumer[T]) safeAck(ctx context.Context, d Delivery) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.Error("msgin: Delivery.Ack panicked", "id", d.Msg.ID(), "panic", r)
+			err = fmt.Errorf("msgin: Delivery.Ack panicked: %v", r)
+		}
+	}()
+	return d.Ack(ctx)
+}
+
+// safeNack invokes d.Nack, recovering a panic with the same rationale, credit
+// ordering, and no-dedup logging as safeAck.
+func (c *consumer[T]) safeNack(ctx context.Context, d Delivery, requeue bool, delay time.Duration) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.Error("msgin: Delivery.Nack panicked", "id", d.Msg.ID(), "panic", r)
+			err = fmt.Errorf("msgin: Delivery.Nack panicked: %v", r)
+		}
+	}()
+	return d.Nack(ctx, requeue, delay)
 }
 
 // safeHandle recovers a panicking handler so a fault in application code never

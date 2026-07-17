@@ -409,6 +409,63 @@ func (s *signalingSource) Stream(ctx context.Context, out chan<- msgin.Delivery)
 	return ctx.Err()
 }
 
+// panicDecodeCodec is a PayloadCodec[order] whose Decode always panics —
+// used to prove safeDecode's panic recovery (ADR 0010 D6): a panicking codec
+// must classify exactly like a real decode error (ErrPayloadDecode,
+// PERMANENT → invalid sink), never crash the process.
+type panicDecodeCodec struct{}
+
+func (panicDecodeCodec) Encode(order) ([]byte, error) { return nil, nil }
+func (panicDecodeCodec) Decode([]byte) (order, error) { panic("panicDecodeCodec.Decode boom") }
+
+// panicSendSink is an OutboundAdapter whose Send always panics — used to
+// prove safeSend's panic recovery (ADR 0010 D6): a panicking invalid/DLQ
+// sink must be routed exactly like a real Send error (retried via Nack, not
+// terminally lost).
+type panicSendSink struct{}
+
+func (panicSendSink) Send(context.Context, msgin.Message[any]) error {
+	panic("panicSendSink.Send boom")
+}
+
+// panicSettle is a settle-style Delivery-settlement double whose Ack and/or
+// Nack can be scripted to panic — used to prove safeAck/safeNack's panic
+// recovery (ADR 0010 D6). A non-scripted call behaves like settle (recorded,
+// nil error).
+type panicSettle struct {
+	mu         sync.Mutex
+	ackPanics  bool
+	nackPanics bool
+	acks       int
+	nacks      int
+}
+
+func (s *panicSettle) ack(context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ackPanics {
+		panic("panicSettle.ack boom")
+	}
+	s.acks++
+	return nil
+}
+
+func (s *panicSettle) nack(context.Context, bool, time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.nackPanics {
+		panic("panicSettle.nack boom")
+	}
+	s.nacks++
+	return nil
+}
+
+func (s *panicSettle) snapshot() (acks, nacks int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.acks, s.nacks
+}
+
 // hookRec records which observability hooks fired, keyed by event name.
 type hookRec struct {
 	mu sync.Mutex
