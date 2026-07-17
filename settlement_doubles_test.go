@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/msgin"
+	"github.com/kartaladev/msgin/adapter/memory"
 )
 
 // lockedBuffer is a goroutine-safe io.Writer for capturing slog output emitted
@@ -148,6 +149,42 @@ func (s *reemittingSource) Stream(ctx context.Context, out chan<- msgin.Delivery
 	}
 }
 
+// controllableSource is a StreamingSource the test drives one delivery at a
+// time: deliver blocks until Stream has forwarded the delivery downstream, so a
+// test can withhold an id across a TTL sweep and then re-deliver it, making the
+// sweep-vs-redeliver ordering deterministic (used by the Task 7 sweep tests).
+type controllableSource struct {
+	emit chan msgin.Delivery
+}
+
+func newControllableSource() *controllableSource {
+	return &controllableSource{emit: make(chan msgin.Delivery)}
+}
+
+func (s *controllableSource) EmitsLiveValue() bool { return true }
+
+func (s *controllableSource) Stream(ctx context.Context, out chan<- msgin.Delivery) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case d := <-s.emit:
+			select {
+			case out <- d:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+}
+
+func (s *controllableSource) deliver(ctx context.Context, d msgin.Delivery) {
+	select {
+	case s.emit <- d:
+	case <-ctx.Done():
+	}
+}
+
 // nativeScriptedSource emits one delivery then blocks; declares no native reliability.
 type nativeScriptedSource struct{ d msgin.Delivery }
 
@@ -181,6 +218,88 @@ func (s *nativeDLQSource) Stream(ctx context.Context, out chan<- msgin.Delivery)
 	}
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+// scriptedBreaker is a deterministic CircuitBreaker test double: Allow returns a
+// preset sequence of values (the last repeats once exhausted) so a test can pin
+// the exact open/closed decision each caller sees — the real breaker's clockwork
+// transitions are async, which is fine for the state-machine tests but too racy
+// to deterministically place a message between the ingress admit and the worker
+// dispatch gate. It records every Record(success) call for assertion.
+type scriptedBreaker struct {
+	mu      sync.Mutex
+	allows  []bool
+	idx     int
+	records []bool
+	wake    chan struct{}
+}
+
+func newScriptedBreaker(allows ...bool) *scriptedBreaker {
+	return &scriptedBreaker{allows: allows, wake: make(chan struct{})}
+}
+
+func (b *scriptedBreaker) Allow() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.idx >= len(b.allows) {
+		return b.allows[len(b.allows)-1] // last scripted value repeats
+	}
+	v := b.allows[b.idx]
+	b.idx++
+	return v
+}
+
+func (b *scriptedBreaker) Record(success bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.records = append(b.records, success)
+}
+
+func (b *scriptedBreaker) HalfOpen() <-chan struct{} {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.wake
+}
+
+func (b *scriptedBreaker) recorded() []bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]bool(nil), b.records...)
+}
+
+// countingSource is a StreamingSource backed by a real memory.Broker, used by
+// the credit-gate tests to catch over-pull: it forwards the broker's live
+// deliveries (whose Nack-requeue synchronously re-injects via Send) unchanged,
+// so the runtime's credit accounting is exercised against a real re-injecting
+// adapter rather than a stub.
+type countingSource struct {
+	broker *memory.Broker
+}
+
+func (s *countingSource) EmitsLiveValue() bool { return true }
+func (s *countingSource) Stream(ctx context.Context, out chan<- msgin.Delivery) error {
+	return s.broker.Stream(ctx, out)
+}
+
+// finiteSource emits its preset deliveries once and then returns nil — the
+// stream ends on its own rather than blocking until ctx is cancelled. It drives
+// the ingest "source stream ended" exit (rawCh closed while ctx is still live)
+// and Run's normal, cancel-free completion returning a nil error.
+type finiteSource struct {
+	deliveries []msgin.Delivery
+}
+
+func (s *finiteSource) EmitsLiveValue() bool { return true }
+
+func (s *finiteSource) Stream(ctx context.Context, out chan<- msgin.Delivery) error {
+	for _, d := range s.deliveries {
+		select {
+		case out <- d:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil // stream complete; Run closes rawCh and ingest exits on the closed read
 }
 
 // hookRec records which observability hooks fired, keyed by event name.

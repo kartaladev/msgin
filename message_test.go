@@ -124,6 +124,11 @@ func TestNew_StampsIDAndTimestamp(t *testing.T) {
 			func(t *testing.T, m msgin.Message[string]) {
 				assert.Equal(t, "body", m.Payload())
 			}},
+		{"nil clock is a no-op, not a panic", []msgin.MessageOption{msgin.WithClock(nil)},
+			func(t *testing.T, m msgin.Message[string]) {
+				_, ok := m.Header(msgin.HeaderTimestamp)
+				assert.True(t, ok, "the real-clock default still stamps a timestamp")
+			}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

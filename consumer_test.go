@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jonboulle/clockwork"
@@ -245,6 +246,31 @@ func TestNewConsumer_Validation(t *testing.T) {
 			_, err := msgin.NewConsumer[order](tc.src, h, tc.opts...)
 			tc.assert(t, err)
 		})
+	}
+}
+
+// TestConsumer_WithConsumerClockNil_IsNoOpNotPanic proves a nil
+// WithConsumerClock is a no-op (the real-clock default stays in place) rather
+// than a caller-triggered nil-panic once Run reaches its first clock use (the
+// shutdown-timeout c.clock.After call) — no panic on caller input.
+func TestConsumer_WithConsumerClockNil_IsNoOpNotPanic(t *testing.T) {
+	b := memory.New()
+	h := func(context.Context, msgin.Message[order]) error { return nil }
+	c, err := msgin.NewConsumer[order](b, h,
+		msgin.WithConsumerClock[order](nil),
+		msgin.WithShutdownTimeout[order](10*time.Millisecond))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+	cancel()
+
+	select {
+	case err := <-done:
+		assert.ErrorIs(t, err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return; a nil clock may have panicked instead of falling back to the real clock")
 	}
 }
 
@@ -1054,7 +1080,7 @@ func TestConsumer_Shutdown_TransientNackDuringDrain(t *testing.T) {
 			<-entered // a message is in flight
 			cancel()  // parent cancel: Stream returns; the transient Nack will block on Send
 
-			require.NoError(t, clk.BlockUntilContext(t.Context(), 1)) // the drain's clock.After is registered
+			require.NoError(t, clk.BlockUntilContext(t.Context(), 2)) // the drain's clock.After is registered; +1 waiter is the always-on tracker sweep ticker (registered at Run start, C1)
 			clk.Advance(time.Hour)                                    // fire it (>= any configured timeout): cancelSettle releases the stuck Send
 
 			select {
@@ -1068,59 +1094,143 @@ func TestConsumer_Shutdown_TransientNackDuringDrain(t *testing.T) {
 }
 
 // TestConsumer_ShutdownDeadlineExpiry_NacksInflightAndBuffered is a
-// deterministic (handlerEntered channel, no time.Sleep) deadline-expiry test
-// with TWO deliveries — one in the handler (in-flight), one buffered. On expiry
-// the in-flight one is Nacked (cooperative abort) and the buffered one is
-// short-circuit Nacked WITHOUT ever entering the handler (M9 + I5).
+// deterministic deadline-expiry test with TWO deliveries — one in the handler
+// (in-flight), one pulled-but-not-dispatched. On cancel the surplus is Nacked by
+// the ingress stage WITHOUT ever entering the handler, and on deadline expiry the
+// in-flight one is Nacked (cooperative abort) (M9 + I5).
+//
+// After the credit-gate rewrite (Plan 003 Task 2) the source→worker path is two
+// unbuffered channels (rawCh, workerCh) rather than a buffered deliveries
+// channel: with workers=1 the surplus "second" parks in ingest on the workerCh
+// send (credit acquired, worker busy). synctest.Wait pins that steady state
+// deterministically — first in the handler, second parked in ingest — before
+// cancel, so there is no reliance on a happens-before between the source emitting
+// "second" and the handler entering. Cancel makes ingest's admit take its
+// ctx-done branch and Nack "second"; the deadline then releases "first". The
+// consumer clock is a clockwork fake, so no real timers run inside the bubble.
 func TestConsumer_ShutdownDeadlineExpiry_NacksInflightAndBuffered(t *testing.T) {
-	st1, st2 := &settle{}, &settle{}
-	entered := make(chan struct{})
-	var mu sync.Mutex
-	handled := map[string]bool{}
-	h := func(ctx context.Context, m msgin.Message[order]) error {
-		id := m.Payload().ID
-		mu.Lock()
-		handled[id] = true
-		mu.Unlock()
-		if id == "first" {
-			close(entered) // in-flight signal
-			<-ctx.Done()   // block until cancelDrain (deadline expiry) releases it
-			return ctx.Err()
+	synctest.Test(t, func(t *testing.T) {
+		st1, st2 := &settle{}, &settle{}
+		entered := make(chan struct{})
+		var mu sync.Mutex
+		handled := map[string]bool{}
+		h := func(ctx context.Context, m msgin.Message[order]) error {
+			id := m.Payload().ID
+			mu.Lock()
+			handled[id] = true
+			mu.Unlock()
+			if id == "first" {
+				close(entered) // in-flight signal
+				<-ctx.Done()   // block until cancelDrain (deadline expiry) releases it
+				return ctx.Err()
+			}
+			return nil
 		}
-		return nil
-	}
-	// scriptedSource emits both; with workers=1 and defaultDeliveryBuffer=1 the
-	// second sits buffered while the first blocks in the handler.
-	src := &scriptedSource{deliveries: []msgin.Delivery{
-		newSettleDelivery(order{ID: "first"}, "m1", st1),
-		newSettleDelivery(order{ID: "second"}, "m2", st2),
-	}}
-	clk := clockwork.NewFakeClock()
+		src := &scriptedSource{deliveries: []msgin.Delivery{
+			newSettleDelivery(order{ID: "first"}, "m1", st1),
+			newSettleDelivery(order{ID: "second"}, "m2", st2),
+		}}
+		clk := clockwork.NewFakeClock()
 
-	c, err := msgin.NewConsumer[order](src, h,
-		msgin.WithConsumerClock[order](clk),
-		msgin.WithShutdownTimeout[order](5*time.Second))
-	require.NoError(t, err)
+		c, err := msgin.NewConsumer[order](src, h,
+			msgin.WithConsumerClock[order](clk),
+			msgin.WithShutdownTimeout[order](5*time.Second))
+		require.NoError(t, err)
 
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() { done <- c.Run(ctx) }()
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan error, 1)
+		go func() { done <- c.Run(ctx) }()
 
-	<-entered // deterministic: the first delivery is in the handler
-	cancel()
+		<-entered       // the first delivery is in the handler
+		synctest.Wait() // steady state: "second" is parked in ingest on the workerCh send
+		cancel()        // ingest's admit takes its ctx-done branch → Nacks "second"
 
-	require.NoError(t, clk.BlockUntilContext(t.Context(), 1)) // drain reached clock.After(5s)
-	clk.Advance(5 * time.Second)                              // fire the deadline
+		require.NoError(t, clk.BlockUntilContext(t.Context(), 2)) // drain reached clock.After(5s); +1 waiter is the always-on tracker sweep ticker (registered at Run start, C1)
+		clk.Advance(5 * time.Second)                              // fire the deadline
 
-	assert.ErrorIs(t, <-done, context.Canceled) // Run returns (always finite)
+		assert.ErrorIs(t, <-done, context.Canceled) // Run returns (always finite)
 
-	_, n1, _ := st1.snapshot()
-	_, n2, _ := st2.snapshot()
-	assert.GreaterOrEqual(t, n1, 1, "in-flight message Nacked on deadline expiry")
-	assert.GreaterOrEqual(t, n2, 1, "buffered message Nacked after expiry (I5)")
-	mu.Lock()
-	defer mu.Unlock()
-	assert.False(t, handled["second"], "buffered message must be short-circuit Nacked, never handled (I5)")
+		_, n1, _ := st1.snapshot()
+		_, n2, _ := st2.snapshot()
+		assert.GreaterOrEqual(t, n1, 1, "in-flight message Nacked on deadline expiry")
+		assert.GreaterOrEqual(t, n2, 1, "pulled-but-not-dispatched message Nacked by ingress on cancel (I5)")
+		mu.Lock()
+		defer mu.Unlock()
+		assert.False(t, handled["second"], "surplus message must be Nacked by ingress, never handled (I5)")
+	})
+}
+
+// TestConsumer_ShutdownDeadlineExpiry_DrainsWorkerChBufferResident proves the
+// OTHER shutdown-drain path from TestConsumer_ShutdownDeadlineExpiry_NacksInflightAndBuffered:
+// a delivery genuinely RESIDENT in the buffered workerCh (D3-fix, ADR 0008) at
+// the deadline — not merely parked in ingest waiting for a credit or a worker —
+// is drained (Nacked via process's drainCtx short-circuit) with no leak.
+//
+// WithMaxInFlight(3) (n >= 2) with the default single worker lets ingest admit
+// "first", "second", and "third" all the way past the credit gate without
+// blocking: workerCh's buffer (capacity == maxInFlight) has room for all three,
+// so "second" and "third" land IN THE BUFFER — resident, not send-blocked — while
+// the sole worker is busy running "first"'s handler. synctest.Wait pins that
+// steady state deterministically before cancel. On cancel, ingest's admit loop
+// has already finished (all three already emitted by the scripted source), so
+// there is nothing left for ingest to Nack; the surplus is settled entirely by
+// the worker draining the closed-but-still-buffered workerCh after the deadline
+// cancels drainCtx, taking process's short-circuit branch for each.
+func TestConsumer_ShutdownDeadlineExpiry_DrainsWorkerChBufferResident(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		st1, st2, st3 := &settle{}, &settle{}, &settle{}
+		entered := make(chan struct{})
+		var mu sync.Mutex
+		handled := map[string]bool{}
+		h := func(ctx context.Context, m msgin.Message[order]) error {
+			id := m.Payload().ID
+			mu.Lock()
+			handled[id] = true
+			mu.Unlock()
+			if id == "first" {
+				close(entered) // in-flight signal: the sole worker is now busy
+				<-ctx.Done()   // block until cancelDrain (deadline expiry) releases it
+				return ctx.Err()
+			}
+			return nil // never reached: "second"/"third" must be short-circuited, not dispatched
+		}
+		src := &scriptedSource{deliveries: []msgin.Delivery{
+			newSettleDelivery(order{ID: "first"}, "m1", st1),
+			newSettleDelivery(order{ID: "second"}, "m2", st2),
+			newSettleDelivery(order{ID: "third"}, "m3", st3),
+		}}
+		clk := clockwork.NewFakeClock()
+
+		c, err := msgin.NewConsumer[order](src, h,
+			msgin.WithConsumerClock[order](clk),
+			msgin.WithMaxInFlight[order](3), // n >= 2: room for "second"+"third" to sit IN workerCh's buffer
+			msgin.WithShutdownTimeout[order](5*time.Second))
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan error, 1)
+		go func() { done <- c.Run(ctx) }()
+
+		<-entered       // "first" is in the handler; the worker is busy
+		synctest.Wait() // steady state: "second" and "third" are resident in workerCh's buffer
+		cancel()        // parent cancel: ingest has nothing left to admit (all 3 already emitted)
+
+		require.NoError(t, clk.BlockUntilContext(t.Context(), 2)) // drain reached clock.After(5s); +1 waiter is the always-on tracker sweep ticker (registered at Run start, C1)
+		clk.Advance(5 * time.Second)                              // fire the deadline: cancelDrain short-circuits the buffered surplus
+
+		assert.ErrorIs(t, <-done, context.Canceled) // Run always returns (C1)
+
+		_, n1, _ := st1.snapshot()
+		_, n2, _ := st2.snapshot()
+		_, n3, _ := st3.snapshot()
+		assert.GreaterOrEqual(t, n1, 1, "in-flight message Nacked on deadline expiry (cooperative abort)")
+		assert.GreaterOrEqual(t, n2, 1, "buffer-resident message drained via process's drainCtx short-circuit")
+		assert.GreaterOrEqual(t, n3, 1, "buffer-resident message drained via process's drainCtx short-circuit")
+		mu.Lock()
+		defer mu.Unlock()
+		assert.False(t, handled["second"], "buffer-resident surplus must be Nacked without dispatch, never handled")
+		assert.False(t, handled["third"], "buffer-resident surplus must be Nacked without dispatch, never handled")
+	})
 }
 
 // TestConsumer_GracefulDrain_ProcessesBuffered leaves work in flight at cancel()
@@ -1159,4 +1269,938 @@ func TestConsumer_GracefulDrain_ProcessesBuffered(t *testing.T) {
 
 	assert.ErrorIs(t, <-done, context.Canceled)
 	assert.GreaterOrEqual(t, seen.Load(), int64(1), "in-flight work drained after cancel, not dropped")
+}
+
+// TestConsumer_StreamEndsNormally_RunReturnsNil proves the ingress "source
+// stream ended" path: when the source's Stream returns nil on its own (a bounded
+// source that runs dry rather than blocking on ctx), Run closes rawCh, ingest
+// exits on the closed read (not via ctx cancel), the pool drains, and Run returns
+// the nil stream error — all without the caller cancelling and with no leak.
+func TestConsumer_StreamEndsNormally_RunReturnsNil(t *testing.T) {
+	st := &settle{}
+	src := &finiteSource{deliveries: []msgin.Delivery{
+		newSettleDelivery(order{ID: "o"}, "m1", st),
+		newSettleDelivery(order{ID: "o"}, "m2", st),
+		newSettleDelivery(order{ID: "o"}, "m3", st),
+	}}
+	h := func(context.Context, msgin.Message[order]) error { return nil }
+
+	c, err := msgin.NewConsumer[order](src, h)
+	require.NoError(t, err)
+
+	// No cancel: the source ends the stream itself, so Run returns on its own.
+	assert.NoError(t, c.Run(t.Context()), "stream ended normally => nil error")
+
+	acks, nacks, _ := st.snapshot()
+	assert.Equal(t, 3, acks, "every delivery acked before the stream-ended shutdown")
+	assert.Equal(t, 0, nacks)
+}
+
+// TestConsumer_MaxInFlight_BoundsClaimedUnsettled proves invariant 1 (no
+// over-pull past n) and invariant 4 (credits recycle — no leak). A burst of 20
+// deliveries hits a 20-worker pool, but WithMaxInFlight(3) means the credit gate
+// admits at most 3 concurrently; maxSeen must never exceed n. Releasing the held
+// handlers lets every message drain, proving credits are recycled exactly.
+func TestConsumer_MaxInFlight_BoundsClaimedUnsettled(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const n = 3
+		const burst = 20
+		b := memory.New(memory.WithBuffer(burst))
+		src := &countingSource{broker: b}
+
+		var inFlight, maxSeen, processed atomic.Int64
+		release := make(chan struct{})
+		h := func(_ context.Context, _ msgin.Message[order]) error {
+			cur := inFlight.Add(1)
+			for {
+				m := maxSeen.Load()
+				if cur <= m || maxSeen.CompareAndSwap(m, cur) {
+					break
+				}
+			}
+			<-release
+			inFlight.Add(-1)
+			processed.Add(1)
+			return nil
+		}
+		c, err := msgin.NewConsumer[order](src, h,
+			// I3: inject a fake consumer clock and NEVER advance it. Once Task 7
+			// adds the always-on tracker sweep, the sweep goroutine creates a
+			// ticker on the CONSUMER clock; with a real clock that would be a real
+			// ticker inside the synctest bubble, perturbing synctest.Wait(). A
+			// clockwork fake ticker fires ONLY on Advance, so — never advanced — it
+			// stays durably blocked and is invisible to synctest.Wait().
+			msgin.WithConsumerClock[order](clockwork.NewFakeClock()),
+			msgin.WithConcurrency[order](burst), // many workers…
+			msgin.WithMaxInFlight[order](n))     // …but credit caps in-flight at n
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		runDone := make(chan error, 1)
+		go func() { runDone <- c.Run(ctx) }()
+		for i := 0; i < burst; i++ {
+			require.NoError(t, b.Send(ctx, msgin.New[any](order{ID: "x"})))
+		}
+
+		synctest.Wait() // steady state: exactly n handlers entered, the rest gated
+		assert.LessOrEqual(t, maxSeen.Load(), int64(n), "never more than n claimed-but-unsettled (no over-pull)")
+		assert.Equal(t, int64(n), inFlight.Load(), "exactly n admitted; the surplus waits in the source")
+
+		close(release) // let everything drain; credits recycle
+		synctest.Wait()
+		assert.Equal(t, int64(burst), processed.Load(), "all messages eventually processed (no credit leak)")
+
+		cancel()
+		assert.ErrorIs(t, <-runDone, context.Canceled)
+	})
+}
+
+// TestConsumer_MaxInFlight_NackReleasesSlot_NoDeadlock proves invariant 3 (n=1
+// Nack-redeliver does not deadlock) and invariant 2's release-FIRST ordering.
+// audit class 3: at n=1 a transient Nack must release its slot BEFORE the memory
+// re-enqueue, or the redelivery deadlocks waiting for the credit it still holds.
+func TestConsumer_MaxInFlight_NackReleasesSlot_NoDeadlock(t *testing.T) {
+	b := memory.New()
+	var attempts atomic.Int64
+	done := make(chan struct{})
+	h := func(context.Context, msgin.Message[order]) error {
+		if attempts.Add(1) == 1 {
+			return errors.New("transient once") // Nack(requeue) re-enqueues via Send
+		}
+		select {
+		case <-done:
+		default:
+			close(done)
+		}
+		return nil
+	}
+	c, err := msgin.NewConsumer[order](b, h, msgin.WithMaxInFlight[order](1))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	runDone := make(chan error, 1)
+	go func() { runDone <- c.Run(ctx) }()
+	require.NoError(t, b.Send(ctx, msgin.New[any](order{ID: "x"})))
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("redelivery deadlocked: the Nacked message pinned its only credit (NF-5)")
+	}
+	cancel()
+	assert.ErrorIs(t, <-runDone, context.Canceled)
+	assert.GreaterOrEqual(t, attempts.Load(), int64(2), "message was redelivered after the transient Nack")
+}
+
+// TestConsumer_Run_BacklogBehindBusyWorkerWithRequeue_NoDeadlock is a
+// regression test for a 3-way cyclic-wait deadlock found in Task 8's
+// whole-branch review: with an UNBUFFERED memory.Broker, the default
+// consumer (concurrency 1, default maxInFlight), and >= 2 messages queued
+// behind a busy worker, a transient failure whose Nack(requeue=true)
+// synchronously re-enters the broker (adapter/memory's Send) could deadlock
+// with nobody left to drain the broker's channel: Stream parked sending to
+// the ingress rawCh, the ingest goroutine parked sending to workerCh (no
+// worker free), and the sole worker parked re-injecting its Nack into the
+// broker. The fix (this commit) buffers workerCh to the credit gate's own
+// capacity so ingest's ONLY blocking point is the credit acquire (the
+// intended backpressure), never worker availability, which keeps the
+// broker always drainable. This reproduced on ~40-50% of runs before the
+// fix and is 0/N-flaky after it — run at -count=20 in CI to guard the fix.
+func TestConsumer_Run_BacklogBehindBusyWorkerWithRequeue_NoDeadlock(t *testing.T) {
+	b := memory.New() // UNBUFFERED: forces the synchronous relay chain
+	var failedOnce atomic.Bool
+	var processed atomic.Int32
+	done := make(chan struct{})
+	h := func(_ context.Context, m msgin.Message[order]) error {
+		if m.Payload().ID == "A" && failedOnce.CompareAndSwap(false, true) {
+			return errors.New("transient fail on A's first attempt")
+		}
+		if processed.Add(1) == 3 {
+			close(done)
+		}
+		return nil
+	}
+	c, err := msgin.NewConsumer[order](b, h)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	runDone := make(chan error, 1)
+	go func() { runDone <- c.Run(ctx) }()
+
+	// Send concurrently: the broker is unbuffered, so each Send blocks until
+	// Stream reads it — sending from separate goroutines lets all three race
+	// into the pipeline the way the original repro did, instead of the
+	// caller itself serializing them one at a time.
+	var wg sync.WaitGroup
+	for _, id := range []string{"A", "B", "C"} {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			_ = b.Send(ctx, msgin.New[any](order{ID: id}))
+		}(id)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("backlog behind the busy worker deadlocked: the requeue could not drain the broker")
+	}
+	wg.Wait()
+	cancel()
+	assert.ErrorIs(t, <-runDone, context.Canceled)
+	assert.Equal(t, int32(3), processed.Load())
+}
+
+// TestConsumer_MaxInFlight_ShutdownWithIngestHeldSurplus_NoLeak proves invariant
+// 5 (a delivery whose ctx is done before it acquires credit does not spuriously
+// release) and the I4 bounded-shutdown contract. Shutdown must still return
+// (bounded, goleak-clean) even when the ingress goroutine is holding a surplus
+// delivery whose ctx-done Nack(requeue=true) blocks on the memory adapter's
+// UNBUFFERED Send (the stopped Stream no longer reads). With n=1 and a handler
+// that holds the single credit, a second message is pulled by ingest and parks
+// on acquire; at cancel, admit's acquire returns ctx.Err and Nacks that held
+// delivery via requeue → the memory Send blocks until cancelSettle fires at the
+// shutdown deadline. Run must not hang past the (finite) deadline, and no
+// goroutine may leak.
+func TestConsumer_MaxInFlight_ShutdownWithIngestHeldSurplus_NoLeak(t *testing.T) {
+	b := memory.New() // UNBUFFERED: Nack(requeue) Send blocks once Stream stops
+	clk := clockwork.NewFakeClock()
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	h := func(context.Context, msgin.Message[order]) error {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release // hold the only credit so the 2nd msg parks in ingest on acquire
+		return nil
+	}
+	c, err := msgin.NewConsumer[order](b, h,
+		msgin.WithConsumerClock[order](clk),
+		msgin.WithMaxInFlight[order](1))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	runDone := make(chan error, 1)
+	go func() { runDone <- c.Run(ctx) }()
+
+	require.NoError(t, b.Send(ctx, msgin.New[any](order{ID: "a"})))
+	require.NoError(t, b.Send(ctx, msgin.New[any](order{ID: "b"}))) // parks in ingest on acquire
+	<-entered
+	cancel() // Stream returns; ingest's acquire returns ctx.Err → Nack(requeue) blocks on Send
+
+	require.NoError(t, clk.BlockUntilContext(t.Context(), 2)) // drain's clock.After registered; +1 waiter is the always-on tracker sweep ticker (registered at Run start, C1)
+	clk.Advance(time.Hour)                                    // fire the deadline → cancelSettle unblocks the stuck Send
+	close(release)
+
+	select {
+	case err := <-runDone:
+		assert.ErrorIs(t, err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run hung: ingest-held surplus Nack blocked on the unbuffered Send past the deadline (I4)")
+	}
+}
+
+// TestConsumer_MaxInFlight_ShutdownDeadline_ShortCircuitsSurplusBeforeHandler
+// covers process's shutdown short-circuit (consumer.go: `if drainCtx.Err() !=
+// nil { ... }`), proving it is reachable and load-bearing: removing it would
+// let handler work start on a delivery admitted AFTER the shutdown deadline
+// already expired. A finiteSource emits two deliveries then ends the stream on
+// its own (no parent cancel) with WithMaxInFlight(1): d1's cooperative handler
+// blocks on <-ctx.Done() (ctx == drainCtx) holding the only credit, while
+// ingest reads d2 and parks in admit's acquire — waiting on the PARENT ctx,
+// which this test never cancels. Once the source ends, Run reaches the
+// shutdown-deadline select; the injected fake clock fires it, cancelling
+// drainCtx/settleCtx. d1's handler sees drainCtx done, returns, and its
+// wrapped Nack releases the credit; ingest's parked acquire claims the freed
+// credit and hands d2 to the (now free) worker, whose process() sees
+// drainCtx.Err() != nil and Nacks d2 WITHOUT ever calling the handler.
+func TestConsumer_MaxInFlight_ShutdownDeadline_ShortCircuitsSurplusBeforeHandler(t *testing.T) {
+	st := &settle{}
+	src := &finiteSource{deliveries: []msgin.Delivery{
+		newSettleDelivery(order{ID: "o"}, "m1", st),
+		newSettleDelivery(order{ID: "o"}, "m2", st),
+	}}
+	var handlerCalls atomic.Int64
+	entered := make(chan struct{}, 1)
+	clk := clockwork.NewFakeClock()
+	h := func(ctx context.Context, _ msgin.Message[order]) error {
+		handlerCalls.Add(1)
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-ctx.Done() // cooperative: only returns once the shutdown deadline cancels drainCtx
+		return ctx.Err()
+	}
+	c, err := msgin.NewConsumer[order](src, h,
+		msgin.WithConsumerClock[order](clk),
+		msgin.WithMaxInFlight[order](1))
+	require.NoError(t, err)
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- c.Run(t.Context()) }()
+
+	<-entered // d1 is in the handler holding the only credit; d2 is parked in ingest's admit
+
+	require.NoError(t, clk.BlockUntilContext(t.Context(), 2)) // Run registered the shutdown deadline; +1 waiter is the always-on tracker sweep ticker (registered at Run start, C1)
+	clk.Advance(time.Hour)                                    // fire it: drainCtx/settleCtx cancel
+
+	select {
+	case err := <-runDone:
+		assert.NoError(t, err, "finiteSource ended the stream on its own; Run returns the nil stream error")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run hung past the shutdown deadline")
+	}
+
+	assert.Equal(t, int64(1), handlerCalls.Load(), "handler entered exactly once: d2 was short-circuited before dispatch")
+	acks, nacks, _ := st.snapshot()
+	assert.Equal(t, 0, acks)
+	assert.Equal(t, 2, nacks, "d1 nacked after its cooperative ctx-done return; d2 nacked by process's shutdown short-circuit")
+}
+
+// TestConsumer_MaxInFlight_AcquireFailReleasesNothing strengthens invariant 5
+// with a direct credit-balance check on the ctx-done-before-acquire path in
+// admit (credit.go's gate.acquire failing before any token was claimed): that
+// path must release NOTHING, since nothing was acquired. An over-release bug
+// there would free a credit currently held by a DIFFERENT in-flight delivery
+// — with n=1, that legitimate credit belongs to d1, so if the acquire-fail
+// Nack for d2 spuriously drained it, d1's OWN later release (via its wrapped
+// Ack) would find the credit gate's single-slot buffer already empty and
+// block forever on the receive (a semaphore release with nothing to release),
+// hanging Run past any deadline (nothing here is context-gated). This test
+// proves that does NOT happen: d1's Ack completes promptly right after the
+// acquire-fail event, and the settlement counts are exactly as expected (one
+// raw, unwrapped Nack for d2; one wrapped Ack for d1) — anything else, or a
+// hang, is the bug.
+//
+// Synchronization: a finiteSource (not scriptedSource) is used so that Stream
+// returning is a hard channel-rendezvous guarantee that BOTH deliveries have
+// already been forwarded into ingest — i.e. d2 is already parked in admit's
+// gate.acquire (waiting on the still-live parent ctx) by the time this test's
+// clk.BlockUntilContext call returns. Only then is the parent ctx cancelled,
+// deterministically resolving that blocked acquire to ctx.Err() rather than
+// racing ingest's outer select into skipping d2 entirely.
+func TestConsumer_MaxInFlight_AcquireFailReleasesNothing(t *testing.T) {
+	st := &settle{}
+	src := &finiteSource{deliveries: []msgin.Delivery{
+		newSettleDelivery(order{ID: "o"}, "m1", st),
+		newSettleDelivery(order{ID: "o"}, "m2", st),
+	}}
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	h := func(context.Context, msgin.Message[order]) error {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release // hold the only credit until the test says so
+		return nil
+	}
+	clk := clockwork.NewFakeClock()
+	c, err := msgin.NewConsumer[order](src, h,
+		msgin.WithConsumerClock[order](clk),
+		msgin.WithMaxInFlight[order](1))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	runDone := make(chan error, 1)
+	go func() { runDone <- c.Run(ctx) }()
+
+	<-entered // d1 holds the only credit
+
+	// finiteSource's Stream only returns — letting Run close rawCh and register
+	// the shutdown deadline on the injected fake clock — once BOTH deliveries
+	// are fully forwarded into ingest. So by the time this unblocks, d2 is
+	// already parked in admit's gate.acquire. +1 waiter is the always-on tracker
+	// sweep ticker (registered at Run start, C1), so we wait for BOTH it and the
+	// shutdown deadline — waiting for only 1 would return on the sweep ticker
+	// before the deadline registered and defeat this barrier.
+	require.NoError(t, clk.BlockUntilContext(t.Context(), 2))
+
+	cancel() // d2's acquire returns ctx.Err(): the acquire-fail path Nacks it RAW
+
+	// Wait for that Nack to land BEFORE releasing d1: this fixes the ordering
+	// so d1's legitimate release can never race the (hypothetical, buggy)
+	// acquire-fail release — without this, closing release immediately after
+	// cancel() lets the scheduler interleave d1's wakeup ahead of ingest's
+	// blocked acquire noticing ctx.Done(), which can let d2 acquire for real
+	// and defeat the test. Polling here only confirms the Nack already
+	// happened; it asserts nothing about credit state yet.
+	require.Eventually(t, func() bool {
+		_, nacks, _ := st.snapshot()
+		return nacks == 1
+	}, 2*time.Second, time.Millisecond, "acquire-fail Nack for d2 never landed")
+
+	// Now release d1. If the acquire-fail path above had spuriously released a
+	// credit, it would have drained the ONE token that d1 (still in the
+	// handler) legitimately holds. d1's own legitimate release would then find
+	// the gate's buffer already empty and block forever on the receive — the
+	// select below would time out instead of observing Run finish.
+	close(release)
+	select {
+	case err := <-runDone:
+		assert.NoError(t, err, "finiteSource ended the stream on its own before cancel; Run returns the nil stream error")
+	case <-time.After(2 * time.Second):
+		t.Fatal("d1's legitimate credit release hung: the acquire-fail path spuriously released a credit it never held")
+	}
+
+	acks, nacks, _ := st.snapshot()
+	assert.Equal(t, 1, acks, "d1 completed and Acked normally")
+	assert.Equal(t, 1, nacks, "d2 Nacked via the raw acquire-fail path, unwrapped (no credit to release)")
+}
+
+func TestConsumer_RateLimit_GatesIngress(t *testing.T) {
+	clk := clockwork.NewFakeClock()
+	rl, err := msgin.NewTokenBucket(10, 1, msgin.WithTokenBucketClock(clk))
+	require.NoError(t, err)
+
+	b := memory.New(memory.WithBuffer(4))
+	var processed atomic.Int64
+	h := func(context.Context, msgin.Message[order]) error { processed.Add(1); return nil }
+	c, err := msgin.NewConsumer[order](b, h, msgin.WithRateLimit[order](rl))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	runDone := make(chan error, 1)
+	go func() { runDone <- c.Run(ctx) }()
+	require.NoError(t, b.Send(ctx, msgin.New[any](order{ID: "a"})))
+	require.NoError(t, b.Send(ctx, msgin.New[any](order{ID: "b"})))
+
+	require.Eventually(t, func() bool { return processed.Load() == 1 }, time.Second, 5*time.Millisecond)
+	// The second is gated on the limiter (parked on clock.After) — advancing a
+	// refill interval lets it through.
+	require.NoError(t, clk.BlockUntilContext(ctx, 1))
+	clk.Advance(100 * time.Millisecond)
+	require.Eventually(t, func() bool { return processed.Load() == 2 }, time.Second, 5*time.Millisecond)
+
+	cancel()
+	assert.ErrorIs(t, <-runDone, context.Canceled)
+}
+
+// admit's rate-limit Wait runs BEFORE the credit acquire (composition order):
+// a ctx cancel while parked on the limiter must Nack without ever touching the
+// credit gate, and the message must never reach the handler.
+func TestConsumer_RateLimit_CtxCancelWhileParkedNacksBeforeCredit(t *testing.T) {
+	clk := clockwork.NewFakeClock()
+	rl, err := msgin.NewTokenBucket(1, 1, msgin.WithTokenBucketClock(clk))
+	require.NoError(t, err)
+
+	b := memory.New(memory.WithBuffer(4))
+	var processed atomic.Int64
+	h := func(context.Context, msgin.Message[order]) error { processed.Add(1); return nil }
+	c, err := msgin.NewConsumer[order](b, h, msgin.WithRateLimit[order](rl))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	runDone := make(chan error, 1)
+	go func() { runDone <- c.Run(ctx) }()
+	require.NoError(t, b.Send(ctx, msgin.New[any](order{ID: "a"})))
+	require.NoError(t, b.Send(ctx, msgin.New[any](order{ID: "b"})))
+
+	require.Eventually(t, func() bool { return processed.Load() == 1 }, time.Second, 5*time.Millisecond)
+	require.NoError(t, clk.BlockUntilContext(ctx, 1)) // the second is parked on the limiter, holding no credit
+	cancel()                                          // shutdown while parked on the rate limiter, not the credit gate
+
+	select {
+	case err := <-runDone:
+		assert.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("Run did not return after ctx cancel while parked on the rate limiter")
+	}
+	assert.Equal(t, int64(1), processed.Load(), "the rate-limited second message must never reach the handler")
+}
+
+// TestConsumer_HandlerTimeout_CancelsStuckHandlerAndRetries proves spec §7.4.4 /
+// ADR 0008 D6: a handler that ignores ctx.Err() is not left running forever
+// (the Plan 002 residual) — WithHandlerTimeout derives a clockwork-driven
+// deadline around the handler call, so a stuck cooperative handler is
+// cancelled, classified transient, and Nacked (retried) rather than pinning
+// the worker.
+func TestConsumer_HandlerTimeout_CancelsStuckHandlerAndRetries(t *testing.T) {
+	st := &settle{}
+	src := &reemittingSource{st: st, id: "m1", payload: order{ID: "o"}}
+	clk := clockwork.NewFakeClock()
+
+	var calls atomic.Int64
+	proceeded := make(chan struct{}, 1)
+	h := func(ctx context.Context, _ msgin.Message[order]) error {
+		n := calls.Add(1)
+		if n == 1 {
+			<-ctx.Done() // first attempt: stuck until the timeout cancels us
+			return ctx.Err()
+		}
+		select {
+		case proceeded <- struct{}{}:
+		default:
+		}
+		return nil
+	}
+	c, err := msgin.NewConsumer[order](src, h,
+		msgin.WithConsumerClock[order](clk),
+		msgin.WithHandlerTimeout[order](2*time.Second))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	runDone := make(chan error, 1)
+	go func() { runDone <- c.Run(ctx) }()
+
+	require.NoError(t, clk.BlockUntilContext(t.Context(), 2)) // the first handler's timeout is registered; +1 waiter is the always-on tracker sweep ticker (registered at Run start, C1)
+	clk.Advance(2 * time.Second)                              // fire it → ctx.Done → transient Nack → redelivery
+	select {
+	case <-proceeded: // the redelivery ran and succeeded
+	case <-time.After(2 * time.Second):
+		t.Fatal("stuck handler was not cancelled by the timeout")
+	}
+	_, nacks, _ := st.snapshot()
+	assert.GreaterOrEqual(t, nacks, 1, "timed-out handler is a transient failure (Nacked, retried)")
+
+	cancel()
+	assert.ErrorIs(t, <-runDone, context.Canceled)
+}
+
+// TestConsumer_CircuitBreaker_GatesDispatchAndRecovers proves NF-10: an open
+// breaker pauses ingress AND makes workers Nack already-buffered work instead of
+// driving it into the failing downstream, and the flow recovers on half-open.
+func TestConsumer_CircuitBreaker_GatesDispatchAndRecovers(t *testing.T) {
+	clk := clockwork.NewFakeClock()
+	b := msgin.NewCircuitBreaker(msgin.WithBreakerClock(clk), msgin.WithBreakerThreshold(1), msgin.WithBreakerCooldown(5*time.Second))
+
+	broker := memory.New(memory.WithBuffer(8))
+	var ok atomic.Int64
+	fail := true
+	var mu sync.Mutex
+	h := func(context.Context, msgin.Message[order]) error {
+		mu.Lock()
+		f := fail
+		mu.Unlock()
+		if f {
+			return errors.New("downstream down") // trips the breaker (threshold 1)
+		}
+		ok.Add(1)
+		return nil
+	}
+	c, err := msgin.NewConsumer[order](broker, h,
+		msgin.WithConsumerClock[order](clk),
+		msgin.WithCircuitBreaker[order](b))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	runDone := make(chan error, 1)
+	go func() { runDone <- c.Run(ctx) }()
+
+	require.NoError(t, broker.Send(ctx, msgin.New[any](order{ID: "a"})))
+	require.Eventually(t, func() bool { return !b.Allow() }, time.Second, 5*time.Millisecond) // opened
+
+	// While open, more messages must NOT be dispatched into the failing handler.
+	require.NoError(t, broker.Send(ctx, msgin.New[any](order{ID: "b"})))
+	// Fix the downstream, then let the cooldown half-open and drain.
+	mu.Lock()
+	fail = false
+	mu.Unlock()
+	require.NoError(t, clk.BlockUntilContext(t.Context(), 2)) // breaker cooldown timer registered; +1 waiter is the always-on tracker sweep ticker (registered at Run start, C1)
+	clk.Advance(5 * time.Second)                              // half-open wakes the parked ingress
+	require.Eventually(t, func() bool { return ok.Load() >= 1 }, 2*time.Second, 5*time.Millisecond)
+
+	cancel()
+	assert.ErrorIs(t, <-runDone, context.Canceled)
+}
+
+// TestConsumer_CircuitBreaker_PermanentErrorsDoNotTrip proves M4: a stream of
+// PERMANENT-error (poison) messages must NOT open the breaker — a bad message is
+// not a downstream failure. With threshold 1, even one transient failure would
+// open it; here every message is permanent, so the breaker stays closed and all
+// messages keep flowing to the invalid sink.
+func TestConsumer_CircuitBreaker_PermanentErrorsDoNotTrip(t *testing.T) {
+	clk := clockwork.NewFakeClock()
+	b := msgin.NewCircuitBreaker(msgin.WithBreakerClock(clk), msgin.WithBreakerThreshold(1), msgin.WithBreakerCooldown(5*time.Second))
+
+	broker := memory.New(memory.WithBuffer(8))
+	sink := &recordingSink{}
+	h := func(context.Context, msgin.Message[order]) error {
+		return msgin.Permanent(errors.New("poison")) // permanent → invalid sink, NOT a breaker failure
+	}
+	c, err := msgin.NewConsumer[order](broker, h,
+		msgin.WithConsumerClock[order](clk),
+		msgin.WithCircuitBreaker[order](b),
+		msgin.WithInvalidMessageSink[order](sink))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	runDone := make(chan error, 1)
+	go func() { runDone <- c.Run(ctx) }()
+
+	const total = 5
+	for i := 0; i < total; i++ {
+		require.NoError(t, broker.Send(ctx, msgin.New[any](order{ID: "p"})))
+	}
+	// All must reach the invalid sink; the breaker must never open on poison.
+	require.Eventually(t, func() bool { return sink.count() == total }, 2*time.Second, 5*time.Millisecond)
+	assert.True(t, b.Allow(), "permanent-error messages must not trip the breaker (M4)")
+
+	cancel()
+	assert.ErrorIs(t, <-runDone, context.Canceled)
+}
+
+// TestConsumer_CircuitBreaker_ShutdownWhileOpen proves the parked-ingress ctx-done
+// path: an open breaker parks ingress, and cancelling the parent context releases
+// the park (admitBreaker returns false), draining cleanly with no goroutine leak.
+// The cooldown is long enough that the breaker stays open for the whole test, so
+// shutdown happens while ingress is parked.
+func TestConsumer_CircuitBreaker_ShutdownWhileOpen(t *testing.T) {
+	clk := clockwork.NewFakeClock()
+	b := msgin.NewCircuitBreaker(msgin.WithBreakerClock(clk), msgin.WithBreakerThreshold(1), msgin.WithBreakerCooldown(time.Hour))
+
+	broker := memory.New(memory.WithBuffer(8))
+	h := func(context.Context, msgin.Message[order]) error {
+		return errors.New("downstream down") // trips the breaker (threshold 1)
+	}
+	c, err := msgin.NewConsumer[order](broker, h,
+		msgin.WithConsumerClock[order](clk),
+		msgin.WithCircuitBreaker[order](b))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	runDone := make(chan error, 1)
+	go func() { runDone <- c.Run(ctx) }()
+
+	require.NoError(t, broker.Send(ctx, msgin.New[any](order{ID: "a"})))
+	require.Eventually(t, func() bool { return !b.Allow() }, time.Second, 5*time.Millisecond) // opened, ingress parks
+
+	cancel() // release the parked ingress via ctx.Done (admitBreaker → false)
+	assert.ErrorIs(t, <-runDone, context.Canceled)
+	assert.False(t, b.Allow(), "breaker stayed open through shutdown")
+}
+
+// TestConsumer_CircuitBreaker_ProcessGateNacksWithoutDispatch pins NF-10's
+// dispatch-side gate deterministically: a delivery that passed the ingress admit
+// (breaker Allow → true) must, if the breaker has since opened, be Nacked by the
+// worker WITHOUT reaching the handler and WITHOUT recording a breaker outcome —
+// so an already-buffered message is never driven into a failing downstream. The
+// scripted breaker returns true to the admit Allow, then false to the process
+// Allow, placing the message exactly in the gated window.
+func TestConsumer_CircuitBreaker_ProcessGateNacksWithoutDispatch(t *testing.T) {
+	b := newScriptedBreaker(true, false) // admit: allow; process: open → gate
+
+	st := &settle{}
+	src := &scriptedSource{deliveries: []msgin.Delivery{
+		newSettleDelivery(order{ID: "gated"}, "gated", st),
+	}}
+	var handled atomic.Int64
+	h := func(context.Context, msgin.Message[order]) error {
+		handled.Add(1)
+		return nil
+	}
+	c, err := msgin.NewConsumer[order](src, h,
+		msgin.WithConsumerClock[order](clockwork.NewFakeClock()),
+		msgin.WithCircuitBreaker[order](b))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	runDone := make(chan error, 1)
+	go func() { runDone <- c.Run(ctx) }()
+
+	// The delivery is Nacked (requeue) by the process gate; no dispatch happens.
+	require.Eventually(t, func() bool {
+		_, nacks, _ := st.snapshot()
+		return nacks >= 1
+	}, time.Second, 5*time.Millisecond)
+	assert.Equal(t, int64(0), handled.Load(), "gated message must NOT reach the handler (NF-10)")
+	acks, _, _ := st.snapshot()
+	assert.Equal(t, 0, acks, "gated message is Nacked, not Acked")
+	assert.Empty(t, b.recorded(), "a gated (never-dispatched) message must not record a breaker outcome")
+
+	cancel()
+	assert.ErrorIs(t, <-runDone, context.Canceled)
+}
+
+// TestConsumer_CircuitBreaker_AdmitRecheckAdmits pins the missed-wakeup-free
+// re-check branch: the first ingress Allow reports open (false), but the re-check
+// AFTER subscribing to HalfOpen reports allowed (true) — so the message proceeds
+// without parking, closing the window where a transition between the two checks
+// would otherwise be lost. The message must then be dispatched normally.
+func TestConsumer_CircuitBreaker_AdmitRecheckAdmits(t *testing.T) {
+	b := newScriptedBreaker(false, true) // admit Allow #1 open, re-check #2 allowed
+
+	st := &settle{}
+	src := &scriptedSource{deliveries: []msgin.Delivery{
+		newSettleDelivery(order{ID: "recheck"}, "recheck", st),
+	}}
+	var handled atomic.Int64
+	h := func(context.Context, msgin.Message[order]) error {
+		handled.Add(1)
+		return nil
+	}
+	c, err := msgin.NewConsumer[order](src, h,
+		msgin.WithConsumerClock[order](clockwork.NewFakeClock()),
+		msgin.WithCircuitBreaker[order](b))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	runDone := make(chan error, 1)
+	go func() { runDone <- c.Run(ctx) }()
+
+	require.Eventually(t, func() bool { return handled.Load() >= 1 }, time.Second, 5*time.Millisecond)
+	acks, _, _ := st.snapshot()
+	assert.Equal(t, 1, acks, "re-check-admitted message is dispatched and Acked")
+	assert.Equal(t, []bool{true}, b.recorded(), "a healthy dispatch records success")
+
+	cancel()
+	assert.ErrorIs(t, <-runDone, context.Canceled)
+}
+
+// TestConsumer_Overflow_DropNewest_ShedsWithoutLeak: with n=1 and DropNewest, a
+// burst behind a blocked handler sheds the surplus (Nack, no requeue) without
+// leaking credit; once the handler releases, later sends still flow (credit
+// recycled, not leaked).
+func TestConsumer_Overflow_DropNewest_ShedsWithoutLeak(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := memory.New(memory.WithBuffer(16))
+		var processed atomic.Int64
+		var dropped atomic.Int64
+		release := make(chan struct{})
+		h := func(context.Context, msgin.Message[order]) error {
+			<-release // hold the single credit so the burst overflows
+			processed.Add(1)
+			return nil
+		}
+		hooks := msgin.Hooks{
+			OnRetry: func(_ context.Context, _ msgin.Message[any], err error) {
+				if errors.Is(err, msgin.ErrOverflowDropped) {
+					dropped.Add(1)
+				}
+			},
+		}
+		c, err := msgin.NewConsumer[order](b, h,
+			// I3: fake consumer clock, NEVER advanced — the Task-7 sweep ticker is
+			// then a clockwork fake ticker that never fires, so it cannot perturb
+			// synctest.Wait() (a real ticker inside the bubble would).
+			msgin.WithConsumerClock[order](clockwork.NewFakeClock()),
+			msgin.WithMaxInFlight[order](1),
+			msgin.WithOverflow[order](msgin.OverflowDropNewest),
+			msgin.WithHooks[order](hooks))
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		runDone := make(chan error, 1)
+		go func() { runDone <- c.Run(ctx) }()
+		for i := 0; i < 6; i++ {
+			require.NoError(t, b.Send(ctx, msgin.New[any](order{ID: "x"})))
+		}
+
+		synctest.Wait() // one handler holds the credit; the rest are shed
+		assert.GreaterOrEqual(t, dropped.Load(), int64(1), "surplus dropped by DropNewest")
+
+		close(release) // free the credit
+		synctest.Wait()
+		// The one that held the credit completed; the credit was not leaked.
+		assert.GreaterOrEqual(t, processed.Load(), int64(1))
+
+		// A fresh send after recovery still flows → credit recycled, not leaked.
+		require.NoError(t, b.Send(ctx, msgin.New[any](order{ID: "y"})))
+		synctest.Wait()
+		assert.GreaterOrEqual(t, processed.Load(), int64(2))
+
+		cancel()
+		assert.ErrorIs(t, <-runDone, context.Canceled)
+	})
+}
+
+// TestConsumer_Overflow_UnknownPolicy_BlocksNeverDrops (I1): an out-of-range
+// OverflowPolicy must BLOCK (backpressure), never drop — the documented
+// unknown→OverflowBlock contract. With n=1 and a held handler, a burst behind an
+// unknown policy backpressures (nothing shed); once released, every message is
+// processed and OnRetry(ErrOverflowDropped) never fires.
+func TestConsumer_Overflow_UnknownPolicy_BlocksNeverDrops(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := memory.New(memory.WithBuffer(16))
+		var processed atomic.Int64
+		var dropped atomic.Int64
+		release := make(chan struct{})
+		h := func(context.Context, msgin.Message[order]) error {
+			<-release
+			processed.Add(1)
+			return nil
+		}
+		hooks := msgin.Hooks{
+			OnRetry: func(_ context.Context, _ msgin.Message[any], err error) {
+				if errors.Is(err, msgin.ErrOverflowDropped) {
+					dropped.Add(1)
+				}
+			},
+		}
+		c, err := msgin.NewConsumer[order](b, h,
+			msgin.WithConsumerClock[order](clockwork.NewFakeClock()), // I3
+			msgin.WithMaxInFlight[order](1),
+			msgin.WithOverflow[order](msgin.OverflowPolicy(99)), // out of range → must behave as Block
+			msgin.WithHooks[order](hooks))
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		runDone := make(chan error, 1)
+		go func() { runDone <- c.Run(ctx) }()
+		const total = 5
+		for i := 0; i < total; i++ {
+			require.NoError(t, b.Send(ctx, msgin.New[any](order{ID: "x"})))
+		}
+
+		synctest.Wait() // one holds the credit; the rest backpressure (buffered), NONE shed
+		assert.Equal(t, int64(0), dropped.Load(), "unknown policy must block, never drop (I1)")
+
+		close(release)
+		synctest.Wait()
+		assert.Equal(t, int64(total), processed.Load(), "all processed under backpressure — nothing was shed")
+
+		cancel()
+		assert.ErrorIs(t, <-runDone, context.Canceled)
+	})
+}
+
+// TestConsumer_AttemptTracker_TTLSweepResetsIdleIds proves the bounded-tracker
+// behaviour (ADR 0008 D8): an id that goes idle past defaultAttemptTTL is swept,
+// so when it reappears it is treated as attempt 1 again (fresh backoff),
+// observable via the delay carried on the Nack.
+//
+// Runs under synctest for DETERMINISM: the sweep runs on a goroutine, so after
+// clk.Advance fires the sweep ticker we must be sure sweep() has completed (and
+// re-blocked) BEFORE re-delivering — otherwise a sweep-vs-deliver race would
+// make it flaky under -count. synctest.Wait() gives exactly that barrier. The
+// clockwork fake clock is advanced INSIDE the bubble but is independent of
+// synctest's own time; the sweep ticker fires ONLY on these explicit Advances,
+// and clockwork fake tickers use non-blocking sends with no background
+// goroutine, so they compose cleanly with synctest.
+func TestConsumer_AttemptTracker_TTLSweepResetsIdleIds(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk := clockwork.NewFakeClock()
+		src := newControllableSource()
+		const initial = 10 * time.Millisecond
+		h := func(context.Context, msgin.Message[order]) error { return errors.New("always transient") }
+
+		c, err := msgin.NewConsumer[order](src, h,
+			msgin.WithConsumerClock[order](clk),
+			msgin.WithRetryPolicy[order](msgin.RetryPolicy{
+				Backoff: msgin.ExponentialBackoff{Initial: initial, Mult: 2.0}, // RandomizationFactor 0 => exact
+			}))
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		runDone := make(chan error, 1)
+		go func() { runDone <- c.Run(ctx) }()
+
+		st := &settle{}
+		deliverX := func() {
+			src.deliver(ctx, msgin.Delivery{Msg: msgin.New[any](order{ID: "o"}, msgin.WithID("x")), Ack: st.ack, Nack: st.nack})
+		}
+
+		// First delivery of x → attempt 1 → Nack delay = Initial.
+		deliverX()
+		synctest.Wait()
+		_, n, delays := st.snapshot()
+		require.Equal(t, 1, n)
+		assert.Equal(t, initial, delays[0], "first ever attempt for x → Delay(0) = Initial")
+
+		// Advance past the TTL; synctest.Wait() makes the sweep deterministic
+		// (it runs and re-blocks before we re-deliver — no sweep-vs-deliver race).
+		clk.Advance(6 * time.Minute) // > defaultAttemptTTL (5m) → sweep evicts idle x
+		synctest.Wait()
+
+		// Re-deliver x: with the entry swept, it must be attempt 1 again (fresh delay).
+		deliverX()
+		synctest.Wait()
+		_, n, delays = st.snapshot()
+		require.Equal(t, 2, n)
+		assert.Equal(t, initial, delays[1], "after a TTL gap x is treated as attempt 1 again (idle entry swept)")
+
+		cancel()
+		assert.ErrorIs(t, <-runDone, context.Canceled)
+	})
+}
+
+// TestConsumer_AttemptTracker_TTLSweepKeepsRefreshedId covers the sweep's KEEP
+// branch (M3): an id refreshed within the TTL survives a sweep that evicts an
+// idle sibling. Two ids a and b start at attempt 1; b is re-delivered (refreshed)
+// inside the TTL window; when the 5m sweep fires, a (idle since t0) is evicted
+// but b (age 2m) is kept — so a restarts at attempt 1 while b keeps climbing to
+// attempt 3. Covers sweep()'s age>=ttl (a) AND age<ttl (b) branches in one test.
+func TestConsumer_AttemptTracker_TTLSweepKeepsRefreshedId(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk := clockwork.NewFakeClock()
+		src := newControllableSource()
+		const initial = 10 * time.Millisecond
+		const mult = 2.0
+		h := func(context.Context, msgin.Message[order]) error { return errors.New("always transient") }
+
+		c, err := msgin.NewConsumer[order](src, h,
+			msgin.WithConsumerClock[order](clk),
+			msgin.WithRetryPolicy[order](msgin.RetryPolicy{
+				Backoff: msgin.ExponentialBackoff{Initial: initial, Mult: mult},
+			}))
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		runDone := make(chan error, 1)
+		go func() { runDone <- c.Run(ctx) }()
+
+		stA, stB := &settle{}, &settle{}
+		deliver := func(st *settle, id string) {
+			src.deliver(ctx, msgin.Delivery{
+				Msg: msgin.New[any](order{ID: "o"}, msgin.WithID(id)),
+				Ack: st.ack, Nack: st.nack,
+			})
+		}
+
+		deliver(stA, "a") // a attempt 1, lastSeen = t0
+		deliver(stB, "b") // b attempt 1, lastSeen = t0
+		synctest.Wait()
+
+		clk.Advance(3 * time.Minute) // < TTL: sweep ticker (5m) does NOT fire
+		synctest.Wait()
+		deliver(stB, "b") // b attempt 2, lastSeen(b) = t0+3m (refreshed within TTL)
+		synctest.Wait()
+
+		clk.Advance(2 * time.Minute) // total 5m → sweep fires: a age 5m evicted, b age 2m kept
+		synctest.Wait()
+
+		deliver(stA, "a") // a was swept → attempt 1 again → delay Initial
+		synctest.Wait()
+		_, nA, delaysA := stA.snapshot()
+		require.Equal(t, 2, nA)
+		assert.Equal(t, initial, delaysA[1], "a idled past TTL → swept → attempt 1 again")
+
+		deliver(stB, "b") // b was kept → attempt 3 → delay Initial*Mult^2 (never reset)
+		synctest.Wait()
+		_, nB, delaysB := stB.snapshot()
+		require.Equal(t, 3, nB)
+		assert.Equal(t, time.Duration(float64(initial)*mult*mult), delaysB[2], "b refreshed within TTL → kept → attempt 3 keeps climbing")
+
+		cancel()
+		assert.ErrorIs(t, <-runDone, context.Canceled)
+	})
+}
+
+// TestConsumer_AttemptTracker_NF2_ActiveIdNotSwept proves NF-2: a
+// continuously-redelivering id is NEVER reset by the sweep — it climbs to the
+// dead-letter after MaxAttempts even though sweeps fire during redelivery.
+func TestConsumer_AttemptTracker_NF2_ActiveIdNotSwept(t *testing.T) {
+	st := &settle{}
+	src := &reemittingSource{st: st, id: "poison", payload: order{ID: "o"}}
+	dlq := &recordingSink{}
+	h := func(context.Context, msgin.Message[order]) error { return errors.New("always transient") }
+
+	c, err := msgin.NewConsumer[order](src, h,
+		msgin.WithRetryPolicy[order](msgin.RetryPolicy{MaxAttempts: 3, DeadLetter: dlq}))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	runDone := make(chan error, 1)
+	go func() { runDone <- c.Run(ctx) }()
+
+	// memory-style immediate redelivery keeps the id fresh; it must dead-letter at
+	// attempt 3, proving the sweep never reset a still-in-redelivery id.
+	require.Eventually(t, func() bool { return dlq.count() == 1 }, 2*time.Second, 5*time.Millisecond)
+	_, nacks, _ := st.snapshot()
+	assert.Equal(t, 2, nacks, "attempts 1 and 2 Nacked; 3 dead-lettered — count never reset (NF-2)")
+
+	cancel()
+	assert.ErrorIs(t, <-runDone, context.Canceled)
 }

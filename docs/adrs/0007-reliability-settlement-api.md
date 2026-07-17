@@ -111,7 +111,7 @@ tests set `RandomizationFactor = 0`. Stateless and `clockwork`-agnostic — pure
 stored as a Go `int`, not `int64`); otherwise the runtime tracks attempts in-process via an
 `attemptTracker` keyed by message id, evicted only on terminal settle.
 
-#### Known limitation — `attemptTracker` unbounded growth under retry-forever (triaged; deferred to Plan 003)
+#### Known limitation — `attemptTracker` unbounded growth under retry-forever (RESOLVED by Plan 003 / ADR 0008 D8)
 
 The id-keyed `attemptTracker` evicts an entry **only on terminal settle** (Ack / dead-letter / invalid
 divert), because NF-2 forbids capacity-based eviction while a message is still being redelivered — a
@@ -127,11 +127,14 @@ new one. Triggering unbounded growth requires a future **wire streaming source**
 Plan 006+) that mints a distinct id per delivery, run under retry-forever with a permanently-failing
 handler.
 
-**Resolution is deferred to Plan 003**, which must add a bounded / TTL-based tracker that still respects
-NF-2 (no mid-redelivery reset), paired with the credit / delay-park flow-control work. We deliberately do
-**not** add capacity-based eviction now: at Plan-002 scope it would be dead code that could only violate
-NF-2 if it ever fired. Recorded here as an explicit, accepted limitation with this rationale so the
-residual is traceable rather than silent.
+**Resolved by Plan 003, Task 7** ([ADR 0008 D8](0008-resilience-flow-control-api.md#d8--bounded-attempt-tracker-via-ttl-sweep-task-7-resolves-adr-0007-d5)).
+The tracker now carries a `lastSeen` timestamp per entry (refreshed on every `observe`) and a
+Run-lifetime `clockwork` ticker sweeps entries idle for ≥ `defaultAttemptTTL` (5m). This bounds the map
+while **preserving NF-2**: an actively-redelivering id is re-observed each attempt (gap ≤ `Backoff.Max`
+≪ 5m), so it is never swept mid-flight — only ids that stopped arriving (the distinct-id-per-delivery
+garbage above) age out. We deliberately did **not** add capacity-based eviction (which could only
+violate NF-2 if it fired); TTL sweep evicts strictly on *idleness*, never under pressure. See ADR 0008
+D8 for the full design, the NF-2 argument, and the sweep-ticker ordering invariant.
 
 ### D6 — Observability `Hooks` shape (Task 4)
 

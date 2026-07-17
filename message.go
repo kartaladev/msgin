@@ -103,9 +103,15 @@ type msgConfig struct {
 type MessageOption func(*msgConfig)
 
 // WithClock injects the clock New uses to stamp msgin.timestamp. The default
-// is the real wall clock; tests typically inject a clockwork.FakeClock.
+// is the real wall clock; tests typically inject a clockwork.FakeClock. A nil
+// clock is a no-op (leaves the real-clock default in place) rather than a
+// caller-triggered nil-panic on the next New call (no panic on caller input).
 func WithClock(c clockwork.Clock) MessageOption {
-	return func(o *msgConfig) { o.clock = c }
+	return func(o *msgConfig) {
+		if c != nil {
+			o.clock = c
+		}
+	}
 }
 
 // WithID sets an explicit msgin.id instead of New's default random 128-bit

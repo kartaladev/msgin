@@ -25,4 +25,12 @@ var (
 	ErrNoDeadLetter = errors.New("msgin: finite MaxAttempts requires a DeadLetter sink")
 	// ErrInvalidMaxAttempts is returned when a RetryPolicy's MaxAttempts is negative.
 	ErrInvalidMaxAttempts = errors.New("msgin: MaxAttempts must be >= 0")
+	// ErrInvalidMaxInFlight is returned when WithMaxInFlight is given n < 1.
+	ErrInvalidMaxInFlight = errors.New("msgin: max in-flight must be >= 1")
+	// ErrInvalidRateLimit is returned when a rate-limit configuration is invalid
+	// (non-positive rps or burst on the default token bucket).
+	ErrInvalidRateLimit = errors.New("msgin: rate limit must have positive rps and burst")
+	// ErrOverflowDropped is the cause carried to OnRetry/logs when an overflow
+	// policy sheds a message; it is not returned from any exported function.
+	ErrOverflowDropped = errors.New("msgin: message dropped by overflow policy")
 )
