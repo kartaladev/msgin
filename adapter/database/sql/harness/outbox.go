@@ -112,6 +112,11 @@ func RunOutbox(t *testing.T, kit TestKit, db *sql.DB) {
 	})
 
 	t.Run("CommitGatesVisibility", func(t *testing.T) {
+		if kit.SingleWriter {
+			t.Skip("CommitGatesVisibility requires MVCC non-blocking reads during an open write tx; " +
+				"a single-writer engine (sqlite) blocks->SQLITE_BUSY here — outbox atomicity is covered by Atomicity (ADR 0012 D8)")
+		}
+
 		ctx := t.Context()
 
 		outTable := freshOutbox(ctx)

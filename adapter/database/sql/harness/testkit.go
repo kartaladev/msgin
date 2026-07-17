@@ -54,6 +54,16 @@ type TestKit struct {
 	// rather than the harness silently mis-asserting engine-specific SQL.
 	MySQLFamily bool
 
+	// SingleWriter reports whether the engine serializes all writers on a
+	// single database-wide write lock (SQLite). It gates ONLY
+	// RunOutbox/CommitGatesVisibility, which holds an uncommitted write
+	// transaction open while a concurrent Source.Poll issues a claim UPDATE on
+	// the pool: on an MVCC engine (Postgres/MySQL) the pool claim returns empty
+	// cleanly, but on a single-writer engine it blocks on the held writer lock
+	// for the full busy_timeout and then fails SQLITE_BUSY. The zero value
+	// (false) preserves the existing Postgres/MySQL behavior (audit F1, ADR 0012 D8).
+	SingleWriter bool
+
 	// Lease is the LeaseDialect under test — the dialect a real
 	// NewPollingSource/NewOutboundAdapter would be constructed with. Required
 	// for RunSource, RunOutbound, RunOutbox, RunDialect, and (via a

@@ -110,7 +110,6 @@ func RunDialect(t *testing.T, kit TestKit, db *sql.DB) {
 		const bad = "bad; name"
 
 		lockDialect, ok := kit.Lease.(msginsql.LockDialect)
-		require.True(t, ok, "TestKit.Lease must implement msginsql.LockDialect for this coverage (RunLock already requires it)")
 
 		assertInvalid := func(t *testing.T, err error) {
 			require.ErrorIs(t, err, msginsql.ErrInvalidTableName)
@@ -170,14 +169,6 @@ func RunDialect(t *testing.T, kit TestKit, db *sql.DB) {
 				assert: assertInvalid,
 			},
 			{
-				name: "ClaimLock",
-				call: func(t *testing.T, ctx context.Context) error {
-					_, err := lockDialect.ClaimLock(ctx, db, bad, dialectTestLockedBy)
-					return err
-				},
-				assert: assertInvalid,
-			},
-			{
 				name: "InsertInboxIfAbsent",
 				call: func(t *testing.T, ctx context.Context) error {
 					_, err := kit.Inbox.InsertInboxIfAbsent(ctx, db, bad, "m")
@@ -208,6 +199,22 @@ func RunDialect(t *testing.T, kit TestKit, db *sql.DB) {
 				},
 				assert: assertInvalid,
 			},
+		}
+
+		// ClaimLock is the only LockDialect method with a bare-table-string signature;
+		// cover its invalid-identifier guard only when the dialect implements the
+		// segregated lock SPI. A lease-only dialect (e.g. sqlite) has no ClaimLock, so
+		// this case is skipped rather than hard-required (ADR 0012 D8). AckLock/NackLock
+		// take a *LockedRow, not a table string, so they are not covered here (as before).
+		if ok {
+			cases = append(cases, validationCase{
+				name: "ClaimLock",
+				call: func(t *testing.T, ctx context.Context) error {
+					_, err := lockDialect.ClaimLock(ctx, db, bad, dialectTestLockedBy)
+					return err
+				},
+				assert: assertInvalid,
+			})
 		}
 
 		for _, tc := range cases {
