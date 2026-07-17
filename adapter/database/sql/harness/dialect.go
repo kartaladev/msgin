@@ -87,6 +87,137 @@ func RunDialect(t *testing.T, kit TestKit, db *sql.DB) {
 		require.ErrorIs(t, err, msginsql.ErrInvalidTableName, "kit.InboxDDL must validate before building any SQL")
 	})
 
+	// InvalidIdentifierRejectedPerSPIMethod exercises the per-method
+	// ValidateIdent/quoteTable early-return guard on EVERY LeaseDialect/
+	// LockDialect/InboxDialect method that takes a table string, not just
+	// kit.DDL/kit.InboxDDL above (review finding: after the dialect-module
+	// split, only the reference-DDL builders were covered, leaving the guard
+	// inside Claim/Ack/Nack/Insert/EnsureSchema/SchemaExists/ClaimLock and the
+	// inbox methods untested ANYWHERE). This is a PUBLIC-SPI typed-error
+	// hot-path branch a dialect-direct caller relies on (CLAUDE.md's
+	// hot-path/typed-error rule). The guard validates and returns before
+	// touching the database, so a bad identifier is sufficient — the other
+	// arguments are zero values. Run against Postgres/MySQL/MariaDB via
+	// dbtest, this single addition covers every shipped dialect.
+	//
+	// AckLock/NackLock are deliberately NOT covered here: both take a
+	// *LockedRow, not a bare table string, and a real LockedRow requires a
+	// successful ClaimLock first — at which point the table is already
+	// valid, so there is no way to drive them with a bad identifier without
+	// fabricating a fake *LockedRow, which the fix's brief explicitly rules
+	// out.
+	t.Run("InvalidIdentifierRejectedPerSPIMethod", func(t *testing.T) {
+		const bad = "bad; name"
+
+		lockDialect, ok := kit.Lease.(msginsql.LockDialect)
+		require.True(t, ok, "TestKit.Lease must implement msginsql.LockDialect for this coverage (RunLock already requires it)")
+
+		assertInvalid := func(t *testing.T, err error) {
+			require.ErrorIs(t, err, msginsql.ErrInvalidTableName)
+		}
+
+		type validationCase struct {
+			name   string
+			call   func(t *testing.T, ctx context.Context) error
+			assert func(t *testing.T, err error)
+		}
+
+		cases := []validationCase{
+			{
+				name: "Claim",
+				call: func(t *testing.T, ctx context.Context) error {
+					_, err := kit.Lease.Claim(ctx, db, bad, 10, dialectTestLockedBy, dialectLongLeaseTTL)
+					return err
+				},
+				assert: assertInvalid,
+			},
+			{
+				name: "Ack",
+				call: func(t *testing.T, ctx context.Context) error {
+					_, err := kit.Lease.Ack(ctx, db, bad, 0, dialectTestLockedBy, 0)
+					return err
+				},
+				assert: assertInvalid,
+			},
+			{
+				name: "Nack",
+				call: func(t *testing.T, ctx context.Context) error {
+					_, err := kit.Lease.Nack(ctx, db, bad, 0, dialectTestLockedBy, 0, time.Second)
+					return err
+				},
+				assert: assertInvalid,
+			},
+			{
+				name: "Insert",
+				call: func(t *testing.T, ctx context.Context) error {
+					return kit.Lease.Insert(ctx, db, bad, "m", nil, nil, 0)
+				},
+				assert: assertInvalid,
+			},
+			{
+				name: "EnsureSchema",
+				call: func(t *testing.T, ctx context.Context) error {
+					return kit.Lease.EnsureSchema(ctx, db, bad)
+				},
+				assert: assertInvalid,
+			},
+			{
+				name: "SchemaExists",
+				call: func(t *testing.T, ctx context.Context) error {
+					_, err := kit.Lease.SchemaExists(ctx, db, bad)
+					return err
+				},
+				assert: assertInvalid,
+			},
+			{
+				name: "ClaimLock",
+				call: func(t *testing.T, ctx context.Context) error {
+					_, err := lockDialect.ClaimLock(ctx, db, bad, dialectTestLockedBy)
+					return err
+				},
+				assert: assertInvalid,
+			},
+			{
+				name: "InsertInboxIfAbsent",
+				call: func(t *testing.T, ctx context.Context) error {
+					_, err := kit.Inbox.InsertInboxIfAbsent(ctx, db, bad, "m")
+					return err
+				},
+				assert: assertInvalid,
+			},
+			{
+				name: "PurgeInbox",
+				call: func(t *testing.T, ctx context.Context) error {
+					_, err := kit.Inbox.PurgeInbox(ctx, db, bad, time.Hour)
+					return err
+				},
+				assert: assertInvalid,
+			},
+			{
+				name: "EnsureInboxSchema",
+				call: func(t *testing.T, ctx context.Context) error {
+					return kit.Inbox.EnsureInboxSchema(ctx, db, bad)
+				},
+				assert: assertInvalid,
+			},
+			{
+				name: "MsgIDUniqueIndexExists",
+				call: func(t *testing.T, ctx context.Context) error {
+					_, err := kit.Inbox.MsgIDUniqueIndexExists(ctx, db, bad)
+					return err
+				},
+				assert: assertInvalid,
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				err := tc.call(t, t.Context())
+				tc.assert(t, err)
+			})
+		}
+	})
+
 	t.Run("ClaimBumpsCountsAndLocks", func(t *testing.T) {
 		ctx := t.Context()
 		table := fresh(ctx)
