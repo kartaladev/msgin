@@ -6,8 +6,9 @@
 > `.superpowers/sdd/plan-006-audit-round-{1,2}.md` (gitignored). Per-task SDD ledger: `.superpowers/sdd/progress.md`.
 
 _Updated: **Plan 006 (increment A — sql engine/dialect module split) is COMPLETE, whole-branch-gated, and
-pushed to `origin/feat/poller-sql-adapter` for MR review.** NOT merged to `main` (per the session directive).
-Next increments: B (SQLite, ADR 0012 + Plan 007) → resume Plan 005 Task 11 (docs/examples)._
+pushed to `origin/feat/poller-sql-adapter` (@ `8f419c7`) for MR review** — the PR itself still needs opening
+(`gh` was unauthenticated; see §5.1). NOT merged to `main` (per the session directive). Next increments:
+B (SQLite, ADR 0012 + Plan 007) → resume Plan 005 Task 11 (docs/examples)._
 
 ## 1. Objective & roadmap position
 
@@ -59,7 +60,11 @@ vulnerabilities.
 
 ## 5. Next actions
 
-1. **Await the user's MR review** on GitHub (`origin/feat/poller-sql-adapter`). Address MR feedback on-branch.
+1. **Open the PR, then await the user's MR review.** The branch IS pushed (`origin/feat/poller-sql-adapter` @
+   `8f419c7`) but the PR was NOT created — `gh` is unauthenticated in the session. Create it once `gh auth login`
+   is done (`gh pr create --base main --head feat/poller-sql-adapter`) or via
+   `https://github.com/kartaladev/msgin/compare/main...feat/poller-sql-adapter`. Address MR feedback on-branch.
+   Do NOT ff-`main` without approval.
 2. **Increment B — SQLite** (spec 002 §7): brainstorm → update spec → write ADR 0012 + Plan 007 → adversarial
    audit → SDD. Pure-Go `modernc.org/sqlite` (cgo-free, no Docker); lease-only (`sqlite.LeaseDialect()` does NOT
    implement `LockDialect` → `ErrLockStrategyUnsupported`); inbox via `ON CONFLICT … RETURNING`. Adds a `sqlite`
