@@ -22,9 +22,9 @@ import (
 
 func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 
-// stubPolling implements only PollingSource, used to prove NewConsumer rejects
-// a poll-only source with ErrUnsupportedSource (PollingSource is wired in
-// Plan 004).
+// stubPolling implements only PollingSource, used to prove NewConsumer resolves
+// a poll-only source to the pull path (Plan 005) and constructs cleanly. Its
+// Poll returns nothing, so it is safe for construction-only assertions.
 type stubPolling struct{}
 
 func (stubPolling) Poll(_ context.Context, _ int) ([]msgin.Delivery, error) { return nil, nil }
@@ -233,8 +233,14 @@ func TestNewConsumer_Validation(t *testing.T) {
 		{"live-value source with codec", memory.New(),
 			[]msgin.ConsumerOption[order]{msgin.WithConsumerCodec[order](msgin.JSONPayloadCodec[order]{})},
 			func(t *testing.T, err error) { assert.ErrorIs(t, err, msgin.ErrUnexpectedCodec) }},
-		{"polling-only source is unsupported", stubPolling{}, nil,
-			func(t *testing.T, err error) { assert.ErrorIs(t, err, msgin.ErrUnsupportedSource) }},
+		{"polling source constructs (resolved to the pull path)", stubPolling{}, nil,
+			func(t *testing.T, err error) { assert.NoError(t, err) }},
+		{"polling source constructs with valid poll options", stubPolling{},
+			[]msgin.ConsumerOption[order]{
+				msgin.WithPollInterval[order](2 * time.Second),
+				msgin.WithPollMaxBatch[order](50),
+			},
+			func(t *testing.T, err error) { assert.NoError(t, err) }},
 		{"source implementing neither is unsupported", stubNeither{}, nil,
 			func(t *testing.T, err error) { assert.ErrorIs(t, err, msgin.ErrUnsupportedSource) }},
 		{"wire streaming source constructs with default codec", &fakeStream{}, nil,

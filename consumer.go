@@ -98,7 +98,11 @@ func WithConsumerClock[T any](c clockwork.Clock) ConsumerOption[T] {
 }
 
 type consumer[T any] struct {
-	src             StreamingSource
+	// Exactly one of streamSrc / pollSrc is non-nil (resolved by NewConsumer).
+	// streamSrc drives today's push path (Stream + ingest); pollSrc drives the
+	// pull path (pollLoop, credit-at-fetch). Run branches on which is set.
+	streamSrc       StreamingSource
+	pollSrc         PollingSource
 	handler         Handler[T]
 	codec           PayloadCodec[T]
 	liveValue       bool
@@ -118,6 +122,8 @@ type consumer[T any] struct {
 	probeGate       ProbeGate // non-nil when breaker also implements ProbeGate (ADR 0009 D2)
 	overflow        OverflowPolicy
 	maxPayloadBytes int
+	pollInterval    time.Duration // pull path: idle wait after an empty poll (ADR 0010 D1)
+	pollMaxBatch    int           // pull path: max rows/credits fetched per poll
 	// panicLogged deduplicates the ERROR log for a panicking resilience governor
 	// per method, so a deterministic panic under fail-open cannot flood the log
 	// (ADR 0009 D1). Keyed by method name.
@@ -165,8 +171,8 @@ func NewConsumer[T any](src any, h Handler[T], opts ...ConsumerOption[T]) (Consu
 	}
 	// C2: unset → default; explicitly set → must be > 0 (so WithPollInterval(0)
 	// is a rejected caller error, not silently defaulted). Poll fields are
-	// validated here for both source kinds (a StreamingSource simply ignores
-	// them); the Poller itself is wired in a later task.
+	// validated for both source kinds (a StreamingSource simply ignores them; the
+	// pull path consumes them in pollLoop — ADR 0010 D1).
 	if !cfg.pollIntervalSet {
 		cfg.pollInterval = defaultPollInterval
 	} else if cfg.pollInterval <= 0 {
@@ -184,15 +190,23 @@ func NewConsumer[T any](src any, h Handler[T], opts ...ConsumerOption[T]) (Consu
 		return nil, err
 	}
 
-	stream, ok := src.(StreamingSource)
-	if !ok {
-		// PollingSource is wired in Plan 004; anything else is unsupported.
-		if _, isPoll := src.(PollingSource); isPoll {
-			return nil, ErrUnsupportedSource // TODO(Plan 004): drive via the Poller
-		}
+	// Resolve the source kind once (ADR 0010 D1). StreamingSource wins the
+	// precedence when a value implements both (the lower-latency event-driven
+	// path); a value implementing only PollingSource takes the pull path; anything
+	// else is unsupported. Exactly one of streamSrc/pollSrc is non-nil.
+	var (
+		streamSrc StreamingSource
+		pollSrc   PollingSource
+	)
+	if s, ok := src.(StreamingSource); ok {
+		streamSrc = s
+	} else if p, ok := src.(PollingSource); ok {
+		pollSrc = p
+	} else {
 		return nil, ErrUnsupportedSource
 	}
-	native, ok := any(stream).(NativeReliability)
+	// NativeReliability is resolved from the underlying value regardless of kind.
+	native, ok := src.(NativeReliability)
 	if !ok {
 		native = noNativeReliability{}
 	}
@@ -201,7 +215,8 @@ func NewConsumer[T any](src any, h Handler[T], opts ...ConsumerOption[T]) (Consu
 	// half-open probes); otherwise it falls back to Allow.
 	probeGate, _ := cfg.breaker.(ProbeGate)
 	return &consumer[T]{
-		src: stream, handler: h, codec: codec, liveValue: live,
+		streamSrc: streamSrc, pollSrc: pollSrc,
+		handler: h, codec: codec, liveValue: live,
 		workers: cfg.concurrency,
 		policy:  cfg.policy, invalidSink: cfg.invalidSink, logger: cfg.logger,
 		hooks: cfg.hooks, shutdownTimeout: cfg.shutdownTimeout, clock: cfg.clock,
@@ -209,6 +224,7 @@ func NewConsumer[T any](src any, h Handler[T], opts ...ConsumerOption[T]) (Consu
 		maxInFlight: cfg.maxInFlight, rateLimiter: cfg.rateLimiter,
 		handlerTimeout: cfg.handlerTimeout, breaker: cfg.breaker, probeGate: probeGate,
 		overflow: cfg.overflow, maxPayloadBytes: cfg.maxPayloadBytes,
+		pollInterval: cfg.pollInterval, pollMaxBatch: cfg.pollMaxBatch,
 	}, nil
 }
 
@@ -240,23 +256,21 @@ func (c *consumer[T]) Run(ctx context.Context) error {
 			"workers", c.workers)
 	}
 
-	rawCh := make(chan Delivery) // Stream writes here
 	// ingress -> workers. Buffered to the credit-gate capacity (D3-fix, ADR
 	// 0008): a delivery only reaches here after acquiring a credit, and the
 	// gate never admits more than maxInFlight concurrently, so this buffer can
 	// never overflow. Sizing it to maxInFlight (rather than leaving it
 	// unbuffered) is load-bearing, not an optimization: an unbuffered workerCh
-	// lets ingest's admit→handoff block on worker availability, which — under a
+	// lets a producer's handoff block on worker availability, which — under a
 	// backlog of >= 2 messages behind a busy worker whose Nack(requeue=true)
 	// synchronously re-enters the source (e.g. adapter/memory's Send) — forms a
-	// 3-way cyclic wait (Stream blocked on rawCh, ingest blocked on workerCh,
-	// the worker blocked on the source's own inbound channel) with nobody left
-	// to drain the source: a genuine deadlock, confirmed by repro and fixed
-	// here. Buffering workerCh to the gate's own capacity means ingest's ONLY
-	// blocking point is gate.acquire (the intended, documented backpressure),
-	// so ingest always keeps draining rawCh (up to maxInFlight in flight),
-	// which keeps the source always drainable, which is exactly what a
-	// requeue's synchronous re-injection needs to complete without a cycle.
+	// 3-way cyclic wait with nobody left to drain the source: a genuine
+	// deadlock, confirmed by repro and fixed here. Buffering workerCh to the
+	// gate's own capacity means the producer's ONLY blocking point is
+	// gate.acquire (the intended, documented backpressure), which keeps the
+	// source always drainable — exactly what a requeue's synchronous
+	// re-injection needs to complete without a cycle. The pull path relies on
+	// the same sizing so its ctx-done handoff arm is near-unreachable (ADR 0010 D1).
 	workerCh := make(chan managedDelivery, c.maxInFlight)
 	gate := newCreditGate(c.maxInFlight)
 
@@ -268,36 +282,68 @@ func (c *consumer[T]) Run(ctx context.Context) error {
 	drainCtx, cancelDrain := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelDrain()
 
-	// Ingress stage: read deliveries, acquire a credit (the flood defense), wrap
-	// release-first, and forward to the workers. It stops on rawCh close (the
-	// source stream ended) or parent-ctx cancel (shutdown: stop admitting).
+	// ingressWG joins the producer stage (ingest or pollLoop) AND the Run-lifetime
+	// sweep; both own their exit so a single Wait() at the end joins both.
 	var ingressWG sync.WaitGroup
-	ingressWG.Add(1)
-	go func() {
-		defer ingressWG.Done()
-		defer close(workerCh) // closing workerCh lets the workers finish their range
-		c.ingest(ctx, settleCtx, gate, rawCh, workerCh)
-	}()
+	cancelSweep := c.startSweep(ctx, &ingressWG)
+	defer cancelSweep() // belt-and-suspenders net if anything below panics before the explicit late cancel
+	wg := c.startWorkers(drainCtx, settleCtx, workerCh)
 
-	// Run-lifetime attempt-tracker sweep (C1). Detached from the parent so a
-	// parent cancel does NOT deregister its clock ticker mid-drain; cancelled
-	// explicitly at Run's end (cancelSweep, just before ingressWG.Wait). The
-	// ingest goroutine (also on ingressWG) has already exited by then (rawCh
-	// closed), so the single ingressWG.Wait() joins both. Keeping the sweep alive
-	// for Run's whole lifetime makes its ticker a stable, always-present waiter on
-	// the consumer clock — a constant that fake-clock tests can count (see the
-	// sweep-ticker ordering invariant in ADR 0008 D8).
+	// Producer stage — the ONLY part that differs by source kind (ADR 0010 D1).
+	// Both producers run on ingressWG, own close(workerCh) on exit, and stop the
+	// main goroutine only once the source has stopped emitting, so the shared
+	// drain below begins at (and is timed from) shutdown, identically for both.
+	var runErr error
+	if c.streamSrc != nil {
+		rawCh := make(chan Delivery) // Stream writes here
+		ingressWG.Add(1)
+		go func() {
+			defer ingressWG.Done()
+			defer close(workerCh) // closing workerCh lets the workers finish their range
+			c.ingest(ctx, settleCtx, gate, rawCh, workerCh)
+		}()
+		runErr = c.streamSrc.Stream(ctx, rawCh) // blocks until ctx is cancelled
+		close(rawCh)                            // ingress drains remaining reads, then closes workerCh
+	} else {
+		ingressWG.Add(1)
+		go func() {
+			defer ingressWG.Done()
+			defer close(workerCh) // pollLoop owns close(workerCh), mirroring ingest
+			c.pollLoop(ctx, settleCtx, gate, workerCh)
+		}()
+		<-ctx.Done() // pollLoop stops on the same signal; block until shutdown begins
+		runErr = ctx.Err()
+	}
+
+	c.drainWorkers(wg, cancelDrain, cancelSettle)
+	// The drain has completed; stop the Run-lifetime sweep last so its ticker
+	// stayed registered for the whole drain.
+	cancelSweep()
+	ingressWG.Wait() // joins the producer (exited) + sweep (exits on sweepCtx) — goleak-clean
+	return runErr
+}
+
+// startSweep launches the Run-lifetime attempt-tracker sweep on ingressWG and
+// returns its cancel. The sweep is detached from the parent (via
+// context.WithoutCancel) so a parent cancel does NOT deregister its clock ticker
+// mid-drain; the caller cancels it explicitly at Run's end (after the drain).
+// Keeping it alive for Run's whole lifetime makes its ticker a stable,
+// always-present waiter on the consumer clock — a constant that fake-clock tests
+// can count (see the sweep-ticker ordering invariant in ADR 0008 D8).
+func (c *consumer[T]) startSweep(ctx context.Context, ingressWG *sync.WaitGroup) context.CancelFunc {
 	sweepCtx, cancelSweep := context.WithCancel(context.WithoutCancel(ctx))
-	defer cancelSweep() // belt-and-suspenders: joins the explicit late cancelSweep() below on the
-	// normal path (a second cancel is a harmless no-op); this defer is the net that
-	// prevents a leaked sweep goroutine if Stream (or anything above) panics before
-	// the explicit late cancel is reached.
 	ingressWG.Add(1)
 	go func() {
 		defer ingressWG.Done()
 		c.tracker.sweepLoop(sweepCtx) // registers the sweep ticker on c.clock at Run start
 	}()
+	return cancelSweep
+}
 
+// startWorkers launches the worker pool draining workerCh and returns the
+// WaitGroup that joins when every worker has finished its range (workerCh
+// closed and drained).
+func (c *consumer[T]) startWorkers(drainCtx, settleCtx context.Context, workerCh <-chan managedDelivery) *sync.WaitGroup {
 	var wg sync.WaitGroup
 	wg.Add(c.workers)
 	for i := 0; i < c.workers; i++ {
@@ -308,14 +354,18 @@ func (c *consumer[T]) Run(ctx context.Context) error {
 			}
 		}()
 	}
+	return &wg
+}
 
-	streamErr := c.src.Stream(ctx, rawCh) // blocks until ctx is cancelled
-	close(rawCh)                          // ingress drains remaining reads, then closes workerCh
-
+// drainWorkers waits for the worker pool to finish, bounded by the shutdown
+// timeout (C1 — ALWAYS finite; a non-positive timeout uses the default). On
+// timeout it cancels both detached contexts so cooperative handlers abort
+// (ctx.Err() -> transient -> Nack) and any settle stuck on a non-accepting
+// backend is released, then joins the (now unblocked) pool.
+func (c *consumer[T]) drainWorkers(wg *sync.WaitGroup, cancelDrain, cancelSettle context.CancelFunc) {
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
 
-	// The drain is ALWAYS finite (C1): a non-positive timeout uses the default.
 	timeout := c.shutdownTimeout
 	if timeout <= 0 {
 		timeout = defaultShutdownTimeout
@@ -327,11 +377,6 @@ func (c *consumer[T]) Run(ctx context.Context) error {
 		cancelSettle() // release any settle stuck on a non-accepting backend (e.g. memory Send)
 		<-done
 	}
-	// The drain has completed (either <-done or the deadline path above); stop the
-	// Run-lifetime sweep last so its ticker stayed registered for the whole drain.
-	cancelSweep()
-	ingressWG.Wait() // joins ingest (exited on rawCh close / ctx done) + sweep (exits on sweepCtx) — goleak-clean
-	return streamErr
 }
 
 // ingest reads deliveries from in, applies the credit gate under the configured

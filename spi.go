@@ -14,6 +14,21 @@ type Delivery struct {
 }
 
 // PollingSource is a pulled inbound adapter, driven by the runtime's Poller.
+//
+// Poll fetches up to max claimable deliveries. The runtime acquires max credits
+// BEFORE calling Poll (credit-at-fetch, spec §7.4.1), so it never over-pulls past
+// WithMaxInFlight. An implementation MUST honor three invariants — the runtime
+// enforces the first defensively and relies on the other two:
+//
+//  1. Return AT MOST max deliveries. Returning more corrupts the credit
+//     accounting; the runtime defensively clamps and Nacks the excess, but a
+//     correct source never returns more than asked.
+//  2. Return NO deliveries alongside a non-nil error. A partial (rows, err) is
+//     forbidden: the runtime discards rows on error, which for a lock/tx-carrying
+//     Delivery would leak the transaction/connection it holds.
+//  3. Own the cleanup (rollback) of any partial or claimed work on the error or
+//     ctx-cancel path, returning (nil, err) — a claimed-but-not-returned row must
+//     be released back to the source so it is redelivered, not lost.
 type PollingSource interface {
 	Poll(ctx context.Context, max int) ([]Delivery, error)
 }
