@@ -14,8 +14,11 @@ coverage.*
 *.prof
 *.pprof
 
-# Go workspace file
-go.work
+# go.work is committed (repo-root workspace ties the 5 sql-adapter modules for
+# local dev; see docs/RELEASE.md). go.work.sum is NOT committed: it accumulates
+# transient checksums from whatever the workspace happens to have built locally
+# (e.g. dbtest's testcontainers/docker closure) and isn't reproducibly stable
+# across machines/clean checkouts — each module's own go.sum is authoritative.
 go.work.sum
 
 # Editor / OS

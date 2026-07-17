@@ -119,7 +119,7 @@ This keeps the spec→plan→ADR→commit chain greppable (`git log --grep`), su
 
 ## Go conventions & skills
 
-**Go 1.25 — required.** This project targets **Go 1.25**: `go.mod` carries the `go 1.25` directive, and builds/tests run on a Go 1.25 toolchain. `GOTOOLCHAIN` needs a full patch version (bare `go1.25` is rejected — "a language version but not a toolchain version"), so when a newer Go is the local default (currently **1.26**), force 1.25 with `GOTOOLCHAIN=go1.25.0` (bump the patch as 1.25.x security releases land). The module must not silently build on 1.26+. Do not use language/stdlib features newer than 1.25. CI pins 1.25.
+**Go 1.25 — required.** This project targets **Go 1.25**: `go.mod` carries the `go 1.25` directive, and builds/tests run on a Go 1.25 toolchain. `GOTOOLCHAIN` needs a full patch version (bare `go1.25` is rejected — "a language version but not a toolchain version"), so when a newer Go is the local default (currently **1.26**), force 1.25 with `GOTOOLCHAIN=go1.25.12` (bump the patch as 1.25.x security releases land — bumped from `go1.25.0` in Plan 006 Task 6 after `govulncheck` flagged a stdlib CVE fixed by `go1.25.3`+). The module must not silently build on 1.26+. Do not use language/stdlib features newer than 1.25. CI pins 1.25.
 
 **Tooling — mandatory.** Use **`gopls`** (the Go language server) for all Go code navigation, diagnostics, and refactoring — go-to-definition, find-references, rename, extract/inline, package API, post-edit diagnostics — via the native `LSP` tool (or gopls' MCP/CLI). Prefer semantic gopls operations over text search/`grep` when reasoning about Go symbols. → See `cc-skills-golang:golang-gopls`.
 
@@ -238,7 +238,7 @@ Because the deliverable is a package other code imports, the exported surface *i
 - **Pure Go, no cgo:** `CGO_ENABLED=0 go build ./...` must succeed — keeps the library cross-compilable and debuggable (see debuggability criterion above).
 - **Runnable examples & coverage:** exported behavior is covered by `Example…` tests (they double as godoc) and table tests. The **Test-coverage gate** (Development workflow §5) applies: target ≥ 85% on changed packages and — the hard requirement — every hot-path logic branch and every typed-error branch has a covering test. Watch coverage on the public packages; don't just chase a number.
 - **Vulnerability scan:** `govulncheck ./...` is clean.
-- **Pinned Go version:** builds/tests on **Go 1.25** (the `go 1.25` directive), not whatever newer toolchain is installed locally. CI runs 1.25; verify locally with `GOTOOLCHAIN=go1.25.0`.
+- **Pinned Go version:** builds/tests on **Go 1.25** (the `go 1.25` directive), not whatever newer toolchain is installed locally. CI runs 1.25; verify locally with `GOTOOLCHAIN=go1.25.12`.
 
 ## Commands
 
@@ -248,7 +248,7 @@ Standard Go tooling once the module is scaffolded (`go mod init github.com/karta
 # One-time scaffold with the Go 1.25 pin (local default is newer, so force 1.25)
 go mod init github.com/kartaladev/msgin
 go mod edit -go=1.25                        # pin language version to 1.25
-export GOTOOLCHAIN=go1.25.0                 # build/test on the 1.25 toolchain; CI sets this too
+export GOTOOLCHAIN=go1.25.12                # build/test on the 1.25 toolchain; CI sets this too
 go install golang.org/x/tools/gopls@latest  # LSP server: code nav / diagnostics / refactor
 
 go build ./...

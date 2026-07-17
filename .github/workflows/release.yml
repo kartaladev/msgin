@@ -1,0 +1,66 @@
+name: Release
+
+# msgin is a library -- the pushed tag itself is the distribution (CLAUDE.md
+# "License & release"); this workflow only publishes a GitHub Release with
+# auto-generated notes, nothing is compiled or uploaded. Because the repo is a
+# multi-module monorepo (ADR 0003 / ADR 0011), releases are tag-driven for the
+# root module (`vX.Y.Z`) AND, independently, for each module that is tagged
+# with its module-path-prefixed SemVer once it depends on a published root
+# (spec 002 §8; see docs/RELEASE.md for the full release choreography).
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+      - "adapter/database/sql/postgres/v[0-9]+.[0-9]+.[0-9]+*"
+      - "adapter/database/sql/mysql/v[0-9]+.[0-9]+.[0-9]+*"
+      - "adapter/database/sql/harness/v[0-9]+.[0-9]+.[0-9]+*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Determine release metadata
+        id: meta
+        run: |
+          set -e
+          TAG="${GITHUB_REF_NAME}"
+
+          case "$TAG" in
+            adapter/database/sql/*/v*.*.*)
+              MODULE_PATH="${TAG%/*}"
+              TITLE="${MODULE_PATH} ${TAG##*/}"
+              ;;
+            *)
+              TITLE="github.com/kartaladev/msgin ${TAG}"
+              ;;
+          esac
+
+          PRERELEASE=false
+          case "$TAG" in
+            *-*) PRERELEASE=true ;;
+          esac
+
+          echo "title=${TITLE}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE: ${{ steps.meta.outputs.title }}
+          PRERELEASE: ${{ steps.meta.outputs.prerelease }}
+        run: |
+          set -e
+          args=(--title "$TITLE" --generate-notes)
+          if [ "$PRERELEASE" = "true" ]; then
+            args+=(--prerelease)
+          fi
+          gh release create "${GITHUB_REF_NAME}" "${args[@]}"

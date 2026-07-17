@@ -1,0 +1,122 @@
+name: CI
+
+# msgin is a multi-module monorepo (ADR 0003 / ADR 0011): the engine (repo
+# root) plus four sql-adapter modules (harness, postgres, mysql, dbtest). Each
+# module MUST build and test standalone against its own go.mod, so the
+# per-module jobs below force GOWORK=off (audit F5, spec 002 §8) -- the local
+# go.work workspace is exercised only by the separate `workspace` job.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # Pin the exact 1.25.x patch (CLAUDE.md "Go conventions"): a bare `go1.25`
+  # is rejected by GOTOOLCHAIN ("a language version but not a toolchain
+  # version"), and govulncheck flags known stdlib CVEs fixed after go1.25.0
+  # (discovered while wiring this workflow -- Plan 006 Task 6), so CI runs
+  # go1.25.12, not the toolchain's own default.
+  GOTOOLCHAIN: go1.25.12
+
+jobs:
+  module:
+    name: ${{ matrix.module.name }} (GOWORK=off)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - name: engine (root)
+            dir: .
+          - name: harness
+            dir: adapter/database/sql/harness
+          - name: postgres
+            dir: adapter/database/sql/postgres
+          - name: mysql
+            dir: adapter/database/sql/mysql
+          - name: dbtest
+            dir: adapter/database/sql/dbtest
+    env:
+      GOWORK: "off"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.12"
+
+      - name: go build
+        working-directory: ${{ matrix.module.dir }}
+        run: go build ./...
+
+      - name: go vet
+        working-directory: ${{ matrix.module.dir }}
+        run: go vet ./...
+
+      - name: gofmt (fail on diff)
+        working-directory: ${{ matrix.module.dir }}
+        run: |
+          out="$(gofmt -l .)"
+          if [ -n "$out" ]; then
+            echo "gofmt would reformat:"
+            echo "$out"
+            exit 1
+          fi
+
+      - name: CGO_ENABLED=0 build
+        working-directory: ${{ matrix.module.dir }}
+        env:
+          CGO_ENABLED: "0"
+        run: go build ./...
+
+      - name: go mod tidy (stability check)
+        working-directory: ${{ matrix.module.dir }}
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: govulncheck
+        working-directory: ${{ matrix.module.dir }}
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+          working-directory: ${{ matrix.module.dir }}
+          args: --timeout=5m
+
+      # dbtest's conformance suite needs Docker (testcontainers-go); the
+      # ubuntu-latest runner ships Docker pre-installed and running, so no
+      # extra service setup is required for that module.
+      - name: go test -race
+        working-directory: ${{ matrix.module.dir }}
+        run: go test ./... -race -shuffle=on
+
+  workspace:
+    name: workspace build (GOWORK on)
+    runs-on: ubuntu-latest
+    # No GOWORK=off here: this job deliberately lets `go` auto-discover the
+    # committed repo-root go.work, proving the workspace itself still resolves
+    # coherently across all 5 modules (spec 002 §8 "one separate
+    # workspace-build job for the aggregate").
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.12"
+
+      - name: Build every workspace member
+        run: |
+          set -e
+          for dir in . adapter/database/sql/harness adapter/database/sql/postgres adapter/database/sql/mysql adapter/database/sql/dbtest; do
+            echo "== $dir =="
+            (cd "$dir" && go build ./...)
+          done

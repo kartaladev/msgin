@@ -1,0 +1,37 @@
+# Conservative, non-noisy linter set (cc-skills-golang:golang-lint) for the
+# msgin multi-module monorepo. golangci-lint discovers this file by walking up
+# from its working directory, so running it inside any of the sql-adapter
+# leaf modules (harness/postgres/mysql/dbtest) still picks up this single
+# repo-root config -- one file governs every module (Plan 006 Task 6).
+#
+# `linters.default: none` is deliberate: golangci-lint v2's built-in default
+# set (errcheck, unused, ...) already flags pre-existing findings on this
+# branch that are out of scope for a config-only task, so the enabled set
+# below is chosen explicitly and kept small. Widening it is a follow-up, not
+# a blocker for this task.
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - govet # correctness: the same analyzers as `go vet`
+    - staticcheck # deprecated APIs, common mistakes, simplifications
+    - ineffassign # assignments to variables that are never read
+    - misspell # common misspellings in identifiers/comments
+  exclusions:
+    paths:
+      - third_party$
+      - builtin$
+
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$

@@ -1,0 +1,9 @@
+go 1.25.0
+
+use (
+	./
+	./adapter/database/sql/harness
+	./adapter/database/sql/postgres
+	./adapter/database/sql/mysql
+	./adapter/database/sql/dbtest
+)
