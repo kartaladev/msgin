@@ -38,11 +38,18 @@ func TestPayloadOf(t *testing.T) {
 			},
 		},
 		{
-			name: "any target always succeeds",
+			name: "any target succeeds for a non-nil payload",
 			run:  func(t *testing.T) (any, error) { return msgin.PayloadOf[any](msgin.New[any](42)) },
 			assert: func(t *testing.T, payload any, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, 42, payload.(msgin.Message[any]).Payload())
+			},
+		},
+		{
+			name: "untyped-nil payload yields ErrPayloadType even for any",
+			run:  func(t *testing.T) (any, error) { return msgin.PayloadOf[any](msgin.New[any](nil)) },
+			assert: func(t *testing.T, _ any, err error) {
+				assert.ErrorIs(t, err, msgin.ErrPayloadType)
 			},
 		},
 	}
