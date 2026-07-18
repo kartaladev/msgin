@@ -52,4 +52,6 @@ var (
 	ErrNoSubscriber = errors.New("msgin: channel has no subscriber")
 	// ErrNilHandler is returned when a nil MessageHandler is subscribed.
 	ErrNilHandler = errors.New("msgin: nil message handler")
+	// ErrNilSink is returned by To when its OutboundAdapter sink is nil.
+	ErrNilSink = errors.New("msgin: nil outbound sink")
 )
