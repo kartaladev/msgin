@@ -44,4 +44,20 @@ var (
 	ErrInvalidPollInterval = errors.New("msgin: poll interval must be > 0")
 	// ErrInvalidPollMaxBatch is returned when WithPollMaxBatch is given n < 1.
 	ErrInvalidPollMaxBatch = errors.New("msgin: poll max batch must be >= 1")
+	// ErrChannelSubscribed is returned by a point-to-point channel's Subscribe
+	// when a handler is already registered (single-consumer invariant).
+	ErrChannelSubscribed = errors.New("msgin: channel already has a subscriber")
+	// ErrNoSubscriber is returned by a point-to-point channel's Send when no
+	// handler is subscribed — a message is never silently dropped.
+	ErrNoSubscriber = errors.New("msgin: channel has no subscriber")
+	// ErrNilHandler is returned when a nil MessageHandler is subscribed.
+	ErrNilHandler = errors.New("msgin: nil message handler")
+	// ErrNilSink is returned by To when its OutboundAdapter sink is nil.
+	ErrNilSink = errors.New("msgin: nil outbound sink")
+	// ErrNilFunc is returned by an endpoint (Transform/Filter/Activate/Consume/
+	// Router) constructed with a nil function, instead of panicking at dispatch.
+	ErrNilFunc = errors.New("msgin: nil endpoint function")
+	// ErrNoRoute is returned by a Router when pick resolves no destination and no
+	// WithDefaultChannel is configured (Spring resolutionRequired=true).
+	ErrNoRoute = errors.New("msgin: no route for message")
 )

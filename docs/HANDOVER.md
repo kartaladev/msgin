@@ -1,93 +1,93 @@
 # HANDOVER — msgin
 
 > **Next session: read this first, then trust the referenced files over any memory.** Read, in order:
-> `CLAUDE.md`, then `docs/specs/001-messaging-core.md` (§9 sql adapter) and `docs/specs/002-sql-multi-module-and-sqlite.md`,
-> `docs/adrs/0010-poller-sql-adapter.md` + `0011-sql-engine-dialect-module-split.md` + `0012-sqlite-dialect.md`,
-> and `docs/plans/005-poller-sql-adapter.md` (Task 11 is the outstanding one). Audit records (gitignored):
-> `.superpowers/sdd/plan-007-audit-round-{1,2}.md`. SDD ledger: `.superpowers/sdd/progress.md`.
+> `CLAUDE.md`, then the design bundle for the NEXT increment — `docs/specs/003-composition-endpoints.md`,
+> `docs/adrs/0014-channel-settlement.md` (QueueChannel/PubSub, still untracked until Phase 2 starts), and
+> (once written) the Phase-2 plan. Plan 008 (Phase 1) is DONE and merged.
 
-_Updated: **Plan 007 (SQLite dialect, increment B) is COMPLETE and MERGED to `main`, and pushed** to
-`origin/main`. Whole-branch-gated before merge (all green). The `feat/sqlite-dialect` branch has been deleted.
-Next: **Plan 005 Task 11** (docs/examples across the multi-module layout + the SQLite story) — the only
-outstanding Plan-005 work — folding the small follow-ups listed in §4._
+_Updated 2026-07-18: **Plan 008 Phase 1 COMPLETE and merged to `main`.** The in-process composition layer +
+four linear EIP endpoints shipped via SDD (8 tasks, each adversarially reviewed), whole-branch gate CLEAN
+(`/code-review` + `/security-review`, `-race`, govulncheck, golangci-lint v2.12.2, root coverage 99.0%). The
+branch `feat/composition-endpoints` was merged (no-ff) to `main` and pushed; the feature branch is deleted._
 
 ## 1. Objective & roadmap position
 
-`msgin` (`github.com/kartaladev/msgin`) — Go 1.25 EIP library, minimal deps, multi-module monorepo (Structure Z).
-`main` now carries: **Plans 001–004** + **Plan 005 (Poller + sql adapter, Tasks 1–10)** + **Plan 006 (sql
-engine/dialect split, increment A)** + **Plan 007 (SQLite dialect, increment B)**. The roadmap's remaining
-item is **Plan 005 Task 11** (docs/examples), pended since Plan 006.
+`msgin` (`github.com/kartaladev/msgin`) — Go 1.25 EIP library, minimal deps, multi-module monorepo. `main`
+carries Plans 001–007 (core + reliability + resilience + `sql`/`memory`/dialects incl. SQLite) **and now Plan
+008 Phase 1** (in-process composition layer), all merged.
 
-## 2. What Plan 007 delivered (increment B — the SQLite dialect)
+**Delivered = Spec 003 / Plan 008, Phase 1.** The **in-process composition backbone** — `MessageHandler` +
+`MessageChannel`, the synchronous `DirectChannel`, `PayloadOf[T]`/`WithPayload[A,B]`, `Step`/`Chain`/`To`, and
+the four linear EIP endpoints: **Transform** (Message Translator), **Filter** (+`WithDiscardChannel`),
+**Content-Based Router** (`NewRouter`/`WithDefaultChannel`/`ErrNoRoute`), **Service Activator**
+(`Activate[A,B]` reply / `Consume[A]` one-way). A composed `Chain` drives off the existing `Consumer` runtime
+via `NewConsumer[any](src, flow.Handle)` — proven by an end-to-end integration test over `memory.New()`.
 
-A sixth shipped adapter surface: the **`adapter/database/sql/sqlite`** module — a driver-free (engine-only)
-SQLite `LeaseDialect` + `InboxDialect`, certified against the reusable `harness` conformance suite via an
-embedded, **Docker-free** run in `dbtest` (pure-Go `modernc.org/sqlite`, confined to `dbtest`).
-- **Lease-only** (ADR 0012 D1): no `LockDialect`; `WithStrategy(StrategyLockForUpdate)` returns the existing
-  `ErrLockStrategyUnsupported`. Claim is a **one-shot atomic** `UPDATE … WHERE id IN (SELECT … LIMIT ?)
-  RETURNING …` (SQLite serializes writers — no `SKIP LOCKED`/two-step needed; empirically proven double-claim-safe).
-- **INTEGER unix-µs timestamps** via `CAST(unixepoch('now','subsec')*1000000 AS INTEGER)` — exact parity with
-  the PG/MySQL `.Microseconds()` interval math; DB-clock invariant preserved.
-- **Exact inbox** (`ON CONFLICT(msg_id) DO NOTHING RETURNING`, like Postgres) → `MySQLFamily=false`.
-  `sqlite_master` / `pragma_index_list(?)` probes.
-- **Driver-free `sqlite.DSN(path, opts…)`** builder (WAL + busy_timeout defaults; `WithJournalMode`/
-  `WithBusyTimeout`/`WithSharedMemory`) — opinionated, overridable connection guidance (the module never opens
-  the caller's `*sql.DB`). `doc.go` explains why WAL + busy_timeout are required for concurrent consumers.
-- **Two gated, behavior-preserving `harness` changes** (ADR 0012 D8): the `RunDialect` `ClaimLock`
-  invalid-ident case is conditional on `LockDialect`; a new `TestKit.SingleWriter` skips only
-  `RunOutbox/CommitGatesVisibility` (which needs MVCC non-blocking reads SQLite lacks — pool claim during an
-  open write tx blocks → `SQLITE_BUSY`, confirmed by spike). Both default off → PG/MySQL fully unaffected.
-- **CI fix (the "CI problem"):** pinned the two non-reproducible `@latest` tools — `govulncheck` →
-  `golang.org/x/vuln@v1.6.0`, `golangci-lint` → `v2.12.2`. Plus sqlite in the CI matrix + aggregate job,
-  release.yml sqlite prefixed-tag, and RELEASE.md tag-order.
+**Phasing (from Spec 003 §6.1 / ADR 0014):** **P1 = DONE** (this increment). **P2 = `QueueChannel`** (buffered,
+ADR 0014) — the next increment. **P3 = `PublishSubscribeChannel`** (fan-out, ADR 0014, un-defers ADR 0002 §4
+pub-sub). **P4 = fluent `Flow` DSL = GATED go/no-go**, decide later.
 
-## 3. Exact state (commits — all on `main` now)
+## 2. Exact state (safepoint — Phase 1 delivered)
 
-Branch `feat/sqlite-dialect` (off `main` @ `0e20df3`), 4 task commits, fast-forward merged to `main` + pushed:
-`5119117` T1 scaffold + DSN builder (+ spec/ADR/plan coupled) → `6f5c9a2` T2 harness gates →
-`a88b590` T3 dialect + dbtest conformance → `65f53cc` T4 CI matrix/pins + release + RELEASE.md
-(+ a final `docs:` HANDOVER commit). Each task: SDD implementer → coordinator verify+commit → adversarial
-reviewer (T3 on Opus). Working tree clean except the user's unstaged `.claude/settings.json` (left alone).
+- **`main`** now contains Plan 008 Phase 1 (merged no-ff, pushed to origin). Feature branch deleted.
+- **`git status --short`** (post-merge working tree):
+  ```
+   M .claude/settings.json                       (user's — leave untouched)
+  ?? docs/adrs/0014-channel-settlement.md         (Phase 2 ADR — intentionally untracked until P2)
+  ```
+- **Build/test:** whole tree builds, `go test ./... -race` green, goleak-clean, root coverage 99.0%.
+- **ADR 0014 stays uncommitted** by design — it governs Phases 2–3 and lands with the Phase-2 code.
 
-**Design-time gate:** two adversarial Opus audits (round 1 NEEDS REVISION → F1 blocker + F2–F7; a no-Docker
-spike against real SQLite (modernc 3.53.3) confirmed F1 and proved claim-safety/inbox/pragma; round 2 SOUND
-WITH FIXES; no round 3). **Whole-branch gate — CLEAN:** all 6 modules build/vet/gofmt/`CGO_ENABLED=0`/
-`tidy`-stable (GOWORK=off, go1.25.12); `-race` green incl. dbtest 4-engine conformance (goleak-clean); merged
-sqlite coverage 92.1%; `govulncheck@v1.6.0` clean; `golangci-lint v2.12.2` 0 issues; isolation probe 0/0 (a
-sqlite consumer inherits no driver/testcontainers); `/code-review` no correctness findings; `/security-review`
-no vulnerabilities.
+## 3. Traceability pointers (read FIRST, before acting on Phase 2)
 
-## 4. Follow-ups (Minor, non-blocking — for Plan 005 Task 11 or a later increment)
+`CLAUDE.md` → `docs/specs/003-composition-endpoints.md` (spec, D1–D9; D7 = QueueChannel/PubSub, the P2/P3
+scope) → `docs/adrs/0013-composition-endpoints.md` (P1 composition model — MERGED) +
+`docs/adrs/0014-channel-settlement.md` (QueueChannel/PubSub settlement, Phases 2–3 — the P2 driver) →
+`docs/plans/008-composition-endpoints-phase1.md` (the delivered P1 plan, for reference). The SDD progress
+ledger + task briefs/reports live under `.superpowers/sdd/` (gitignored scratch).
 
-1. **New (Plan 007 code-review Minors):** (a) surface the SQLite ≥3.42 version floor on the exported
-   `sqlite.DDL`/`InboxDDL` godoc (currently only on `doc.go` + the internal `nowMicros` const); (b) `sqlite.DSN`
-   — a filesystem `path` containing a literal `?` flips the pragma separator to `&` (malformed URI); doc already
-   directs exotic cases to a hand-built DSN — consider a doc note or `?`-guard.
-2. **Carried from Plan 006 §4:** wider golangci linters (`errcheck`/`gosec`/`revive`) still deferred (config is
-   the minimal govet/staticcheck/ineffassign/misspell set); `NewOutboundAdapter` `ErrNilResolver`-before-
-   `ErrNilAdapter` precedence (cosmetic). (The `@latest` CI-pin follow-up is now DONE.)
-3. **Plan-005 backlog:** `TransactionResolver` typed-nil guard + godoc (Plan 005 Task 9 review) — address in
-   Plan 005 Task 11.
+## 4. Decisions & findings this session (all resolved)
 
-## 5. Next actions
+**Delivered design (Spec 003 §3 / ADR 0013):** C-core/A-sugar typing (monomorphic `Message[any]` core + typed
+generic free-function constructors that box into `any`; Go forbids generic methods, so no fully-typed fluent
+chain); synchronous-direct error model (endpoint errors propagate into the EXISTING retry/DLQ/invalid runtime;
+`ErrPayloadType` → invalid sink); Spring-aligned overridable defaults (Filter silent-drop, Router `ErrNoRoute`,
+Activate/Consume split).
 
-1. **Start Plan 005 Task 11** (docs/examples) from a fresh branch off `main` — runnable `Example…` tests across
-   the multi-module layout (memory/sql engine + postgres/mysql/**sqlite** dialects), the transactional-outbox
-   and dedup-inbox stories, and the SQLite embedded/no-Docker story. Fold the §4 follow-ups where they touch
-   the same files.
-2. Follow the full workflow: brainstorm → (Task 11 is already specced in Plan 005; confirm scope) → SDD
-   implementer + reviewer → whole-branch gate → merge.
+**Whole-branch gate findings (both resolved before merge):**
+- **CR#1 (fixed):** `PayloadOf[any]` godoc claimed "always succeeds" but returns `ErrPayloadType` on an
+  untyped-nil payload (`New[any](nil)` has no dynamic type). Resolved doc-only + pinning test (commit 3d6e00a).
+- **CR#2 (triaged, accepted):** a typed-nil `MessageChannel` (nil concrete pointer boxed in the interface)
+  bypasses the `== nil` guards in Router (pick-return/default) and Filter (discard) and panics on `Send`. This
+  matches the codebase's existing nil-check convention (`Source`/`OutboundAdapter`/`To`) — accepted pattern,
+  not a regression. Handler panics are recovered at the endpoint boundary by the runtime (fault isolation).
+- `/security-review`: no HIGH/MEDIUM findings (pure in-process layer; no injection/crypto/I/O surface).
+
+**Minor backlog (non-blocking, carry to a future increment):** no concurrent-goroutine test for
+`DirectChannel` (mutex correct by inspection); `Router.Handle` method doc terse (type doc carries the full
+contract); a couple of inherited-from-brief test-style nits (see `.superpowers/sdd/progress.md`).
+
+## 5. Next actions (Phase 2 — QueueChannel)
+
+1. **Brainstorm → spec-delta → adversarial audit → plan** for **P2 (`QueueChannel`, buffered, ADR 0014)**
+   before any code (CLAUDE.md design-time gate: spec + ADR + plan, then an independent Opus audit, two rounds
+   is the project norm). `QueueChannel` adds an async buffered hand-off with its own goroutine/shutdown/drain
+   — the goleak + graceful-shutdown constraints bite here (unlike P1's synchronous `DirectChannel`).
+2. **Then P3 (`PublishSubscribeChannel`, fan-out)**, then the **P4 DSL go/no-go**.
+3. **Still deferred** (after P1–P3): Splitter/Aggregator/Resequencer, Messaging Gateway, Recipient List /
+   Wire Tap / Message History; then the **pended adapters** (pgx/redis/nats/http) + Plan 005 Task 11 examples.
 
 ## 6. Gotchas / environment
 
-- **Go 1.25 pinned, patch = go1.25.12:** always `GOTOOLCHAIN=go1.25.12` (the `go` directive stays `1.25.0`).
-  CI sets it and now pins `govulncheck@v1.6.0` + `golangci-lint v2.12.2` (no more `@latest`).
-- **Multi-module (6 members):** `go.work` for local dev; **CI runs `GOWORK=off`** per module; each non-root
-  module has a dev-time `replace github.com/kartaladev/msgin => ../../../..` swapped for a pinned `require`
-  only at release (root tagged FIRST — `docs/RELEASE.md`, which now lists `sqlite`).
-- **Docker** is needed only for the `dbtest` module (PG+MySQL+MariaDB via testcontainers). **SQLite conformance
-  needs NO Docker** (embedded `modernc.org/sqlite`, in `dbtest` only). Root/harness/postgres/mysql/sqlite need
-  no Docker.
-- **modernc.org/sqlite** bundles SQLite ≥3.45 (satisfies the ≥3.42 floor for `unixepoch('now','subsec')`).
-- **Custom skills (mandatory):** `table-test`, `use-mockgen`, `use-testcontainers`. Start Go work from
-  `cc-skills-golang:golang-how-to`; blackbox `_test` packages; assert-closure tables; `t.Context()`.
+- **Go 1.25 pinned:** always `GOTOOLCHAIN=go1.25.12` (the `go` directive stays `1.25.0`). Stdlib-only core —
+  no new dependency; `go mod tidy` stays clean.
+- **Typed endpoints need live-value payloads** (Spec 003 D8 / F3): a composed flow's typed constructors assume
+  the payload is the live Go value — true for `memory.New()` (a `LiveValueSource`). A **wire** source at
+  `T=any` decodes to `map[string]any`, so decode to the concrete type in the first endpoint. Documented in
+  `doc_composition.go` + ADR 0013 D8.
+- **Reused core symbols (do NOT redeclare):** `ErrPayloadType`/`ErrPayloadDecode` (`errors.go`), `NewMessage[T]`,
+  `New[T]`, `Message[any]` accessors, `NewConsumer`/`Handler[T]`/`WithShutdownTimeout`, `adapter/memory`.
+- **Custom skills (mandatory):** `table-test` (assert-closure tables, `t.Context()`), `use-mockgen`,
+  `use-testcontainers`; blackbox `_test` packages; start Go work from `cc-skills-golang:golang-how-to`; execute
+  via SDD (`superpowers:subagent-driven-development`).
+- **SDD ledger:** `.superpowers/sdd/progress.md` (gitignored) has the full per-task record for Plan 008.
