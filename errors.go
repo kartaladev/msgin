@@ -54,4 +54,7 @@ var (
 	ErrNilHandler = errors.New("msgin: nil message handler")
 	// ErrNilSink is returned by To when its OutboundAdapter sink is nil.
 	ErrNilSink = errors.New("msgin: nil outbound sink")
+	// ErrNilFunc is returned by an endpoint (Transform/Filter/Activate/Consume/
+	// Router) constructed with a nil function, instead of panicking at dispatch.
+	ErrNilFunc = errors.New("msgin: nil endpoint function")
 )
