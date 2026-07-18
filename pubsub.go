@@ -64,6 +64,10 @@ func WithPubSubLogger(l *slog.Logger) PubSubOption {
 	}
 }
 
+// withConfig seeds a channel with an already-built config (used by PubSub so all
+// topic channels inherit the registry's fan-out policy and logger).
+func withConfig(cfg pubSubConfig) PubSubOption { return func(c *pubSubConfig) { *c = cfg } }
+
 // subscription is one registered handler on a PublishSubscribeChannel.
 type subscription struct {
 	ch      *PublishSubscribeChannel
