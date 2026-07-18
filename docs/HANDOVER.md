@@ -1,93 +1,93 @@
 # HANDOVER — msgin
 
 > **Next session: read this first, then trust the referenced files over any memory.** Read, in order:
-> `CLAUDE.md`, then the design bundle for the NEXT increment — `docs/specs/003-composition-endpoints.md`,
-> `docs/adrs/0014-channel-settlement.md` (QueueChannel/PubSub, still untracked until Phase 2 starts), and
-> (once written) the Phase-2 plan. Plan 008 (Phase 1) is DONE and merged.
+> `CLAUDE.md`, then — before starting the next increment — the governing artifacts for whatever you pick up.
+> Phase 3 (Publish-Subscribe) is **DONE and merged to `main`**; there is no in-flight work.
 
-_Updated 2026-07-18: **Plan 008 Phase 1 COMPLETE and merged to `main`.** The in-process composition layer +
-four linear EIP endpoints shipped via SDD (8 tasks, each adversarially reviewed), whole-branch gate CLEAN
-(`/code-review` + `/security-review`, `-race`, govulncheck, golangci-lint v2.12.2, root coverage 99.0%). The
-branch `feat/composition-endpoints` was merged (no-ff) to `main` and pushed; the feature branch is deleted._
+_Updated 2026-07-19: **composition Phase 3 (Publish-Subscribe) is COMPLETE, gate-clean, and MERGED to `main`.**
+Spec 004 / ADR 0014 / Plan 009 delivered via SDD (3 tasks + 1 review-fix), each task adversarially reviewed
+(Approved), whole-branch `/code-review` + `/security-review` clean. The `feat/pubsub` branch was deleted after
+merge. The next increment is the **scheduled/delayed-send API** (design not yet started)._
 
 ## 1. Objective & roadmap position
 
-`msgin` (`github.com/kartaladev/msgin`) — Go 1.25 EIP library, minimal deps, multi-module monorepo. `main`
-carries Plans 001–007 (core + reliability + resilience + `sql`/`memory`/dialects incl. SQLite) **and now Plan
-008 Phase 1** (in-process composition layer), all merged.
+`msgin` (`github.com/kartaladev/msgin`) — Go 1.25 EIP library, minimal deps, multi-module monorepo. `main` now
+carries Plans 001–007 (core + reliability + resilience + `sql`/`memory`/dialects incl. SQLite), **Plan 008
+composition Phase 1** (in-process composition layer + 4 linear endpoints), **and Plan 009 composition Phase 3
+(Publish-Subscribe)** — all merged.
 
-**Delivered = Spec 003 / Plan 008, Phase 1.** The **in-process composition backbone** — `MessageHandler` +
-`MessageChannel`, the synchronous `DirectChannel`, `PayloadOf[T]`/`WithPayload[A,B]`, `Step`/`Chain`/`To`, and
-the four linear EIP endpoints: **Transform** (Message Translator), **Filter** (+`WithDiscardChannel`),
-**Content-Based Router** (`NewRouter`/`WithDefaultChannel`/`ErrNoRoute`), **Service Activator**
-(`Activate[A,B]` reply / `Consume[A]` one-way). A composed `Chain` drives off the existing `Consumer` runtime
-via `NewConsumer[any](src, flow.Handle)` — proven by an end-to-end integration test over `memory.New()`.
+**No active increment.** Phase 3 shipped: an in-process `PublishSubscribeChannel` (one message → every
+subscriber), a topic pub/sub SPI (`TopicPublisher`/`TopicSubscriber`), and an EIP-native `PubSub` topic registry
+(lazy-create, drop-on-empty). This un-deferred pub-sub (ADR 0002 §4) and completed Spec 003 §3 D7 Phase 3.
 
-**Phasing (from Spec 003 §6.1 / ADR 0014):** **P1 = DONE** (this increment). **P2 = `QueueChannel`** (buffered,
-ADR 0014) — the next increment. **P3 = `PublishSubscribeChannel`** (fan-out, ADR 0014, un-defers ADR 0002 §4
-pub-sub). **P4 = fluent `Flow` DSL = GATED go/no-go**, decide later.
+**Roadmap (reprioritized 2026-07-19):** **Next = a scheduled/delayed-send API** over the `sql` adapter's
+*existing* `visible_after` mechanism (storage primitive already built — `dialect.go` `Insert(delay)`/`Nack(delay)`;
+the gap is only a public scheduled-send surface, since `OutboundAdapter.Send` is delay-0). Start it with the full
+deliberate-design loop: brainstorm → spec → ADR → plan → **2-round adversarial Opus audit** → SDD. **Deprioritized:**
+Phase 2 `QueueChannel` (at-most-once buffered case is already `memory.Broker`; at-least-once needs settlement-runtime
+work) and Splitter/Aggregator. **Still deferred:** Wire Tap / Recipient List, Messaging Gateway, the pended adapters
+(pgx/redis/nats/http), Plan 005 Task 11 examples, the Phase-4 fluent DSL (gated).
 
-## 2. Exact state (safepoint — Phase 1 delivered)
+## 2. Exact state (safepoint — Phase 3 merged, tree clean)
 
-- **`main`** now contains Plan 008 Phase 1 (merged no-ff, pushed to origin). Feature branch deleted.
-- **`git status --short`** (post-merge working tree):
-  ```
-   M .claude/settings.json                       (user's — leave untouched)
-  ?? docs/adrs/0014-channel-settlement.md         (Phase 2 ADR — intentionally untracked until P2)
-  ```
-- **Build/test:** whole tree builds, `go test ./... -race` green, goleak-clean, root coverage 99.0%.
-- **ADR 0014 stays uncommitted** by design — it governs Phases 2–3 and lands with the Phase-2 code.
+- **Branch:** `main` (Phase 3 merged; `feat/pubsub` deleted local + remote).
+- **`git status --short`:** only `.claude/settings.json` (the user's own file — leave untouched). Everything else is committed.
+- **Build/tests:** `go build ./...` and `go test ./... -race` green; coverage on the root package 98.9%; `go vet`,
+  `gofmt`, `golangci-lint` (0 issues), `govulncheck` (no called vulns) all clean; `CGO_ENABLED=0` builds; `go mod tidy`
+  leaves go.mod/go.sum unchanged (no new dependency — stdlib-only, as designed).
 
-## 3. Traceability pointers (read FIRST, before acting on Phase 2)
+### Plan 009 commits (on `main` via the merge)
+- `1a48316` feat(core): add PublishSubscribeChannel (single-topic fan-out) — Task 1 (+ CLAUDE.md writing-plans override).
+- `cc4af14` feat(core): add topic pub/sub SPI + PubSub registry — Task 2 (F1 TOCTOU fix: Subscribe holds `p.mu` across `ch.Subscribe`).
+- `f9a91c6` test(core): pub-sub end-to-end via NewConsumer + example + package doc — Task 3.
+- `6325f89` refactor(core): nil vacated tail slot in PublishSubscribeChannel.remove — whole-branch review Minor fix.
 
-`CLAUDE.md` → `docs/specs/003-composition-endpoints.md` (spec, D1–D9; D7 = QueueChannel/PubSub, the P2/P3
-scope) → `docs/adrs/0013-composition-endpoints.md` (P1 composition model — MERGED) +
-`docs/adrs/0014-channel-settlement.md` (QueueChannel/PubSub settlement, Phases 2–3 — the P2 driver) →
-`docs/plans/008-composition-endpoints-phase1.md` (the delivered P1 plan, for reference). The SDD progress
-ledger + task briefs/reports live under `.superpowers/sdd/` (gitignored scratch).
+## 3. Traceability pointers
 
-## 4. Decisions & findings this session (all resolved)
+Delivered design bundle (all on `main`): `docs/specs/004-publish-subscribe.md` → `docs/adrs/0014-publish-subscribe.md`
+→ `docs/plans/009-publish-subscribe-phase3.md` (3-task plan, both audit rounds folded). Companion: `docs/specs/003-composition-endpoints.md`
+(D7 Phase 3) + `docs/adrs/0013-composition-endpoints.md` (Phase-1 composition model). SDD ledger (gitignored scratch):
+`.superpowers/sdd/progress.md`.
 
-**Delivered design (Spec 003 §3 / ADR 0013):** C-core/A-sugar typing (monomorphic `Message[any]` core + typed
-generic free-function constructors that box into `any`; Go forbids generic methods, so no fully-typed fluent
-chain); synchronous-direct error model (endpoint errors propagate into the EXISTING retry/DLQ/invalid runtime;
-`ErrPayloadType` → invalid sink); Spring-aligned overridable defaults (Filter silent-drop, Router `ErrNoRoute`,
-Activate/Consume split).
+## 4. What shipped (Spec 004 / ADR 0014)
 
-**Whole-branch gate findings (both resolved before merge):**
-- **CR#1 (fixed):** `PayloadOf[any]` godoc claimed "always succeeds" but returns `ErrPayloadType` on an
-  untyped-nil payload (`New[any](nil)` has no dynamic type). Resolved doc-only + pinning test (commit 3d6e00a).
-- **CR#2 (triaged, accepted):** a typed-nil `MessageChannel` (nil concrete pointer boxed in the interface)
-  bypasses the `== nil` guards in Router (pick-return/default) and Filter (discard) and panics on `Send`. This
-  matches the codebase's existing nil-check convention (`Source`/`OutboundAdapter`/`To`) — accepted pattern,
-  not a regression. Handler panics are recovered at the endpoint boundary by the runtime (fault isolation).
-- `/security-review`: no HIGH/MEDIUM findings (pure in-process layer; no injection/crypto/I/O surface).
+- **EIP-native topics** — a topic is a *named* `PublishSubscribeChannel`; the `PubSub` registry maps topic name → channel
+  (lazy-create, drop-on-empty), so a future native-topic broker adapter implements the same topic pub/sub SPI generically.
+- **3 layers** — SPI (`TopicPublisher`/`TopicSubscriber`/`Subscription`, split per ISP) → `PublishSubscribeChannel`
+  (single-topic fan-out; an `OutboundAdapter` via `Send`, so `To(psChannel)` broadcasts) → `PubSub` registry.
+- **Synchronous** dispatch (no goroutine → leak-free), registration order, snapshot-under-RLock, dispatch outside the lock.
+- **Settlement** — all-succeed-before-Ack default (`errors.Join` → Consumer retries; unit-settlement, so a permanent
+  subscriber error propagates to the invalid sink), `WithFanOut(FanOutBestEffort)` opt-in (log-and-continue via injected
+  `WithPubSubLogger`, default discard). Per-subscriber panic isolation (`safeFanOut` → transient `ErrHandlerPanic`).
+- **Public API:** `PublishSubscribeChannel`/`NewPublishSubscribeChannel`/`Send`/`Subscribe`, `Subscription.Cancel`,
+  `PubSub`/`NewPubSub`/`Publish`/`Subscribe`/`TopicCount`, `TopicPublisher`/`TopicSubscriber`, `FanOutPolicy`
+  (`FanOutAllSucceed`/`FanOutBestEffort`), `WithFanOut`/`WithPubSubLogger`.
 
-**Minor backlog (non-blocking, carry to a future increment):** no concurrent-goroutine test for
-`DirectChannel` (mutex correct by inspection); `Router.Handle` method doc terse (type doc carries the full
-contract); a couple of inherited-from-brief test-style nits (see `.superpowers/sdd/progress.md`).
+**Deferred (documented in Spec 004 / ADR 0014):** `Close()` (O4-1, YAGNI for a goroutine-free channel);
+`Router`/`Filter` → `OutboundAdapter` widening (O4-2 — `pick`-return widening is breaking, own ADR); Wire Tap /
+Recipient List; native-topic broker adapters. Consumer groups remain adapter-provided (sql `SKIP LOCKED` + lease).
 
-## 5. Next actions (Phase 2 — QueueChannel)
+**Backlog from the whole-branch review (triaged, not a blocker):** `PublishSubscribeChannel.Send` allocates a snapshot
+slice (`make`+`copy`) per publish. A copy-on-write `subs` slice (Subscribe/remove rebuild it; Send reads the header under
+RLock, no copy) would make the broadcast hot path allocation-free — a future perf increment; the current approach is
+correct and documented.
 
-1. **Brainstorm → spec-delta → adversarial audit → plan** for **P2 (`QueueChannel`, buffered, ADR 0014)**
-   before any code (CLAUDE.md design-time gate: spec + ADR + plan, then an independent Opus audit, two rounds
-   is the project norm). `QueueChannel` adds an async buffered hand-off with its own goroutine/shutdown/drain
-   — the goleak + graceful-shutdown constraints bite here (unlike P1's synchronous `DirectChannel`).
-2. **Then P3 (`PublishSubscribeChannel`, fan-out)**, then the **P4 DSL go/no-go**.
-3. **Still deferred** (after P1–P3): Splitter/Aggregator/Resequencer, Messaging Gateway, Recipient List /
-   Wire Tap / Message History; then the **pended adapters** (pgx/redis/nats/http) + Plan 005 Task 11 examples.
+## 5. Next actions
+
+1. **Next increment = scheduled/delayed-send API.** Run the deliberate-design loop: `superpowers:brainstorming` →
+   `docs/specs/005-*.md` → ADR(s) → `superpowers:writing-plans` (`docs/plans/010-*.md`) → **independent adversarial Opus
+   audit of the full bundle (spec + ADR + plan), 2 rounds** → **ask the user for go-ahead + execution mode** before any code.
+   The surface: expose a public scheduled/delayed send over the `sql` adapter's existing `visible_after` (`dialect.go`
+   `Insert(delay)`/`Nack(delay)`) — no new storage machinery, a thin API increment.
+2. Start from a fresh branch off `main` (`git checkout -b feat/<slug> main`). Per-task commits only after the plan is
+   approved and a task-by-task mode is chosen.
 
 ## 6. Gotchas / environment
 
-- **Go 1.25 pinned:** always `GOTOOLCHAIN=go1.25.12` (the `go` directive stays `1.25.0`). Stdlib-only core —
-  no new dependency; `go mod tidy` stays clean.
-- **Typed endpoints need live-value payloads** (Spec 003 D8 / F3): a composed flow's typed constructors assume
-  the payload is the live Go value — true for `memory.New()` (a `LiveValueSource`). A **wire** source at
-  `T=any` decodes to `map[string]any`, so decode to the concrete type in the first endpoint. Documented in
-  `doc_composition.go` + ADR 0013 D8.
-- **Reused core symbols (do NOT redeclare):** `ErrPayloadType`/`ErrPayloadDecode` (`errors.go`), `NewMessage[T]`,
-  `New[T]`, `Message[any]` accessors, `NewConsumer`/`Handler[T]`/`WithShutdownTimeout`, `adapter/memory`.
-- **Custom skills (mandatory):** `table-test` (assert-closure tables, `t.Context()`), `use-mockgen`,
-  `use-testcontainers`; blackbox `_test` packages; start Go work from `cc-skills-golang:golang-how-to`; execute
-  via SDD (`superpowers:subagent-driven-development`).
-- **SDD ledger:** `.superpowers/sdd/progress.md` (gitignored) has the full per-task record for Plan 008.
+- **Go 1.25 pinned:** always `GOTOOLCHAIN=go1.25.12` (the `go` directive stays `1.25.0`). Stdlib-only core — no new dep.
+- **Tooling on PATH:** `golangci-lint` (homebrew), `gopls`/`govulncheck`/`staticcheck`/`gosec`/`mockgen` under `$(go env GOPATH)/bin`
+  (`govulncheck` is NOT on bare PATH — call it by full path). `gofumpt` is not installed; `gofmt` is clean.
+- **Custom skills (mandatory):** start Go work from `cc-skills-golang:golang-how-to`; TDD via
+  `superpowers:test-driven-development`; `gopls` for navigation; `table-test` (assert-closure tables, `t.Context()`),
+  `use-mockgen`, `use-testcontainers`; blackbox `_test` packages.
+- **`.claude/settings.json`** shows as modified in `git status` — it is the user's own file; do not stage or commit it.
