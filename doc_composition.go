@@ -15,4 +15,13 @@
 // bytes-passthrough WithConsumerCodec[any] + Transform[[]byte, T]). Endpoint
 // errors propagate into the runtime; a payload-type mismatch is ErrPayloadType,
 // routed to the invalid-message channel.
+//
+// Publish-Subscribe (Spec 004 / ADR 0014). Beyond point-to-point channels, a
+// PublishSubscribeChannel fans a message out to every subscriber; Subscribe
+// returns a Subscription whose Cancel unsubscribes. A PubSub registry maps a
+// topic name to such a channel (created on first Subscribe, dropped when empty)
+// and satisfies the TopicPublisher/TopicSubscriber SPI that native-topic broker
+// adapters implement. Dispatch is synchronous (no goroutine); the default
+// settlement is all-subscribers-succeed (a subscriber error is joined and the
+// message retried), with WithFanOut(FanOutBestEffort) to log-and-continue.
 package msgin
