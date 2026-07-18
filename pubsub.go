@@ -118,7 +118,9 @@ func (c *PublishSubscribeChannel) remove(s *subscription) {
 	defer c.mu.Unlock()
 	for i, x := range c.subs {
 		if x == s {
-			c.subs = append(c.subs[:i], c.subs[i+1:]...)
+			copy(c.subs[i:], c.subs[i+1:])
+			c.subs[len(c.subs)-1] = nil
+			c.subs = c.subs[:len(c.subs)-1]
 			return
 		}
 	}
