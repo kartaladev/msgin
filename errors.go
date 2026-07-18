@@ -57,4 +57,7 @@ var (
 	// ErrNilFunc is returned by an endpoint (Transform/Filter/Activate/Consume/
 	// Router) constructed with a nil function, instead of panicking at dispatch.
 	ErrNilFunc = errors.New("msgin: nil endpoint function")
+	// ErrNoRoute is returned by a Router when pick resolves no destination and no
+	// WithDefaultChannel is configured (Spring resolutionRequired=true).
+	ErrNoRoute = errors.New("msgin: no route for message")
 )
