@@ -44,4 +44,12 @@ var (
 	ErrInvalidPollInterval = errors.New("msgin: poll interval must be > 0")
 	// ErrInvalidPollMaxBatch is returned when WithPollMaxBatch is given n < 1.
 	ErrInvalidPollMaxBatch = errors.New("msgin: poll max batch must be >= 1")
+	// ErrChannelSubscribed is returned by a point-to-point channel's Subscribe
+	// when a handler is already registered (single-consumer invariant).
+	ErrChannelSubscribed = errors.New("msgin: channel already has a subscriber")
+	// ErrNoSubscriber is returned by a point-to-point channel's Send when no
+	// handler is subscribed — a message is never silently dropped.
+	ErrNoSubscriber = errors.New("msgin: channel has no subscriber")
+	// ErrNilHandler is returned when a nil MessageHandler is subscribed.
+	ErrNilHandler = errors.New("msgin: nil message handler")
 )
