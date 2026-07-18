@@ -131,6 +131,8 @@ Three **project-local skills override samber's testing guidance** where they con
 - **`use-mockgen`** — generate test doubles with uber-go/mock (`mockgen`, `--typed`), placed alongside the interface in the producer package via `//go:generate`. Overrides mock-generation in `golang-testing` / `golang-stretchr-testify`.
 - **`use-testcontainers`** — provision heavy external resources (Postgres, Redis, Kafka, MinIO, …) via testcontainers-go, never mocks/in-memory fakes; expose each through a single `RunTestX(t, opts...)` helper. Overrides integration-test scaffolding in `golang-testing`.
 
+**Plans must activate the Go skills explicitly (writing-plans override).** `superpowers:writing-plans`'s header template mandates only the *execution* sub-skill (`subagent-driven-development`/`executing-plans`) — it **omits** this Go-skills hard rule. Because every `docs/plans/*` is Go-code work, the plan document itself MUST re-state, in its **header note + Global Constraints**, that each task starts from **`cc-skills-golang:golang-how-to`** (+ TDD via `superpowers:test-driven-development`, `gopls` for navigation/refactor, and the `table-test`/`use-mockgen`/`use-testcontainers` overrides). Encode it in the plan; do **not** rely on relaying it only through SDD dispatch prompts.
+
 **Testing rules (mandatory — this project).** In addition to the skills above:
 
 - **Blackbox tests only.** Every `_test.go` uses the external `package <pkg>_test` form and exercises only the exported API. A test that seems to need an unexported helper is rewritten to drive that behavior through the public surface — never fall back to whitebox `package <pkg>`. Example tests are `_test`-package too; keep them so.
