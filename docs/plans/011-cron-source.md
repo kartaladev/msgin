@@ -50,7 +50,7 @@ All under `adapter/cron/` (root module, `package cron`) unless noted.
 - `source.go` — `Source[T]`, `NewSource`, `Stream`, `EmitsLiveValue`, the firing loop (incl. the zero-`Next` guard), the `gate` type + `win`, the no-op settle closures, `Option` + `WithClock`/`WithLocation`/`WithScope`/`WithCronLogger` (Task 1); `WithElector`/`WithLocker` + the real `wireGate` body (incl. the `@every`+Locker refusal) (Task 2).
 - `coordinator.go` — `Elector`, `Locker` interfaces (Task 1 — needed by `source.go`'s `config` fields, so declared alongside the `Source` type; the *options* and gating logic that consume them are added in Task 2).
 - `sqlutil.go` — the exported `Querier` interface, `identPattern`/`validateIdent`, `ErrInvalidTableName`, per-engine quote helpers (Task 3).
-- `sqllock.go` — `SQLLocker`, `NewSQLLocker`, `Claim`, `Purge`, `EnsureSchema`; `LockerOption` (`WithLockerTable`/`WithInstanceID`) (Task 3).
+- `sqllock.go` — `SQLLocker`, `NewSQLLocker`, `Claim`, `Purge`, `EnsureSchema`; `LockerOption` (`WithLockerTable`) (Task 3; no claimant identity — removed as YAGNI, see Task 3's note).
 - `sqlelector.go` — `SQLElector`, `NewSQLElector`, `IsLeader(ctx, scope)`, `EnsureSchema`; `ElectorOption` (`WithElectorTable`/`WithElectorInstanceID`/`WithLeaseTTL`) (Task 4).
 - `dialect.go` — `LockerDialect`/`ElectorDialect` interfaces (both taking the exported `Querier`) + the three concrete constructors each + the per-dialect DDL string builders (`PostgresLockerDDL(table)` etc.) (Tasks 3–4).
 - `*_test.go` — blackbox unit tests (Tasks 1–4).
@@ -1108,13 +1108,13 @@ Mirrors the proven `InboxDeduper` mechanism (ADR 0010 D10) keyed on the determin
 - Consumes: `msgin.ErrNilAdapter`; `Querier`/`validateIdent`/quote helpers (this task).
 - Produces:
   - `type Querier interface { ExecContext(...); QueryContext(...); QueryRowContext(...) }` (exported — mirrors `msginsql.Querier`; it is legitimate dialect-author SPI, decided per KD-1, not an open question)
-  - `type LockerDialect interface { ClaimFire(ctx, q Querier, table, scope string, fire time.Time) (won bool, err error); PurgeFired(ctx, q Querier, table string, olderThan time.Duration) (int64, error); EnsureFiredSchema(ctx, q Querier, table string) error }`
+  - `type LockerDialect interface { ClaimFire(ctx, q Querier, table, scope string, fire time.Time) (won bool, err error); PurgeFired(ctx, q Querier, table string, olderThan time.Duration) (int64, error); EnsureFiredSchema(ctx, q Querier, table string) error }` *(corrected post-implementation: Task 3 review — EnsureSchema multi-statement split for pgx)*
   - `func PostgresLocker() LockerDialect`; `func MySQLLocker() LockerDialect`; `func SQLiteLocker() LockerDialect`
   - `func PostgresLockerDDL(table string) (string, error)` (+ MySQL/SQLite peers)
   - `type SQLLocker struct{…}`; `func NewSQLLocker(db *sql.DB, dialect LockerDialect, opts ...LockerOption) (*SQLLocker, error)`
   - `func (*SQLLocker) Claim(ctx, scope string, fire time.Time) (bool, error)` (implements `Locker`)
   - `func (*SQLLocker) Purge(ctx, olderThan time.Duration) (int64, error)`; `func (*SQLLocker) EnsureSchema(ctx) error`
-  - `type LockerOption func(*lockerConfig)`; `func WithLockerTable(string) LockerOption`; `func WithInstanceID(string) LockerOption` (this Locker-specific option's peer for the Elector is the distinct `WithElectorInstanceID`, Task 4)
+  - `type LockerOption func(*lockerConfig)`; `func WithLockerTable(string) LockerOption` *(corrected post-implementation: Task 3 review pass 2 — `WithInstanceID`/claimed_by/holder/randomID removed from the Locker as YAGNI; the winner is decided solely by whose INSERT succeeds, nothing reads a per-fire claimant, and the Elector's `WithElectorInstanceID` (Task 4) already covers the one identity that is correctness-bearing)*
   - `var ErrNilDialect, ErrInvalidRetention, ErrLockerClaimFailed error`
 
 - [ ] **Step 1: Write the failing test** — `adapter/cron/sqllock_test.go` (driver-free; a real-DB run is Task 5)
@@ -1358,7 +1358,9 @@ import (
 // each method's atomicity reasoning relies on a fresh per-statement snapshot.
 type LockerDialect interface {
 	// ClaimFire idempotently inserts (scope, fire_ts) and reports whether THIS
-	// call inserted the row (won). A conflict (row already present) is won=false.
+	// call inserted the row (won). A conflict (row already present) is
+	// won=false. There is no recorded claimant identity — the winner is
+	// decided solely by whose INSERT succeeds.
 	ClaimFire(ctx context.Context, q Querier, table, scope string, fire time.Time) (won bool, err error)
 	// PurgeFired deletes fired-keys rows whose claimed_at (DB clock) is older than
 	// olderThan and returns the count removed.
@@ -1367,7 +1369,10 @@ type LockerDialect interface {
 	// NOT EXISTS). Opt-in; production provisions via the *LockerDDL builder.
 	EnsureFiredSchema(ctx context.Context, q Querier, table string) error
 }
+```
+*(corrected post-implementation: Task 3 review pass 2 — Locker claimant surface removed as YAGNI; `claimed_by`/`WithInstanceID` dropped.)*
 
+```go
 // --- PostgreSQL --------------------------------------------------------------
 
 type postgresLocker struct{}
@@ -1411,37 +1416,56 @@ func (postgresLocker) PurgeFired(ctx context.Context, q Querier, table string, o
 	return res.RowsAffected()
 }
 
+// EnsureFiredSchema issues the CREATE TABLE then the CREATE INDEX as two
+// separate ExecContext calls — never a single combined multi-statement Exec:
+// pgx's extended protocol rejects multi-statement Exec (mirrors
+// adapter/database/sql/postgres's EnsureSchema two-Exec split).
 func (postgresLocker) EnsureFiredSchema(ctx context.Context, q Querier, table string) error {
-	ddl, err := PostgresLockerDDL(table)
+	qt, err := quoteTable(pgQuote, table)
 	if err != nil {
 		return err
 	}
-	_, err = q.ExecContext(ctx, ddl)
+	if _, err := q.ExecContext(ctx, postgresCreateFiredTable(qt)); err != nil {
+		return err
+	}
+	qidx, _ := quoteTable(pgQuote, table+"_claimed_idx")
+	_, err = q.ExecContext(ctx, postgresCreateFiredIndex(qt, qidx))
 	return err
 }
 
+// postgresCreateFiredTable / postgresCreateFiredIndex build the two DDL
+// statements separately (qt/qidx already quoted) so EnsureFiredSchema can
+// issue them as two Execs; PostgresLockerDDL joins them for migration tooling.
+func postgresCreateFiredTable(qt string) string {
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+  scope      VARCHAR(255) NOT NULL,
+  fire_ts    TIMESTAMPTZ  NOT NULL,
+  claimed_at TIMESTAMPTZ  NOT NULL DEFAULT now(),
+  PRIMARY KEY (scope, fire_ts)
+)`, qt)
+}
+
+func postgresCreateFiredIndex(qt, qidx string) string {
+	return fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (claimed_at)`, qidx, qt)
+}
+
 // PostgresLockerDDL returns the reference CREATE TABLE (+ retention index) for
-// the PG fired-keys table, for a migration tool. It validates table first.
+// the PG fired-keys table, as a single combined statement, for a migration
+// tool. It validates table first.
 func PostgresLockerDDL(table string) (string, error) {
 	qt, err := quoteTable(pgQuote, table)
 	if err != nil {
 		return "", err
 	}
 	qidx, _ := quoteTable(pgQuote, table+"_claimed_idx")
-	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %[1]s (
-  scope      VARCHAR(255) NOT NULL,
-  fire_ts    TIMESTAMPTZ  NOT NULL,
-  claimed_by VARCHAR(255),
-  claimed_at TIMESTAMPTZ  NOT NULL DEFAULT now(),
-  PRIMARY KEY (scope, fire_ts)
-);
-CREATE INDEX IF NOT EXISTS %[2]s ON %[1]s (claimed_at);`, qt, qidx), nil
+	return postgresCreateFiredTable(qt) + ";\n" + postgresCreateFiredIndex(qt, qidx) + ";", nil
 }
 ```
+*(corrected post-implementation: Task 3 review — `EnsureFiredSchema` split into two `ExecContext` calls via `postgresCreateFiredTable`/`postgresCreateFiredIndex`, mirroring `adapter/database/sql/postgres`'s `EnsureSchema`; the combined-string `PostgresLockerDDL` is unchanged in output, now composed from the same two helpers.)*
 
-> The **MySQL** `postgresLocker` peer (`mysqlLocker`) mirrors `mysql.InsertInboxIfAbsent` exactly (report §2): `INSERT IGNORE INTO %s (scope, fire_ts, claimed_at) VALUES (?, ?, UTC_TIMESTAMP(6))` → `RowsAffected()==1` ⇒ won; `==0` ⇒ verify with `SELECT scope FROM %s WHERE scope=? AND fire_ts=? LOCK IN SHARE MODE` (NOT `FOR SHARE`, MariaDB-compat) → a row ⇒ lost (`false,nil`); `sql.ErrNoRows` ⇒ a demoted data error ⇒ `return false, fmt.Errorf("%w: scope %q fire %s …", ErrLockerClaimFailed, scope, fire)`. `fire` is passed as `fire.UTC()`. `PurgeFired`: `DELETE FROM %s WHERE claimed_at < DATE_SUB(UTC_TIMESTAMP(6), INTERVAL ? MICROSECOND)`. DDL (`MySQLLockerDDL`): inline index, `PRIMARY KEY (scope, fire_ts)`, `INDEX %[2]s (claimed_at)`, `DATETIME(6)` columns with `DEFAULT (UTC_TIMESTAMP(6))`, single statement (no trailing `;` join).
+> The **MySQL** `postgresLocker` peer (`mysqlLocker`) mirrors `mysql.InsertInboxIfAbsent` exactly (report §2): `INSERT IGNORE INTO %s (scope, fire_ts, claimed_at) VALUES (?, ?, UTC_TIMESTAMP(6))` (args `scope, fire.UTC()`) → `RowsAffected()==1` ⇒ won; `==0` ⇒ verify with `SELECT scope FROM %s WHERE scope=? AND fire_ts=? LOCK IN SHARE MODE` (NOT `FOR SHARE`, MariaDB-compat) → a row ⇒ lost (`false,nil`); `sql.ErrNoRows` ⇒ a demoted data error ⇒ `return false, fmt.Errorf("%w: scope %q fire %s …", ErrLockerClaimFailed, scope, fire)`. `PurgeFired`: `DELETE FROM %s WHERE claimed_at < DATE_SUB(UTC_TIMESTAMP(6), INTERVAL ? MICROSECOND)`. DDL (`MySQLLockerDDL`): inline index, `PRIMARY KEY (scope, fire_ts)`, `INDEX %[2]s (claimed_at)`, `DATETIME(6)` columns with `DEFAULT (UTC_TIMESTAMP(6))`, genuinely single statement (no trailing `;` join, verified) — `EnsureFiredSchema` issues it as ONE Exec, unlike PG/SQLite.
 >
-> The **SQLite** peer (`sqliteLocker`) mirrors `sqlite.InsertInboxIfAbsent`: `INSERT INTO %s (scope, fire_ts, claimed_at) VALUES (?, ?, <nowMicrosSQLite>) ON CONFLICT (scope, fire_ts) DO NOTHING RETURNING scope` → `sql.ErrNoRows` ⇒ lost; row ⇒ won. `fire_ts` is stored as INTEGER epoch micros: pass `fire.UTC().UnixMicro()`. `PurgeFired`: `DELETE FROM %s WHERE claimed_at < <nowMicrosSQLite> - ?` with `olderThan.Microseconds()`. DDL (`SQLiteLockerDDL`): `scope TEXT NOT NULL, fire_ts INTEGER NOT NULL, claimed_by TEXT, claimed_at INTEGER NOT NULL DEFAULT (<nowMicrosSQLite>), PRIMARY KEY (scope, fire_ts)` + a separate `CREATE INDEX IF NOT EXISTS … (claimed_at)`, joined with `";\n"`.
+> The **SQLite** peer (`sqliteLocker`) mirrors `sqlite.InsertInboxIfAbsent`: `INSERT INTO %s (scope, fire_ts, claimed_at) VALUES (?, ?, <nowMicrosSQLite>) ON CONFLICT (scope, fire_ts) DO NOTHING RETURNING scope` (args `scope, fire.UTC().UnixMicro()`) → `sql.ErrNoRows` ⇒ lost; row ⇒ won. `fire_ts` is stored as INTEGER epoch micros. `PurgeFired`: `DELETE FROM %s WHERE claimed_at < <nowMicrosSQLite> - ?` with `olderThan.Microseconds()`. DDL (`SQLiteLockerDDL`): `scope TEXT NOT NULL, fire_ts INTEGER NOT NULL, claimed_at INTEGER NOT NULL DEFAULT (<nowMicrosSQLite>), PRIMARY KEY (scope, fire_ts)` + a separate `CREATE INDEX IF NOT EXISTS … (claimed_at)`, joined with `";\n"` for the combined `SQLiteLockerDDL`; `EnsureFiredSchema` issues the two as separate `ExecContext` calls via `sqliteCreateFiredTable`/`sqliteCreateFiredIndex` helpers, mirroring the Postgres split. *(corrected post-implementation: Task 3 review pass 2 — `claimed_by` column + `holder` bind param removed from both MySQL/SQLite as YAGNI, mirroring the Postgres and interface changes above; `EnsureFiredSchema` two-Exec split for driver parity with Postgres is unchanged.)*
 >
 > **fire_ts type/precision:** PG/MySQL store `fire.UTC()` (a `time.Time`, requires the driver's `parseTime=true` for MySQL — the crontest helper sets it); SQLite stores `fire.UTC().UnixMicro()`. Cron fires are second-aligned in v1, and — because `NewSource` refuses a Locker for `@every` (`ErrLockerRequiresGridSchedule`) — every `SQLLocker` caller's schedule is grid-aligned, so every instance computes the identical schedule grid instant under bounded clock skew and the composite key matches exactly across instances. (Do NOT round to the DB clock — the fire time is an app-computed deterministic key, unlike claimed_at.)
 
@@ -1453,8 +1477,6 @@ package cron
 import (
 	"context"
 	stdsql "database/sql"
-	"crypto/rand"
-	"encoding/hex"
 	"time"
 
 	"github.com/kartaladev/msgin"
@@ -1465,8 +1487,7 @@ import (
 const defaultFiredTable = "msgin_cron_fired"
 
 type lockerConfig struct {
-	table      string
-	instanceID string
+	table string
 }
 
 // LockerOption configures an SQLLocker.
@@ -1478,20 +1499,10 @@ func WithLockerTable(table string) LockerOption {
 	return func(c *lockerConfig) { c.table = table }
 }
 
-// WithInstanceID sets the claimant identity recorded (observability only — the
-// winner is whoever inserts). Default is a per-process crypto-random id. The
-// Elector's peer option is the distinct WithElectorInstanceID (Task 4) — the
-// two coordinators use distinct option types, so the name is not shared.
-func WithInstanceID(id string) LockerOption {
-	return func(c *lockerConfig) {
-		if id != "" {
-			c.instanceID = id
-		}
-	}
-}
-
 // SQLLocker is the dependency-free, SQL-backed Locker (ADR 0017): each Claim
-// idempotently inserts (scope, fire_ts); the inserter wins. It reuses the proven
+// idempotently inserts (scope, fire_ts); the inserter wins — there is no
+// recorded claimant identity (removed as YAGNI: nothing reads it, and the
+// winner is decided solely by whose INSERT succeeds). It reuses the proven
 // InboxDeduper dedup mechanism keyed on the deterministic fire time. Recommended
 // coordination primitive for GRID-ALIGNED schedules (standard cron / descriptors)
 // — no failover gap. NewSource enforces this: a Locker paired with an "@every"
@@ -1499,33 +1510,34 @@ func WithInstanceID(id string) LockerOption {
 // the dedup key is not instance-invariant there — use an Elector instead.
 // Starts no goroutine.
 type SQLLocker struct {
-	db         *stdsql.DB
-	table      string
-	dialect    LockerDialect
-	instanceID string
+	db      *stdsql.DB
+	table   string
+	dialect LockerDialect
 }
 
 var _ Locker = (*SQLLocker)(nil)
 
 // NewSQLLocker builds an SQLLocker over db using dialect for the exact SQL (pass
-// PostgresLocker()/MySQLLocker()/SQLiteLocker() or your own). A nil db is
-// msgin.ErrNilAdapter; an invalid table is ErrInvalidTableName; a nil dialect is
-// ErrNilDialect — all at construction.
+// PostgresLocker()/MySQLLocker()/SQLiteLocker() or your own). Checked in order:
+// a nil db is msgin.ErrNilAdapter; a nil dialect is ErrNilDialect; an invalid
+// table is ErrInvalidTableName — all at construction.
+// (corrected post-implementation: Task 3 review — priority reordered to
+// db → dialect → table, matching the brief; was previously db → table → dialect.)
 func NewSQLLocker(db *stdsql.DB, dialect LockerDialect, opts ...LockerOption) (*SQLLocker, error) {
 	if db == nil {
 		return nil, msgin.ErrNilAdapter
 	}
-	cfg := lockerConfig{table: defaultFiredTable, instanceID: randomID()}
+	if dialect == nil {
+		return nil, ErrNilDialect
+	}
+	cfg := lockerConfig{table: defaultFiredTable}
 	for _, o := range opts {
 		o(&cfg)
 	}
 	if err := validateIdent(cfg.table); err != nil {
 		return nil, err
 	}
-	if dialect == nil {
-		return nil, ErrNilDialect
-	}
-	return &SQLLocker{db: db, table: cfg.table, dialect: dialect, instanceID: cfg.instanceID}, nil
+	return &SQLLocker{db: db, table: cfg.table, dialect: dialect}, nil
 }
 
 // Claim implements Locker: it inserts (scope, fire) and reports whether this
@@ -1552,19 +1564,8 @@ func (l *SQLLocker) Purge(ctx context.Context, olderThan time.Duration) (int64, 
 func (l *SQLLocker) EnsureSchema(ctx context.Context) error {
 	return l.dialect.EnsureFiredSchema(ctx, l.db, l.table)
 }
-
-// randomID returns a per-process crypto-random 128-bit hex id (mirrors the
-// core's message-id / lease-owner generation). The crypto/rand.Read error is
-// deliberately ignored: it is practically impossible to fail on a supported Go
-// 1.25 platform, and the core's own randomID makes the same trade-off — see
-// message.go. (An all-zero id on a hypothetical failure would make two Elector
-// instances treat each other as "self"; harmless in practice, tracked as a NIT.)
-func randomID() string {
-	var b [16]byte
-	_, _ = rand.Read(b[:])
-	return hex.EncodeToString(b[:])
-}
 ```
+*(corrected post-implementation: Task 3 review pass 2 — `WithInstanceID`, `lockerConfig.instanceID`, `SQLLocker.instanceID`, and the now-unused `randomID` helper all removed as YAGNI; see the "Produces" note above.)*
 
 - [ ] **Step 3d: Implement — `adapter/cron/errors.go`** (add the three sentinels)
 
@@ -1629,7 +1630,7 @@ ADR: 0017"
   - `func PostgresElector() ElectorDialect` (+ MySQL/SQLite); `func PostgresElectorDDL(table string) (string, error)` (+ peers)
   - `type SQLElector struct{…}`; `func NewSQLElector(db *sql.DB, dialect ElectorDialect, opts ...ElectorOption) (*SQLElector, error)`
   - `func (*SQLElector) IsLeader(ctx context.Context, scope string) (bool, error)` (implements `Elector`, scope-parameterized per M-1); `func (*SQLElector) EnsureSchema(ctx) error`
-  - `type ElectorOption func(*electorConfig)`; `WithElectorTable(string)`; `WithElectorInstanceID(string)` (the Locker's peer option is the distinct `WithInstanceID`, Task 3 — no shared name, no overload); `WithLeaseTTL(time.Duration)`. **`WithElectorScope` does NOT exist** — scope moved to the `IsLeader` call argument (M-1); there is nothing to bake at construction.
+  - `type ElectorOption func(*electorConfig)`; `WithElectorTable(string)`; `WithElectorInstanceID(string)` (the Locker has no peer option — its `WithInstanceID` was removed as YAGNI, Task 3 review pass 2 — `WithElectorInstanceID` is Elector-only, and correctness-bearing there since it decides lease `holder`); `WithLeaseTTL(time.Duration)`. **`WithElectorScope` does NOT exist** — scope moved to the `IsLeader` call argument (M-1); there is nothing to bake at construction.
   - `var ErrInvalidLeaseTTL, ErrElectorAcquireFailed error`
 
 - [ ] **Step 1: Write the failing test** — `adapter/cron/sqlelector_test.go`
@@ -1946,8 +1947,10 @@ func WithElectorTable(table string) ElectorOption { return func(c *electorConfig
 
 // WithElectorInstanceID sets this instance's holder identity (default a
 // per-process crypto-random id). Two instances MUST NOT share an id. This is
-// the Elector's peer of the Locker's WithInstanceID (Task 3) — distinct name,
-// distinct option type; there is no shared/overloaded WithInstanceID.
+// Elector-only — the Locker carries no claimant identity (its WithInstanceID
+// was removed as YAGNI, Task 3 review pass 2); the Elector's holder is
+// correctness-bearing (it decides lease ownership), unlike the Locker's
+// removed observability-only claimant.
 func WithElectorInstanceID(id string) ElectorOption {
 	return func(c *electorConfig) {
 		if id != "" {
@@ -2159,7 +2162,7 @@ Requirements: use `t.Context()`; drive concurrency with `golang.org/x/sync/errgr
 //
 // CREATE TABLE msgin_cron_fired_malformed (
 //   scope VARCHAR(255) NOT NULL, fire_ts DATETIME(6) NOT NULL,
-//   claimed_by VARCHAR(255), claimed_at DATETIME(6) NOT NULL DEFAULT (UTC_TIMESTAMP(6)),
+//   claimed_at DATETIME(6) NOT NULL DEFAULT (UTC_TIMESTAMP(6)),
 //   guard INT NOT NULL DEFAULT 0 CHECK (guard = 1),  -- INSERT never sets guard -> 0 -> CHECK fails
 //   PRIMARY KEY (scope, fire_ts)
 // );
@@ -2442,13 +2445,16 @@ was resolved in the spec/ADR/plan (not merely noted):
   (`querier`/`Querier` inconsistency + broken fake signature) — `Querier` exported everywhere, fake signatures
   fixed (Task 3). L-3 ("sticky" wording) — `WithLeaseTTL`/`Elector` godoc clarified (Tasks 1/4). L-4 (`CRON_TZ=`
   override) — documented on `WithLocation`/`doc.go` (Tasks 1/6). L-5 (`randomID` error ignored) — commented,
-  consistent with the core's own `randomID` (Task 3). L-6 (`WithInstanceID` naming drift) — spec/plan wording
-  aligned on `WithInstanceID` (Locker) / `WithElectorInstanceID` (Elector).
+  consistent with the core's own `randomID` (Task 3, since superseded — see below). L-6 (`WithInstanceID` naming
+  drift) — spec/plan wording aligned on `WithInstanceID` (Locker) / `WithElectorInstanceID` (Elector), *since
+  superseded*: the Locker's `WithInstanceID`/`claimed_by`/`randomID` were removed as YAGNI in a Task 3 review
+  pass 2 (post-implementation, before this plan's Task 4) — see Task 3's "Produces" note and Spec 006 D12 /
+  ADR 0017. `WithElectorInstanceID` (Elector) is unaffected and remains the sole holder-identity option.
 
-- **Spec coverage:** G1 (recurring Source[T]/StreamingSource) → Task 1; G2 (cron/@every/descriptors via robfig) → Task 1 + ADR 0016 (Task 1 dep step); G3 (goleak-clean, no goroutine, fake-clock) → Task 1 (loop, `TestMain`, `BlockUntilContext`); G4 (Elector+Locker + dependency-free SQL impls PG/MySQL/SQLite) → Tasks 1/2/3/4/5; G5 (safe defaults: at-most-once, skip-missed, UTC, injectable clock, all `WithX`-overridable) → Tasks 1/3/4 + doc (Task 6). D1–D12 all realized: D1 robfig root dep (Task 1), D2/D4 StreamingSource+LiveValueSource (Task 1), D3 factory (Task 1), D5 skip-missed loop (Task 1 test), D6 no-op Ack/Nack (Task 1), D7 clock+location incl. CRON_TZ override (Task 1), D8 construction validation incl. satisfiability (Tasks 1/3/4), D9 on-demand scoped gate + fail-safe skip + ErrConflictingCoordinator + ErrLockerRequiresGridSchedule (Tasks 1/2), D10 SQL Locker dedup-INSERT, grid-aligned only (Tasks 3/5), D11 SQL Elector leader-lease, scope-parameterized (Tasks 4/5), D12 WithInstanceID/WithElectorInstanceID (Tasks 3/4). N1 (no core runtime change) held — only `adapter/cron` + one root dep. N3/N4 (no Redis/etcd, no seconds field) deferred, documented.
+- **Spec coverage:** G1 (recurring Source[T]/StreamingSource) → Task 1; G2 (cron/@every/descriptors via robfig) → Task 1 + ADR 0016 (Task 1 dep step); G3 (goleak-clean, no goroutine, fake-clock) → Task 1 (loop, `TestMain`, `BlockUntilContext`); G4 (Elector+Locker + dependency-free SQL impls PG/MySQL/SQLite) → Tasks 1/2/3/4/5; G5 (safe defaults: at-most-once, skip-missed, UTC, injectable clock, all `WithX`-overridable) → Tasks 1/3/4 + doc (Task 6). D1–D12 all realized: D1 robfig root dep (Task 1), D2/D4 StreamingSource+LiveValueSource (Task 1), D3 factory (Task 1), D5 skip-missed loop (Task 1 test), D6 no-op Ack/Nack (Task 1), D7 clock+location incl. CRON_TZ override (Task 1), D8 construction validation incl. satisfiability (Tasks 1/3/4), D9 on-demand scoped gate + fail-safe skip + ErrConflictingCoordinator + ErrLockerRequiresGridSchedule (Tasks 1/2), D10 SQL Locker dedup-INSERT, grid-aligned only (Tasks 3/5), D11 SQL Elector leader-lease, scope-parameterized (Tasks 4/5), D12 holder identity is Elector-only via `WithElectorInstanceID` (Task 4) — the Locker's `WithInstanceID` was removed as YAGNI post-implementation (Task 3 review pass 2). N1 (no core runtime change) held — only `adapter/cron` + one root dep. N3/N4 (no Redis/etcd, no seconds field) deferred, documented.
 - **Open items resolved:** O6-3 (coordination interfaces in `adapter/cron`) — yes, `coordinator.go`, now declared in Task 1. O6-4 (one plan, phased) — yes, six tasks. O6-5 (dialect seam location) — **KD-1**: in `adapter/cron`, own SQL micro-primitives, `Querier` exported (decided). O6-1/O6-2 deferred.
 - **Risks addressed:** R1 (universal dep) → ADR 0016 acceptance gate (`go mod graph` no-transitive check, Task 1 Step 1 + whole-branch gate). R2 (leader-election correctness) → Task 4's per-dialect atomic acquire-or-renew with the MySQL three-step (locking verify reads, autocommit precondition documented) + Task 5's real MySQL **and** MariaDB concurrency conformance + deterministic demoted-error tests + the dedicated audit focus. R3 (overrun) → skip-missed test (Task 1). R4 (no-coordinator footgun) → documented in `doc.go`/`Source` godoc (Tasks 1/6). R5 (size) → six green-unit tasks. R6 (Locker grid-alignment, new) → `ErrLockerRequiresGridSchedule` refusal + test (Task 2). R7 (unsatisfiable schedule, new) → construction probe + loop guard (Task 1).
 - **Decisions flagged for the audit/user (Key design decisions):** KD-1 own-primitives, `Querier` exported (decided, not open); KD-2 Source-owned scope for BOTH Locker and Elector (default spec string); KD-3 REMOVED — superseded by KD-2 (Elector scope is now per-call, not baked at construction); KD-4 30s lease-TTL default, reframed around schedule-shaped coordinator choice; KD-5 (new) the `@every`+Locker construction-time refusal.
-- **Type consistency:** `Source[T]`/`NewSource`/`Stream`/`EmitsLiveValue`; `Elector.IsLeader(ctx, scope)`/`Locker.Claim(ctx, scope, fire)` (scope-symmetric, M-1); `WithClock`/`WithLocation`/`WithScope`/`WithCronLogger`/`WithElector`/`WithLocker`; `Querier` (exported everywhere); `LockerDialect.ClaimFire`/`PurgeFired`/`EnsureFiredSchema`; `ElectorDialect.AcquireOrRenew`/`EnsureLeaseSchema` (both require an autocommitting `Querier`); `SQLLocker.Claim`/`Purge`/`EnsureSchema`; `SQLElector.IsLeader(ctx, scope)`/`EnsureSchema` (no `WithElectorScope`); the six dialect constructors + six `*DDL` builders; `WithLockerTable`/`WithInstanceID` vs `WithElectorTable`/`WithElectorInstanceID`/`WithLeaseTTL` (distinct-names, no shared/generic `WithInstanceID`); sentinels `ErrInvalidSchedule` (incl. unsatisfiable specs)/`ErrNilFactory`/`ErrConflictingCoordinator`/`ErrLockerRequiresGridSchedule`/`ErrNilDialect`/`ErrInvalidTableName`/`ErrInvalidRetention`/`ErrLockerClaimFailed`/`ErrInvalidLeaseTTL`/`ErrElectorAcquireFailed` — verified: no lingering `WithElectorScope`, no unscoped `IsLeader(ctx)`, no claim that a fake covers a demoted-error branch, `Querier` exported everywhere, `ErrLockerRequiresGridSchedule` present end to end.
+- **Type consistency:** `Source[T]`/`NewSource`/`Stream`/`EmitsLiveValue`; `Elector.IsLeader(ctx, scope)`/`Locker.Claim(ctx, scope, fire)` (scope-symmetric, M-1); `WithClock`/`WithLocation`/`WithScope`/`WithCronLogger`/`WithElector`/`WithLocker`; `Querier` (exported everywhere); `LockerDialect.ClaimFire`/`PurgeFired`/`EnsureFiredSchema`; `ElectorDialect.AcquireOrRenew`/`EnsureLeaseSchema` (both require an autocommitting `Querier`); `SQLLocker.Claim`/`Purge`/`EnsureSchema`; `SQLElector.IsLeader(ctx, scope)`/`EnsureSchema` (no `WithElectorScope`); the six dialect constructors + six `*DDL` builders; `WithLockerTable` (Locker; no claimant option — removed as YAGNI, Task 3 review pass 2) vs `WithElectorTable`/`WithElectorInstanceID`/`WithLeaseTTL` (Elector; holder identity is Elector-only); sentinels `ErrInvalidSchedule` (incl. unsatisfiable specs)/`ErrNilFactory`/`ErrConflictingCoordinator`/`ErrLockerRequiresGridSchedule`/`ErrNilDialect`/`ErrInvalidTableName`/`ErrInvalidRetention`/`ErrLockerClaimFailed`/`ErrInvalidLeaseTTL`/`ErrElectorAcquireFailed` — verified: no lingering `WithElectorScope`, no unscoped `IsLeader(ctx)`, no claim that a fake covers a demoted-error branch, `Querier` exported everywhere, `ErrLockerRequiresGridSchedule` present end to end.
 - **Deferred (documented):** Redis/etcd coordinators (O6-1), seconds-field cron (O6-2), a `Ready`/`SchemaExists` fail-fast for the coordinators (the first Claim/IsLeader errors clearly if the table is missing — a lighter posture than the sql adapter's `Ready`; note as a possible follow-up), and prod-migration DDL is served by the `*DDL` string builders + opt-in `EnsureSchema`.
 - **SemVer:** all-additive new package + one new root dependency (a minor bump; the dep is an architectural decision recorded in ADR 0016). No existing exported symbol changes.

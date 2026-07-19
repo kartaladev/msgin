@@ -166,9 +166,13 @@ the "you already run a database" philosophy that made `visible_after` the right 
   per-statement fresh snapshot each atomicity argument relies on (esp. the MySQL three-step acquire-or-renew) is
   load-bearing; documented on both dialect interfaces.
 
-- **D12 — Distinct holder identity.** Both SQL coordinators take a caller instance-id option — `WithInstanceID`
-  (Locker) / `WithElectorInstanceID` (Elector), distinct names on distinct option types — for the `holder`/
-  claimant identity; default a per-process random id. Two instances must not share an id (documented).
+- **D12 — Holder identity is Elector-only.** Only the `Elector` takes a caller instance-id option —
+  `WithElectorInstanceID` — for the lease's `holder` identity; default a per-process random id. Two Elector
+  instances must not share an id (documented). The `Locker` does **not** record a claimant: a `WithInstanceID`
+  option and a `claimed_by` column were implemented in Task 3 and then removed as YAGNI post-implementation —
+  the Locker's winner is decided solely by whose `INSERT` succeeds, nothing in the design reads a per-fire
+  claimant, and the Elector's `holder` already covers the one case (failover diagnosis) where identity is
+  correctness-bearing.
 
 ## 4. Architecture
 

@@ -36,4 +36,23 @@ var (
 	// (Round-1 audit B-1). Use an Elector for "@every" schedules instead.
 	// errors.Is-able.
 	ErrLockerRequiresGridSchedule = errors.New("msgin/cron: a Locker requires a grid-aligned schedule (cron or descriptor); @every is unsupported — use an Elector instead")
+
+	// ErrNilDialect is a construction error from NewSQLLocker/NewSQLElector when
+	// the required dialect argument is nil (there is no driver auto-detect).
+	ErrNilDialect = errors.New("msgin/cron: nil dialect")
+
+	// ErrInvalidRetention is returned by SQLLocker.Purge when olderThan is
+	// non-positive — a cutoff of now()-or-future would delete fired-keys rows for
+	// fires still being claimed by lagging instances, re-opening the fire to a
+	// double claim. Refused before any DB call. errors.Is-able.
+	ErrInvalidRetention = errors.New("msgin/cron: retention (olderThan) must be > 0")
+
+	// ErrLockerClaimFailed is returned by the MySQL LockerDialect when an
+	// INSERT IGNORE affected no row AND a verifying SELECT finds none — INSERT
+	// IGNORE demoted a genuine (non-duplicate) data error to a warning. The fire
+	// is NOT treated as claimed-by-another (which would silently skip it on every
+	// instance); the error surfaces so the Source skips this fire fail-safe and
+	// logs it. Postgres/SQLite have no equivalent path (ON CONFLICT … RETURNING is
+	// exact). errors.Is-able.
+	ErrLockerClaimFailed = errors.New("msgin/cron: locker claim did not take effect and is not a conflict")
 )

@@ -63,7 +63,7 @@ Ship an `adapter/cron` package (root module, ADR 0016) with three parts.
 - **Options:** `WithClock(clockwork.Clock)` (nil = real; ADR 0004), `WithLocation(*time.Location)` (default UTC,
   Spec D7 — a spec-embedded `CRON_TZ=`/`TZ=` prefix overrides `WithLocation`; `@every` ignores location
   entirely), `WithElector`/`WithLocker` (part 3), `WithCronLogger(*slog.Logger)` (default discard),
-  `WithInstanceID` (Locker) / `WithElectorInstanceID` (Elector) (part 3). **Construction validates** (Spec D8):
+  `WithElectorInstanceID` (Elector only — part 3). **Construction validates** (Spec D8):
   invalid `spec` → `ErrInvalidSchedule`; a syntactically valid but unsatisfiable spec (no future occurrence,
   e.g. `"0 0 30 2 *"`) → `ErrInvalidSchedule` as well; nil factory → `ErrNilFactory`; both coordinators set →
   `ErrConflictingCoordinator`; a `Locker` paired with an `@every` schedule → `ErrLockerRequiresGridSchedule` (see
@@ -117,9 +117,12 @@ Without a coordinator, the source fires on every instance (documented footgun, S
   the existing `InboxDialect`/`LeaseDialect` split; `EnsureSchema`/DDL are opt-in (never implicit DDL on the hot
   path). **Both `LockerDialect.ClaimFire` and `ElectorDialect.AcquireOrRenew` require an autocommitting `Querier`
   (a `*sql.DB`, not a `*sql.Tx`)** — the per-statement fresh snapshot each atomicity argument relies on (esp. the
-  MySQL three-step acquire-or-renew, M-2) is load-bearing; documented on both interfaces. Distinct
-  `holder`/claimant identity via `WithInstanceID` (Locker) / `WithElectorInstanceID` (Elector) (default
-  per-process random; Spec D12).
+  MySQL three-step acquire-or-renew, M-2) is load-bearing; documented on both interfaces. Distinct `holder`
+  identity via `WithElectorInstanceID` (Elector only; default per-process random; Spec D12) — the Elector's
+  `holder` is correctness-bearing (it decides lease ownership). The `Locker` does **not** carry a claimant:
+  a `WithInstanceID` option and `claimed_by` column were built in Task 3, then **removed as YAGNI** post-
+  implementation per the Task 3 review — it was observability-only (the winner is whoever's `INSERT`
+  succeeds; nothing reads `claimed_by`), so it added surface without a consumer. Spec D12 updated accordingly.
 
 ## Consequences
 
