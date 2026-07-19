@@ -72,4 +72,10 @@ var (
 	// ErrInvalidCapacity is returned by a bounded store constructor (e.g.
 	// memory.NewQueueStore) when an explicit capacity is <= 0.
 	ErrInvalidCapacity = errors.New("msgin: capacity must be > 0")
+	// ErrInvalidExpression is returned by FilterExpr/RouterExpr when an
+	// expression is empty, unparseable, or fails type-checking against the
+	// payload type at construction. The wrapped error names the offending
+	// expression. Runtime evaluation errors are NOT this — they propagate as the
+	// endpoint's handler error into the runtime's retry/DLQ path.
+	ErrInvalidExpression = errors.New("msgin: invalid expression")
 )

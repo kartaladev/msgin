@@ -207,7 +207,13 @@ These were the open decisions; all are now ratified in [`docs/specs/001-messagin
 
 Minimal dependencies is a **hard requirement** for this library — every direct dep is a transitive dep forced on every consumer.
 
-- **The core (root package) depends on the Go standard library only — with two accepted exceptions: `github.com/jonboulle/clockwork`** (injectable time, used directly — see Testing rules; [ADR 0004](docs/adrs/0004-clockwork-dependency.md)) **and `github.com/cenkalti/backoff/v4`** (retry backoff strategy; [ADR 0005](docs/adrs/0005-cenkalti-backoff-dependency.md)). No *other* third-party imports in the pattern core or the in-memory/`http`/`database/sql` adapters. `database/sql` is stdlib; the SQL *driver* is the caller's choice, injected — msgin does not import a driver.
+- **The core (root module) depends on the Go standard library only — with four accepted, ADR-justified third-party exceptions**, each verified/required to add **zero net-new transitive dependencies**:
+  - **`github.com/jonboulle/clockwork`** — injectable time, used directly by the pattern core (see Testing rules; [ADR 0004](docs/adrs/0004-clockwork-dependency.md)).
+  - **`github.com/cenkalti/backoff/v4`** — retry backoff strategy, used by the pattern core ([ADR 0005](docs/adrs/0005-cenkalti-backoff-dependency.md)).
+  - **`github.com/robfig/cron/v3`** — cron/recurring schedule parser, imported by the `adapter/cron` package (root module; [ADR 0016](docs/adrs/0016-robfig-cron-dependency.md)).
+  - **`github.com/expr-lang/expr`** — runtime expression evaluation for `FilterExpr`/`RouterExpr` in the pattern core ([ADR 0019](docs/adrs/0019-runtime-expression-evaluation.md)); v1.17.8 verified zero-transitive (`go mod tidy` after `go get` touched only `expr-lang/expr` lines in `go.sum`).
+
+  No *other* third-party imports in the pattern core or the in-memory/`http`/`database/sql` adapters. `database/sql` is stdlib; the SQL *driver* is the caller's choice, injected — msgin does not import a driver.
 - **Adapters that need a heavy client declare a narrow interface and let the consumer inject the implementation** (the Redis case above). Prefer "accept an interface" over "import a client." This keeps the dep out of the module graph, and makes the adapter trivially testable (the interface is mockable via `use-mockgen`).
 - **Justify every dependency in an ADR.** Adding a direct dependency to the root module is an architectural decision. Test-only dependencies (`testify`, `goleak`, `testcontainers-go`, a real Redis/SQL client used *in tests*) are fine and do not burden consumers — they live under `require` but are not imported by non-test code.
 
