@@ -1,5 +1,6 @@
-// Package cron is the msgin channel adapter that ORIGINATES messages on a
-// recurring / cron schedule.
+// This file implements Source[T], the msgin channel adapter that ORIGINATES
+// messages on a recurring / cron schedule. See doc.go for the package doc.
+
 package cron
 
 import (
