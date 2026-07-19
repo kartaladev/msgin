@@ -97,3 +97,41 @@ func FilterExpr[A any](expression string, opts ...FilterOption) (Step, error) {
 		return b, nil
 	}, opts...), nil
 }
+
+// RouterExpr is a content-based Router (see NewRouter) whose channel is chosen by
+// a routing-key expression: keyExpr is compiled to a string key and the message
+// routes to routes[key], falling back to WithDefaultChannel or ErrNoRoute. An
+// empty/nil routes map, a nil channel value in routes, or a bad keyExpr is
+// ErrInvalidExpression at construction. The nil-channel check catches only a
+// literal nil interface value in routes; a typed-nil MessageChannel implementation
+// passes construction and fails at Send instead. Mirrors Spring Integration's
+// <router expression="…">; a ternary key (`payload.Amount >= 100 ? "big" : "small"`)
+// gives first-match multi-way routing in one construct. Same trade-offs and
+// security posture as FilterExpr (type-safety only for concrete A, no Go stack
+// trace in an expression, expr's default node/memory limits, no ctx-cancellation).
+func RouterExpr[A any](keyExpr string, routes map[string]MessageChannel, opts ...RouterOption) (*Router, error) {
+	if len(routes) == 0 {
+		return nil, fmt.Errorf("%w: empty routes map", ErrInvalidExpression)
+	}
+	for k, ch := range routes { // fail fast on a literal-nil channel value (audit L2).
+		if ch == nil { // NB: catches a nil interface, not a typed-nil sink — that still fails at Send.
+			return nil, fmt.Errorf("%w: nil channel for route %q", ErrInvalidExpression, k)
+		}
+	}
+	eval, err := compile[A](keyExpr, exprString)
+	if err != nil {
+		return nil, err
+	}
+	return NewRouter(func(_ context.Context, m Message[any]) (MessageChannel, error) {
+		in, err := PayloadOf[A](m)
+		if err != nil {
+			return nil, err
+		}
+		out, err := eval(in)
+		if err != nil {
+			return nil, err
+		}
+		key, _ := out.(string)  // AsKind(String) guarantees a string result
+		return routes[key], nil // miss → nil → NewRouter's default/ErrNoRoute handling
+	}, opts...), nil
+}

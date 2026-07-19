@@ -108,3 +108,83 @@ func TestFilterExpr(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) { tt.assert(t) })
 	}
 }
+
+func TestRouterExpr(t *testing.T) {
+	eu, us, def := &collector{}, &collector{}, &collector{}
+	tests := []struct {
+		name   string
+		assert func(t *testing.T)
+	}{
+		{
+			name: "bad key expression is ErrInvalidExpression",
+			assert: func(t *testing.T) {
+				// Non-empty routes so the keyExpr COMPILE-error branch is reached
+				// (an empty map would trip the len(routes)==0 guard first — NEW-1).
+				_, err := msgin.RouterExpr[exprOrder]("payload.", map[string]msgin.MessageChannel{"x": eu})
+				require.ErrorIs(t, err, msgin.ErrInvalidExpression)
+			},
+		},
+		{
+			name: "nil/empty routes is ErrInvalidExpression",
+			assert: func(t *testing.T) {
+				_, err := msgin.RouterExpr[exprOrder]("payload.Currency", nil)
+				require.ErrorIs(t, err, msgin.ErrInvalidExpression)
+			},
+		},
+		{
+			name: "a nil channel value in routes is ErrInvalidExpression",
+			assert: func(t *testing.T) {
+				_, err := msgin.RouterExpr[exprOrder]("payload.Currency",
+					map[string]msgin.MessageChannel{"EUR": nil})
+				require.ErrorIs(t, err, msgin.ErrInvalidExpression)
+			},
+		},
+		{
+			name: "PayloadOf error propagates from Handle",
+			assert: func(t *testing.T) {
+				r, err := msgin.RouterExpr[exprOrder]("payload.Currency",
+					map[string]msgin.MessageChannel{"EUR": eu})
+				require.NoError(t, err)
+				// Wrong payload type: A = exprOrder, message carries an int.
+				require.ErrorIs(t, r.Handle(t.Context(), msgin.New[any](42)), msgin.ErrPayloadType)
+			},
+		},
+		{
+			name: "eval error propagates from Handle",
+			assert: func(t *testing.T) {
+				// header("missing") is nil; nil + string is a real expr eval error
+				// (verified v1.17.8: "invalid operation: <nil> + string").
+				r, err := msgin.RouterExpr[exprOrder](`header("missing") + payload.Currency`,
+					map[string]msgin.MessageChannel{"EUR": eu})
+				require.NoError(t, err) // compiles fine (header() is any)
+				require.Error(t, r.Handle(t.Context(), msgin.New[any](exprOrder{Currency: "EUR"})))
+			},
+		},
+		{
+			name: "key hit routes to the mapped channel",
+			assert: func(t *testing.T) {
+				r, err := msgin.RouterExpr[exprOrder]("payload.Currency",
+					map[string]msgin.MessageChannel{"EUR": eu, "USD": us})
+				require.NoError(t, err)
+				require.NoError(t, r.Handle(t.Context(), msgin.New[any](exprOrder{Currency: "EUR"})))
+				require.Len(t, eu.got, 1)
+				require.Empty(t, us.got)
+			},
+		},
+		{
+			name: "miss with default routes to default; without default is ErrNoRoute",
+			assert: func(t *testing.T) {
+				withDef, _ := msgin.RouterExpr[exprOrder]("payload.Currency",
+					map[string]msgin.MessageChannel{"EUR": eu}, msgin.WithDefaultChannel(def))
+				require.NoError(t, withDef.Handle(t.Context(), msgin.New[any](exprOrder{Currency: "GBP"})))
+				require.Len(t, def.got, 1)
+
+				noDef, _ := msgin.RouterExpr[exprOrder]("payload.Currency", map[string]msgin.MessageChannel{"EUR": eu})
+				require.ErrorIs(t, noDef.Handle(t.Context(), msgin.New[any](exprOrder{Currency: "GBP"})), msgin.ErrNoRoute)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) { tt.assert(t) })
+	}
+}
