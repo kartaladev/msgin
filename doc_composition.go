@@ -34,4 +34,13 @@
 // delay delivers immediately. No goroutine is started — the delay lives in the
 // durable row, so a scheduled send survives restarts and fires once across N
 // competing consumers.
+//
+// Runtime-defined rules (Spec 008 / ADR 0019). FilterExpr and RouterExpr are
+// expr-lang-backed counterparts to Filter and NewRouter for predicates and
+// routing keys that must be defined at runtime — operator- or config-authored
+// rules that change without a rebuild. They compile and type-check once at
+// construction (an invalid expression is ErrInvalidExpression) and otherwise
+// behave like their Go-func equivalents. The Go-func Filter/Router remain the
+// compile-time default: prefer them whenever the rule is known at build time,
+// for their type safety and debuggability.
 package msgin
