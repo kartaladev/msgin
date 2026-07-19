@@ -56,6 +56,7 @@ func TestMySQLConformance(t *testing.T) {
 	t.Run("Outbox", func(t *testing.T) { harness.RunOutbox(t, kit, db) })
 	t.Run("Inbox", func(t *testing.T) { harness.RunInbox(t, kit, db) })
 	t.Run("Dialect", func(t *testing.T) { harness.RunDialect(t, kit, db) })
+	t.Run("QueueStore", func(t *testing.T) { harness.RunQueueStore(t, kit, db) })
 }
 
 // TestMariaDBConformance is the MariaDB peer of TestMySQLConformance: the same
@@ -73,6 +74,7 @@ func TestMariaDBConformance(t *testing.T) {
 	t.Run("Outbox", func(t *testing.T) { harness.RunOutbox(t, kit, db) })
 	t.Run("Inbox", func(t *testing.T) { harness.RunInbox(t, kit, db) })
 	t.Run("Dialect", func(t *testing.T) { harness.RunDialect(t, kit, db) })
+	t.Run("QueueStore", func(t *testing.T) { harness.RunQueueStore(t, kit, db) })
 }
 
 // TestMySQLClaimInExistingTransaction is Plan 006 Task 5 carry-forward item

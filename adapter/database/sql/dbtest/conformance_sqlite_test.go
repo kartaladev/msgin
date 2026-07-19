@@ -46,6 +46,7 @@ func TestSQLiteConformance(t *testing.T) {
 	t.Run("Outbox", func(t *testing.T) { harness.RunOutbox(t, kit, db) })
 	t.Run("Inbox", func(t *testing.T) { harness.RunInbox(t, kit, db) })
 	t.Run("Dialect", func(t *testing.T) { harness.RunDialect(t, kit, db) })
+	t.Run("QueueStore", func(t *testing.T) { harness.RunQueueStore(t, kit, db) })
 }
 
 // TestSQLiteLockStrategyUnsupported asserts the lease-only sqlite dialect does
