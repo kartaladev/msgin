@@ -45,8 +45,8 @@ var _ Locker = (*SQLLocker)(nil)
 
 // NewSQLLocker builds an SQLLocker over db using dialect for the exact SQL (pass
 // PostgresLocker()/MySQLLocker()/SQLiteLocker() or your own). A nil db is
-// msgin.ErrNilAdapter; an invalid table is ErrInvalidTableName; a nil dialect is
-// ErrNilDialect — all at construction.
+// msgin.ErrNilAdapter; a nil dialect is ErrNilDialect; an invalid table is
+// ErrInvalidTableName — checked in that order, all at construction.
 func NewSQLLocker(db *stdsql.DB, dialect LockerDialect, opts ...LockerOption) (*SQLLocker, error) {
 	if db == nil {
 		return nil, msgin.ErrNilAdapter

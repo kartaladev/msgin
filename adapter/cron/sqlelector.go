@@ -79,12 +79,17 @@ type SQLElector struct {
 var _ Elector = (*SQLElector)(nil)
 
 // NewSQLElector builds an SQLElector over db using dialect (PostgresElector()/
-// MySQLElector()/SQLiteElector() or your own). A nil db is msgin.ErrNilAdapter; an
-// invalid table is ErrInvalidTableName; a non-positive WithLeaseTTL is
-// ErrInvalidLeaseTTL; a nil dialect is ErrNilDialect — checked in that order.
+// MySQLElector()/SQLiteElector() or your own). A nil db is msgin.ErrNilAdapter; a
+// nil dialect is ErrNilDialect; an invalid table is ErrInvalidTableName; a
+// non-positive WithLeaseTTL is ErrInvalidLeaseTTL — checked in that order
+// (nil-arg checks before value validation, matching NewSQLLocker's db -> dialect
+// -> table order).
 func NewSQLElector(db *stdsql.DB, dialect ElectorDialect, opts ...ElectorOption) (*SQLElector, error) {
 	if db == nil {
 		return nil, msgin.ErrNilAdapter
+	}
+	if dialect == nil {
+		return nil, ErrNilDialect
 	}
 	cfg := electorConfig{
 		table:      defaultLeaseTable,
@@ -99,9 +104,6 @@ func NewSQLElector(db *stdsql.DB, dialect ElectorDialect, opts ...ElectorOption)
 	}
 	if cfg.ttlSet && cfg.leaseTTL <= 0 {
 		return nil, ErrInvalidLeaseTTL
-	}
-	if dialect == nil {
-		return nil, ErrNilDialect
 	}
 	return &SQLElector{
 		db: db, table: cfg.table,

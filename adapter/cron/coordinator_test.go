@@ -3,6 +3,8 @@ package cron_test
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +15,39 @@ import (
 	"github.com/kartaladev/msgin"
 	"github.com/kartaladev/msgin/adapter/cron"
 )
+
+// recordingHandler is a minimal slog.Handler that captures every record it
+// receives, so tests can assert on log LEVEL without parsing text/JSON
+// output. Safe for concurrent use (Stream's firing loop runs on its own
+// goroutine).
+type recordingHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r)
+	return nil
+}
+
+func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *recordingHandler) WithGroup(string) slog.Handler      { return h }
+
+// hasLevel reports whether any captured record was emitted at exactly level.
+func (h *recordingHandler) hasLevel(level slog.Level) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, r := range h.records {
+		if r.Level == level {
+			return true
+		}
+	}
+	return false
+}
 
 // fakeElector / fakeLocker are hand-written doubles (no external dep). They record
 // the call and return a scripted verdict/error.
@@ -139,6 +174,68 @@ func TestSource_Gating(t *testing.T) {
 
 			cancel()
 			<-done
+		})
+	}
+}
+
+// TestSource_WinLogsCoordinatorErrorsExceptCancellation locks both branches of
+// win()'s logging guard: a context.Canceled/DeadlineExceeded gate error is a
+// graceful-shutdown signal, not a genuine coordinator failure, so it must NOT
+// be logged at ERROR (that would trip alerts on every graceful shutdown of a
+// coordinated Source); any OTHER coordinator error is genuine and must still
+// be logged at ERROR. Both cases still fail-safe skip the fire either way
+// (proven separately by TestSource_Gating's "elector/locker error skips
+// fail-safe" cases).
+func TestSource_WinLogsCoordinatorErrorsExceptCancellation(t *testing.T) {
+	type testCase struct {
+		name       string
+		gateErr    error
+		assertLogs func(t *testing.T, h *recordingHandler)
+	}
+	cases := []testCase{
+		{
+			name:    "context.Canceled is skipped without an ERROR log (graceful shutdown, not a genuine failure)",
+			gateErr: context.Canceled,
+			assertLogs: func(t *testing.T, h *recordingHandler) {
+				assert.False(t, h.hasLevel(slog.LevelError), "context.Canceled must not be logged at ERROR")
+			},
+		},
+		{
+			name:    "context.DeadlineExceeded is skipped without an ERROR log (same shutdown-signal treatment)",
+			gateErr: context.DeadlineExceeded,
+			assertLogs: func(t *testing.T, h *recordingHandler) {
+				assert.False(t, h.hasLevel(slog.LevelError), "context.DeadlineExceeded must not be logged at ERROR")
+			},
+		},
+		{
+			name:    "a genuine coordinator error IS logged at ERROR (locks the other branch)",
+			gateErr: errors.New("db down"),
+			assertLogs: func(t *testing.T, h *recordingHandler) {
+				assert.True(t, h.hasLevel(slog.LevelError), "a genuine coordinator error must still be logged at ERROR")
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &recordingHandler{}
+			fe := &fakeElector{err: tc.gateErr}
+			clk := clockwork.NewFakeClockAt(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+			src, err := cron.NewSource("@hourly", func(time.Time) int { return 1 },
+				cron.WithElector(fe), cron.WithClock(clk), cron.WithCronLogger(slog.New(h)))
+			require.NoError(t, err)
+
+			out := make(chan msgin.Delivery)
+			ctx, cancel := context.WithCancel(t.Context())
+			done := make(chan error, 1)
+			go func() { done <- src.Stream(ctx, out) }()
+
+			_, emitted := drainOne(t, clk, out, ctx)
+			assert.False(t, emitted, "a coordinator error must fail-safe skip the fire")
+
+			cancel()
+			<-done
+
+			tc.assertLogs(t, h)
 		})
 	}
 }

@@ -5,6 +5,7 @@ package cron
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -249,17 +250,23 @@ func (s *Source[T]) Stream(ctx context.Context, out chan<- msgin.Delivery) error
 }
 
 // win reports whether this instance should emit the fire at fireTime. With no
-// gate it always wins. A coordinator ERROR is logged and treated as a LOSS
-// (fail-safe skip) — a coordination outage must degrade to NO fire, never to
-// N-fold firing.
+// gate it always wins. A coordinator ERROR is treated as a LOSS (fail-safe
+// skip) — a coordination outage must degrade to NO fire, never to N-fold
+// firing. It is logged at ERROR level UNLESS it is context.Canceled or
+// context.DeadlineExceeded: those two mean the gate call was interrupted by
+// normal shutdown (ctx cancellation), not a genuine coordinator failure, so
+// logging them at ERROR would trip alerts on every graceful shutdown of a
+// coordinated Source. The fire is still skipped fail-safe either way.
 func (s *Source[T]) win(ctx context.Context, fireTime time.Time) bool {
 	if s.gate == nil {
 		return true
 	}
 	won, err := s.gate(ctx, fireTime)
 	if err != nil {
-		s.logger.Error("msgin/cron: coordinator error; skipping fire (fail-safe)",
-			"err", err, "fire", fireTime)
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			s.logger.Error("msgin/cron: coordinator error; skipping fire (fail-safe)",
+				"err", err, "fire", fireTime)
+		}
 		return false
 	}
 	return won

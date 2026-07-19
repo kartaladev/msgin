@@ -53,7 +53,8 @@ type LockerDialect interface {
 type ElectorDialect interface {
 	// AcquireOrRenew atomically sets holder=holder, expires_at=db_now+leaseTTL on
 	// the lease row for scope IFF the row is absent, already held by holder, or
-	// expired; it returns true iff holder now holds a valid lease.
+	// expired; it returns true iff holder now holds a valid lease. See the
+	// ElectorDialect PRECONDITION above: q must be an autocommitting handle.
 	AcquireOrRenew(ctx context.Context, q Querier, table, scope, holder string, leaseTTL time.Duration) (isLeader bool, err error)
 	// EnsureLeaseSchema idempotently creates the lease table (opt-in).
 	EnsureLeaseSchema(ctx context.Context, q Querier, table string) error
@@ -117,7 +118,10 @@ func (postgresLocker) EnsureFiredSchema(ctx context.Context, q Querier, table st
 	if _, err := q.ExecContext(ctx, postgresCreateFiredTable(qt)); err != nil {
 		return err
 	}
-	qidx, _ := quoteTable(pgQuote, table+"_claimed_idx")
+	qidx, err := quoteTable(pgQuote, table+"_claimed_idx")
+	if err != nil {
+		return err
+	}
 	_, err = q.ExecContext(ctx, postgresCreateFiredIndex(qt, qidx))
 	return err
 }
@@ -148,7 +152,10 @@ func PostgresLockerDDL(table string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	qidx, _ := quoteTable(pgQuote, table+"_claimed_idx")
+	qidx, err := quoteTable(pgQuote, table+"_claimed_idx")
+	if err != nil {
+		return "", err
+	}
 	return postgresCreateFiredTable(qt) + ";\n" + postgresCreateFiredIndex(qt, qidx) + ";", nil
 }
 
@@ -314,7 +321,10 @@ func MySQLLockerDDL(table string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	qidx, _ := quoteTable(mysqlQuote, table+"_claimed_idx")
+	qidx, err := quoteTable(mysqlQuote, table+"_claimed_idx")
+	if err != nil {
+		return "", err
+	}
 	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %[1]s (
   scope      VARCHAR(255) NOT NULL,
   fire_ts    DATETIME(6)  NOT NULL,
@@ -535,7 +545,10 @@ func (sqliteLocker) EnsureFiredSchema(ctx context.Context, q Querier, table stri
 	if _, err := q.ExecContext(ctx, sqliteCreateFiredTable(qt)); err != nil {
 		return err
 	}
-	qidx, _ := quoteTable(sqliteQuote, table+"_claimed_idx")
+	qidx, err := quoteTable(sqliteQuote, table+"_claimed_idx")
+	if err != nil {
+		return err
+	}
 	_, err = q.ExecContext(ctx, sqliteCreateFiredIndex(qt, qidx))
 	return err
 }
@@ -566,7 +579,10 @@ func SQLiteLockerDDL(table string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	qidx, _ := quoteTable(sqliteQuote, table+"_claimed_idx")
+	qidx, err := quoteTable(sqliteQuote, table+"_claimed_idx")
+	if err != nil {
+		return "", err
+	}
 	return sqliteCreateFiredTable(qt) + ";\n" + sqliteCreateFiredIndex(qt, qidx) + ";", nil
 }
 

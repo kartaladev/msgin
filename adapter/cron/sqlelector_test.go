@@ -31,6 +31,10 @@ func (f *fakeElectorDialect) EnsureLeaseSchema(context.Context, cron.Querier, st
 	return f.ensureErr
 }
 
+// TestSQLElector_Construction covers NewSQLElector's validation order — db==nil
+// (msgin.ErrNilAdapter) → dialect==nil (ErrNilDialect) → invalid table
+// (ErrInvalidTableName) → non-positive lease TTL (ErrInvalidLeaseTTL) —
+// matching NewSQLLocker's db → dialect → table order.
 func TestSQLElector_Construction(t *testing.T) {
 	type testCase struct {
 		name   string
@@ -46,6 +50,18 @@ func TestSQLElector_Construction(t *testing.T) {
 		{
 			name:   "nil dialect is ErrNilDialect",
 			build:  func() (*cron.SQLElector, error) { return cron.NewSQLElector(stubDB(t), nil) },
+			assert: func(t *testing.T, err error) { assert.ErrorIs(t, err, cron.ErrNilDialect) },
+		},
+		{
+			// Locks the construction-error priority: db==nil is checked first
+			// (covered above), then dialect==nil, then table validity — so a
+			// nil dialect co-occurring with an invalid table still reports
+			// ErrNilDialect, never ErrInvalidTableName. Mirrors
+			// sqllock_test.go's equivalent case.
+			name: "nil dialect AND invalid table: dialect check wins (ErrNilDialect)",
+			build: func() (*cron.SQLElector, error) {
+				return cron.NewSQLElector(stubDB(t), nil, cron.WithElectorTable("bad;"))
+			},
 			assert: func(t *testing.T, err error) { assert.ErrorIs(t, err, cron.ErrNilDialect) },
 		},
 		{

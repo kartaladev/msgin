@@ -137,12 +137,29 @@ func runLockerConformance(t *testing.T, db *sql.DB, dialect cron.LockerDialect) 
 		assert.True(t, won, "after purge, the same fire should be re-claimable")
 	})
 
-	t.Run("purge rejects a non-positive retention", func(t *testing.T) {
-		for _, d := range []time.Duration{0, -time.Second} {
-			_, err := locker.Purge(ctx, d)
-			assert.ErrorIs(t, err, cron.ErrInvalidRetention)
-		}
-	})
+	type nonPositiveRetentionCase struct {
+		name   string
+		older  time.Duration
+		assert func(t *testing.T, err error)
+	}
+	nonPositiveRetentionCases := []nonPositiveRetentionCase{
+		{
+			name:   "zero retention is ErrInvalidRetention",
+			older:  0,
+			assert: func(t *testing.T, err error) { assert.ErrorIs(t, err, cron.ErrInvalidRetention) },
+		},
+		{
+			name:   "negative retention is ErrInvalidRetention",
+			older:  -time.Second,
+			assert: func(t *testing.T, err error) { assert.ErrorIs(t, err, cron.ErrInvalidRetention) },
+		},
+	}
+	for _, tc := range nonPositiveRetentionCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := locker.Purge(ctx, tc.older)
+			tc.assert(t, err)
+		})
+	}
 }
 
 // TestMySQLLocker_ClaimDemotedError deterministically drives ClaimFire's
