@@ -2,12 +2,15 @@ package memory_test
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jonboulle/clockwork"
 	"github.com/kartaladev/msgin"
 	"github.com/kartaladev/msgin/adapter/memory"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -198,4 +201,88 @@ func TestQueueStore(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) { tt.assert(t) })
 	}
+}
+
+// TestQueueStore_ConcurrentStress drives QueueStore's real concurrency contract
+// under the race detector: concurrent producers, some of them blocking on a full
+// buffer (default Block overflow policy), concurrent consumers that Claim then
+// Ack — freeing slots and releasing blocked producers — and a same-delivery
+// double-Ack race exercising the epoch fence (audit target: double-settle must
+// not double-free a slot). Run with `-race`.
+func TestQueueStore_ConcurrentStress(t *testing.T) {
+	const (
+		capacity     = 4
+		numProducers = 5
+		perProducer  = 8
+		numConsumers = 4
+		total        = numProducers * perProducer
+	)
+
+	s, err := memory.NewQueueStore(memory.WithCapacity(capacity))
+	require.NoError(t, err)
+
+	ctx := t.Context()
+
+	var producers sync.WaitGroup
+	for p := 0; p < numProducers; p++ {
+		producers.Add(1)
+		go func(p int) {
+			defer producers.Done()
+			for i := 0; i < perProducer; i++ {
+				// capacity (4) << total (40): most of these block until a
+				// consumer's Ack frees a slot.
+				assert.NoError(t, s.Enqueue(ctx, msgin.New[any](p*perProducer+i)))
+			}
+		}(p)
+	}
+
+	var claimed int64
+	var consumers sync.WaitGroup
+	for c := 0; c < numConsumers; c++ {
+		consumers.Add(1)
+		go func() {
+			defer consumers.Done()
+			for atomic.LoadInt64(&claimed) < int64(total) {
+				deliveries, err := s.Claim(ctx, 2)
+				assert.NoError(t, err)
+				for _, d := range deliveries {
+					atomic.AddInt64(&claimed, 1)
+					// Double-settle race: two goroutines Ack the SAME delivery
+					// concurrently — exercises the epoch fence under -race.
+					var race sync.WaitGroup
+					race.Add(2)
+					go func(d msgin.Delivery) {
+						defer race.Done()
+						assert.NoError(t, d.Ack(ctx))
+					}(d)
+					go func(d msgin.Delivery) {
+						defer race.Done()
+						assert.NoError(t, d.Ack(ctx))
+					}(d)
+					race.Wait()
+				}
+			}
+		}()
+	}
+
+	producers.Wait()
+	consumers.Wait()
+
+	require.Equal(t, int64(total), atomic.LoadInt64(&claimed),
+		"every produced message must be claimed exactly once")
+
+	// Fence sanity: the double-Ack race above must free each slot exactly once
+	// (not zero, not twice) — so exactly `capacity` more Enqueues fit without
+	// blocking, and the one after that does not.
+	for i := 0; i < capacity; i++ {
+		probeCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		err := s.Enqueue(probeCtx, msgin.New[any]("probe"))
+		cancel()
+		assert.NoError(t, err, "slot %d should be free (no leaked/under-released capacity)", i)
+	}
+	overflowCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	err = s.Enqueue(overflowCtx, msgin.New[any]("overflow"))
+	assert.ErrorIs(t, err, context.DeadlineExceeded,
+		"buffer should be exactly full now (no double-free leaking an extra slot)")
 }

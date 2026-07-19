@@ -139,6 +139,8 @@ func ExampleQueueChannel() {
 	_ = qc.Send(context.Background(), msgin.New[any]("hello"))
 	_ = qc.Send(context.Background(), msgin.New[any]("world"))
 
+	// memory.QueueStore.Claim returns ready entries in FIFO order, so the output
+	// order below is deterministic (not an artifact of single-goroutine timing).
 	deliveries, _ := qc.Poll(context.Background(), 10)
 	for _, d := range deliveries {
 		fmt.Println(d.Msg.Payload())

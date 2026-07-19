@@ -58,7 +58,7 @@ func (q *QueueChannel) EmitsLiveValue() bool { return q.store.EmitsLiveValue() }
 // future store whose NativeDeadLetter is true from being silently double
 // dead-lettered by the runtime (audit M-2).
 func (q *QueueChannel) NativeRedelivery() bool {
-	if nr, ok := q.store.(NativeReliability); ok {
+	if nr, ok := q.native(); ok {
 		return nr.NativeRedelivery()
 	}
 	return false
@@ -67,8 +67,15 @@ func (q *QueueChannel) NativeRedelivery() bool {
 // NativeDeadLetter forwards the store's NativeReliability when it implements
 // it, else reports false. See NativeRedelivery.
 func (q *QueueChannel) NativeDeadLetter() bool {
-	if nr, ok := q.store.(NativeReliability); ok {
+	if nr, ok := q.native(); ok {
 		return nr.NativeDeadLetter()
 	}
 	return false
+}
+
+// native reports whether the store implements NativeReliability, deduplicating
+// the type assertion shared by NativeRedelivery and NativeDeadLetter.
+func (q *QueueChannel) native() (NativeReliability, bool) {
+	nr, ok := q.store.(NativeReliability)
+	return nr, ok
 }

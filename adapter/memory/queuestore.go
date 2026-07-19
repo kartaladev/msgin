@@ -161,7 +161,7 @@ func (s *QueueStore) Claim(_ context.Context, max int) ([]msgin.Delivery, error)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.clock.Now()
-	out := make([]msgin.Delivery, 0, max)
+	out := make([]msgin.Delivery, 0, min(max, len(s.ready)))
 	kept := s.ready[:0]
 	for _, e := range s.ready {
 		if len(out) < max && !e.visibleAt.After(now) {
@@ -177,6 +177,7 @@ func (s *QueueStore) Claim(_ context.Context, max int) ([]msgin.Delivery, error)
 		}
 		kept = append(kept, e)
 	}
+	clear(s.ready[len(kept):len(s.ready)]) // release claimed entries' Message refs from the backing array tail
 	s.ready = kept
 	return out, nil
 }
