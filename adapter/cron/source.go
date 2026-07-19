@@ -116,6 +116,22 @@ func WithCronLogger(l *slog.Logger) Option {
 	}
 }
 
+// WithElector gates every fire behind leader election (see Elector): only the
+// leader instance emits. Mutually exclusive with WithLocker (ErrConflictingCoordinator).
+func WithElector(e Elector) Option {
+	return func(o *config) { o.elector = e }
+}
+
+// WithLocker gates each fire behind a per-fire claim (see Locker): exactly one
+// instance wins each (scope, fire) and emits. Mutually exclusive with WithElector
+// (ErrConflictingCoordinator). Requires a GRID-ALIGNED schedule (5-field cron or
+// a @daily/@hourly/... descriptor) — an "@every" schedule is refused with
+// ErrLockerRequiresGridSchedule (Round-1 audit B-1; use WithElector for
+// "@every"). Pair with WithScope when distinct jobs share a spec.
+func WithLocker(l Locker) Option {
+	return func(o *config) { o.locker = l }
+}
+
 // NewSource parses spec once (cron 5-field + "@every" + descriptors) and builds
 // a Source emitting factory(fireTime) on each fire. An unparseable spec, OR a
 // syntactically valid spec with no future occurrence (e.g. "0 0 30 2 *"), is
@@ -163,7 +179,7 @@ func NewSource[T any](spec string, factory func(fire time.Time) T, opts ...Optio
 		scope:    scope,
 		logger:   cfg.logger,
 	}
-	if err := s.wireGate(&cfg); err != nil { // Task 2 — no-op until WithElector/WithLocker exist
+	if err := s.wireGate(&cfg); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -251,9 +267,32 @@ func (s *Source[T]) win(ctx context.Context, fireTime time.Time) bool {
 // EmitsLiveValue reports that this source carries live Go values (no codec).
 func (s *Source[T]) EmitsLiveValue() bool { return true }
 
-// wireGate resolves the configured coordinator (if any) into s.gate. Extended in
-// Task 2 with WithElector/WithLocker; until then no coordinator is settable.
-func (s *Source[T]) wireGate(cfg *config) error { return nil }
+// wireGate resolves the configured coordinator into s.gate: an Elector wraps
+// IsLeader(ctx, scope) with the Source's own scope; a Locker wraps
+// Claim(scope, fire); neither leaves s.gate nil (always emit). Both set is
+// ErrConflictingCoordinator. A Locker paired with a ConstantDelaySchedule
+// ("@every") is ErrLockerRequiresGridSchedule (checked BEFORE the delegation
+// switch, alongside the conflicting-coordinator check, so both construction-time
+// refusals live in one place).
+func (s *Source[T]) wireGate(cfg *config) error {
+	switch {
+	case cfg.elector != nil && cfg.locker != nil:
+		return ErrConflictingCoordinator
+	case cfg.locker != nil:
+		if _, isEvery := s.schedule.(robfig.ConstantDelaySchedule); isEvery {
+			return ErrLockerRequiresGridSchedule
+		}
+	}
+	switch {
+	case cfg.elector != nil:
+		e, scope := cfg.elector, s.scope
+		s.gate = func(ctx context.Context, _ time.Time) (bool, error) { return e.IsLeader(ctx, scope) }
+	case cfg.locker != nil:
+		l, scope := cfg.locker, s.scope
+		s.gate = func(ctx context.Context, fire time.Time) (bool, error) { return l.Claim(ctx, scope, fire) }
+	}
+	return nil
+}
 
 // noopAck / noopNack settle an at-most-once fire: there is no durable row to
 // delete or requeue, so both are no-ops.
