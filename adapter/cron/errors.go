@@ -55,4 +55,17 @@ var (
 	// logs it. Postgres/SQLite have no equivalent path (ON CONFLICT … RETURNING is
 	// exact). errors.Is-able.
 	ErrLockerClaimFailed = errors.New("msgin/cron: locker claim did not take effect and is not a conflict")
+
+	// ErrInvalidLeaseTTL is a construction error from NewSQLElector when
+	// WithLeaseTTL is given a non-positive duration. Unset leaves the 30s default;
+	// an explicit non-positive value is a caller mistake, not a request for the
+	// default. errors.Is-able.
+	ErrInvalidLeaseTTL = errors.New("msgin/cron: lease TTL must be > 0")
+
+	// ErrElectorAcquireFailed is returned by the MySQL ElectorDialect when an
+	// INSERT IGNORE of an absent lease row affected no row AND a verifying SELECT
+	// finds none — INSERT IGNORE demoted a genuine data error. Leadership is NOT
+	// silently granted or denied on a corrupt write; the error surfaces so the
+	// Source skips the fire fail-safe. errors.Is-able.
+	ErrElectorAcquireFailed = errors.New("msgin/cron: elector acquire did not take effect")
 )
