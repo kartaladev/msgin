@@ -7,4 +7,5 @@ use (
 	./adapter/database/sql/mysql
 	./adapter/database/sql/sqlite
 	./adapter/database/sql/dbtest
+	./adapter/cron/crontest
 )
