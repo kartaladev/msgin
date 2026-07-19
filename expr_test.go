@@ -2,6 +2,7 @@ package msgin_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/kartaladev/msgin"
@@ -107,6 +108,54 @@ func TestFilterExpr(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) { tt.assert(t) })
 	}
+}
+
+// ExampleFilterExpr shows the two-line construct-then-check pattern:
+// FilterExpr returns (Step, error) — unlike a bare Filter, it cannot be
+// passed inline to Chain — so the caller constructs it, checks the error,
+// then composes the resulting Step like any other.
+func ExampleFilterExpr() {
+	step, err := msgin.FilterExpr[exprOrder]("payload.Amount > 100")
+	if err != nil {
+		fmt.Println("invalid expression:", err)
+		return
+	}
+
+	var passed []int
+	flow := msgin.Chain(
+		step,
+		msgin.Consume(func(_ context.Context, m msgin.Message[exprOrder]) error {
+			passed = append(passed, m.Payload().Amount)
+			return nil
+		}),
+	)
+
+	_ = flow.Handle(context.Background(), msgin.New[any](exprOrder{Amount: 150, Currency: "USD"}))
+	_ = flow.Handle(context.Background(), msgin.New[any](exprOrder{Amount: 50, Currency: "USD"})) // filtered out
+
+	fmt.Println(passed)
+	// Output: [150]
+}
+
+// ExampleRouterExpr routes on a runtime routing-key expression instead of a
+// Go func, dispatching each message to the MessageChannel mapped from
+// payload.Currency.
+func ExampleRouterExpr() {
+	eu, us := &collector{}, &collector{}
+	router, err := msgin.RouterExpr[exprOrder]("payload.Currency", map[string]msgin.MessageChannel{
+		"EUR": eu,
+		"USD": us,
+	})
+	if err != nil {
+		fmt.Println("invalid expression:", err)
+		return
+	}
+
+	_ = router.Handle(context.Background(), msgin.New[any](exprOrder{Amount: 10, Currency: "EUR"}))
+	_ = router.Handle(context.Background(), msgin.New[any](exprOrder{Amount: 20, Currency: "USD"}))
+
+	fmt.Println(len(eu.got), len(us.got))
+	// Output: 1 1
 }
 
 func TestRouterExpr(t *testing.T) {
