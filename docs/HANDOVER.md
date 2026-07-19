@@ -3,12 +3,23 @@
 > **Next session: read this first, then trust the referenced files over any memory.** Read, in order:
 > `CLAUDE.md`, then the **audited, implementation-ready** design bundle for the completed increment —
 > `docs/specs/006-cron-source.md`, `docs/adrs/0016-robfig-cron-dependency.md`, `docs/adrs/0017-cron-source.md`,
-> and the plan `docs/plans/011-cron-source.md`. **Plan 011 is DONE and MERGED to `main`** (merge commit
-> `c62da27`, pushed to origin; `feat/cron-source` deleted). Start the NEXT increment from a fresh branch off
-> `main`. Read the SDD progress ledger `.superpowers/sdd/progress.md` (gitignored, local) for the full per-task
-> history; trust it + `git log` over memory.
+> and the plans `docs/plans/011-cron-source.md` + `docs/plans/012-cron-with-seconds.md`. **Plans 011 AND 012 are
+> DONE and MERGED to `main`** (Plan 011 = merge `c62da27`; **Plan 012 = merge `d315f52`**, both pushed;
+> `feat/cron-source` + `feat/cron-with-seconds` deleted). Start the NEXT increment from a fresh branch off `main`.
+> Read the SDD progress ledger `.superpowers/sdd/progress.md` (gitignored, local) for per-task history; trust it +
+> `git log` over memory.
 
-_Updated 2026-07-19: **Plan 011 COMPLETE and MERGED via `superpowers:subagent-driven-development`.** All six
+_Updated 2026-07-19 (latest): **Plan 012 — `cron.WithSeconds()` (opt-in 6-field seconds schedule) COMPLETE and
+MERGED** (merge `d315f52`, pushed; `feat/cron-with-seconds` deleted, was local-only). One SDD task (commit
+`901ebce`): a no-arg `WithSeconds()` Option switches `NewSource` to robfig's required-`Second` 6-field parser; the
+5-field default is byte-for-byte unchanged; `@every`/descriptors work under it; a 6-field cron stays grid-aligned
+so a `Locker` is accepted while `@every` is refused. Purely `source.go` + `seconds_test.go` + `doc.go` — no new
+dependency, no coordinator/`crontest`/`go.mod` change. Closes **Spec 006 O6-2/N4 (D13)**; ADR 0017 `WithSeconds`
+addendum. Single-round design audit (user-approved lighter check) = SOUND; task review Approved; whole-branch gate
+clean (root `-race` green, vet/gofmt/golangci-lint(0)/govulncheck/CGO0-build/mod-tidy clean; `crontest` unaffected,
+not re-run). Spec 006 open items remaining: **O6-1 Redis/etcd coordinators**. — Prior increment below._
+
+_Plan 011, 2026-07-19: **COMPLETE and MERGED via `superpowers:subagent-driven-development`.** All six
 tasks + a whole-branch review fix-pass done; merged to `main` as `c62da27` (--no-ff) and pushed; `feat/cron-source`
 deleted (local; never pushed). `adapter/cron` ships Source[T] (recurring/cron StreamingSource) + Elector/Locker
 coordination + dependency-free SQL-backed Locker/Elector (PG/MySQL/SQLite) + the `crontest` leaf module (real-DB
@@ -21,18 +32,20 @@ Spec D12 / ADR 0017 updated)._
 
 ## 1. Objective & roadmap position
 
-`msgin` (`github.com/kartaladev/msgin`) — Go 1.25 EIP library, minimal deps, multi-module monorepo. `main` @ `c62da27` carries Plans 001–011 (core + reliability + resilience + `sql`/`memory`/dialects + composition
-Phase 1 + Phase 3 Publish-Subscribe + scheduled/delayed send + cron/recurring source & coordination), all merged.
+`msgin` (`github.com/kartaladev/msgin`) — Go 1.25 EIP library, minimal deps, multi-module monorepo. `main` @
+`d315f52` carries Plans 001–012 (core + reliability + resilience + `sql`/`memory`/dialects + composition Phase 1 +
+Phase 3 Publish-Subscribe + scheduled/delayed send + cron/recurring source & coordination + `WithSeconds`), all
+merged.
 
-**MERGED increment (`c62da27`) = Spec 006 — cron / recurring message source + distributed
-coordination.** A recurring/cron `Source[T]` (a `StreamingSource`) that emits a caller-defined message on each
-schedule fire, driven by the existing runtime; PLUS msgin-native multi-instance single-fire via an `Elector`
-(leader) + `Locker` (per-fire) seam with **dependency-free SQL-backed implementations of both** (PG/MySQL/SQLite).
-Un-defers Spec 005 O5-5.
+**Latest MERGED increment (`d315f52`) = Spec 006 O6-2 — `cron.WithSeconds()`** (opt-in required 6-field seconds
+schedule; D13). Prior (`c62da27`) = the Spec 006 core: a recurring/cron `Source[T]` (`StreamingSource`) + msgin-native
+multi-instance single-fire via an `Elector` (leader) + `Locker` (per-fire) seam with **dependency-free SQL-backed
+implementations of both** (PG/MySQL/SQLite). Un-defers Spec 005 O5-5.
 
-**Roadmap after this merges:** (Spec 006 open items) Redis/etcd-backed coordinators (O6-1, optional modules),
-seconds-field cron `WithSeconds` (O6-2); plus still-deferred: EIP `Delayer` composition step (Spec 005 O5-1),
-memory delayed-send (O5-2), pgx/redis/nats/http adapters, Plan 005 T11 examples, Phase-4 fluent DSL (gated).
+**Roadmap (next):** **Spec 006 O6-1 — Redis/etcd-backed coordinators** (optional modules implementing the same
+`Elector`/`Locker` seam). Still-deferred: EIP `Delayer` composition step (Spec 005 O5-1), memory delayed-send
+(O5-2), pgx/redis/nats/http adapters, Plan 005 T11 examples, Phase-4 fluent DSL (gated). *(Spec 006 O6-2 CLOSED by
+Plan 012.)*
 
 ## 2. Exact state (Plan 011 MERGED to `main` @ `c62da27`, pushed)
 
