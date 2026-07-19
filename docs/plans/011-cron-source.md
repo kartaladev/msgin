@@ -13,7 +13,7 @@
 
 **Goal:** Ship an `adapter/cron` package (root module) with a recurring/cron **`Source[T]`** (a `StreamingSource` that emits a caller-defined message on each schedule fire) plus msgin-native **distributed single-fire coordination** — an `Elector` (leader) and `Locker` (per-fire) seam with **dependency-free SQL-backed implementations of each** (PG/MySQL/SQLite).
 
-**Architecture:** `Source[T]` parses its schedule once with `robfig/cron/v3` (the accepted third core dependency, ADR 0016) and drives a single **goleak-clean loop** over the injected `clockwork.Clock` (no background goroutine — the `memory.Broker.Stream` template): each iteration recomputes `next := schedule.Next(clock.Now())`, waits on `clock.After`, then (optionally) consults a coordination **gate** and emits `msgin.New[any](factory(fire))` as an at-most-once `Delivery` (no-op Ack/Nack). Coordination is checked **synchronously per fire** (no heartbeat goroutine): `WithElector`/`WithLocker` inject the gate; a coordinator error **skips the fire fail-safe**. Two SQL coordinators reuse proven `adapter/database/sql` patterns — the `Locker` is the `InboxDeduper` dedup-INSERT keyed on `(scope, fire_ts)`; the `Elector` is a leader-lease atomic acquire-or-renew — both DB-server-clock-based via a per-engine dialect seam kept **inside `adapter/cron`**.
+**Architecture:** `Source[T]` parses its schedule once with `robfig/cron/v3` (the accepted third core dependency, ADR 0016) and drives a single **goleak-clean loop** over the injected `clockwork.Clock` (no background goroutine): it **grid-tracks** a single `next` pointer (seeded once, advanced by `schedule.Next(next)` per fire — NOT recomputed from `clock.Now()`, which would shift a non-grid `@every` phase after an overrun; skip-missed is preserved by advancing past elapsed instants without emitting), waits on `clock.After`, then (optionally) consults a coordination **gate** and emits `msgin.New[any](factory(fire))` as an at-most-once `Delivery` (no-op Ack/Nack). Coordination is checked **synchronously per fire** (no heartbeat goroutine): `WithElector`/`WithLocker` inject the gate; a coordinator error **skips the fire fail-safe**. Two SQL coordinators reuse proven `adapter/database/sql` patterns — the `Locker` is the `InboxDeduper` dedup-INSERT keyed on `(scope, fire_ts)`; the `Elector` is a leader-lease atomic acquire-or-renew — both DB-server-clock-based via a per-engine dialect seam kept **inside `adapter/cron`**.
 
 **Tech Stack:** Go 1.25, stdlib + the three blessed core deps: `github.com/robfig/cron/v3` (**NEW**, ADR 0016 — schedule parse + `Next` only), `github.com/jonboulle/clockwork` (firing clock), and `github.com/cenkalti/backoff/v4` (unused here). SQL coordinators are `database/sql` only (driver injected). Tests: blackbox `_test` packages, `stretchr/testify`, `goleak`, and a new `adapter/cron/crontest` leaf module (testcontainers: real PG/MySQL/MariaDB/SQLite).
 
@@ -216,7 +216,8 @@ func TestSource_SkipsMissedFireOnOverrun(t *testing.T) {
 	d1 := <-out // fire #1 delivered
 	require.Equal(t, epoch.Add(time.Hour), d1.Msg.Payload().(time.Time).UTC())
 
-	// The loop recomputes Next(02:30) = 03:00 and blocks — #2 (02:00) was skipped.
+	// The loop grid-tracks: from next=02:00 it skips (02:00 <= 02:30) to 03:00 and
+	// blocks — #2 (02:00) was skipped, not queued.
 	require.NoError(t, clk.BlockUntilContext(ctx, 1))
 	clk.Advance(30 * time.Minute) // reach 03:00
 	d2 := <-out
@@ -567,26 +568,47 @@ func NewSource[T any](spec string, factory func(fire time.Time) T, opts ...Optio
 
 // Stream drives the firing loop until ctx is cancelled (msgin.StreamingSource).
 // It starts NO goroutine — the loop runs on the caller's (runtime Run) goroutine
-// — so it is goleak-clean. Each iteration recomputes the next fire from the
-// clock's current time (in the configured location), which is why an overrun
-// skips the missed fire rather than queuing it.
+// — so it is goleak-clean.
+//
+// GRID-TRACKING (refined in Task 1 — see the plan's Task-1 loop note): the loop
+// holds a single `next` pointer, seeded ONCE from the clock's current time, and
+// advances it by exactly one schedule step (schedule.Next(next)) each time an
+// instant is reached — NEVER recomputing from clock.Now() every iteration.
+// Recomputing from "now" is wrong for a non-grid "@every <duration>" schedule
+// (robfig ConstantDelaySchedule.Next(t) = t+duration, not grid-aligned):
+// reseeding from an arbitrary post-overrun "now" would silently shift the
+// interval's phase. Before waiting, the loop advances `next` past every
+// already-elapsed instant WITHOUT emitting (a slow hand-off let them pass) —
+// the "skip missed, not queued" guarantee (Spec D5).
 func (s *Source[T]) Stream(ctx context.Context, out chan<- msgin.Delivery) error {
+	next := s.schedule.Next(s.clock.Now().In(s.location))
 	for {
-		next := s.schedule.Next(s.clock.Now().In(s.location))
 		if next.IsZero() {
 			// Belt-and-suspenders for a schedule that becomes unsatisfiable only
 			// after construction validated it (NewSource already refuses an
-			// unsatisfiable spec up front, Round-1 audit B-2) — never fire, exit
+			// unsatisfiable spec up front, Round-1 audit B-2; the far-future
+			// zero-Next case is Round-2 audit NEW-NIT-2) — never fire, exit
 			// cleanly on cancel rather than hot-spin on a hugely negative Sub.
 			<-ctx.Done()
 			return ctx.Err()
 		}
+		for !next.After(s.clock.Now().In(s.location)) {
+			// An overrun on the previous fire's hand-off let this instant elapse:
+			// skip it (never deliver, never queue) and grid-track to the next step.
+			next = s.schedule.Next(next)
+			if next.IsZero() {
+				<-ctx.Done()
+				return ctx.Err()
+			}
+		}
 		select {
 		case <-s.clock.After(next.Sub(s.clock.Now())):
-			if !s.win(ctx, next) {
+			fire := next
+			next = s.schedule.Next(fire) // advance the grid pointer for the next iteration
+			if !s.win(ctx, fire) {
 				continue // lost the fire, or a coordinator error → skip fail-safe
 			}
-			msg := msgin.New[any](s.factory(next), msgin.WithClock(s.clock))
+			msg := msgin.New[any](s.factory(fire), msgin.WithClock(s.clock))
 			select {
 			case out <- msgin.Delivery{Msg: msg, Ack: noopAck, Nack: noopNack}:
 			case <-ctx.Done():

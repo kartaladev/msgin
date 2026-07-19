@@ -10,3 +10,7 @@ You may obtain a copy of the License at
     http://www.apache.org/licenses/LICENSE-2.0
 
 Third-party notices, if any, are listed below.
+
+This product includes software from the robfig/cron project
+(https://github.com/robfig/cron), licensed under the MIT License,
+Copyright (c) 2012 Rob Figueiredo.

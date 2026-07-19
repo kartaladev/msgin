@@ -82,11 +82,18 @@ the "you already run a database" philosophy that made `visible_after` the right 
   `memory`): it emits live Go values, so `NewConsumer[T]` pairs it with no codec. The factory's `T` is the
   handler's payload type.
 
-- **D5 — goleak-clean loop; skip-missed on overrun.** The `Stream` loop computes `next := schedule.Next(clock.Now())`
-  each iteration and `select`s on `clock.After(next.Sub(now))` vs `ctx.Done()` (and on the `out <- delivery` send
-  vs `ctx.Done()`). **No background goroutine.** Because `next` is recomputed from `clock.Now()`, if a slow handler
-  (backpressure on `out`) stalls the loop past a scheduled fire, that fire is **skipped, not queued** (standard
-  cron overrun behavior — no stampede after a pause). Documented.
+- **D5 — goleak-clean loop; skip-missed on overrun.** The `Stream` loop **grid-tracks** the schedule: it holds a
+  single `next` pointer, seeded once from `schedule.Next(clock.Now())`, and advances it by exactly one step
+  (`next = schedule.Next(next)`) as each instant is reached — it does NOT recompute `next` from `clock.Now()` every
+  iteration. It `select`s on `clock.After(next.Sub(now))` vs `ctx.Done()` (and on the `out <- delivery` send vs
+  `ctx.Done()`). **No background goroutine.** If a slow handler (backpressure on `out`) stalls the loop past one or
+  more scheduled instants, the loop advances `next` past every already-elapsed instant WITHOUT emitting, then waits
+  on the first still-future one — so missed fires are **skipped, not queued** (standard cron overrun behavior — no
+  stampede after a pause). Grid-tracking (vs recompute-from-now) is required for correctness: for a non-grid
+  `@every <duration>` schedule, robfig's `ConstantDelaySchedule.Next(t) = t + duration` is relative, so reseeding
+  from an arbitrary post-overrun `now` would silently shift the interval's phase; grid-tracking from the prior
+  `next` keeps the phase fixed. (Refined during Plan 011 Task 1 — the recompute-from-now form both drifts `@every`'s
+  phase and hangs the skip-missed test; the skip-missed *guarantee* is unchanged.) Documented.
 
 - **D6 — At-most-once; no-op Ack/Nack.** A fire is an ephemeral trigger, not a durable row — `Ack`/`Nack` are
   no-ops. Transient handler failures are still retried **in-process** by the runtime's `RetryPolicy` (same

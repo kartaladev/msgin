@@ -30,14 +30,21 @@ Ship an `adapter/cron` package (root module, ADR 0016) with three parts.
 - `cron.NewSource[T](spec string, factory func(fire time.Time) T, opts ...Option) (*Source[T], error)`.
 - Implements `StreamingSource` **and** `LiveValueSource` (`EmitsLiveValue() → true`) — it emits live Go values, so
   `NewConsumer[T]` pairs it with no codec (like `memory`). (Spec D2, D4.)
-- **Firing loop** (Spec D5), the `memory.Broker.Stream` template — **no background goroutine**:
+- **Firing loop** (Spec D5) — **grid-tracking, no background goroutine** (refined in Plan 011 Task 1; see Spec D5):
   ```
+  next := schedule.Next(clock.Now())                 // seed once, in WithLocation tz
   for {
-      next := schedule.Next(clock.Now())            // robfig Schedule, in WithLocation tz
+      if next.IsZero() { <-ctx.Done(); return ctx.Err() }   // unsatisfiable-far-future guard (B-2)
+      for !next.After(clock.Now()) {                 // overrun: skip every already-elapsed instant,
+          next = schedule.Next(next)                 //   grid-tracking, WITHOUT emitting (skip-missed)
+          if next.IsZero() { <-ctx.Done(); return ctx.Err() }
+      }
       select {
-      case <-clock.After(next.Sub(clock.Now())):    // fire
-          if gate != nil && !win(ctx, gate, next) { continue }   // coordination (part 3)
-          msg := msgin.New[any](factory(next), msgin.WithClock(clock))
+      case <-clock.After(next.Sub(clock.Now())):     // fire
+          fire := next
+          next = schedule.Next(fire)                 // advance the grid pointer (NOT reseeded from now)
+          if gate != nil && !win(ctx, gate, fire) { continue }   // coordination (part 3)
+          msg := msgin.New[any](factory(fire), msgin.WithClock(clock))
           select {
           case out <- Delivery{Msg: msg, Ack: noop, Nack: noop}:  // at-most-once (D6)
           case <-ctx.Done(): return ctx.Err()
@@ -46,8 +53,12 @@ Ship an `adapter/cron` package (root module, ADR 0016) with three parts.
       }
   }
   ```
-  Recomputing `next` from `clock.Now()` each iteration means an overrun (slow handler → backpressure on `out`)
-  **skips** the missed fire rather than queuing it (Spec D5). `Ack`/`Nack` are no-ops (at-most-once, Spec D6);
+  The loop advances a single `next` pointer by exactly one schedule step each fire (`schedule.Next(next)`), never
+  reseeding from `clock.Now()`. An overrun (slow handler → backpressure on `out`) is handled by the inner skip loop,
+  which advances past every elapsed instant WITHOUT emitting — **skips** missed fires rather than queuing them (Spec
+  D5). Grid-tracking (vs recompute-from-now) is load-bearing: for a non-grid `@every` schedule
+  (`ConstantDelaySchedule.Next(t) = t+duration`), reseeding from a post-overrun `now` would shift the phase and
+  hang the skip-missed test; grid-tracking keeps the phase fixed. `Ack`/`Nack` are no-ops (at-most-once, Spec D6);
   transient handler failure is retried in-process by the runtime `RetryPolicy`.
 - **Options:** `WithClock(clockwork.Clock)` (nil = real; ADR 0004), `WithLocation(*time.Location)` (default UTC,
   Spec D7 — a spec-embedded `CRON_TZ=`/`TZ=` prefix overrides `WithLocation`; `@every` ignores location
