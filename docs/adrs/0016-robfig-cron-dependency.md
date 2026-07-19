@@ -1,7 +1,9 @@
 # ADR 0016 — Accept `github.com/robfig/cron/v3` as a core dependency
 
-- **Status:** Proposed (2026-07-19) — pending the mandatory adversarial audit of the spec + ADR + plan bundle and
-  an explicit go-ahead before implementation (CLAUDE.md design-time gate).
+- **Status:** Accepted (2026-07-19) — both adversarial audit rounds complete; the dependency choice was verified
+  sound (robfig/cron/v3 confirmed genuinely zero-dependency against its `go.mod`, so the `go mod graph`
+  no-transitive acceptance gate will pass). Gated only on an explicit user go-ahead before implementation
+  (CLAUDE.md design-time gate).
 - **Spec:** [Spec 006 — Cron source + coordination](../specs/006-cron-source.md) (D1).
 - **Companion:** [ADR 0017 — Cron source + distributed coordination](0017-cron-source.md) (the design this dep serves).
 - **Precedent:** [ADR 0004 — clockwork core dependency](0004-clockwork-dependency.md), [ADR 0005 — cenkalti/backoff
