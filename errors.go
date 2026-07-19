@@ -36,8 +36,10 @@ var (
 	// ErrInvalidAttemptTTL is returned when WithAttemptTTL is given a non-positive
 	// duration (ADR 0009 D3).
 	ErrInvalidAttemptTTL = errors.New("msgin: attempt TTL must be > 0")
-	// ErrOverflowDropped is the cause carried to OnRetry/logs when an overflow
-	// policy sheds a message; it is not returned from any exported function.
+	// ErrOverflowDropped is the cause carried to OnRetry/logs when a streaming
+	// source's overflow policy sheds a message, AND is returned by a bounded
+	// ChannelStore.Enqueue (e.g. memory.QueueStore) when OverflowReject rejects a
+	// full-buffer Send. It is NOT returned for the silent Drop* policies.
 	ErrOverflowDropped = errors.New("msgin: message dropped by overflow policy")
 	// ErrInvalidPollInterval is returned when WithPollInterval is given a
 	// non-positive duration.
@@ -65,4 +67,9 @@ var (
 	// delivery). It is never a silent immediate send — the caller is told the sink
 	// cannot schedule. It is errors.Is-able.
 	ErrScheduledSendUnsupported = errors.New("msgin: outbound adapter does not support scheduled send")
+	// ErrNilStore is returned by NewQueueChannel when the ChannelStore is nil.
+	ErrNilStore = errors.New("msgin: channel store is nil")
+	// ErrInvalidCapacity is returned by a bounded store constructor (e.g.
+	// memory.NewQueueStore) when an explicit capacity is <= 0.
+	ErrInvalidCapacity = errors.New("msgin: capacity must be > 0")
 )
