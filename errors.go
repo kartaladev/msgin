@@ -60,4 +60,9 @@ var (
 	// ErrNoRoute is returned by a Router when pick resolves no destination and no
 	// WithDefaultChannel is configured (Spring resolutionRequired=true).
 	ErrNoRoute = errors.New("msgin: no route for message")
+	// ErrScheduledSendUnsupported is returned by Producer.SendAfter/SendAt when the
+	// underlying OutboundAdapter does not implement ScheduledSender (it cannot defer
+	// delivery). It is never a silent immediate send — the caller is told the sink
+	// cannot schedule. It is errors.Is-able.
+	ErrScheduledSendUnsupported = errors.New("msgin: outbound adapter does not support scheduled send")
 )

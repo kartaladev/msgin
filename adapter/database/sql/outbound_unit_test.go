@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"errors"
 	"testing"
+	"time"
 
 	msgin "github.com/kartaladev/msgin"
 	msginsql "github.com/kartaladev/msgin/adapter/database/sql"
@@ -156,6 +157,56 @@ func TestOutbound_ResolveQuerier(t *testing.T) {
 			tc.assert(t, fd, db, sendErr)
 		})
 	}
+}
+
+// TestOutbound_SendAfter_ThreadsDelay covers the ScheduledSender capability:
+// SendAfter sets visible_after = db-now + delay (recorded by fakeDialect), and
+// Send is exactly SendAfter with delay 0. now() is fixed for a deterministic
+// visible_after assertion.
+func TestOutbound_SendAfter_ThreadsDelay(t *testing.T) {
+	t.Parallel()
+	epoch := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	type testCase struct {
+		name   string
+		send   func(ctx context.Context, out *msginsql.Outbound, msg msgin.Message[any]) error
+		assert func(t *testing.T, visibleAfter time.Time)
+	}
+	cases := []testCase{
+		{
+			name: "Send inserts an immediately visible row (delay 0)",
+			send: func(ctx context.Context, out *msginsql.Outbound, msg msgin.Message[any]) error {
+				return out.Send(ctx, msg)
+			},
+			assert: func(t *testing.T, va time.Time) { assert.Equal(t, epoch, va) },
+		},
+		{
+			name: "SendAfter sets visible_after = now + delay",
+			send: func(ctx context.Context, out *msginsql.Outbound, msg msgin.Message[any]) error {
+				return out.SendAfter(ctx, msg, 30*time.Minute)
+			},
+			assert: func(t *testing.T, va time.Time) { assert.Equal(t, epoch.Add(30*time.Minute), va) },
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fd := newFakeDialect()
+			fd.now = func() time.Time { return epoch }
+			out, err := msginsql.NewOutboundAdapter(openDB(t, fakeDriverName), "msgs", fd)
+			require.NoError(t, err)
+
+			msg := msgin.New[any]([]byte(`{"k":"v"}`), msgin.WithID("s-1"))
+			require.NoError(t, tc.send(t.Context(), out, msg))
+			tc.assert(t, fd.onlyRow(t).visibleAfter)
+		})
+	}
+}
+
+// TestOutbound_IsScheduledSender documents the capability at the type level.
+func TestOutbound_IsScheduledSender(t *testing.T) {
+	t.Parallel()
+	var _ msgin.ScheduledSender = (*msginsql.Outbound)(nil)
 }
 
 // TestOutbound_SendClassifiesInsertError covers Outbound.Send's

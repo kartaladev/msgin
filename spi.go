@@ -54,3 +54,19 @@ type NativeReliability interface {
 type LiveValueSource interface {
 	EmitsLiveValue() bool
 }
+
+// ScheduledSender is an optional capability of an OutboundAdapter: it delivers a
+// message so that it becomes consumable only after a delay elapses (durable
+// delayed send). An adapter that can defer delivery — e.g. the database/sql
+// adapter via its visible_after column — implements it; the producer discovers
+// it by type-assertion and returns ErrScheduledSendUnsupported when the sink
+// does not.
+//
+// The capability carries the RELATIVE primitive only: the delivery time is
+// computed by the adapter's own store as now+delay, so it is free of app-vs-store
+// clock skew. A delay <= 0 delivers immediately (equivalent to Send). Absolute-time
+// scheduling is a producer-side concern (Producer.SendAt), never pushed into the
+// adapter.
+type ScheduledSender interface {
+	SendAfter(ctx context.Context, msg Message[any], delay time.Duration) error
+}
