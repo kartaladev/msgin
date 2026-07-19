@@ -165,3 +165,31 @@ Without a coordinator, the source fires on every instance (documented footgun, S
   gap-free, and reuses `InboxDeduper`; both ship, `Locker` recommended.
 - **Fire-per-instance only (no coordination).** Rejected for v1: the user wants first-class multi-instance
   single-fire shipped now.
+
+## Addendum — `WithSeconds()` optional seconds field (2026-07-19, Plan 012; Spec 006 D13)
+
+**Status:** Accepted. Closes Spec 006 O6-2 / N4. Single-round design audit (user-approved a lighter check for this
+small, additive increment, not the 2-round norm).
+
+**Context.** ADR 0017 §1 shipped `Source[T]` parsing with robfig's 5-field `ParseStandard`
+(`Minute|Hour|Dom|Month|Dow|Descriptor`). Callers asked for sub-minute (seconds-granularity) schedules.
+
+**Decision.** Add a no-arg `WithSeconds() Option`. When set, `NewSource` parses with a **required 6-field** parser
+(`Second|Minute|Hour|Dom|Month|Dow|Descriptor`) — the same option set robfig's own `cron.WithSeconds()` uses — so
+the spec MUST carry a leading seconds field and a 5-field spec returns `ErrInvalidSchedule`. Both parsers are
+package-level stateless singletons. `NewSource` applies options **before** parsing to select the parser (a
+behavior-preserving reorder: invalid-spec is still reported before nil-factory). `@every` and descriptors continue
+to work (the `Descriptor` flag is set in both parsers).
+
+- **Required, not `SecondOptional`.** Accepting either 5- or 6-field would make the same-looking spec mean different
+  things by field count — a footgun. One spec, one meaning; fail loud on a mismatched field count.
+- **No change to any other mechanism.** The D5 grid-tracking loop, D7 timezone handling, D8 satisfiability guard,
+  and the D10 `@every`+Locker refusal all apply unchanged (a 6-field cron is grid-aligned, so a `Locker` is
+  accepted; `@every` is still refused). The SQL coordinators are schedule-granularity-agnostic → **no `dialect.go`
+  / `crontest` change.** This is purely `source.go` + tests + docs.
+
+**Consequences.** Sub-minute schedules are now expressible. Two documented (non-blocking) footguns on
+`WithSeconds`/`doc.go`: (a) a sub-minute schedule with a SQL coordinator does one DB round-trip per fire; (b) with
+the Elector's default 30s `WithLeaseTTL`, a sub-30s schedule holds leadership across several fires (still
+single-fire-correct — lower the TTL for faster failover). The default (5-field) path is byte-for-byte unchanged, so
+existing callers are unaffected; the exported surface grows by exactly one option (additive, minor SemVer bump).

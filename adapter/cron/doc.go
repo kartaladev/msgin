@@ -2,8 +2,9 @@
 // recurring / cron schedule — the Enterprise Integration Scheduled Producer /
 // Polling Consumer shape. A Source[T] fires on a wall-clock schedule (standard
 // 5-field cron, "@every <duration>" intervals, or @daily/@hourly/... descriptors,
-// parsed by robfig/cron/v3) and emits a caller-defined message into a flow that
-// the existing runtime (retry/DLQ/flow-control/graceful shutdown) then carries.
+// parsed by robfig/cron/v3 — or a 6-field seconds schedule when WithSeconds is
+// set) and emits a caller-defined message into a flow that the existing runtime
+// (retry/DLQ/flow-control/graceful shutdown) then carries.
 //
 // # Import alias
 //
@@ -53,4 +54,11 @@
 // require an autocommitting Querier (*sql.DB, not *sql.Tx). A coordinator error
 // skips the fire FAIL-SAFE — a coordination outage degrades to no fire, never to
 // N-fold firing.
+//
+// # Sub-minute schedules
+//
+// A sub-minute schedule (WithSeconds) paired with a SQL coordinator does one DB
+// round-trip per fire, and at the Elector's default 30s lease a sub-30s
+// schedule holds leadership across several fires — size WithLeaseTTL
+// accordingly.
 package cron

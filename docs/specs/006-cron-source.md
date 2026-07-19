@@ -54,8 +54,9 @@ the "you already run a database" philosophy that made `visible_after` the right 
   rejected (large blast radius, no existing seam) — the source is push-side (`StreamingSource`).
 - N3. **No Redis/etcd-backed coordinators** this increment. Only the dependency-free SQL-backed Elector + Locker
   ship; Redis/etcd impls are future optional modules (O6-1).
-- N4. **No seconds-field cron (6-field)** in v1 — standard 5-field + `@every` + descriptors only; `WithSeconds()`
-  deferred (O6-2).
+- N4. *(CLOSED by Plan 012, 2026-07-19 — was: no seconds-field cron in v1.)* Seconds-field cron (6-field) is now
+  supported **opt-in** via `WithSeconds()` — see **D13**. The **default is unchanged**: standard 5-field + `@every`
+  + descriptors.
 - N5. No durable *replay* of missed fires — a fire is an ephemeral trigger (at-most-once); the durable
   delayed-*send* primitive is Spec 005's `ScheduledSender`, a separate, orthogonal concern.
 - N6. No general-purpose distributed-lock library surface — the Elector/Locker are scoped to gating cron fires
@@ -174,6 +175,23 @@ the "you already run a database" philosophy that made `visible_after` the right 
   claimant, and the Elector's `holder` already covers the one case (failover diagnosis) where identity is
   correctness-bearing.
 
+- **D13 — Optional seconds field via `WithSeconds()` (closes N4/O6-2; Plan 012, 2026-07-19).** By default `NewSource`
+  parses `spec` with the 5-field standard parser (`Minute|Hour|Dom|Month|Dow|Descriptor`). `WithSeconds()` — a
+  no-arg `Option`, consistent with the other `WithX` — switches to a **required 6-field** parser
+  (`Second|Minute|Hour|Dom|Month|Dow|Descriptor`), matching robfig's own `cron.WithSeconds()` semantics: the spec
+  MUST carry a leading seconds field (e.g. `"*/5 * * * * *"`), and a 5-field spec then returns `ErrInvalidSchedule`
+  at construction. **Required, not optional** (rejected `SecondOptional`): a field-count-dependent meaning for the
+  same-looking spec is a footgun — one spec, one meaning. `@every` and descriptors still work under `WithSeconds`
+  (the `Descriptor` flag is set in both parsers). To pick the parser, `NewSource` applies options **before** parsing
+  (a behavior-preserving reorder — invalid-spec is still reported before nil-factory). **All other invariants are
+  unchanged and require no code beyond the option + parser selection:** the D7 timezone rules, the D5 grid-tracking
+  loop and D8 satisfiability guard, and the D10 `@every`+Locker refusal (a 6-field cron is still grid-aligned, so a
+  `Locker` is accepted; `@every` is still refused) all apply as-is; the SQL coordinators (D10/D11) are
+  schedule-granularity-agnostic, so **no `dialect.go`/`crontest` change**. **Footgun (documented on `WithSeconds`/
+  `doc.go`, not blocking):** a sub-minute schedule paired with a SQL coordinator does one DB round-trip per fire, and
+  with the Elector's default 30s `WithLeaseTTL` a sub-30s schedule holds leadership across several fires (still
+  single-fire-correct — lower the TTL for faster failover).
+
 ## 4. Architecture
 
 Units, dependency pointing inward (core runtime unchanged; the adapter implements the inbound SPI):
@@ -261,7 +279,8 @@ handler/retry/DLQ. Shutdown: `ctx` cancel → `Stream` returns `ctx.Err()` promp
 ## 8. Open items (to close in ADRs + the plan)
 
 - **O6-1 — Redis/etcd-backed coordinators.** Future optional modules implementing `Elector`/`Locker`. Deferred.
-- **O6-2 — Seconds-field cron (`WithSeconds`).** Deferred (N4).
+- **O6-2 — Seconds-field cron (`WithSeconds`).** ✅ CLOSED by **Plan 012** (2026-07-19) — see **D13** (required
+  6-field, opt-in; default unchanged). Records decision in ADR 0017 (addendum).
 - **O6-3 — Where the coordination interfaces live.** In `adapter/cron` (consumed there) this increment; if they
   prove generally useful, a later extraction to a neutral package is possible (confirm in ADR 0017).
 - **O6-4 — Plan split.** Confirm at planning whether §6 ships as one Plan 011 or splits (011a: source+SPI+Locker;
@@ -271,8 +290,9 @@ handler/retry/DLQ. Shutdown: `ctx` cancel → `Stream` returns `ctx.Err()` promp
 
 ## 9. Traceability
 
-- **Realized by:** Plan 011 → commits carry `Spec: 006` / `Plan: 011` / `ADR: 0016,0017` trailers.
-- **Records decisions in:** ADR 0016 (dependency), ADR 0017 (design).
+- **Realized by:** Plan 011 (core source + coordination) → `Spec: 006` / `Plan: 011` / `ADR: 0016,0017` trailers;
+  **Plan 012** (D13 — `WithSeconds`, closes O6-2/N4) → `Spec: 006` / `Plan: 012` / `ADR: 0017` trailers.
+- **Records decisions in:** ADR 0016 (dependency), ADR 0017 (design; + `WithSeconds` addendum for D13).
 - **Builds on:** ADR 0002 (inbound SPI: `StreamingSource`/`LiveValueSource`/`Delivery`), ADR 0004 (`clockwork`
   precedent for a core-dep exception), ADR 0010 (`InboxDeduper` dedup pattern reused by the SQL `Locker`).
 - **Governing product spec:** Spec 001 §7.

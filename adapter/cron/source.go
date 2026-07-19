@@ -44,6 +44,15 @@ var (
 	_ msgin.LiveValueSource = (*Source[any])(nil)
 )
 
+// secondsParser parses a REQUIRED 6-field schedule (leading seconds field),
+// selected by WithSeconds. It uses the same option set as robfig's own
+// cron.WithSeconds(): Second is required, so a 5-field spec fails to parse.
+// @every and descriptors still work (the Descriptor flag is set). The default
+// (no WithSeconds) path keeps using robfig.ParseStandard (5-field).
+var secondsParser = robfig.NewParser(
+	robfig.Second | robfig.Minute | robfig.Hour | robfig.Dom | robfig.Month | robfig.Dow | robfig.Descriptor,
+)
+
 // gate reports whether THIS instance should emit the fire at fireTime — the
 // coordination hook consulted once per fire (Task 2). nil means "always emit".
 type gate func(ctx context.Context, fire time.Time) (won bool, err error)
@@ -57,6 +66,7 @@ type config struct {
 	elector  Elector // Task 2
 	locker   Locker  // Task 2
 	logger   *slog.Logger
+	seconds  bool // WithSeconds — require a 6-field (seconds) schedule
 }
 
 // Option configures a Source built by NewSource.
@@ -87,6 +97,23 @@ func WithLocation(loc *time.Location) Option {
 			o.location = loc
 		}
 	}
+}
+
+// WithSeconds opts the schedule into a REQUIRED leading seconds field — a
+// 6-field cron expression (e.g. "*/5 * * * * *" fires every 5 seconds). The
+// default is 5-field cron; with WithSeconds a 5-field spec is refused at
+// construction (ErrInvalidSchedule), and without it a 6-field spec is likewise
+// refused — one spec, one meaning. "@every" intervals and descriptors
+// (@hourly/@daily/...) work with or without this option.
+//
+// Footguns for sub-minute schedules (both non-fatal, but size accordingly):
+// paired with a SQL coordinator, EVERY fire does one DB round-trip (e.g. a
+// 5-second schedule = a query every 5s per instance); and with the Elector's
+// default 30s WithLeaseTTL, a sub-30s schedule holds leadership across several
+// fires before re-election (still single-fire-correct — lower WithLeaseTTL for
+// faster failover). Prefer the Locker for grid-aligned sub-minute schedules.
+func WithSeconds() Option {
+	return func(o *config) { o.seconds = true }
 }
 
 // WithScope sets the coordination scope passed to a Locker's Claim or an
@@ -134,7 +161,8 @@ func WithLocker(l Locker) Option {
 	return func(o *config) { o.locker = l }
 }
 
-// NewSource parses spec once (cron 5-field + "@every" + descriptors) and builds
+// NewSource parses spec once (cron 5-field + "@every" + descriptors — or a
+// required 6-field seconds schedule when WithSeconds is set) and builds
 // a Source emitting factory(fireTime) on each fire. An unparseable spec, OR a
 // syntactically valid spec with no future occurrence (e.g. "0 0 30 2 *"), is
 // ErrInvalidSchedule; a nil factory is ErrNilFactory; both a WithElector and a
@@ -143,14 +171,6 @@ func WithLocker(l Locker) Option {
 // construction, so misuse fails loudly up front rather than on the first fire
 // (or, for the unsatisfiable-schedule case, never — see the Stream guard).
 func NewSource[T any](spec string, factory func(fire time.Time) T, opts ...Option) (*Source[T], error) {
-	schedule, err := robfig.ParseStandard(spec)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %q: %v", ErrInvalidSchedule, spec, err)
-	}
-	if factory == nil {
-		return nil, ErrNilFactory
-	}
-
 	cfg := config{
 		clock:    clockwork.NewRealClock(),
 		location: time.UTC,
@@ -158,6 +178,24 @@ func NewSource[T any](spec string, factory func(fire time.Time) T, opts ...Optio
 	}
 	for _, opt := range opts {
 		opt(&cfg)
+	}
+
+	// Pick the parser BEFORE parsing (WithSeconds ⇒ required 6-field). The
+	// default path stays exactly robfig.ParseStandard, so existing callers are
+	// unaffected. Parse before the nil-factory check to preserve the prior
+	// error precedence (an invalid spec is reported before a nil factory).
+	var schedule robfig.Schedule
+	var err error
+	if cfg.seconds {
+		schedule, err = secondsParser.Parse(spec)
+	} else {
+		schedule, err = robfig.ParseStandard(spec)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %q: %v", ErrInvalidSchedule, spec, err)
+	}
+	if factory == nil {
+		return nil, ErrNilFactory
 	}
 
 	// Probe satisfiability (Round-1 audit B-2): ParseStandard accepts specs with
