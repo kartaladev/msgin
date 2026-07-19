@@ -144,3 +144,40 @@ requests are tracked for goleak-clean shutdown whether the handler is mounted or
 - **Codec inside wire adapters / decode in the adapter** (an earlier draft) — the adapter has `[]byte`
   but not `T`, so it cannot produce a typed payload; `msg.Payload.(T)` fails on every wire message.
   Replaced by the payload-codec-in-runtime split (ADR 0001).
+
+## Addendum — how these interfaces map to EIP / Spring Integration "Channel Adapter" (2026-07-20)
+
+**Status:** Accepted (clarification only; no design change). Recorded while evaluating the `adapter/database/sql`
+package against Spring Integration during the Spec 007 / Plan 013 (queue channel) work.
+
+This ADR's SPI **is** the EIP **Channel Adapter** contract, in the strict Spring Integration sense — a
+*unidirectional* bridge between a message channel and a non-messaging external system, doing transport + envelope
+framing only, with **no request-reply** (a request-reply bridge would be a *Gateway*, which this project does not
+yet ship). Three points worth pinning down so the term is used consistently:
+
+1. **The inbound channel-adapter responsibility is split.** A `PollingSource` corresponds to Spring's
+   `MessageSource` (the pollable source of messages); the **runtime's `Poller`/`NewConsumer`** corresponds to
+   Spring's `SourcePollingChannelAdapter` (the driver that schedules the poll and pushes into the flow). Together
+   they form the complete inbound channel adapter. Symmetrically, `OutboundAdapter.Send` is the outbound
+   channel-adapter *handler*; it becomes a full channel-subscribed outbound adapter once wired behind a channel via
+   a `Producer`/`Consumer`. A `StreamingSource` is the event-driven (push) inbound variant.
+
+2. **The `sql` adapter adapts the database *as a message transport*, not as an arbitrary business table.** Its
+   `Source`/`Outbound` own their schema (`headers`/`payload`/`visible_after`/lease columns) and impose queue
+   semantics (lease/claim, at-least-once, `SKIP LOCKED`). That places them closer to Spring's JMS/Kafka-style
+   channel adapters over a message transport — and to `JdbcChannelMessageStore` behind a `QueueChannel` — than to a
+   `jdbc:inbound-channel-adapter` running a caller's `SELECT` over a caller-owned business table. Both roles are
+   legitimate channel adapters (the DB is the external system/transport); the distinction is what the "external
+   system" is. **Consequence:** a true *data* inbound adapter (poll a caller-owned table with a caller-supplied
+   `SELECT`, adapting external application data) would be a **new, different** adapter this SPI accommodates but the
+   `sql` package does not currently provide. The same `Source`+`Outbound` pair over one table also doubles as a
+   durable in-flow **Channel** (the persistence behind `sql.QueueStore`, Spec 007 / ADR 0018) — a channel role,
+   distinct from the channel-adapter role, depending on whether the far end is an external system or another
+   endpoint in the same flow.
+
+3. **Not every component in an adapter package is a channel adapter.** `sql.InboxDeduper` is an **Idempotent
+   Receiver** (EIP), not a channel adapter; the `Dialect`/framing/`adapterBase` types are adapter *internals* (the
+   SPI's implementation seams), not messaging endpoints.
+
+No interface changes follow from this addendum; it fixes the vocabulary so "channel adapter", "message source",
+and "durable channel" are applied consistently across the docs.
