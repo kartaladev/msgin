@@ -3,11 +3,13 @@ package msgin_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/kartaladev/msgin"
+	"github.com/kartaladev/msgin/adapter/memory"
 	"github.com/stretchr/testify/require"
 )
 
@@ -125,4 +127,24 @@ func TestQueueChannel(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) { tt.assert(t) })
 	}
+}
+
+// ExampleQueueChannel demonstrates the pollable Send/Poll/Ack round-trip against
+// a memory-backed store, driven directly (rather than via Consumer.Run) so the
+// output ordering is deterministic.
+func ExampleQueueChannel() {
+	store, _ := memory.NewQueueStore()
+	qc, _ := msgin.NewQueueChannel(store)
+
+	_ = qc.Send(context.Background(), msgin.New[any]("hello"))
+	_ = qc.Send(context.Background(), msgin.New[any]("world"))
+
+	deliveries, _ := qc.Poll(context.Background(), 10)
+	for _, d := range deliveries {
+		fmt.Println(d.Msg.Payload())
+		_ = d.Ack(context.Background())
+	}
+	// Output:
+	// hello
+	// world
 }
