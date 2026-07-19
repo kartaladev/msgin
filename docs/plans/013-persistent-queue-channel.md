@@ -364,7 +364,7 @@ EOF
 - Consumes: `msgin.ChannelStore`, `msgin.Message[any]`, `msgin.Delivery`, `msgin.OverflowPolicy` + `OverflowBlock`/`OverflowDropNewest`/`OverflowDropOldest`/`OverflowReject` (existing, `flowcontrol.go`), `msgin.ErrOverflowDropped`, `msgin.ErrInvalidCapacity`, `clockwork.Clock`.
 - Produces:
   - `func NewQueueStore(opts ...Option) (*QueueStore, error)`
-  - `func WithCapacity(n int) Option` — bounds ready+inflight; **default 1024**; explicit `<=0` → `msgin.ErrInvalidCapacity`.
+  - `func WithCapacity(n int) QueueStoreOption` — bounds ready+inflight; **default 1024**; explicit `<=0` → `msgin.ErrInvalidCapacity`. (The option type is `QueueStoreOption`, not `Option`, to avoid colliding with the existing `memory.Broker`'s `Option` — resolved during implementation, commit c82a4a4.)
   - `func WithOverflow(p msgin.OverflowPolicy) Option` — full-buffer behavior at `Enqueue`; **default `OverflowBlock`**; unknown value → `OverflowBlock` (matches the codebase convention, `flowcontrol.go`).
   - `func WithClock(c clockwork.Clock) Option` — nil → real clock.
   - `*QueueStore` implements `msgin.ChannelStore` (`Enqueue`/`Claim`/`EmitsLiveValue`→true).
@@ -630,7 +630,7 @@ type config struct {
 // default 1024. A bounded buffer is the safe default — an unbounded in-memory
 // queue is an OOM lever (CLAUDE.md fail-safe defaults). An explicit n <= 0 is
 // msgin.ErrInvalidCapacity.
-func WithCapacity(n int) Option { return func(c *config) { c.capacity = n; c.capacitySet = true } }
+func WithCapacity(n int) QueueStoreOption { return func(c *config) { c.capacity = n; c.capacitySet = true } }
 
 // WithOverflow sets the behavior when Enqueue meets a full buffer: OverflowBlock
 // (default — backpressure until a slot frees or ctx cancels), OverflowReject
