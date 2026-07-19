@@ -24,4 +24,14 @@
 // adapters implement. Dispatch is synchronous (no goroutine); the default
 // settlement is all-subscribers-succeed (a subscriber error is joined and the
 // message retried), with WithFanOut(FanOutBestEffort) to log-and-continue.
+//
+// Scheduled / delayed send (Spec 005 / ADR 0015). An OutboundAdapter that can
+// defer delivery implements the optional ScheduledSender capability; the sql
+// adapter does so via its visible_after column. Producer.SendAfter(delay) is the
+// skew-free relative primitive (the store computes now+delay) and SendAt(t) is
+// absolute sugar over an injected clock; a sink that cannot schedule returns
+// ErrScheduledSendUnsupported (never a silent immediate send). A negative or past
+// delay delivers immediately. No goroutine is started — the delay lives in the
+// durable row, so a scheduled send survives restarts and fires once across N
+// competing consumers.
 package msgin

@@ -113,6 +113,44 @@ func RunOutbound(t *testing.T, kit TestKit, db *sql.DB) {
 		require.Equal(t, 0, rowCount(t, ctx, kit, db, table), "the row is Acked (DELETEd) after handling")
 	})
 
+	t.Run("ScheduledSendDelaysVisibility", func(t *testing.T) {
+		ctx := t.Context()
+		table := fresh(ctx)
+
+		out, err := msginsql.NewOutboundAdapter(db, table, kit.Lease)
+		require.NoError(t, err)
+		p, err := msgin.NewProducer[string](out)
+		require.NoError(t, err)
+		src, err := msginsql.NewPollingSource(db, table, kit.Lease)
+		require.NoError(t, err)
+
+		// (a) A far-future delayed row is persisted but NOT claimable. Using a 1h
+		// delay makes the invisibility assertion race-free (no plausible test/CI
+		// stall approaches 1h between INSERT and the first Claim — F1), unlike a
+		// short delay whose window a slow container could exceed.
+		require.NoError(t, p.SendAfter(ctx, msgin.New("far"), 1*time.Hour))
+		require.Equal(t, 1, rowCount(t, ctx, kit, db, table), "the row is persisted immediately")
+		got, err := src.Poll(ctx, 10)
+		require.NoError(t, err)
+		require.Empty(t, got, "a far-future row must not be claimable before its visible_after")
+
+		// (b) A short-delay row becomes claimable after its delay elapses; the
+		// far-future row stays invisible. Eventually waits real time for (b) only.
+		require.NoError(t, p.SendAfter(ctx, msgin.New("soon", msgin.WithID("soon")), 500*time.Millisecond))
+		require.Eventually(t, func() bool {
+			// No require.* here: testify runs this in a spawned goroutine, where a
+			// FailNow/Goexit is unsupported (F3). Return false on any mismatch.
+			d, err := src.Poll(ctx, 10)
+			if err != nil || len(d) != 1 || d[0].Msg.ID() != "soon" {
+				return false
+			}
+			return d[0].Ack(ctx) == nil
+		}, 5*time.Second, 50*time.Millisecond, "the short-delay row becomes claimable after its delay")
+
+		// The far-future row is still present and unclaimed (soon was Acked/deleted).
+		require.Equal(t, 1, rowCount(t, ctx, kit, db, table), "the far-future row remains invisible")
+	})
+
 	t.Run("PoisonMessageLandsInSinkTable", func(t *testing.T) {
 		ctx := t.Context()
 
