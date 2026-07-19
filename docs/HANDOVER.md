@@ -3,28 +3,28 @@
 > **Next session: read this first, then trust the referenced files over any memory.** Read, in order:
 > `CLAUDE.md`, then the **audited, implementation-ready** design bundle for the completed increment —
 > `docs/specs/006-cron-source.md`, `docs/adrs/0016-robfig-cron-dependency.md`, `docs/adrs/0017-cron-source.md`,
-> and the plan `docs/plans/011-cron-source.md`. **Plan 011 execution is DONE — all six tasks complete and
-> committed.** What remains is the **whole-branch delivery gate + merge to `main`**, which is the coordinator's
-> job in the next session (NOT done yet — do not assume `feat/cron-source` is merged). Read the SDD progress
-> ledger `.superpowers/sdd/progress.md` (gitignored, local) for the full per-task history; trust it + `git log`
-> over memory.
+> and the plan `docs/plans/011-cron-source.md`. **Plan 011 is DONE and MERGED to `main`** (merge commit
+> `c62da27`, pushed to origin; `feat/cron-source` deleted). Start the NEXT increment from a fresh branch off
+> `main`. Read the SDD progress ledger `.superpowers/sdd/progress.md` (gitignored, local) for the full per-task
+> history; trust it + `git log` over memory.
 
-_Updated 2026-07-19: **Plan 011 execution COMPLETE via `superpowers:subagent-driven-development`.** All six tasks
-done and committed on `feat/cron-source`. `adapter/cron` ships Source[T] (recurring/cron StreamingSource) +
-Elector/Locker coordination + dependency-free SQL-backed Locker/Elector (PG/MySQL/SQLite) + the `crontest` leaf
-module (real-DB conformance) + package doc + a goleak-clean runnable example. Clean safepoint (tree builds, full
-package suite green, race-clean, goleak-clean). Handing over for the **whole-branch delivery gate** (CLAUDE.md
-§5: `/code-review` + `/security-review` over `main..HEAD`, full-module `-race` suite incl. `crontest` Docker,
-lint/vuln/build gates, coverage confirmation) and, after explicit user approval, merge to `main` + branch
-cleanup. Push/merge/branch-delete still need explicit user approval — none of that has happened yet._
+_Updated 2026-07-19: **Plan 011 COMPLETE and MERGED via `superpowers:subagent-driven-development`.** All six
+tasks + a whole-branch review fix-pass done; merged to `main` as `c62da27` (--no-ff) and pushed; `feat/cron-source`
+deleted (local; never pushed). `adapter/cron` ships Source[T] (recurring/cron StreamingSource) + Elector/Locker
+coordination + dependency-free SQL-backed Locker/Elector (PG/MySQL/SQLite) + the `crontest` leaf module (real-DB
+conformance) + package doc + a goleak-clean runnable example. **Whole-branch delivery gate PASSED:** code-review
+APPROVE + security-review PASS (all findings fixed, commit `b684976`), `-race` green across all modules incl.
+`crontest` (Docker), `govulncheck` clean, `golangci-lint` 0 issues, `CGO_ENABLED=0` build ok, ADR 0016 acceptance
+(robfig zero-transitive) confirmed, `adapter/cron` coverage 87.5% (merged unit + real-DB). Design change folded in:
+the Locker's `claimed_by`/`WithInstanceID` claimant surface was removed as YAGNI (claimant identity is Elector-only;
+Spec D12 / ADR 0017 updated)._
 
 ## 1. Objective & roadmap position
 
-`msgin` (`github.com/kartaladev/msgin`) — Go 1.25 EIP library, minimal deps, multi-module monorepo. `main` @
-`410a45e` carries Plans 001–010 (core + reliability + resilience + `sql`/`memory`/dialects + composition Phase 1 +
-Phase 3 Publish-Subscribe + scheduled/delayed send), all merged.
+`msgin` (`github.com/kartaladev/msgin`) — Go 1.25 EIP library, minimal deps, multi-module monorepo. `main` @ `c62da27` carries Plans 001–011 (core + reliability + resilience + `sql`/`memory`/dialects + composition
+Phase 1 + Phase 3 Publish-Subscribe + scheduled/delayed send + cron/recurring source & coordination), all merged.
 
-**Completed increment (not yet merged) = Spec 006 — cron / recurring message source + distributed
+**MERGED increment (`c62da27`) = Spec 006 — cron / recurring message source + distributed
 coordination.** A recurring/cron `Source[T]` (a `StreamingSource`) that emits a caller-defined message on each
 schedule fire, driven by the existing runtime; PLUS msgin-native multi-instance single-fire via an `Elector`
 (leader) + `Locker` (per-fire) seam with **dependency-free SQL-backed implementations of both** (PG/MySQL/SQLite).
@@ -34,9 +34,9 @@ Un-defers Spec 005 O5-5.
 seconds-field cron `WithSeconds` (O6-2); plus still-deferred: EIP `Delayer` composition step (Spec 005 O5-1),
 memory delayed-send (O5-2), pgx/redis/nats/http adapters, Plan 005 T11 examples, Phase-4 fluent DSL (gated).
 
-## 2. Exact state (Plan 011 complete — awaiting whole-branch gate + merge)
+## 2. Exact state (Plan 011 MERGED to `main` @ `c62da27`, pushed)
 
-- **Branch:** `feat/cron-source` (off `main` @ `410a45e`), NOT merged yet.
+- **Branch:** `feat/cron-source` (off `main` @ `410a45e`) — MERGED to `main` as `c62da27` (--no-ff), then deleted.
 - **All six tasks done and committed:**
   - **Task 1** (`d0c4204`) — `Source[T]` (grid-tracking clockwork loop, skip-missed) + `coordinator.go`
     (`Elector`/`Locker` interfaces) + `errors.go` + `robfig/cron/v3` dep (zero-transitive gate confirmed).
