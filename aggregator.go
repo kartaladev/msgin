@@ -2,7 +2,6 @@ package msgin
 
 import (
 	"context"
-	"hash/fnv"
 	"sync"
 	"time"
 
@@ -165,7 +164,7 @@ const numShardLocks = 256
 // partial groups via Run(ctx) — see WithGroupTimeout.
 //
 // Concurrency: Handle holds a lock sharded by the message's correlation key
-// (hash/fnv over the key, mod numShardLocks) across the entire
+// (an FNV-1a hash of the key, mod numShardLocks) across the entire
 // correlate-result→Add→release-check→aggregate→Send→Remove sequence for that
 // key, so concurrent Handle calls for DIFFERENT keys (mostly) proceed in
 // parallel while calls for the SAME key serialize — this is what makes
@@ -250,11 +249,21 @@ func boxAggFn[A, B any](fn func(ctx context.Context, group []Message[A]) (Messag
 	}
 }
 
-// keyLock returns the shard lock for key (hash/fnv fnv32a mod numShardLocks).
+// keyLock returns the shard lock for key. It computes FNV-1a (32-bit) inline
+// rather than via fnv.New32a(), whose hash.Hash32 return escapes to the heap —
+// keyLock is on the per-message hot path (every Handle and every reapGroup), so
+// the inline form keeps it allocation-free.
 func (a *Aggregator) keyLock(key string) *sync.Mutex {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(key))
-	return &a.locks[h.Sum32()%numShardLocks]
+	const (
+		offset32 = 2166136261
+		prime32  = 16777619
+	)
+	h := uint32(offset32)
+	for i := 0; i < len(key); i++ {
+		h ^= uint32(key[i])
+		h *= prime32
+	}
+	return &a.locks[h%numShardLocks]
 }
 
 // Handle correlates msg, adds it to its group, and — once the group's
