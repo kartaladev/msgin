@@ -47,8 +47,10 @@ type MessageGroupStore interface {
 	// them plus a fence epoch. It returns (nil, nil) when key is absent or is
 	// already leased by another holder whose lease has not expired — the caller
 	// then treats the group as held (someone else is releasing it). The lease
-	// TTL is store-owned (WithGroupLeaseTTL); a crash before SettleGroup lets the
-	// lease age out so another holder re-claims (duplicate, never loss).
+	// TTL is store-owned (each implementation exposes its own configuration,
+	// e.g. a WithGroupLeaseTTL-style option — this core interface makes no
+	// assumption about it); a crash before SettleGroup lets the lease age out
+	// so another holder re-claims (duplicate, never loss).
 	ClaimGroup(ctx context.Context, key string) (MessageGroupClaim, error)
 	// SettleGroup deletes exactly the claimed member set (fenced on claim.Epoch)
 	// after a successful release. Members added during the lease survive as a

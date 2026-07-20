@@ -3,11 +3,12 @@
 - **Status:** Draft (2026-07-21) — brainstormed with the user; scope and the dominant design forks settled
   interactively (see below). **Phase 1 (Splitter, Plan 015) + Phase 2 (Aggregator + `MessageGroupStore` SPI +
   `memory.GroupStore`, Plan 016) SHIPPED & MERGED to `main`** (`e4b346d`, `94cda1f`). **Phase 3 (`sql.GroupStore`,
-  full multi-process — Plan 017 / ADR 0021 + the ADR 0020 §8 revision) is in design**: the user chose full
-  multi-process durability, which reopened the Phase-2 settlement into a store-level lease-claim (SPI `Remove` →
-  `ClaimGroup`/`SettleGroup`/`AbandonGroup`; `memory` reworked; per-key lock dropped) — see §3.4 (revised). The
-  full Phase-3 bundle (this spec-delta + ADR 0021 + the ADR 0020 §8 revision + Plan 017) goes through the 2-round
-  adversarial audit before any implementation. **Phase-1 (Splitter) adversarial audit round 1 folded** (Opus): H-1 deterministic
+  full multi-process — Plan 017 / ADR 0021 + the ADR 0020 §8 revision) is implemented (Plan 017 Tasks 1-4 done:
+  the lease-claim SPI reshape, `sql.GroupStore` + `GroupDialect`, per-engine dialects, 4-engine conformance, and
+  this finalize task) on branch `feat/sql-groupstore`, pending the whole-branch `/code-review` + `/security-review`
+  gate and merge to `main`**: the user chose full multi-process durability, which reopened the Phase-2 settlement
+  into a store-level lease-claim (SPI `Remove` → `ClaimGroup`/`SettleGroup`/`AbandonGroup`; `memory` reworked;
+  per-key lock dropped) — see §3.4 (revised). **Phase-1 (Splitter) adversarial audit round 1 folded** (Opus): H-1 deterministic
   child id `parentID#seq` (D2) — closes an id-collision that would silently drop the Splitter→Aggregator round-trip;
   M-1 durable `int`/`float64` sequence-header contract (D2); L-1/L-2/L-3 into Plan 015. **Round-2 re-audit: SOUND-WITH-NITS** — the deterministic
   child-id fix verified collision-free/idempotent and inert in the retry path; Phase-1 (Splitter) bundle ready to
@@ -233,7 +234,12 @@ the durable realization is [ADR 0021](../adrs/0021-sql-group-store.md). Summary:
   compose into the existing `Chain`/`Consumer` runtime — retry/DLQ/invalid-message/flow-control/worker-pool apply
   unchanged, and permanent errors (`ErrPayloadType`, `ErrNoCorrelation`, `ErrInvalidExpression` at eval) route to
   the invalid-message channel exactly as the linear endpoints do.
-- **D16 — Concurrency (corrected, audit R1 H-1).** Serializing the store's *individual* calls is **not** enough —
+- **D16 — Concurrency (corrected, audit R1 H-1; Phase-2 guarantee — SUPERSEDED for Phase 3 by D11 revised / §3.4).**
+  The per-key lock and its "multi-process needs a transactional atomic release" caveat below describe the Phase-2
+  (`memory`-only) mechanism; Phase 3 replaced it entirely with the store-level lease-claim
+  (`ClaimGroup`/`SettleGroup`/`AbandonGroup`, §3.4/ADR 0020 §8), which serializes both within AND across processes
+  and removed the per-key lock — see §3.4 for the shipped guarantee. Kept below for history. Serializing the
+  store's *individual* calls is **not** enough —
   `Handle`'s `Add → release-check → aggregate → Send → Remove` is a multi-call sequence, so under a worker pool two
   `Handle`s for the **same key** could both release a complete group (double-emit) or lose a member that arrived
   mid-release (a logical bug **invisible to `-race`**). The Aggregator therefore holds a **sharded per-correlation-key
@@ -250,7 +256,7 @@ the durable realization is [ADR 0021](../adrs/0021-sql-group-store.md). Summary:
 
 ```
 Phase 1  Splitter (stateless)         Split[A,B](fn) Step  ── stamps sequence headers ── forwards N children to next
-Phase 2  Aggregator core + SPI        NewAggregator[A,B](fn, opts) (*Aggregator, error)   (MessageHandler + Run(ctx) reaper)
+Phase 2  Aggregator core + SPI        NewAggregator[A,B](store, fn, opts) (*Aggregator, error)   (MessageHandler + Run(ctx) reaper)
              │ correlation/release/expiry strategies (opinionated defaults, all WithX-overridable)
              └── MessageGroupStore SPI (core) ── memory.GroupStore (reference, within-process)
 Phase 3  sql.GroupStore (durable)     database/sql + Dialect ── PG/MySQL/MariaDB/SQLite ── at-least-once across restart
@@ -274,12 +280,13 @@ flow := msgin.Chain(
 
 ### 4.2 Aggregator data flow (Phase 2/3)
 ```go
-store := memory.NewGroupStore()                         // or sql.NewGroupStore(db, dialect) for durability
+store, err := memory.NewGroupStore()                    // or sql.NewGroupStore(db, table, dialect) for durability
 agg, err := msgin.NewAggregator(
+    store,                                               // required: the MessageGroupStore (memory or sql)
     func(ctx context.Context, group []msgin.Message[Item]) (msgin.Message[Result], error) {
         return msgin.New(reduce(group)), nil            // N→1
     },
-    msgin.WithGroupStore(store),
+    msgin.WithOutputChannel(sink),                      // required: where a released aggregate is sent
     msgin.WithGroupTimeout(30*time.Second),             // opt-in expiry …
     msgin.WithExpiredGroupChannel(timeoutCh),           // … with a visible sink (required together)
 )

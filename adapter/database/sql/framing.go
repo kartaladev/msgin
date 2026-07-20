@@ -21,7 +21,9 @@ import (
 //   - msgin.timestamp is written as an RFC3339 (nanosecond) string. A time.Time
 //     would otherwise marshal to a string that DecodeHeaders could not restore
 //     to a time.Time.
-//   - msgin.delivery-count is written as a JSON number and restored to an int.
+//   - msgin.delivery-count, msgin.sequence-number, and msgin.sequence-size are
+//     each written as a JSON number and restored to an int by DecodeHeaders
+//     (ADR 0021 §2 M-1).
 //
 // All other keys — the reserved string keys (msgin.id, msgin.content-type,
 // msgin.correlation-id) and any custom keys — are marshaled as-is; a numeric

@@ -346,6 +346,11 @@ func (s *GroupStore) EmitsLiveValue() bool { return false }
 // become the Message[any]'s payload verbatim (the typed runtime decodes it
 // downstream — EmitsLiveValue()==false). A member whose framed headers cannot
 // be decoded surfaces as a wrapped error naming the offending message id.
+//
+// Decode is deliberately all-or-nothing per call: one corrupt stored header
+// fails the whole Add/ClaimGroup/Expired operation rather than silently
+// dropping just that member from the returned group — surfacing storage
+// corruption beats hiding it behind an incomplete-but-successful result.
 func (s *GroupStore) decodeGroupRows(rows GroupRows) (groupSnapshot, error) {
 	msgs := make([]msgin.Message[any], 0, len(rows.Members))
 	for _, m := range rows.Members {

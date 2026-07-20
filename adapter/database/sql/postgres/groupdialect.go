@@ -96,6 +96,11 @@ func (postgresGroupDialect) AddMember(ctx context.Context, q msginsql.Querier, t
 		// (which would then see no row). This single statement serializes same-key
 		// adds (H1) and closes that delete race. created_at is set once: the no-op
 		// update never touches it, so it keeps the first-arrival value.
+		//
+		// Correctness-neutral cost: the no-op DO UPDATE still writes a new (dead)
+		// heap tuple on every re-add to an existing group, like any PostgreSQL
+		// MVCC UPDATE -- a hot correlation key accumulates dead tuples between
+		// autovacuum runs. Autovacuum reclaims them; this is not a leak.
 		var createdMicros int64
 		if err := tx.QueryRowContext(ctx,
 			fmt.Sprintf(`INSERT INTO %s (group_key, created_at, epoch) VALUES ($1, %s, 0)

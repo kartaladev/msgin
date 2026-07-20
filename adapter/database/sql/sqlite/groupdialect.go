@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	stdsql "database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"time"
@@ -62,14 +63,31 @@ func withImmediateConn(ctx context.Context, q msginsql.Querier, fn func(conn msg
 		return err
 	}
 	if err := fn(conn); err != nil {
-		_, _ = conn.ExecContext(ctx, "ROLLBACK")
+		if _, rbErr := conn.ExecContext(ctx, "ROLLBACK"); rbErr != nil {
+			discardConn(conn)
+		}
 		return err
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-		_, _ = conn.ExecContext(ctx, "ROLLBACK")
+		if _, rbErr := conn.ExecContext(ctx, "ROLLBACK"); rbErr != nil {
+			discardConn(conn)
+		}
 		return err
 	}
 	return nil
+}
+
+// discardConn forces database/sql to evict conn from the pool instead of
+// returning it on the caller's subsequent Close: called only when a
+// defensive ROLLBACK itself failed, leaving the connection's transaction
+// state unknown, so a still-mid-transaction connection is never handed back
+// for reuse. Conn.Raw is the documented mechanism — a raw f that returns
+// driver.ErrBadConn makes database/sql discard the connection rather than
+// pool it (see database/sql's (*Conn).Raw / putConn). The error Raw itself
+// returns is always driver.ErrBadConn here and carries no new information,
+// so it is deliberately discarded.
+func discardConn(conn *stdsql.Conn) {
+	_ = conn.Raw(func(any) error { return driver.ErrBadConn })
 }
 
 // groupTables validates table once and returns the quoted group-lease table and

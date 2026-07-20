@@ -384,15 +384,28 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 		require.NotNil(t, crashed)
 		require.Len(t, crashed.Messages(), 2)
 
-		// A second Aggregator over the same store recovers via its reaper.
+		// A second Aggregator over the same store recovers via its reaper. An
+		// expired channel is wired in too (though WithGroupTimeout is unset, so
+		// the reaper's age-expiry path never fires) so the recovery can be
+		// asserted directly: the crashed COMPLETE group must reach OUTPUT, not
+		// EXPIRED — asserting expiredCount==0 makes that explicit rather than
+		// merely inferring it from outCount==1 alone.
 		out := msgin.NewDirectChannel()
+		expiredCh := msgin.NewDirectChannel()
 		var (
-			mu       sync.Mutex
-			outCount int
+			mu           sync.Mutex
+			outCount     int
+			expiredCount int
 		)
 		require.NoError(t, out.Subscribe(msgin.HandlerFunc(func(_ context.Context, _ msgin.Message[any]) error {
 			mu.Lock()
 			outCount++
+			mu.Unlock()
+			return nil
+		})))
+		require.NoError(t, expiredCh.Subscribe(msgin.HandlerFunc(func(_ context.Context, _ msgin.Message[any]) error {
+			mu.Lock()
+			expiredCount++
 			mu.Unlock()
 			return nil
 		})))
@@ -403,6 +416,7 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 				return msgin.New([]byte("aggregated")), nil
 			},
 			msgin.WithOutputChannel(out),
+			msgin.WithExpiredGroupChannel(expiredCh),
 			msgin.WithCompletionSize(2),
 		)
 		require.NoError(t, err)
@@ -424,6 +438,7 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 
 		mu.Lock()
 		require.Equal(t, 1, outCount, "the recovered aggregate reaches output exactly once (no double emit, no loss)")
+		require.Equal(t, 0, expiredCount, "the recovered COMPLETE group must reach OUTPUT, never EXPIRED")
 		mu.Unlock()
 		require.Equal(t, 0, memberCount(t, ctx, table, "g"), "no orphan member rows remain after recovery+settle")
 	})

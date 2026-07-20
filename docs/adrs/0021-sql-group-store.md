@@ -41,7 +41,7 @@ expiry scan are genuinely new SQL, so it gets its own segregated dialect.
 ### 1. `sql.GroupStore` — a `MessageGroupStore` over `database/sql` + a new `GroupDialect`
 
 ```go
-func NewGroupStore(db *stdsql.DB, dialect GroupDialect, opts ...GroupStoreOption) (*GroupStore, error)
+func NewGroupStore(db *stdsql.DB, table string, dialect GroupDialect, opts ...GroupStoreOption) (*GroupStore, error)
 ```
 
 - Implements the full ADR 0020 §8 SPI (`Add`/`ClaimGroup`/`SettleGroup`/`AbandonGroup`/`Expired`/`EmitsLiveValue`/
@@ -259,7 +259,7 @@ store bounded, sql store DB-bounded); no `OverflowPolicy` knob is added to `sql.
 
 **Positive**
 - Aggregation is now durable and **multi-process-safe** with the same memory↔sql store-swap ergonomics
-  `ChannelStore` gave queue channels — flip `memory.NewGroupStore()` to `sql.NewGroupStore(db, dialect)` and the
+  `ChannelStore` gave queue channels — flip `memory.NewGroupStore()` to `sql.NewGroupStore(db, table, dialect)` and the
   flow survives restarts and scales to Competing Consumers, no rewiring.
 - The lease-claim is **loss-free at-least-once** end to end; the claimed-set fencing keeps the "late member forms a
   fresh group" semantics honest under early-release strategies.
