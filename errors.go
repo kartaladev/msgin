@@ -78,4 +78,16 @@ var (
 	// expression. Runtime evaluation errors are NOT this — they propagate as the
 	// endpoint's handler error into the runtime's retry/DLQ path.
 	ErrInvalidExpression = errors.New("msgin: invalid expression")
+	// ErrNoCorrelation is returned when an Aggregator's correlation strategy
+	// yields no key for a message. It is always wrapped with Permanent (a
+	// missing correlation id will not appear on redelivery), so the runtime
+	// routes it to the invalid-message channel rather than retrying.
+	ErrNoCorrelation = errors.New("msgin: message has no correlation key")
+	// ErrNilOutput is returned by NewAggregator when no output channel is set
+	// (WithOutputChannel is required).
+	ErrNilOutput = errors.New("msgin: aggregator output channel is nil")
+	// ErrExpiryChannelRequired is returned by NewAggregator when
+	// WithGroupTimeout is set without WithExpiredGroupChannel — an expired
+	// partial group must have a visible sink, never a silent drop.
+	ErrExpiryChannelRequired = errors.New("msgin: group timeout requires an expired-group channel")
 )
