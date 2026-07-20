@@ -209,10 +209,18 @@ primitive from Spec 008.
   compose into the existing `Chain`/`Consumer` runtime — retry/DLQ/invalid-message/flow-control/worker-pool apply
   unchanged, and permanent errors (`ErrPayloadType`, `ErrNoCorrelation`, `ErrInvalidExpression` at eval) route to
   the invalid-message channel exactly as the linear endpoints do.
-- **D16 — Concurrency.** The Aggregator's group operations are serialized through the store (the store owns its
-  own locking / DB transactions); the reaper and `Handle` contend only on the store, which is the single
-  synchronization point. `-race` clean is a gate. Under a worker pool (`WithConcurrency > 1`), concurrent `Handle`
-  calls for the same key are serialized by the store's `Add` (idempotent + returns the authoritative group).
+- **D16 — Concurrency (corrected, audit R1 H-1).** Serializing the store's *individual* calls is **not** enough —
+  `Handle`'s `Add → release-check → aggregate → Send → Remove` is a multi-call sequence, so under a worker pool two
+  `Handle`s for the **same key** could both release a complete group (double-emit) or lose a member that arrived
+  mid-release (a logical bug **invisible to `-race`**). The Aggregator therefore holds a **sharded per-correlation-key
+  lock** across the whole `Handle` sequence, and the reaper acquires the same per-key lock around its re-check +
+  `Remove`-returns-group + route (so a group can never be both released and expired). Different keys run
+  concurrently → Competing Consumers preserved across groups. **Guarantee: correct under `WithConcurrency > 1`
+  within a single process** (memory store); **multi-process durable aggregation (Phase 3 `sql.GroupStore`) requires
+  a transactional atomic release** (`DELETE … RETURNING`), a per-process lock being insufficient across processes.
+  Exact-count (`== n`) release is safe in a single process WITH the per-key lock (racy only multi-process/id-less);
+  `>=`/`WithCompletionSize` remain recommended. `-race` remains a gate, but a dedicated **N>1 same-key stress test**
+  (single emit, no loss) is the correctness proof `-race` cannot provide.
 
 ## 4. Architecture
 

@@ -7,8 +7,15 @@
   (§1) — closes the id-collision that would have made the Splitter→Aggregator round-trip silently drop; **M-1** the
   durable `int`-vs-`float64` sequence-header contract recorded (§2); L-1/L-2/L-3 folded into Plan 015. **Round 2 re-audit: SOUND-WITH-NITS**
   — the child-id scheme verified collision-free/idempotent and inert in the retry path; only a plan-local godoc nit
-  (L-1) folded. Phase-1 bundle ready to implement. Realized across Plans 015–018; the `sql.GroupStore` specifics are
-  recorded separately in **ADR 0021**, expr-on-endpoints as an **ADR 0019 addendum**.
+  (L-1) folded. **Phase 1 (Splitter) SHIPPED & MERGED to `main` (`e4b346d`).**
+  **Phase 2 (Aggregator) round-1 audit: NEEDS-REVISION — folded** (H-1 concurrent double-release → per-key lock +
+  `Remove`-returns-group, §2/§3; M-1 `Permanent(ErrNoCorrelation)`, §3; M-2 ingress fail-fast already in §3; M-2/M-3
+  + L into Plan 016). **Round-2 re-audit: SOUND-WITH-NITS — folded** (F1 reaper
+  re-check-the-removed-group; F2 cyclic-Send self-deadlock doc; F3 `==n` caveat scoped to multi-process; F4 de-stale
+  inline snippets; F5 expired-Send error; F6 clone `Remove` snapshot). Per-key lock verified to close H-1 with no
+  ABBA deadlock; M-1/M-2 verified to route to the invalid-message channel. **Phase-2 design implementation-ready.**
+  Realized across Plans 015–018; the `sql.GroupStore` specifics (incl. the multi-process transactional atomic
+  release H-1 needs) are recorded separately in **ADR 0021**, expr-on-endpoints as an **ADR 0019 addendum**.
 - **Spec:** [Spec 009 — Splitter + Aggregator endpoints](../specs/009-splitter-aggregator-endpoints.md).
 - **Depends on / builds on:** [ADR 0013 — Composition endpoints](0013-composition-endpoints.md) (the
   `MessageHandler`/`MessageChannel`/`Step`/`Chain` backbone + synchronous-direct error model these endpoints extend),
@@ -87,8 +94,12 @@ type MessageGroupStore interface {
     // returns the unchanged group — this upholds at-least-once under source
     // redelivery (a redelivered member does not double-count toward release).
     Add(ctx context.Context, key string, msg Message[any]) (MessageGroup, error)
-    // Remove deletes an entire group (called after a successful release).
-    Remove(ctx context.Context, key string) error
+    // Remove deletes group key and RETURNS the group it removed (nil if the key
+    // was absent). Release calls it after forwarding; the reaper calls it and
+    // routes the returned members to the expired channel — so the reaper routes
+    // exactly what it atomically removed, never a stale Expired snapshot (audit
+    // R1 H-1).
+    Remove(ctx context.Context, key string) (MessageGroup, error)
     // Expired returns groups whose CreatedAt is strictly before the cutoff (reaper).
     Expired(ctx context.Context, before time.Time) ([]MessageGroup, error)
     // EmitsLiveValue reports live Go values (memory) vs []byte (wire, sql), for
@@ -117,28 +128,70 @@ type MessageGroupStore interface {
 ### 3. Aggregator — `NewAggregator[A,B]`, a `Run(ctx)`-owning `MessageHandler` (Spec D7/D8)
 
 ```go
-func NewAggregator[A, B any](fn func(ctx context.Context, group []Message[A]) (Message[B], error),
-    opts ...AggOption) (*Aggregator, error)
-func (a *Aggregator) Handle(ctx context.Context, msg Message[any]) error // MessageHandler
+func NewAggregator[A, B any](
+    store MessageGroupStore,                                              // positional (mirrors NewQueueChannel(store)); nil → ErrNilStore
+    fn func(ctx context.Context, group []Message[A]) (Message[B], error), // N→1; nil → ErrNilFunc
+    opts ...AggregatorOption,
+) (*Aggregator, error)
+func (a *Aggregator) Handle(ctx context.Context, msg Message[any]) error // MessageHandler (called by upstream)
 func (a *Aggregator) Run(ctx context.Context) error                     // expiry reaper; joined on ctx cancel
 ```
 
+- **Store is positional, output is a required option** (resolved Spec O9-2 during planning). The `MessageGroupStore`
+  is a positional constructor arg — mirroring `NewQueueChannel(store ChannelStore)`, the established "store is the
+  substrate" precedent (there is no default in-core store; `memory.GroupStore` lives in `adapter/memory`, which the
+  core cannot import). The **downstream destination** for a released aggregate is `WithOutputChannel(ch
+  MessageChannel)` — **required** (a released group must have somewhere to go); absent/nil → a construction error
+  (`ErrNilOutput`). Keeping *all* the aggregator's channels as options (`WithOutputChannel`, `WithExpiredGroupChannel`)
+  and only the store positional is the consistent shape. Rejected: a `Step` form (`Aggregate(...) Step` capturing
+  `next`) — it cannot own the reaper's `Run(ctx)` lifecycle (a `Step` has no lifetime hook; a per-message `Handle`
+  ctx is request-scoped, wrong for a long-lived ticker), so the struct + explicit output channel is the only clean
+  shape (O9-1).
 - **Lifecycle struct, not a bare `Step`** — because the expiry reaper is an owned goroutine (no-goroutine-leak
   gate). It implements `MessageHandler` (place as a chain's `next` via `Subscribe`, or as a flow head via
   `NewConsumer[any](src, agg.Handle)`). `Run(ctx)` starts the reaper **only when `WithGroupTimeout` is set**,
   cancellable and joined on ctx cancel (consistent with `Consumer`/`Poller`). With no timeout, no goroutine is
-  started and `Handle` works standalone. A nil `fn`, or `WithGroupTimeout` set without `WithExpiredGroupChannel`
-  (§5), is a **construction error** (returned from `NewAggregator`, the debuggability surface).
-- **Per-message algorithm (`Handle`):** assert→A (`ErrPayloadType`) · compute correlation key
-  (`WithCorrelationStrategy`, default = `HeaderCorrelationID`; missing/empty → `ErrNoCorrelation`, permanent →
-  invalid channel) · `store.Add(ctx, key, msg)` (durable persist) · release check (`WithReleaseStrategy`, default =
-  `len(group) >= HeaderSequenceSize` (read **number-tolerantly** per §2's M-1 contract); `WithCompletionSize(n)`
-  sugar for a fixed count) · **release** → `fn(ctx,
-  group)` → forward `Message[B]` to `next` → on success `store.Remove(key)`; **not yet** → return nil (message held;
-  source Acks — durability now on the store).
-- **Concurrency.** Group operations serialize through the store (the store owns its locking / DB transactions), the
-  single synchronization point between concurrent `Handle` calls (worker pool) and the reaper. `-race` clean is a
-  gate.
+  started and `Handle` works standalone. A nil `fn`, a nil `store`, a missing output channel, or `WithGroupTimeout`
+  set without `WithExpiredGroupChannel` (§5), is a **construction error** (returned from `NewAggregator`, the
+  debuggability surface).
+- **Per-message algorithm (`Handle`):** **assert payload→A** (`ErrPayloadType`, permanent → invalid channel —
+  fail-fast on ingress so a mistyped message never pollutes a group) · compute correlation key
+  (`WithCorrelationStrategy`, default = `HeaderCorrelationID`; missing/empty → `ErrNoCorrelation` **wrapped
+  `Permanent(...)`** — `isPermanent` does not match it by default, so without the wrap the runtime would *retry*
+  it to the DLQ instead of routing it to the invalid-message channel, audit R1 M-1 → permanent → invalid channel) · `store.Add(ctx, key, msg)` (durable persist of the `Message[any]`) · release check
+  (`WithReleaseStrategy`, default = `len(group) >= HeaderSequenceSize` read **number-tolerantly** per §2's M-1
+  contract; `WithCompletionSize(n)` sugar for a fixed count) · **release** → convert the group's stored
+  `[]Message[any]` back to `[]Message[A]` (each via `PayloadOf[A]`; re-assert is safe — they passed ingress) →
+  `fn(ctx, group)` → **send `Message[B]` to the output channel** → on success `store.Remove(key)` (the removed group
+  is ignored on the release path); a `fn`/`Send` error returns **without** removing, so a retry re-releases; **not
+  yet** → return nil (message held; source Acks — durability now on the store). All of this runs under the
+  per-key lock (Concurrency, below).
+- **Concurrency — per-correlation-key serialization (audit R1 H-1).** Serializing the store's individual calls is
+  NOT enough: `Handle`'s `Add → release-check → agg → output.Send → Remove` is a multi-call sequence, and under
+  `WithConcurrency>1` two `Handle`s for the **same key** could both observe a complete group and both release
+  (double-emit), or the coarse key-`Remove` could drop a member that arrived mid-release (data loss). This is a
+  **logical** atomicity bug **invisible to `-race`**. The Aggregator therefore holds a **sharded per-key lock**
+  (`[N]sync.Mutex`, `key → fnv%N`) across the WHOLE `Handle` sequence for a key; different keys proceed
+  concurrently, so Competing Consumers is preserved *across* groups (the useful parallelism — one group's members
+  are inherently serial anyway). The **expiry reaper acquires the same per-key lock**, then — because the SPI has no
+  keyed read — `Remove`s the key (which returns the removed group) and re-checks the *returned* group: if it is
+  `nil` (released concurrently) it skips; if it is no longer expired (a fresh group re-formed at that key since the
+  lock-free `Expired()` snapshot) it re-`Add`s the members (idempotent) and skips; otherwise it routes the removed
+  members to the expired channel (audit R2 F1). So release and expiry can never both settle one group, and a live
+  refilled group is never prematurely expired.
+  - **Guarantee (honest):** correct under N>1 **within a single process** (the memory store). **Multi-process
+    durable aggregation (Phase 3 `sql.GroupStore`) needs a transactional atomic release** (`DELETE … RETURNING` in
+    one tx) — a per-process lock does NOT serialize across processes; recorded as an ADR 0021 requirement.
+  - **Footgun (document, audit R2 F2):** the per-key lock is held across `output.Send`/`expired.Send`, which for a
+    `DirectChannel` runs synchronously — so wiring an aggregator's output/expired channel back into its own input
+    under the **same** correlation key self-deadlocks (non-reentrant mutex). Godoc forbids the cycle.
+  - **`==n` caveat (scoped, audit R2 F3):** WITH the per-key lock, exact-count (`== n`) release is **safe in a
+    single process** (members serialize per key; the group is removed the instant it hits `n`; idempotent `Add`
+    blocks redelivery double-count) — same as `>=`. It is racy only for **multi-process durable** aggregation
+    (Phase 3, no cross-process lock) or **id-less** over-delivery; `>=`/`WithCompletionSize` remain the recommended
+    default. Documented on `WithReleaseStrategy`.
+  - `-race` clean remains a gate, but the **concurrency correctness proof is a dedicated N>1 same-key stress test**
+    (single emit, no loss), since `-race` cannot see this class of bug.
 
 ### 4. Hold-until-release settlement & the at-least-once contract (Spec D9) — the crux
 
