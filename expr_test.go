@@ -16,6 +16,13 @@ type exprOrder struct {
 	Currency string
 }
 
+// exprItem is the element type SplitExpr fans a batch's Items into.
+type exprItem struct{ Name string }
+
+// exprBatch is the SplitExpr source payload: payload.Items is the
+// slice-yielding expression under test.
+type exprBatch struct{ Items []exprItem }
+
 // collector is a MessageChannel that records what it receives (blackbox helper).
 type collector struct{ got []msgin.Message[any] }
 
@@ -302,6 +309,113 @@ func TestTransformExpr(t *testing.T) {
 				require.NoError(t, err)
 				next := msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { return nil })
 				require.Error(t, step(next).Handle(t.Context(), msgin.New[any](exprOrder{})))
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) { tt.assert(t) })
+	}
+}
+
+func TestSplitExpr(t *testing.T) {
+	tests := []struct {
+		name   string
+		assert func(t *testing.T)
+	}{
+		{
+			name: "empty expression is ErrInvalidExpression at construction",
+			assert: func(t *testing.T) {
+				_, err := msgin.SplitExpr[exprBatch, exprItem]("   ")
+				require.ErrorIs(t, err, msgin.ErrInvalidExpression)
+			},
+		},
+		{
+			name: "unparseable expression is ErrInvalidExpression at construction",
+			assert: func(t *testing.T) {
+				_, err := msgin.SplitExpr[exprBatch, exprItem]("payload.")
+				require.ErrorIs(t, err, msgin.ErrInvalidExpression)
+			},
+		},
+		{
+			name: "PayloadOf error propagates from Handle",
+			assert: func(t *testing.T) {
+				step, err := msgin.SplitExpr[exprBatch, exprItem]("payload.Items")
+				require.NoError(t, err)
+				next := msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { return nil })
+				err = step(next).Handle(t.Context(), msgin.New[any](42)) // wrong payload type
+				require.ErrorIs(t, err, msgin.ErrPayloadType)
+			},
+		},
+		{
+			name: "slice-yielding expr fans out N children in order with sequence headers stamped",
+			assert: func(t *testing.T) {
+				step, err := msgin.SplitExpr[exprBatch, exprItem]("payload.Items")
+				require.NoError(t, err)
+				var forwarded []msgin.Message[any]
+				next := msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
+					forwarded = append(forwarded, m)
+					return nil
+				})
+				parent := msgin.New[any](exprBatch{Items: []exprItem{{Name: "a"}, {Name: "b"}}}, msgin.WithID("parent-1"))
+				require.NoError(t, step(next).Handle(t.Context(), parent))
+				require.Len(t, forwarded, 2)
+				require.Equal(t, exprItem{Name: "a"}, forwarded[0].Payload())
+				require.Equal(t, exprItem{Name: "b"}, forwarded[1].Payload())
+				require.Equal(t, "parent-1#1", forwarded[0].ID())
+				require.Equal(t, "parent-1#2", forwarded[1].ID())
+				for i, m := range forwarded {
+					num, _ := m.Header(msgin.HeaderSequenceNumber)
+					size, _ := m.Header(msgin.HeaderSequenceSize)
+					require.Equal(t, i+1, num)
+					require.Equal(t, 2, size)
+				}
+			},
+		},
+		{
+			name: "empty slice forwards nothing",
+			assert: func(t *testing.T) {
+				step, err := msgin.SplitExpr[exprBatch, exprItem]("payload.Items")
+				require.NoError(t, err)
+				var forwarded []msgin.Message[any]
+				next := msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
+					forwarded = append(forwarded, m)
+					return nil
+				})
+				require.NoError(t, step(next).Handle(t.Context(), msgin.New[any](exprBatch{})))
+				require.Empty(t, forwarded)
+			},
+		},
+		{
+			name: "non-slice result is ErrExprResultType",
+			assert: func(t *testing.T) {
+				step, err := msgin.SplitExpr[exprBatch, exprItem]("payload.Items[0]") // yields a struct, not a slice
+				require.NoError(t, err)
+				next := msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { return nil })
+				parent := msgin.New[any](exprBatch{Items: []exprItem{{Name: "a"}}})
+				err = step(next).Handle(t.Context(), parent)
+				require.ErrorIs(t, err, msgin.ErrExprResultType)
+			},
+		},
+		{
+			name: "non-B element is ErrExprResultType",
+			assert: func(t *testing.T) {
+				// A=any → no compile-time result type-check; the literal yields a
+				// mixed []interface{} whose 2nd element cannot be asserted to B=int.
+				step, err := msgin.SplitExpr[any, int](`[1, "two"]`)
+				require.NoError(t, err)
+				next := msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { return nil })
+				err = step(next).Handle(t.Context(), msgin.New[any](0))
+				require.ErrorIs(t, err, msgin.ErrExprResultType)
+			},
+		},
+		{
+			name: "runtime eval error propagates",
+			assert: func(t *testing.T) {
+				step, err := msgin.SplitExpr[exprBatch, exprItem](`header("missing") > 100`)
+				require.NoError(t, err) // compiles fine (header() is any)
+				next := msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { return nil })
+				err = step(next).Handle(t.Context(), msgin.New[any](exprBatch{}))
+				require.Error(t, err)
 			},
 		},
 	}

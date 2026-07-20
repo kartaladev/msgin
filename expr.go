@@ -181,3 +181,80 @@ func TransformExpr[A, B any](expression string) (Step, error) {
 		return WithPayload(m, b), nil
 	}), nil
 }
+
+// SplitExpr is a Splitter endpoint (see Split) whose fan-out is a runtime
+// expr-lang expression evaluated against the payload (A) and headers, e.g.
+// `payload.Items` or `filter(payload.Items, {.Amount > 100})`. The expression
+// is compiled once at construction; an invalid or unparseable expression
+// returns ErrInvalidExpression. At each evaluation the result must be a
+// slice/array and each element is asserted to B; a non-slice result or a
+// non-B element returns ErrExprResultType as the endpoint's handler error
+// (into the runtime's retry/DLQ path) rather than panicking. An empty slice
+// forwards nothing (a valid "nothing to split", like Split). Each child
+// inherits the parent's headers via WithPayload and is then stamped for
+// reassembly exactly as Split stamps its children — HeaderSequenceNumber
+// (1-based), HeaderSequenceSize, a deterministic id, and correlation — so a
+// SplitExpr->Aggregator round-trip reassembles with no extra configuration.
+//
+// Because it returns (Step, error), it cannot be passed inline to Chain like
+// a bare Split — construct it first, check the error, then compose.
+//
+// SplitExpr takes two type parameters ([A, B]) where FilterExpr/TransformExpr
+// take one (or two): A is the input payload the expression evaluates against,
+// B is the per-element type each result entry is asserted to. Trade-offs vs a
+// Go-func Split: same as FilterExpr (type safety only for concrete A, opaque
+// to a Go debugger, expr's default node/memory limits, no ctx-cancellation) —
+// see FilterExpr's godoc.
+//
+// Result-type ceilings on B: expr's filter/map builtins yield []interface{}
+// (each element boxed as any), while a direct field like payload.Items yields
+// the concrete []T — exprSliceToChildren handles both via reflection, but the
+// exact-type assertion (elem.(B)) still applies per element, so it carries the
+// same struct/numeric ceilings as TransformExpr's B (see TransformExpr's
+// godoc) — B is realistically a scalar/slice/map/named-field type or a struct
+// element already of the exact B type; a mismatched box (e.g. an int64
+// element asserted to B=int) is ErrExprResultType.
+func SplitExpr[A, B any](expression string) (Step, error) {
+	eval, err := compile[A](expression, exprAny)
+	if err != nil {
+		return nil, err
+	}
+	return func(next MessageHandler) MessageHandler {
+		return HandlerFunc(func(ctx context.Context, msg Message[any]) error {
+			in, err := PayloadOf[A](msg)
+			if err != nil {
+				return err
+			}
+			out, err := eval(in)
+			if err != nil {
+				return err
+			}
+			children, err := exprSliceToChildren[A, B](out, in)
+			if err != nil {
+				return err
+			}
+			return forwardSplit(ctx, next, msg, children)
+		})
+	}, nil
+}
+
+// exprSliceToChildren reflects over a SplitExpr result: it must be a slice/array;
+// each element is asserted to B and wrapped via WithPayload(parent, elem) so the
+// child inherits the parent's headers (Split then stamps sequence/id/correlation).
+// A non-slice result or a non-B element is ErrExprResultType.
+func exprSliceToChildren[A, B any](out any, parent Message[A]) ([]Message[B], error) {
+	rv := reflect.ValueOf(out)
+	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+		return nil, fmt.Errorf("%w: SplitExpr result %T is not a slice", ErrExprResultType, out)
+	}
+	children := make([]Message[B], rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		elem := rv.Index(i).Interface()
+		b, ok := elem.(B)
+		if !ok {
+			return nil, fmt.Errorf("%w: SplitExpr element %d %T is not %T", ErrExprResultType, i, elem, *new(B))
+		}
+		children[i] = WithPayload(parent, b)
+	}
+	return children, nil
+}
