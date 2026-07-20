@@ -117,3 +117,86 @@ func TestSplit_DownstreamErrorAbortsRemaining(t *testing.T) {
 
 // boxInt wraps v as a Message[any] with an int payload.
 func boxInt(v int) msgin.Message[any] { return msgin.New[any](v) }
+
+func TestSplit_SequenceHeaders(t *testing.T) {
+	tests := []struct {
+		name   string
+		fn     func(ctx context.Context, m msgin.Message[int]) ([]msgin.Message[int], error)
+		parent msgin.Message[any]
+		assert func(t *testing.T, children []msgin.Message[any])
+	}{
+		{
+			name: "WithPayload children: distinct deterministic ids, parent-id correlation, 1-based seq",
+			// The documented construction path: WithPayload copies the parent's
+			// headers (incl. HeaderID), so Split MUST overwrite each child id.
+			fn: func(_ context.Context, m msgin.Message[int]) ([]msgin.Message[int], error) {
+				return []msgin.Message[int]{msgin.WithPayload(m, 1), msgin.WithPayload(m, 2)}, nil
+			},
+			parent: msgin.New[any](0, msgin.WithID("parent-123")),
+			assert: func(t *testing.T, children []msgin.Message[any]) {
+				require.Len(t, children, 2)
+				assert.Equal(t, "parent-123#1", children[0].ID())
+				assert.Equal(t, "parent-123#2", children[1].ID()) // distinct → group fills to N
+				for i, c := range children {
+					num, _ := c.Header(msgin.HeaderSequenceNumber)
+					size, _ := c.Header(msgin.HeaderSequenceSize)
+					corr, _ := c.Header(msgin.HeaderCorrelationID)
+					assert.Equal(t, i+1, num)
+					assert.Equal(t, 2, size)
+					assert.Equal(t, "parent-123", corr)
+				}
+			},
+		},
+		{
+			name: "re-split of the same parent yields identical child ids (idempotent)",
+			fn: func(_ context.Context, m msgin.Message[int]) ([]msgin.Message[int], error) {
+				return []msgin.Message[int]{msgin.WithPayload(m, 1), msgin.WithPayload(m, 2)}, nil
+			},
+			parent: msgin.New[any](0, msgin.WithID("parent-123")),
+			assert: func(t *testing.T, children []msgin.Message[any]) {
+				// stable, derived only from parent id + seq — see the extra re-run below.
+				assert.Equal(t, "parent-123#1", children[0].ID())
+				assert.Equal(t, "parent-123#2", children[1].ID())
+			},
+		},
+		{
+			name: "child with its own correlation id keeps it (inherited/nested case)",
+			fn: func(_ context.Context, m msgin.Message[int]) ([]msgin.Message[int], error) {
+				child := msgin.WithPayload(m, 1).WithHeader(msgin.HeaderCorrelationID, "child-own")
+				return []msgin.Message[int]{child}, nil
+			},
+			parent: msgin.New[any](0, msgin.WithID("parent-123")),
+			assert: func(t *testing.T, children []msgin.Message[any]) {
+				require.Len(t, children, 1)
+				corr, _ := children[0].Header(msgin.HeaderCorrelationID)
+				assert.Equal(t, "child-own", corr)                // correlation NOT overwritten
+				assert.Equal(t, "parent-123#1", children[0].ID()) // id still deterministic
+			},
+		},
+		{
+			name: "id-less parent: no deterministic id, no correlation stamped",
+			// Covers the parent.ID()=="" hot-path branch (audit M-2).
+			fn: func(_ context.Context, m msgin.Message[int]) ([]msgin.Message[int], error) {
+				return []msgin.Message[int]{msgin.WithPayload(m, 1)}, nil
+			},
+			parent: msgin.NewMessage[any](0, msgin.NewHeaders(nil)), // ID()==""
+			assert: func(t *testing.T, children []msgin.Message[any]) {
+				require.Len(t, children, 1)
+				assert.Equal(t, "", children[0].ID()) // no parent id → nothing derived
+				_, hasCorr := children[0].Header(msgin.HeaderCorrelationID)
+				assert.False(t, hasCorr) // no fallback correlation stamped
+				num, _ := children[0].Header(msgin.HeaderSequenceNumber)
+				assert.Equal(t, 1, num) // sequence headers still stamped
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var forwarded []msgin.Message[any]
+			h := msgin.Split(tc.fn)(collect(&forwarded))
+			require.NoError(t, h.Handle(t.Context(), tc.parent))
+			tc.assert(t, forwarded)
+		})
+	}
+}
