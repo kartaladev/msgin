@@ -12,7 +12,7 @@ import (
 type aggregatorConfig struct {
 	output    MessageChannel
 	correlate func(Message[any]) (string, error)
-	release   func(MessageGroup) bool
+	release   func(MessageGroup) (bool, error)
 	timeout   time.Duration
 	expired   MessageChannel
 	clock     clockwork.Clock
@@ -60,7 +60,9 @@ func WithCorrelationStrategy(fn func(Message[any]) (string, error)) AggregatorOp
 // slightly different member set than the one it decided on. Prefer a
 // monotonic strategy (e.g. >=, never <) for this reason.
 func WithReleaseStrategy(fn func(MessageGroup) bool) AggregatorOption {
-	return func(c *aggregatorConfig) { c.release = fn }
+	return func(c *aggregatorConfig) {
+		c.release = func(g MessageGroup) (bool, error) { return fn(g), nil }
+	}
 }
 
 // WithCompletionSize releases a group once it holds n messages — sugar for a
@@ -71,7 +73,7 @@ func WithReleaseStrategy(fn func(MessageGroup) bool) AggregatorOption {
 // duplicate members (no dedup).
 func WithCompletionSize(n int) AggregatorOption {
 	return func(c *aggregatorConfig) {
-		c.release = func(g MessageGroup) bool { return len(g.Messages()) >= n }
+		c.release = func(g MessageGroup) (bool, error) { return len(g.Messages()) >= n, nil }
 	}
 }
 
@@ -136,13 +138,13 @@ func defaultCorrelate(m Message[any]) (string, error) {
 // with no members never releases; a group whose first member carries no
 // HeaderSequenceSize never releases via this strategy (use WithCompletionSize
 // or WithReleaseStrategy, or rely on expiry).
-func defaultRelease(g MessageGroup) bool {
+func defaultRelease(g MessageGroup) (bool, error) {
 	msgs := g.Messages()
 	if len(msgs) == 0 {
-		return false
+		return false, nil
 	}
 	size, ok := asInt(firstHeader(msgs, HeaderSequenceSize))
-	return ok && len(msgs) >= size
+	return ok && len(msgs) >= size, nil
 }
 
 // firstHeader returns the raw header value for key on msgs' first member.
@@ -282,7 +284,12 @@ func (a *Aggregator) Handle(ctx context.Context, msg Message[any]) error {
 	if err != nil {
 		return err
 	}
-	if !a.cfg.release(group) {
+	ok, err := a.cfg.release(group)
+	if err != nil {
+		return err // release-decision error (e.g. WithReleaseExpr eval) → retry/DLQ;
+		// the reaper's expiry fall-through surfaces a stuck group (ADR 0019 A3).
+	}
+	if !ok {
 		return nil // held; source Acks — durability now on the store
 	}
 	claim, err := a.store.ClaimGroup(ctx, key)
@@ -346,19 +353,26 @@ func (a *Aggregator) releaseOnce(ctx context.Context, claim MessageGroupClaim) (
 // re-open the strand).
 func (a *Aggregator) release(ctx context.Context, claim MessageGroupClaim) error {
 	if err := a.releaseOnce(ctx, claim); err != nil {
-		return err
+		return err // MAIN release failed → NOT settled (defer abandoned the claim) →
+		// Nack+redeliver is correct (idempotent Add re-groups, no double-count).
 	}
+	// Main group settled (incl. the current member). The drain below is a
+	// best-effort optimization that claims/emits any already-complete residual
+	// formed during the lease; it must NEVER return a non-nil error (H-2/H-3),
+	// or it would Nack the already-settled member. Residuals it leaves are
+	// recovered by the reaper (durable store) / a later Add.
 	for {
 		next, err := a.store.ClaimGroup(ctx, claim.Key())
 		if err != nil || next == nil {
-			return err // nothing more to drain (empty / leased by another / gone)
+			return nil // no residual, leased by another, or a transient claim error → leave for reaper
 		}
-		if !a.cfg.release(next) {
-			_ = a.store.AbandonGroup(ctx, next) // residual not yet complete; leave it live
+		ok, rerr := a.cfg.release(next)
+		if rerr != nil || !ok {
+			_ = a.store.AbandonGroup(ctx, next) // residual not evaluable / not complete; leave it live
 			return nil
 		}
 		if err := a.releaseOnce(ctx, next); err != nil {
-			return err // failed re-release already abandoned its claim; retry later
+			return nil // residual re-release failed (its claim already abandoned by the defer) → reaper
 		}
 	}
 }
@@ -433,10 +447,14 @@ func (a *Aggregator) reapGroup(ctx context.Context, g MessageGroup, cutoff time.
 	if err != nil || claim == nil {
 		return // released/leased concurrently, or gone
 	}
-	if a.cfg.release(claim) {
+	ok, rerr := a.cfg.release(claim)
+	if rerr == nil && ok {
 		_ = a.release(ctx, claim) // RECOVERY: re-emit a crashed/complete group to OUTPUT (+ settle)
 		return
 	}
+	// H-1: a release ERROR or a not-yet-complete group both fall through to
+	// age-expiry so an unevaluable group is surfaced to the visible sink,
+	// never stranded/busy-spinning.
 	if !cutoff.IsZero() && claim.CreatedAt().Before(cutoff) {
 		// genuinely expired incomplete group → route members to the expired sink.
 		for _, m := range claim.Messages() {

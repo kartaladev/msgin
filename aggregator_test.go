@@ -373,6 +373,43 @@ func TestAggregator_Handle(t *testing.T) {
 			},
 		},
 		{
+			// Regression for the internal release seam evolving to
+			// func(MessageGroup) (bool, error) (the public
+			// WithReleaseStrategy(func(MessageGroup) bool) signature is
+			// unchanged): proves the always-nil-error wrapper releases
+			// across multiple cycles exactly as the pre-refactor bool-only
+			// seam did — held, released-and-removed, held again for a
+			// fresh group at the same key.
+			name: "WithReleaseStrategy bool wrapper is transparent across release cycles",
+			assert: func(t *testing.T) {
+				store := newIntStore(t)
+				out := &fakeAggChannel{}
+				agg, err := msgin.NewAggregator[int, int](store, sumFn,
+					msgin.WithOutputChannel(out),
+					msgin.WithReleaseStrategy(func(g msgin.MessageGroup) bool {
+						return len(g.Messages()) >= 2
+					}),
+				)
+				require.NoError(t, err)
+
+				m1 := corrMsg(1, "m1", "g", nil)
+				m2 := corrMsg(2, "m2", "g", nil)
+				require.NoError(t, agg.Handle(t.Context(), m1))
+				assert.Equal(t, 0, out.count(), "1 of 2: held")
+				require.NoError(t, agg.Handle(t.Context(), m2))
+				require.Equal(t, 1, out.count(), "2 of 2: released")
+				assert.Equal(t, 3, out.last().Payload())
+
+				// group removed on release: a 3rd message to "g" starts a
+				// fresh (again held) group rather than immediately
+				// re-releasing — identical to the pre-refactor bool-only
+				// seam's behavior.
+				m3 := corrMsg(3, "m3", "g", nil)
+				require.NoError(t, agg.Handle(t.Context(), m3))
+				assert.Equal(t, 1, out.count(), "fresh group after removal is held again")
+			},
+		},
+		{
 			name: "number-tolerant size: HeaderSequenceSize as float64",
 			assert: func(t *testing.T) {
 				store := newIntStore(t)
