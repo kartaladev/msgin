@@ -4,15 +4,20 @@ import (
 	"context"
 	"hash/fnv"
 	"sync"
+	"time"
+
+	"github.com/jonboulle/clockwork"
 )
 
 // aggregatorConfig accumulates AggregatorOption settings before NewAggregator
-// builds an Aggregator. timeout/expired/clock are added in Task 3
-// (WithGroupTimeout/WithExpiredGroupChannel/WithClock).
+// builds an Aggregator.
 type aggregatorConfig struct {
 	output    MessageChannel
 	correlate func(Message[any]) (string, error)
 	release   func(MessageGroup) bool
+	timeout   time.Duration
+	expired   MessageChannel
+	clock     clockwork.Clock
 }
 
 // AggregatorOption configures an Aggregator built by NewAggregator.
@@ -54,6 +59,46 @@ func WithReleaseStrategy(fn func(MessageGroup) bool) AggregatorOption {
 func WithCompletionSize(n int) AggregatorOption {
 	return func(c *aggregatorConfig) {
 		c.release = func(g MessageGroup) bool { return len(g.Messages()) >= n }
+	}
+}
+
+// WithGroupTimeout enables the optional expiry reaper (Run): a group whose
+// CreatedAt is older than d, and still unreleased at a reap tick, is routed
+// to the expired-group channel (WithExpiredGroupChannel) and removed rather
+// than held forever. Unset (the default), no timeout applies and Run blocks
+// until its context is cancelled without reaping anything.
+//
+// WithGroupTimeout without a paired WithExpiredGroupChannel makes
+// NewAggregator return ErrExpiryChannelRequired: a partial group's members
+// must go somewhere observable when they expire, rather than being silently
+// dropped.
+func WithGroupTimeout(d time.Duration) AggregatorOption {
+	return func(c *aggregatorConfig) { c.timeout = d }
+}
+
+// WithExpiredGroupChannel sets the channel an expired partial group's members
+// are sent to by the reaper (Run), one message at a time, in the group's
+// arrival order. Required whenever WithGroupTimeout is set.
+//
+// Never wire this channel back into the same Aggregator's input under the
+// same correlation key: the reaper holds a per-key lock across the call to
+// Send, and that lock is not reentrant — a cycle deadlocks (see
+// WithOutputChannel's doc for the identical Handle-side caveat).
+func WithExpiredGroupChannel(ch MessageChannel) AggregatorOption {
+	return func(c *aggregatorConfig) { c.expired = ch }
+}
+
+// WithAggregatorClock injects the clock the expiry reaper (Run) uses to drive
+// its ticker and compute the expiry cutoff. The default is the real wall
+// clock; tests inject a clockwork.FakeClock. A nil c leaves the default in
+// place. Named distinctly from the package-level WithClock (a MessageOption)
+// to avoid a same-package function collision — both configure a
+// clockwork.Clock but for different option types.
+func WithAggregatorClock(c clockwork.Clock) AggregatorOption {
+	return func(cfg *aggregatorConfig) {
+		if c != nil {
+			cfg.clock = c
+		}
 	}
 }
 
@@ -117,7 +162,7 @@ const numShardLocks = 256
 // NewAggregator) into one Message[B] sent to the output channel. It
 // implements MessageHandler; place it as a chain's next (Subscribe) or a
 // flow head (NewConsumer[any](src, agg.Handle)). Optionally it reaps expired
-// partial groups via Run(ctx) — see WithGroupTimeout (Task 3).
+// partial groups via Run(ctx) — see WithGroupTimeout.
 //
 // Concurrency: Handle holds a lock sharded by the message's correlation key
 // (hash/fnv over the key, mod numShardLocks) across the entire
@@ -150,9 +195,8 @@ var _ MessageHandler = (*Aggregator)(nil)
 // NewAggregator builds an Aggregator from store, the typed aggregate function
 // fn, and opts. store and an output channel (WithOutputChannel) are required;
 // a nil store is ErrNilStore, a nil fn is ErrNilFunc, and no WithOutputChannel
-// is ErrNilOutput — no panic on caller input. (WithGroupTimeout without
-// WithExpiredGroupChannel → ErrExpiryChannelRequired is validated starting in
-// Task 3.)
+// is ErrNilOutput — no panic on caller input. WithGroupTimeout without a
+// paired WithExpiredGroupChannel is ErrExpiryChannelRequired.
 func NewAggregator[A, B any](
 	store MessageGroupStore,
 	fn func(ctx context.Context, group []Message[A]) (Message[B], error),
@@ -164,12 +208,15 @@ func NewAggregator[A, B any](
 	if fn == nil {
 		return nil, ErrNilFunc
 	}
-	cfg := aggregatorConfig{correlate: defaultCorrelate, release: defaultRelease}
+	cfg := aggregatorConfig{correlate: defaultCorrelate, release: defaultRelease, clock: clockwork.NewRealClock()}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
 	if cfg.output == nil {
 		return nil, ErrNilOutput
+	}
+	if cfg.timeout > 0 && cfg.expired == nil {
+		return nil, ErrExpiryChannelRequired
 	}
 	return &Aggregator{
 		store:  store,
@@ -244,4 +291,79 @@ func (a *Aggregator) Handle(ctx context.Context, msg Message[any]) error {
 	}
 	_, err = a.store.Remove(ctx, key)
 	return err
+}
+
+// Run drives the optional expiry reaper: it periodically finds groups whose
+// CreatedAt is older than WithGroupTimeout and are still unreleased, routes
+// their held members to WithExpiredGroupChannel, and removes them, so a
+// partial group with no matching final member does not wait forever.
+//
+// If WithGroupTimeout is unset (timeout <= 0), Run has nothing to reap: it
+// blocks until ctx is cancelled and returns ctx.Err(), starting no ticker
+// goroutine. Otherwise it ticks every timeout (via the clock injected by
+// WithAggregatorClock, or the real clock by default) and, on each tick, reaps
+// every group Expired as of clock.Now().Add(-timeout). A transient store
+// error from Expired is skipped and retried on the next tick. Run returns
+// ctx.Err() when ctx is cancelled; callers that want reaping typically start
+// Run in its own goroutine alongside the flow that calls Handle.
+//
+// Each expired group is re-checked after being atomically removed: the SPI
+// has no keyed read, so Run cannot check-then-remove atomically. Instead it
+// removes first (under the same per-key lock Handle uses for that
+// correlation key) and inspects what it actually removed. If that group's
+// CreatedAt is no longer before the cutoff — a concurrent Handle released and
+// re-formed a fresh group at the same key between Run's Expired() snapshot
+// and this Remove — the removed members are restored (re-Added) rather than
+// expired-routed, so a live, still-fillable group is never prematurely
+// diverted. A group that failed to send to the expired channel is dropped
+// after removal (at-most-once to the expired sink): Remove already
+// committed, so there is nothing left to retry from.
+func (a *Aggregator) Run(ctx context.Context) error {
+	if a.cfg.timeout <= 0 {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	ticker := a.cfg.clock.NewTicker(a.cfg.timeout)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.Chan():
+			a.reap(ctx)
+		}
+	}
+}
+
+// reap runs one expiry sweep: see Run's doc for the full re-check contract.
+func (a *Aggregator) reap(ctx context.Context) {
+	cutoff := a.cfg.clock.Now().Add(-a.cfg.timeout)
+	groups, err := a.store.Expired(ctx, cutoff)
+	if err != nil {
+		return // transient; next tick
+	}
+	for _, g := range groups {
+		mu := a.keyLock(g.Key())
+		mu.Lock()
+
+		removed, rerr := a.store.Remove(ctx, g.Key())
+		if rerr != nil || removed == nil {
+			mu.Unlock()
+			continue // released concurrently, or already gone
+		}
+		if !removed.CreatedAt().Before(cutoff) {
+			// A fresh group re-formed at this key since Expired(): restore it
+			// rather than expired-route a live, still-fillable group.
+			for _, m := range removed.Messages() {
+				_, _ = a.store.Add(ctx, g.Key(), m)
+			}
+			mu.Unlock()
+			continue
+		}
+		for _, m := range removed.Messages() {
+			_ = a.cfg.expired.Send(ctx, m)
+		}
+		mu.Unlock()
+	}
 }
