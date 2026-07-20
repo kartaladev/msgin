@@ -16,6 +16,13 @@
   ABBA deadlock; M-1/M-2 verified to route to the invalid-message channel. **Phase-2 design implementation-ready.**
   Realized across Plans 015–018; the `sql.GroupStore` specifics (incl. the multi-process transactional atomic
   release H-1 needs) are recorded separately in **ADR 0021**, expr-on-endpoints as an **ADR 0019 addendum**.
+  **Phase 2 (Aggregator) SHIPPED & MERGED to `main` (`94cda1f`).**
+  **Phase-3 revision (2026-07-21): §8 below SUPERSEDES §2's `Remove` method and §3's per-process per-key lock.**
+  The user chose full **multi-process** durability, which the per-key lock cannot deliver (it does not serialize
+  across processes). The settlement model becomes a **store-level lease-claim** (`ClaimGroup`/`SettleGroup`/
+  `AbandonGroup`) that is the single serialization point for both memory (in-process) and sql (cross-process); the
+  Aggregator's `[256]sync.Mutex` is removed. Because msgin has **no release tag** (the Phase-2 SPI is unreleased),
+  this reshape is not a SemVer break. See §8; the `sql.GroupStore` realization is **ADR 0021**.
 - **Spec:** [Spec 009 — Splitter + Aggregator endpoints](../specs/009-splitter-aggregator-endpoints.md).
 - **Depends on / builds on:** [ADR 0013 — Composition endpoints](0013-composition-endpoints.md) (the
   `MessageHandler`/`MessageChannel`/`Step`/`Chain` backbone + synchronous-direct error model these endpoints extend),
@@ -238,6 +245,146 @@ slice → Phase-1 Split), and the aggregator exprs — `WithCorrelationExpr[A]` 
 `compile[A]`; a bad expr is `ErrInvalidExpression` at construction. No new dependency (expr already in-core). The
 group-env is fixed and documented, not a general extension point (`WithExprEnv` stays deferred, Spec 008 O8-3).
 
+### 8. Phase-3 revision — uniform lease-claim settlement (SUPERSEDES §2 `Remove` + §3 per-key lock)
+
+The user chose **full multi-process** durability for the durable backend (ADR 0021): two aggregator processes
+sharing one `sql.GroupStore` (e.g. Competing Consumers over a `SELECT … FOR UPDATE SKIP LOCKED` source) must never
+both emit a group, nor lose one. §3's per-process `[256]sync.Mutex` cannot deliver that — it does not serialize
+across processes. This section revises the settlement model accordingly; it applies to **both** stores (the memory
+store is reworked to the same shape so there is one Handle path and the concurrency proof needs no DB — two
+`*Aggregator` instances sharing one `memory.GroupStore` *is* a faithful cross-process simulation, and a per-instance
+lock could never serialize them). Because msgin carries **no release tag**, replacing the shipped `Remove` is not a
+SemVer break (unreleased API).
+
+- **SPI: `Remove` → `ClaimGroup`/`SettleGroup`/`AbandonGroup` (a lease).** The store gains an atomic **lease-claim**
+  and the coarse key-`Remove` is dropped:
+  ```go
+  type MessageGroupClaim interface { MessageGroup; Epoch() int64 } // Key/Messages/CreatedAt + fence token
+  // ClaimGroup atomically leases the members present at claim time (one winner), returning them + a
+  //   fence epoch; nil (no error) if key is absent or already leased. memory and sql differ in how a
+  //   lease ends (audit R1 H4/M1): the in-process MEMORY lease is UNCONDITIONAL while held — it is
+  //   released only by SettleGroup/AbandonGroup (both synchronous in the claiming goroutine), never by
+  //   wall-clock, so it has NO TTL and cannot be stolen from a live holder (a panic mid-release leaks
+  //   the lease until process exit, consistent with memory's process-scoped guarantee). The durable SQL
+  //   lease is TTL-bounded (store-owned WithGroupLeaseTTL, default 5m) so a CRASHED holder's lease ages
+  //   out and another process re-claims — the crash-recovery path memory does not need. Expired excludes
+  //   currently-leased groups in both.
+  ClaimGroup(ctx context.Context, key string) (MessageGroupClaim, error)
+  // SettleGroup fenced-deletes exactly the CLAIMED member set (epoch-fenced); members added during the
+  //   lease survive as a fresh live group. Called after a successful output Send.
+  SettleGroup(ctx context.Context, claim MessageGroupClaim) error
+  // AbandonGroup releases the lease WITHOUT deleting (Send failed, or the reaper found a not-actually-expired
+  //   group): the claimed members return to live so a retry / next tick re-releases. Un-tags, never drops.
+  AbandonGroup(ctx context.Context, claim MessageGroupClaim) error
+  // Expired returns groups the reaper's settlement sweep should re-examine: any group whose LEASE has expired
+  //   (a crashed holder — sql) regardless of age, PLUS (when before is non-zero) unleased groups whose CreatedAt
+  //   is before the cutoff. Excludes groups under a live lease. Redefined for crash recovery (audit R2 H-A):
+  //   the crashed-lease case is how a durable store's stuck complete group is found and re-released.
+  Expired(ctx context.Context, before time.Time) ([]MessageGroup, error)
+  // RecoverInterval is the cadence at which the reaper must sweep for crashed leases, independent of
+  //   WithGroupTimeout (audit R2 H-A). memory returns 0 (unconditional lease — no crash-recovery sweep needed;
+  //   a panic mid-release is handled by the Aggregator's defer-abandon). sql returns its lease TTL, so a crashed
+  //   holder's group is recovered within ~one TTL even with no expiry timeout configured.
+  RecoverInterval() time.Duration
+  ```
+  `Add` and `EmitsLiveValue` are unchanged (both stores). **`Add` returns the LIVE (unclaimed) members only —
+  audit R2 M-C:** memory returns `msgs[claimedLen:]` (the residual when a claim is in flight, else all), matching
+  sql's `claimed_epoch IS NULL` snapshot, so the release-check sees the same set on both stores (a member arriving
+  during a lease is a fresh-residual member, not part of the in-flight claim).
+- **The claim tags a MEMBER SET, it never blind-deletes by key (the Phase-3 correctness crux, analogous to
+  Phase-2 H-1 — logical, invisible to `-race`).** After a group is leased but before `SettleGroup`, a **new distinct
+  member can still arrive for the same key** — real under an early-release strategy (`WithCompletionSize(3)` when 5
+  will come) or an id-less over-delivery (a redelivery is an idempotent `Add` no-op and does not grow the group). If
+  settlement deleted the whole `group_key`, that late member — already `Add`-committed and **Acked to the source** —
+  would be **silently lost**, a worse-than-documented at-least-once violation (§4). Therefore: `ClaimGroup` freezes
+  and tags exactly the members present at claim time; `Add`s during the lease stay **live/untagged**; `SettleGroup`
+  deletes **only the tagged claimed set**; a member that arrived during the lease **survives as a fresh live group**
+  → re-releases later or expires. This preserves the §4 "late member forms a fresh group" semantics *loss-free*.
+  - **memory fences the claimed set by PREFIX LENGTH, not by id (audit R1 H3).** Because `Add` only ever appends,
+    the members present at claim time are exactly `msgs[:claimedLen]`; `SettleGroup` deletes that prefix and keeps
+    `msgs[claimedLen:]`. An id-map fence (an earlier sketch) never deleted **id-less** members (`ID()==""` was never
+    tagged), leaking + re-emitting an all-id-less group — a silent regression from Phase-2's whole-key `Remove`. The
+    prefix fence is id-agnostic and correct for both.
+  - **sql fences by a `claimed_epoch` marker, and MUST re-absorb a superseded claim's members (audit R1 H2).** A
+    re-claim after a crashed holder's lease expiry bumps the group epoch and tags members
+    `WHERE claimed_epoch IS NULL OR claimed_epoch < <new group epoch>` — the group-row lease fence guarantees a
+    single active claim, so any `claimed_epoch` below the current epoch is a **dead claim** safe to re-absorb.
+    Tagging only `claimed_epoch IS NULL` would orphan the dead holder's members forever (loss). See ADR 0021 §4.
+  - **Multi-process completion detection must serialize same-key adds (audit R1 H1).** On sql under READ COMMITTED,
+    two processes each adding one member of a size-N group see only their own member (the other's `INSERT` is
+    uncommitted) → **neither observes completion** → the group sits complete-but-undetected (mis-expired, or stuck).
+    `AddMember` therefore takes a **row lock on the group row** (`SELECT … FOR UPDATE`) before snapshotting, so the
+    completing add observes all committed members. memory is immune (its single mutex serializes adds), which is why
+    the memory cross-process stress test cannot prove this — the **sql conformance** must (ADR 0021 §6). See ADR 0021 §4.
+  - **Message ids are REQUIRED for durable/multi-process aggregation.** The sql schema keys members by
+    `PRIMARY KEY(group_key, msg_id)`, so id-less members (`msg_id=""`) collapse to one row — unsupported on the
+    durable path (documented; source-delivered messages and Splitter children always carry ids). memory tolerates
+    id-less members (prefix fence) but without redelivery-dedup (idempotent `Add` is by id).
+- **Aggregator: drop the per-key lock; the store's atomic claim is the single serialization point.** `Handle`
+  becomes `assert → correlate → Add → release-check(live snapshot) → ClaimGroup → (nil ⇒ held, return nil) → release`.
+  **`release` uses a `defer`-abandon-unless-settled (audit R2 M-G):** it runs `agg(claim members) → output.Send →
+  SettleGroup` and defers `if !settled { AbandonGroup }`, so an `agg`/`Send` **error** OR a **panic** (recovered by
+  the driving `Consumer`) always releases the lease — otherwise a panic mid-release would wedge the correlation key
+  forever on memory (no TTL to age it out). **After a successful settle, `release` DRAINS the key (audit R3 H1):** it
+  loops `ClaimGroup(key)` and re-releases while a *complete* residual remains (stopping when the claim is nil or not
+  release-satisfied). A residual forms when members arrive during a holder's lease; after the settle it may itself be
+  complete, yet nothing else re-checks it (the recovery sweep surfaces only crashed *leases*, not unleased-complete
+  residuals), so under count-based release + a recurring key + no expiry timeout a completed residual would be
+  **silently stranded** (both members Acked, never emitted). The drain closes the common case, but it is **not** a
+  full guarantee on its own under concurrency (audit R4 NIT): a residual can still be left complete-but-untriggered
+  by a crash mid-drain, OR by a concurrent `Add` landing during the drain's speculative claim-then-abandon of an
+  *incomplete* residual (m5 arrives while the drainer holds {m3,m4}; the drainer abandons {m3,m4}, the live group is
+  now {m3,m4,m5} = complete but both callers have returned). Neither loses data (at-least-once holds — every member
+  survives, un-Acked or Acked-into-the-store), and both are recovered by the reaper's age-scan (release-check →
+  **OUTPUT**) — so **count-based recurring-key aggregation under Competing Consumers should set `WithGroupTimeout`**,
+  which is the actual guarantee-bearer there; the drain just makes the common path immediate. The canonical
+  Splitter→Aggregator (exactly-N-once) never forms a residual and needs none of this.
+  The `[256]sync.Mutex`/`keyLock` is **removed** — it could not serialize
+  two Aggregator instances over one store, and the store claim now provides exact-once emit within *and* across
+  processes. **Bonus:** no lock is held across `output.Send`, so §3's "cyclic wiring self-deadlocks" footgun (F2)
+  disappears (a cycle may still recurse, but no longer deadlocks a non-reentrant mutex).
+- **The reaper is a RECOVERY + expiry sweep, and running it is REQUIRED for durable crash-recovery (audit R2 H-A —
+  the central fix).** A lease-based durable store, exactly like the sql `Source`, needs a periodic sweep to reclaim a
+  **crashed holder's** lease — there is no other trigger (the crashed group's members are all tagged, so the
+  release-check live snapshot is empty and a redelivered final member is Acked-and-dropped as a trigger; nothing
+  re-fires `Handle`). So `Run(ctx)`'s sweep, per tick, for each group from `Expired(cutoff)` (crashed-lease groups
+  always + age-old unleased groups when a timeout is set): `ClaimGroup → nil⇒skip → release-strategy satisfied?
+  **re-aggregate + Send to the OUTPUT channel + SettleGroup (RECOVERY)** : createdAt<cutoff? route members to the
+  EXPIRED channel + SettleGroup : AbandonGroup`. This is the fix for the round-2 hole: a crashed **complete** group is
+  re-emitted to **output** (not mis-routed to the expired sink, and not stuck forever). Tick cadence =
+  min-positive of `WithGroupTimeout` and `store.RecoverInterval()`; the reaper runs whenever **either** is set, so a
+  durable store (RecoverInterval = its lease TTL > 0) gets recovery sweeps even with no expiry timeout. **Using the
+  durable `sql.GroupStore` for multi-process safety therefore REQUIRES `go agg.Run(ctx)`** (documented) — for the
+  memory store `Run` is only needed for expiry (RecoverInterval = 0). A fresh residual re-formed at the key since the
+  lock-free `Expired()` snapshot is abandoned (its `createdAt` is not before the cutoff), never expired-routed.
+- **Lease recovery = at-least-once, never loss (the trap the naive design falls into).** A crash between
+  `ClaimGroup` and `SettleGroup` leaves the group **leased but present**; the lease expires (`leaseTTL`) → the
+  **reaper's recovery sweep** (above) on another process (or a restart) re-claims → re-releases to output → a
+  **duplicate** downstream message. A naive `DELETE … RETURNING`-before-Send would instead **lose** the group
+  (deleted, its members' source messages already Acked, crash before Send) — rejected. The lease is the loss-free
+  shape, mirroring the sql Source's lease/fence/epoch model (ADR 0010/0018).
+- **`==n` / exact-count caveat (revised):** WITH the store-level atomic claim, exact-count release is safe **across
+  processes** too (the claim admits one winner; the claimed set is fenced; a redelivery is an idempotent no-op) —
+  strictly stronger than §3's single-process-only claim. `>=`/`WithCompletionSize` remain the recommended default
+  for id-less streams.
+- **Guarantee (final):** at-least-once **across processes and restarts** — exactly-one emit under concurrent
+  completion (store claim), **duplicate-on-crash via the reaper's recovery sweep re-emitting to output** (lease
+  re-claim; requires `Run`), **never loss** (lease not delete; late members survive; dead-claim members re-absorbed).
+  The `-race` gate stays; the correctness proof is **split by concern** (audit R1 M4 / R2 H-A): the
+  **two-Aggregators-one-`memory.GroupStore` stress test** proves in-process claim/settle **atomicity** (single emit,
+  no loss, late-member survives) — it is NOT a faithful proxy for the sql add/claim/recovery behaviour (memory's
+  mutex-serialized `Add` and in-process lease hide H1/H2/H-A), so the **sql testcontainers conformance** MUST
+  additionally cover the multi-process/durable-only cases: concurrent-first-add completion detection (H1),
+  stale-epoch crash-recovery re-claim (H2), and **a crashed-mid-release complete group re-emitted to the OUTPUT
+  channel by the recovery sweep** (H-A — assert output, not just "no orphan rows"). Both stores share one case list
+  where semantics are meant to be identical (live-only Add snapshot, late-member survival,
+  claim-returns-nil-when-leased, Expired-excludes-live-leased).
+- **Documented edges (audit R1 L1/L2):** the release decision is made on the `Add` snapshot but `ClaimGroup` freezes
+  whatever is present at claim time, so a **non-monotonic** custom `WithReleaseStrategy` (true only transiently) may
+  aggregate a slightly different set than it "decided" on — documented on `WithReleaseStrategy`. Dropping the per-key
+  lock removes the F2 deadlock, but wiring an output/expired channel back to the same input under the same key still
+  **recurses unboundedly** on a `DirectChannel` — the godoc keeps a warning (recursion, no longer a deadlock).
+
 ## Consequences
 
 **Positive**
@@ -274,3 +421,13 @@ group-env is fixed and documented, not a general extension point (`WithExprEnv` 
   visible channel is the only fail-safe shape (Spec D10).
 - **Ack-on-receive with an in-memory-only store** (the simplest settlement). Rejected with the durable-store
   choice: it cannot survive a restart, which was the user's explicit requirement.
+- **(Phase 3) Per-process per-key lock for multi-process safety** (§3's Phase-2 shape). Rejected: a per-process
+  mutex does not serialize two processes sharing a durable store, so it cannot prevent a cross-process double-emit.
+  Superseded by the store-level lease-claim (§8).
+- **(Phase 3) Atomic `DELETE … RETURNING`-before-Send as the claim** (multi-process-safe, one statement). Rejected:
+  it trades the duplicate-on-crash for **data loss** — a crash in the delete→Send window loses a group whose
+  members' source messages were already Acked. The lease (§8) keeps it at-least-once (crash ⇒ lease expiry ⇒
+  re-claim ⇒ duplicate), never loss.
+- **(Phase 3) Blind `SettleGroup` by `group_key`** (delete the whole group on release). Rejected: a distinct member
+  arriving during the lease window would be deleted after being Acked — silent loss. The claim tags and settles only
+  the claimed member set; late members survive as a fresh group (§8).

@@ -14,8 +14,16 @@ import (
 // of held messages, for an Aggregator. Delivery guarantee: at-least-once within
 // the process lifetime; partial groups are LOST on process exit (use the sql
 // store to survive a restart). Add is idempotent by msg id (a redelivered member
-// does not double-count); id-less messages are appended without dedup. Carries
-// live values. Starts no goroutine — the Aggregator owns the expiry reaper.
+// does not double-count); id-less messages are appended without dedup (and lack
+// idempotent-by-id redelivery dedup — rare, since source messages carry ids).
+// Carries live values. Starts no goroutine — the Aggregator owns the expiry
+// reaper.
+//
+// The lease a ClaimGroup grants is UNCONDITIONAL while held (no wall-clock
+// TTL): it is released only by a matching SettleGroup or AbandonGroup, both
+// synchronous in the claiming goroutine. RecoverInterval reports 0 — there is
+// no crash-recovery sweep to run, since a lease cannot outlive the goroutine
+// that holds it within one process.
 type GroupStore struct {
 	mu        sync.Mutex
 	groups    map[string]*groupState
@@ -23,10 +31,17 @@ type GroupStore struct {
 	maxGroups int
 }
 
+// groupState is one correlation group's mutable state. msgs grows only by
+// append; the active claim (if leased) is the PREFIX msgs[:claimedLen] — a
+// member Added during a lease lands beyond claimedLen and survives settlement
+// as a fresh residual group.
 type groupState struct {
-	msgs      []msgin.Message[any]
-	ids       map[string]struct{}
-	createdAt time.Time
+	msgs       []msgin.Message[any]
+	ids        map[string]struct{}
+	createdAt  time.Time
+	epoch      int64 // bumped on each ClaimGroup, fences Settle/Abandon
+	leased     bool  // true between ClaimGroup and Settle/Abandon (UNCONDITIONAL — no wall-clock TTL)
+	claimedLen int   // # members frozen into the active claim; Add only appends, so claimed = msgs[:claimedLen]
 }
 
 type groupStoreConfig struct {
@@ -71,10 +86,11 @@ func NewGroupStore(opts ...GroupStoreOption) (*GroupStore, error) {
 }
 
 // Add durably appends msg to group key and returns the resulting group
-// snapshot, allocating a new group (stamped with the current clock time) on
-// first arrival for key. It is idempotent by msg.ID(): re-adding an
-// already-stored member id is a no-op returning the unchanged group snapshot.
-// A new key beyond WithMaxGroups returns msgin.ErrOverflowDropped.
+// snapshot of the LIVE (unclaimed) members, allocating a new group (stamped
+// with the current clock time) on first arrival for key. It is idempotent by
+// msg.ID(): re-adding an already-stored member id is a no-op returning the
+// unchanged live-members snapshot. A new key beyond WithMaxGroups returns
+// msgin.ErrOverflowDropped.
 func (s *GroupStore) Add(_ context.Context, key string, msg msgin.Message[any]) (msgin.MessageGroup, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -88,45 +104,101 @@ func (s *GroupStore) Add(_ context.Context, key string, msg msgin.Message[any]) 
 	}
 	if id := msg.ID(); id != "" {
 		if _, seen := g.ids[id]; seen {
-			return snapshot{key: key, msgs: slices.Clone(g.msgs), createdAt: g.createdAt}, nil
+			return snapshot{key: key, msgs: slices.Clone(g.msgs[g.claimedLen:]), createdAt: g.createdAt}, nil
 		}
 		g.ids[id] = struct{}{}
 	}
 	g.msgs = append(g.msgs, msg)
-	return snapshot{key: key, msgs: slices.Clone(g.msgs), createdAt: g.createdAt}, nil
+	return snapshot{key: key, msgs: slices.Clone(g.msgs[g.claimedLen:]), createdAt: g.createdAt}, nil
 }
 
-// Remove deletes the group at key and returns a cloned snapshot of the group
-// it removed, or (nil, nil) if key was absent.
-func (s *GroupStore) Remove(_ context.Context, key string) (msgin.MessageGroup, error) {
+// ClaimGroup atomically leases the members currently present for key and
+// returns them plus a fence epoch. It returns (nil, nil) when key is absent or
+// already leased (a live in-process holder — no wall-clock steal).
+func (s *GroupStore) ClaimGroup(_ context.Context, key string) (msgin.MessageGroupClaim, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	g, ok := s.groups[key]
-	if !ok {
-		return nil, nil
+	if !ok || g.leased {
+		return nil, nil // absent, or held by a live holder (no wall-clock steal in-process)
 	}
-	delete(s.groups, key)
-	return snapshot{key: key, msgs: slices.Clone(g.msgs), createdAt: g.createdAt}, nil
+	g.epoch++
+	g.leased = true
+	g.claimedLen = len(g.msgs)
+	claimed := slices.Clone(g.msgs[:g.claimedLen])
+	return claimGroup{snapshot{key: key, msgs: claimed, createdAt: g.createdAt}, g.epoch}, nil
 }
 
-// Expired returns snapshots of groups whose CreatedAt is strictly before
-// before.
+// SettleGroup deletes exactly the claimed member set (fenced on claim.Epoch)
+// after a successful release. Members added during the lease survive as a
+// fresh live group. A fence miss (already settled/abandoned/stolen) is a
+// no-op.
+func (s *GroupStore) SettleGroup(_ context.Context, claim msgin.MessageGroupClaim) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, ok := s.groups[claim.Key()]
+	if !ok || !g.leased || g.epoch != claim.Epoch() { // fence miss / stolen / already settled
+		return nil
+	}
+	// delete exactly the claimed PREFIX; anything appended during the lease survives.
+	for _, m := range g.msgs[:g.claimedLen] {
+		if id := m.ID(); id != "" {
+			delete(g.ids, id) // so a post-completion redelivery forms a fresh group, not a dedup no-op
+		}
+	}
+	residual := slices.Clone(g.msgs[g.claimedLen:])
+	if len(residual) == 0 {
+		delete(s.groups, claim.Key())
+		return nil
+	}
+	g.msgs = residual
+	g.leased = false
+	g.claimedLen = 0
+	g.createdAt = s.clock.Now() // residual is a fresh group for expiry (matches sql — audit R1 M2)
+	return nil
+}
+
+// AbandonGroup releases the lease WITHOUT deleting: the claimed members return
+// to live (along with anything appended during the lease) so a retry / next
+// member / next reaper tick re-releases. Fenced on claim.Epoch; a fence miss
+// is a no-op.
+func (s *GroupStore) AbandonGroup(_ context.Context, claim msgin.MessageGroupClaim) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, ok := s.groups[claim.Key()]
+	if !ok || !g.leased || g.epoch != claim.Epoch() {
+		return nil
+	}
+	g.leased = false // members return to live (all of msgs, incl. any appended during the lease)
+	g.claimedLen = 0 // epoch stays bumped so the abandoned holder's later settle is a no-op
+	return nil
+}
+
+// Expired returns snapshots of unleased groups whose CreatedAt is strictly
+// before before. A crashed lease never occurs in-process (the lease is
+// released synchronously by the claiming goroutine, or by the Aggregator's
+// panic-safe defer-abandon), so memory's Expired surfaces only age-old
+// unleased groups.
 func (s *GroupStore) Expired(_ context.Context, before time.Time) ([]msgin.MessageGroup, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []msgin.MessageGroup
 	for key, g := range s.groups {
-		if g.createdAt.Before(before) {
+		if g.createdAt.Before(before) && !g.leased {
 			out = append(out, snapshot{key: key, msgs: slices.Clone(g.msgs), createdAt: g.createdAt})
 		}
 	}
 	return out, nil
 }
 
+// RecoverInterval reports 0: memory needs no crash-recovery sweep — a lease
+// cannot outlive the goroutine that holds it within one process.
+func (s *GroupStore) RecoverInterval() time.Duration { return 0 }
+
 // EmitsLiveValue reports that this store carries live Go values (no codec).
 func (s *GroupStore) EmitsLiveValue() bool { return true }
 
-// snapshot is an immutable msgin.MessageGroup view returned by Add/Remove/Expired.
+// snapshot is an immutable msgin.MessageGroup view returned by Add/ClaimGroup/Expired.
 type snapshot struct {
 	key       string
 	msgs      []msgin.Message[any]
@@ -136,3 +208,11 @@ type snapshot struct {
 func (s snapshot) Key() string                    { return s.key }
 func (s snapshot) Messages() []msgin.Message[any] { return s.msgs }
 func (s snapshot) CreatedAt() time.Time           { return s.createdAt }
+
+// claimGroup is a snapshot + fence epoch implementing msgin.MessageGroupClaim.
+type claimGroup struct {
+	snapshot
+	epoch int64
+}
+
+func (c claimGroup) Epoch() int64 { return c.epoch }

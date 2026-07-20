@@ -58,26 +58,147 @@ func TestGroupStore_Conformance(t *testing.T) {
 			},
 		},
 		{
-			name: "Remove drops the group and returns a snapshot of it",
+			name: "ClaimGroup then SettleGroup removes the claimed group; a later Add starts fresh",
 			assert: func(t *testing.T, s msgin.MessageGroupStore) {
 				_, _ = s.Add(t.Context(), "k", msg("a"))
-				removed, err := s.Remove(t.Context(), "k")
+				claim, err := s.ClaimGroup(t.Context(), "k")
 				require.NoError(t, err)
-				require.NotNil(t, removed)
-				assert.Equal(t, "k", removed.Key())
-				assert.Len(t, removed.Messages(), 1)
-				assert.Equal(t, "a", removed.Messages()[0].ID())
+				require.NotNil(t, claim)
+				assert.Equal(t, "k", claim.Key())
+				assert.Len(t, claim.Messages(), 1)
+				assert.Equal(t, "a", claim.Messages()[0].ID())
+
+				require.NoError(t, s.SettleGroup(t.Context(), claim))
 
 				g, _ := s.Add(t.Context(), "k", msg("b"))
-				assert.Len(t, g.Messages(), 1) // fresh group
+				assert.Len(t, g.Messages(), 1, "fresh group after settlement")
 			},
 		},
 		{
-			name: "Remove on an absent key returns (nil, nil)",
+			name: "ClaimGroup then AbandonGroup returns the members to live",
 			assert: func(t *testing.T, s msgin.MessageGroupStore) {
-				removed, err := s.Remove(t.Context(), "absent")
+				_, _ = s.Add(t.Context(), "k", msg("a"))
+				claim, err := s.ClaimGroup(t.Context(), "k")
 				require.NoError(t, err)
-				assert.Nil(t, removed)
+				require.NotNil(t, claim)
+
+				require.NoError(t, s.AbandonGroup(t.Context(), claim))
+
+				g, err := s.Add(t.Context(), "k", msg("b"))
+				require.NoError(t, err)
+				assert.Len(t, g.Messages(), 2, "abandoned members are live again, plus the new one")
+			},
+		},
+		{
+			name: "ClaimGroup on an absent key returns (nil, nil)",
+			assert: func(t *testing.T, s msgin.MessageGroupStore) {
+				claim, err := s.ClaimGroup(t.Context(), "absent")
+				require.NoError(t, err)
+				assert.Nil(t, claim)
+			},
+		},
+		{
+			name: "ClaimGroup on an already-leased key returns (nil, nil): held by the live holder",
+			assert: func(t *testing.T, s msgin.MessageGroupStore) {
+				_, _ = s.Add(t.Context(), "k", msg("a"))
+				first, err := s.ClaimGroup(t.Context(), "k")
+				require.NoError(t, err)
+				require.NotNil(t, first)
+
+				second, err := s.ClaimGroup(t.Context(), "k")
+				require.NoError(t, err)
+				assert.Nil(t, second, "a second concurrent claim on an in-flight lease must be held")
+			},
+		},
+		{
+			name: "a member arriving during a lease survives SettleGroup as a fresh residual group",
+			assert: func(t *testing.T, s msgin.MessageGroupStore) {
+				_, _ = s.Add(t.Context(), "k", msg("a"))
+				claim, err := s.ClaimGroup(t.Context(), "k")
+				require.NoError(t, err)
+				require.NotNil(t, claim)
+
+				// A late member arrives while "a" is under lease.
+				live, err := s.Add(t.Context(), "k", msg("b"))
+				require.NoError(t, err)
+				assert.Len(t, live.Messages(), 1, "Add returns LIVE (unclaimed) members only")
+				assert.Equal(t, "b", live.Messages()[0].ID())
+
+				require.NoError(t, s.SettleGroup(t.Context(), claim))
+
+				g, err := s.Add(t.Context(), "k", msg("c"))
+				require.NoError(t, err)
+				require.Len(t, g.Messages(), 2, "the late member b survives, plus the new c")
+				assert.Equal(t, "b", g.Messages()[0].ID())
+				assert.Equal(t, "c", g.Messages()[1].ID())
+			},
+		},
+		{
+			name: "SettleGroup with a stale epoch (the lease was re-claimed) is a no-op — the fence protects the current lease",
+			assert: func(t *testing.T, s msgin.MessageGroupStore) {
+				_, _ = s.Add(t.Context(), "k", msg("a"))
+				staleClaim, err := s.ClaimGroup(t.Context(), "k")
+				require.NoError(t, err)
+				require.NotNil(t, staleClaim)
+
+				require.NoError(t, s.AbandonGroup(t.Context(), staleClaim)) // released; the epoch is NOT rewound
+
+				freshClaim, err := s.ClaimGroup(t.Context(), "k") // bumps the epoch past staleClaim's
+				require.NoError(t, err)
+				require.NotNil(t, freshClaim)
+
+				// The stale claim's Settle must be a no-op: it must not delete
+				// the member now held (again) by the fresh claim.
+				require.NoError(t, s.SettleGroup(t.Context(), staleClaim))
+
+				require.NoError(t, s.SettleGroup(t.Context(), freshClaim)) // the real settle
+				g, err := s.Add(t.Context(), "k", msg("b"))
+				require.NoError(t, err)
+				assert.Len(t, g.Messages(), 1, "settled cleanly via the fresh claim; the stale settle was a no-op")
+			},
+		},
+		{
+			name: "AbandonGroup with a stale epoch (the lease was re-claimed) is a no-op — the fence protects the current lease",
+			assert: func(t *testing.T, s msgin.MessageGroupStore) {
+				_, _ = s.Add(t.Context(), "k", msg("a"))
+				staleClaim, err := s.ClaimGroup(t.Context(), "k")
+				require.NoError(t, err)
+				require.NotNil(t, staleClaim)
+
+				// A late member arrives during the lease, forming a residual so
+				// the group survives settlement (rather than being deleted) —
+				// keeping the SAME group alive for the epoch to be re-bumped on.
+				_, err = s.Add(t.Context(), "k", msg("b"))
+				require.NoError(t, err)
+				require.NoError(t, s.SettleGroup(t.Context(), staleClaim)) // settles "a"; "b" survives live
+
+				freshClaim, err := s.ClaimGroup(t.Context(), "k") // claims "b"; bumps the epoch past staleClaim's
+				require.NoError(t, err)
+				require.NotNil(t, freshClaim)
+
+				// The stale (already-settled) claim's Abandon must be a no-op:
+				// it must not un-lease the fresh claim.
+				require.NoError(t, s.AbandonGroup(t.Context(), staleClaim))
+
+				second, err := s.ClaimGroup(t.Context(), "k")
+				require.NoError(t, err)
+				assert.Nil(t, second, "the fresh claim must still be exclusively held; the stale abandon must not have un-leased it")
+			},
+		},
+		{
+			name: "Expired excludes a leased group",
+			assert: func(t *testing.T, s msgin.MessageGroupStore) {
+				_, _ = s.Add(t.Context(), "k", msg("a"))
+				claim, err := s.ClaimGroup(t.Context(), "k")
+				require.NoError(t, err)
+				require.NotNil(t, claim)
+
+				clock.Advance(10 * time.Second)
+				cutoff := clock.Now()
+
+				exp, err := s.Expired(t.Context(), cutoff)
+				require.NoError(t, err)
+				assert.Empty(t, exp, "a leased group must not be surfaced as expired")
 			},
 		},
 		{

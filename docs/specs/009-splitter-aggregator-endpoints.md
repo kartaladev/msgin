@@ -1,7 +1,13 @@
 # Spec 009 — Splitter + Aggregator endpoints (durable group store, expr sugar)
 
-- **Status:** Draft (2026-07-20) — brainstormed with the user; scope and the dominant design forks settled
-  interactively (see below). **Phase-1 (Splitter) adversarial audit round 1 folded** (Opus): H-1 deterministic
+- **Status:** Draft (2026-07-21) — brainstormed with the user; scope and the dominant design forks settled
+  interactively (see below). **Phase 1 (Splitter, Plan 015) + Phase 2 (Aggregator + `MessageGroupStore` SPI +
+  `memory.GroupStore`, Plan 016) SHIPPED & MERGED to `main`** (`e4b346d`, `94cda1f`). **Phase 3 (`sql.GroupStore`,
+  full multi-process — Plan 017 / ADR 0021 + the ADR 0020 §8 revision) is in design**: the user chose full
+  multi-process durability, which reopened the Phase-2 settlement into a store-level lease-claim (SPI `Remove` →
+  `ClaimGroup`/`SettleGroup`/`AbandonGroup`; `memory` reworked; per-key lock dropped) — see §3.4 (revised). The
+  full Phase-3 bundle (this spec-delta + ADR 0021 + the ADR 0020 §8 revision + Plan 017) goes through the 2-round
+  adversarial audit before any implementation. **Phase-1 (Splitter) adversarial audit round 1 folded** (Opus): H-1 deterministic
   child id `parentID#seq` (D2) — closes an id-collision that would silently drop the Splitter→Aggregator round-trip;
   M-1 durable `int`/`float64` sequence-header contract (D2); L-1/L-2/L-3 into Plan 015. **Round-2 re-audit: SOUND-WITH-NITS** — the deterministic
   child-id fix verified collision-free/idempotent and inert in the retry path; Phase-1 (Splitter) bundle ready to
@@ -181,14 +187,32 @@ primitive from Spec 008.
   `WithExpiredGroupChannel`, that is a **construction error** (an expiry that drops data without a visible sink is a
   footgun) — expiry demands a destination.
 
-### 3.4 `sql.GroupStore` (Phase 3)
+### 3.4 `sql.GroupStore` (Phase 3) — FULL multi-process (revised 2026-07-21)
 
-- **D11 — Schema + dialects.** Table `msgin_message_group(group_key TEXT, msg_id TEXT, seq BIGINT, headers …,
-  payload …, created_at …, PRIMARY KEY(group_key, msg_id))`. `Add` = dialect-appropriate idempotent upsert
-  (`INSERT … ON CONFLICT(group_key,msg_id) DO NOTHING` / `INSERT IGNORE`). `Remove` = `DELETE WHERE group_key=?`.
-  `Expired` = groups whose `MIN(created_at) < ?`. Reuses the existing `Dialect` seam; PG/MySQL/MariaDB/SQLite,
-  proven via `RunTestDatabase`. `EmitsLiveValue() == false` (wire — headers+payload framed via the runtime codec,
-  as the `sql` adapter already does). At-least-once **across restart**.
+The user chose **full multi-process** durability (not merely single-process-durable). This **reopens the Phase-2
+settlement**: a per-process lock cannot serialize two aggregator processes sharing one store, so atomicity moves
+**into the store** as a lease-claim. The full model is [ADR 0020 §8](../adrs/0020-splitter-aggregator-group-store.md);
+the durable realization is [ADR 0021](../adrs/0021-sql-group-store.md). Summary:
+
+- **D11 (revised) — SPI reshape: `Remove` → lease-claim.** The `MessageGroupStore` SPI drops `Remove` and gains
+  `ClaimGroup(ctx, key) (MessageGroupClaim, error)` (atomic lease of the members present at claim time; nil if
+  absent/already-leased; the lease TTL is store-owned via `WithGroupLeaseTTL`, sql default 5m, memory moot),
+  `SettleGroup(ctx, claim)` (fenced delete of **only the claimed set**), and
+  `AbandonGroup(ctx, claim)` (release the lease without deleting). **`memory` is reworked to the same shape** so
+  there is one Handle path and the concurrency proof is a DB-free two-`*Aggregator`-one-`memory.GroupStore` stress
+  test. The Aggregator's per-key `[256]sync.Mutex` is **removed** — the store's atomic claim is the single
+  serialization point (within and across processes). msgin has **no release tag**, so replacing `Remove` is not a
+  SemVer break. **The claim tags a member set and never blind-deletes by key** — a member arriving during the lease
+  survives as a fresh group (loss-free; the Phase-3 correctness crux, ADR 0020 §8).
+- **D11a — `sql.GroupStore` schema + `GroupDialect` (ADR 0021).** Two tables: `msgin_group(group_key PK, created_at,
+  epoch, locked_by, locked_at)` (per-group lease + expiry clock) and `msgin_group_member(group_key, msg_id, seq,
+  headers, payload, claimed_epoch, PK(group_key,msg_id))` (append-only; `claimed_epoch NULL` = live). `Add` =
+  idempotent upsert; `ClaimGroup` = fenced lease on the group row + tag members with the epoch; `SettleGroup` =
+  delete `claimed_epoch = epoch` rows (fenced); `Expired` = `created_at < ? AND not-leased`. A **new segregated
+  `GroupDialect`** (like `InboxDialect`, not the row-oriented `LeaseDialect`) with built-ins
+  `postgres`/`mysql`(MariaDB)/`sqlite`, proven via `RunTestDatabase` on all four engines. `EmitsLiveValue() ==
+  false` (wire). Lease TTL default 5m (`WithGroupLeaseTTL`). At-least-once **across restart and across processes**;
+  crash in the claim→settle window recovers via lease expiry → re-claim → duplicate (never loss).
 
 ### 3.5 expr sugar (Phase 4)
 
@@ -329,9 +353,10 @@ plan is approved and the user gives an explicit per-phase go-ahead** (CLAUDE.md)
   lazy opportunistic reaping. Confirm in ADR 0020. *(User leaned to the lifecycle struct in brainstorming.)*
 - **O9-2** — Whether `Split`/aggregate expose a channel-wired (branch) form in addition to the `Step`/`Handle`
   form, or the `Step`/`MessageHandler` forms are sufficient (lean: sufficient; channels reached via `Subscribe`).
-- **O9-3** — `MessageGroupStore` capacity/overflow: does the store bound total groups/members (like `ChannelStore`
-  capacity + overflow policy, Spec 007 D6), and does that live on the store or the Aggregator? Lean: on the store,
-  reusing the `OverflowPolicy` knobs. Confirm in ADR 0020/0021.
+- **O9-3** (RESOLVED, ADR 0021 §5) — capacity lives on the **store**: `memory.GroupStore` keeps `WithMaxGroups`
+  (a new key beyond the cap → `ErrOverflowDropped`, never evicting a partial group); `sql.GroupStore` is
+  **DB-bounded** (no in-store cap in v1 — a never-completing-group DoS is handled by expiry reaping + table
+  monitoring, matching ADR 0018 §4's sql-is-DB-bounded stance). No `OverflowPolicy` knob on the sql store.
 - **O9-4** — expr `SplitExpr` element typing: `[]any` elements asserted per-item to A/B vs a homogeneous `[]A`
   expr result. Confirm in the Phase-4 plan.
 - **O9-5** — Whether `Split` should offer a `WithoutSequenceHeaders()` escape for callers who don't aggregate
