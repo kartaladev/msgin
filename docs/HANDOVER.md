@@ -6,7 +6,7 @@
 > `docs/plans/017-sql-group-store.md`. The SDD ledger `.superpowers/sdd/progress.md` (gitignored, local) holds
 > per-task history — trust it + `git log` over memory.
 
-## LATEST: Phase 3 (`sql.GroupStore`, Plan 017) implementation COMPLETE on branch `feat/sql-groupstore` — Tasks 1-4 all done (core SPI reshape + `memory.GroupStore` rework, `sql.GroupStore` facade + `GroupDialect` SPI, 3 per-engine dialects + 4-engine conformance, and this finalize task: runnable Example, review-polish fixes, `go mod tidy` hygiene, docs coherence). Mechanical gate green (see below). **NOT YET MERGED**: the coordinator still owes the whole-branch `/code-review` + `/security-review` over `main..HEAD` (CLAUDE.md §5 final pre-merge gate) before `main` merge + branch delete + user's explicit push/merge approval.
+## LATEST: Phase 3 (`sql.GroupStore`, Plan 017) SHIPPED, MERGED to `main` (`c7eb673`, `--no-ff`) and PUSHED to origin; `feat/sql-groupstore` deleted. Whole-branch gate PASSED — `/code-review` high (0 Critical/Important; 2 low triaged: decodeGroupRows poison-group has no dead-letter escape [needs externally-corrupt DB bytes; conservative all-or-nothing decode documented], compile-only `Example_sqlGroupStore` nil-db panic is unreachable since Go never runs a no-Output example); `/security-review` clean (SQL injection-guarded via `ValidateIdent`+bound params, `DecodeHeaders` stock `encoding/json`, no secrets/crypto/auth surface); full `-race`/vet/lint(0)/gofmt/CGO0/tidy/govulncheck green incl the 4-engine testcontainers conformance. Design was **4-rounds adversarially audited (SOUND-WITH-NITS)** before any code. **NEXT = Phase 4 (expr sugar, Plan 018 / ADR 0019 addendum) — not started.** Deferred backlog: decodeGroupRows dead-letter-after-N escape; the two Task-review polish Minors already folded.
 
 ## Where we are (2026-07-21)
 
@@ -18,14 +18,19 @@ increment. Phases each get their own plan + ADR + 2-round adversarial audit + SD
 - **Phase 2 — Aggregator (Plan 016): SHIPPED & MERGED to `main`** (`94cda1f`, `--no-ff`) and PUSHED; `feat/aggregator`
   deleted. Shipped: `MessageGroupStore` SPI (Phase-2 shape, since superseded), `memory.GroupStore`,
   `NewAggregator[A,B]`/`Handle`/`Run(ctx)` reaper, sharded per-key lock (also since superseded).
-- **Phase 3 — `sql.GroupStore` (Plan 017 / ADR 0021 + the ADR 0020 §8 revision): IMPLEMENTATION COMPLETE, NOT YET
-  MERGED.** Branch `feat/sql-groupstore`, commits `c481ece` (core SPI reshape), `3f02f0e` (GroupDialect SPI + sql
-  facade + sequence-header int framing), `5b2d680` (per-engine dialects + 4-engine conformance), plus this
-  session's finalize work (Example + polish + tidy + docs, not yet committed as of writing this handover — see
-  "Exact state"). Reopened the Phase-2 settlement into a store-level lease-claim
-  (`ClaimGroup`/`SettleGroup`/`AbandonGroup`, claim tags a member set, fenced by epoch) that serializes both
-  within AND across processes; the per-key `[256]sync.Mutex` was removed. See "What shipped in Phase 3" below.
-- **Phase 4 (expr sugar, Plan 018 / ADR 0019 addendum): not started.**
+- **Phase 3 — `sql.GroupStore` (Plan 017 / ADR 0021 + the ADR 0020 §8 revision): SHIPPED & MERGED to `main`
+  (`c7eb673`, `--no-ff`) and PUSHED; `feat/sql-groupstore` deleted.** Branch commits (now on main via the merge):
+  `c481ece` (core SPI reshape + Aggregator claim rework + memory rework), `3f02f0e` (GroupDialect SPI + sql facade +
+  sequence-header int framing), `5b2d680` (per-engine dialects + 4-engine conformance), `c27990e` (chore: go mod
+  tidy — expr indirect), `668672d` (Example + review-polish + docs finalize). Reopened the Phase-2 settlement into a
+  store-level lease-claim (`ClaimGroup`/`SettleGroup`/`AbandonGroup`, claim tags a member set, fenced by epoch) that
+  serializes both within AND across processes; the per-key `[256]sync.Mutex` was removed. See "What shipped in
+  Phase 3" below.
+- **Phase 4 (expr sugar, Plan 018 / ADR 0019 addendum): NOT STARTED — this is the next increment.** Full expr sugar
+  `TransformExpr[A,B]` / `SplitExpr[A]` / aggregator `WithCorrelationExpr`/`WithReleaseExpr`/aggregate-by-expr,
+  reusing the `compile[A]` primitive (Spec 008 / ADR 0019); no DB, no new dependency (expr already in-core). Start a
+  fresh design cycle: spec-delta (Spec 009 §3.5 D12–D14 already sketches it) → ADR 0019 addendum → Plan 018 →
+  2-round adversarial audit → SDD → whole-branch gate → merge.
 
 ## What shipped in Phase 3 (for a fresh session with zero context)
 
@@ -59,26 +64,14 @@ increment. Phases each get their own plan + ADR + 2-round adversarial audit + SD
 
 ## Exact state
 
-- **Branch:** `feat/sql-groupstore`. `git status --short` at the start of this finalize session:
-  `M .claude/settings.json` (pre-existing, unrelated, NEVER stage), plus uncommitted `docs/` edits (spec 009, ADR
-  0021, plan 017 — the `NewGroupStore(db, table, dialect, opts)` reconciliation, folded in this session along with
-  the Phase-3-status/pseudocode-drift fixes below).
-- **This session's finalize work (Task 4), staged for two commits (not yet committed as of writing — commit after
-  the mechanical gate is confirmed green; see the task-4 report for the exact gate output):**
-  1. `chore(sql): go mod tidy adapter modules (expr indirect via core, Plan-014 residue)` — `go mod tidy` in every
-     `go.work` module; adds `github.com/expr-lang/expr v1.17.8 // indirect` to the sql submodules (transitive via
-     the core `msgin` import, not a new direct dep).
-  2. `test(sql): GroupStore example + review-polish; docs finalize` — the Example above; the
-     `sqlite/groupdialect.go` `discardConn` bad-conn-on-failed-ROLLBACK fix (`Conn.Raw` + `driver.ErrBadConn`, the
-     documented `database/sql` mechanism to evict a pooled connection); the H-A expired-channel assertion in
-     `harness/groupstore.go`; a postgres `groupdialect.go` godoc note on the `ON CONFLICT DO UPDATE` dead-tuple
-     cost (correctness-neutral, autovacuum-reclaimed); the core `groupstore.go` `ClaimGroup` godoc de-cross-ref
-     (no dangling `WithGroupLeaseTTL` symbol from core); the `framing.go` godoc addition for
-     sequence-number/sequence-size round-tripping; the `groupstore.go` `decodeGroupRows` all-or-nothing-decode
-     godoc note; plus the spec/ADR doc-coherence fixes (Status line, §4.2 pseudocode signature drift, D16
-     supersession pointer) and this HANDOVER rewrite.
-- **`main` @ `b509db6`** (Phase-2 handover commit; Phase 1+2 merged, Phase 1 unpushed). Phase 3 has NOT been merged
-  to `main` yet.
+- **`main` @ `c7eb673`** (the Phase-3 `--no-ff` merge) and **PUSHED to origin** (`b509db6..c7eb673`). Branch
+  `feat/sql-groupstore` **deleted** (was never on the remote). Working tree clean except the pre-existing
+  `M .claude/settings.json` (unrelated, NEVER stage).
+- Phase-3 commits now on `main` via the merge: `c481ece` (core SPI reshape + Aggregator + memory) → `3f02f0e`
+  (GroupDialect SPI + sql facade + framing) → `5b2d680` (per-engine dialects + 4-engine conformance) → `c27990e`
+  (chore: go mod tidy — expr indirect) → `668672d` (Example + review-polish + docs finalize).
+- **Phase 1's `main` is now pushed too** (this push carried the whole history forward), so the long-standing
+  "Phase 1 unpushed" caveat from prior handovers is resolved — `origin/main == main == c7eb673`.
 
 ## Traceability pointers (read first)
 
@@ -93,19 +86,20 @@ increment. Phases each get their own plan + ADR + 2-round adversarial audit + SD
 
 ## Next actions (resume here)
 
-1. **Confirm the mechanical gate is green** (this session's report has the exact command output —
-   `.superpowers/sdd/task-4-report.md`): `go build ./...`, `go test ./... -race` (all `go.work` modules, including
-   the 4-engine `dbtest` conformance under Docker), `go vet ./...`, `golangci-lint run ./...`, `gofmt -l .`,
-   `CGO_ENABLED=0 go build ./...`, `go mod tidy` no-diff, `govulncheck ./...`.
-2. **If not already committed:** commit the two commits described in "Exact state" above (chore first, then the
-   finalize commit) — the user must approve each `git commit` per CLAUDE.md.
-3. **Run the whole-branch pre-merge gate** (CLAUDE.md §5, the coordinator's job, NOT part of Task 4's scope):
-   `/code-review` and `/security-review` over `main..HEAD`, resolve/triage every finding, re-confirm `-race` green.
-4. **On explicit user approval:** merge `feat/sql-groupstore` to `main` (`--no-ff`), delete the branch (local +
-   remote if pushed), and decide on pushing `main` (still pending from Phase 1 — `main` has been unpushed since
-   before Phase 2 per prior handovers; confirm current push state before assuming).
-5. **Then Phase 4** (expr sugar `TransformExpr`/`SplitExpr`/aggregator exprs, Plan 018 / ADR 0019 addendum —
-   lighter, reuses `compile[A]`, no DB). Spec 009 §3.5/D12-D14 has the design; not yet planned/audited.
+Phase 3 is DONE, merged, and pushed — nothing outstanding on it. The next increment is **Phase 4 (expr sugar)**:
+
+1. **Fresh design cycle for Phase 4** (Plan 018 / ADR 0019 addendum). Scope: `TransformExpr[A,B]` (payload
+   projection → asserted to B), `SplitExpr[A]` (expr → slice → Phase-1 Split machinery), and the aggregator exprs
+   `WithCorrelationExpr[A]` / `WithReleaseExpr` / aggregate-by-expr over a fixed group-scoped env
+   `{messages []A, size int}`. Reuses the `compile[A]` primitive (Spec 008 / ADR 0019); a bad expr is
+   `ErrInvalidExpression` at construction. **No DB, no new dependency** (`expr-lang/expr` already in-core).
+2. Follow the mandatory workflow: brainstorm → spec-delta (Spec 009 §3.5 D12–D14 already sketches it) → ADR 0019
+   addendum → Plan 018 → **2-round (min) adversarial Opus audit of spec+ADR+plan** → **ask the user before any
+   implementation** → SDD (fresh implementer per task, coordinator verifies+commits, adversarial reviewer) →
+   whole-branch `/code-review`+`/security-review` gate → merge.
+3. Backlog (deferred, not blocking Phase 4): `decodeGroupRows` dead-letter-after-N-reclaims escape for a
+   poison/corrupt-header group (`/code-review` low finding — needs externally-corrupt DB bytes; low priority);
+   O9-6 nested-correlation godoc note; Resequencer/other group-store backends (redis/pgx/nats).
 
 ## Gotchas / environment
 
@@ -124,6 +118,6 @@ increment. Phases each get their own plan + ADR + 2-round adversarial audit + SD
   `parentID#seq` + `HeaderCorrelationID` = parent id.
 - SDD helper scripts: `~/.claude/plugins/cache/claude-plugins-official/superpowers/6.1.1/skills/subagent-driven-development/scripts/{task-brief,review-package}`.
 
-_Updated 2026-07-21: Phase 3 (`sql.GroupStore`, Plan 017) implementation complete on `feat/sql-groupstore`
-(Tasks 1-4, including this finalize task) — pending commit confirmation, the coordinator's whole-branch
-`/code-review` + `/security-review` gate, and user-approved merge to `main`._
+_Updated 2026-07-21: Phase 3 (`sql.GroupStore`, Plan 017) SHIPPED — merged to `main` (`c7eb673`, `--no-ff`) and
+pushed to origin; `feat/sql-groupstore` deleted; whole-branch `/code-review`+`/security-review` gate passed. Next
+increment: Phase 4 (expr sugar, Plan 018 / ADR 0019 addendum) — not started._
