@@ -17,6 +17,11 @@ const (
 	HeaderContentType   = "msgin.content-type"
 	HeaderCorrelationID = "msgin.correlation-id"
 	HeaderDeliveryCount = "msgin.delivery-count"
+	// HeaderSequenceNumber is the 1-based position of a child within a Splitter's
+	// output (int). HeaderSequenceSize is the total number of children (int). A
+	// Splitter stamps both so a downstream Aggregator can reassemble the group.
+	HeaderSequenceNumber = "msgin.sequence-number"
+	HeaderSequenceSize   = "msgin.sequence-size"
 )
 
 // Headers is an immutable set of message metadata. The backing map is never
