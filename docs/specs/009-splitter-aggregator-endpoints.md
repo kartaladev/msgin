@@ -3,12 +3,13 @@
 - **Status:** Draft (2026-07-21) — brainstormed with the user; scope and the dominant design forks settled
   interactively (see below). **Phase 1 (Splitter, Plan 015) + Phase 2 (Aggregator + `MessageGroupStore` SPI +
   `memory.GroupStore`, Plan 016) SHIPPED & MERGED to `main`** (`e4b346d`, `94cda1f`). **Phase 3 (`sql.GroupStore`,
-  full multi-process — Plan 017 / ADR 0021 + the ADR 0020 §8 revision) is implemented (Plan 017 Tasks 1-4 done:
-  the lease-claim SPI reshape, `sql.GroupStore` + `GroupDialect`, per-engine dialects, 4-engine conformance, and
-  this finalize task) on branch `feat/sql-groupstore`, pending the whole-branch `/code-review` + `/security-review`
-  gate and merge to `main`**: the user chose full multi-process durability, which reopened the Phase-2 settlement
+  full multi-process — Plan 017 / ADR 0021 + the ADR 0020 §8 revision) SHIPPED & MERGED to `main`** (`c7eb673`,
+  `--no-ff`, pushed): the user chose full multi-process durability, which reopened the Phase-2 settlement
   into a store-level lease-claim (SPI `Remove` → `ClaimGroup`/`SettleGroup`/`AbandonGroup`; `memory` reworked;
-  per-key lock dropped) — see §3.4 (revised). **Phase-1 (Splitter) adversarial audit round 1 folded** (Opus): H-1 deterministic
+  per-key lock dropped) — see §3.4 (revised). **Phase 4 (expr sugar — Plan 018 / ADR 0019 addendum) design settled
+  with the user 2026-07-21** (§3.5 revised: `TransformExpr[A,B]`/`SplitExpr[A,B]`/`WithCorrelationExpr[A]`/
+  `WithReleaseExpr[A]`; aggregate-by-expr deferred; per-member view env; internal release `(bool,error)`), pending
+  the adversarial audit + Plan 018 + implementation. **Phase-1 (Splitter) adversarial audit round 1 folded** (Opus): H-1 deterministic
   child id `parentID#seq` (D2) — closes an id-collision that would silently drop the Splitter→Aggregator round-trip;
   M-1 durable `int`/`float64` sequence-header contract (D2); L-1/L-2/L-3 into Plan 015. **Round-2 re-audit: SOUND-WITH-NITS** — the deterministic
   child-id fix verified collision-free/idempotent and inert in the retry path; Phase-1 (Splitter) bundle ready to
@@ -20,8 +21,10 @@
     impl **and** a `sql` durable impl, using **hold-until-release settlement** (true at-least-once across restart).
   - **Incomplete-group expiry** = **opt-in** `WithGroupTimeout(d)` → `WithExpiredGroupChannel(ch)`; **no default
     timeout** (documented "off" state). Never silent-drop, never partial-emit (CLAUDE.md safe-default gate).
-  - **Expr breadth** = **full** — `TransformExpr`, `SplitExpr`, and the canonical SpEL aggregator use
-    (correlation-by-expr, release-by-expr, aggregate-by-expr).
+  - **Expr breadth** = **full**, then trimmed 2026-07-21 — `TransformExpr[A,B]`, `SplitExpr[A,B]`, and the
+    canonical SpEL aggregator use (correlation-by-expr, release-by-expr). **Aggregate-by-expr deferred**
+    (§2 non-goals / §3.5 D14): expr cannot build an arbitrary struct, so it is low-value extra surface; non-breaking
+    to add later.
 - **Governing product spec:** [Spec 001 — Messaging core](001-messaging-core.md) §1 (the deferred routing endpoints:
   "Splitter, Aggregator"). Directly continues [Spec 003 — Composition endpoints](003-composition-endpoints.md), which
   built the linear endpoints (Transformer/Filter/Router/Service Activator) and **explicitly deferred Splitter +
@@ -76,9 +79,12 @@ primitive from Spec 008.
 - **G4 — `sql.GroupStore` (durable).** A `MessageGroupStore` over `database/sql` with the existing `Dialect` seam;
   PostgreSQL + MySQL + MariaDB + SQLite; idempotent add, key-scoped remove, expiry query. At-least-once across
   process restart.
-- **G5 — expr sugar (reuses `compile[A]`).** `TransformExpr[A,B]` (payload projection), `SplitExpr[A]`
-  (expr → collection to split), and Aggregator `WithCorrelationExpr[A]` / `WithReleaseExpr` / aggregate-by-expr
-  — the canonical SpEL aggregator use. Each compiles once at construction; a bad expr is `ErrInvalidExpression`.
+- **G5 — expr sugar (reuses `compile[A]`).** `TransformExpr[A,B]` (payload projection), `SplitExpr[A,B]`
+  (expr → collection to split, per-element asserted to B), and Aggregator `WithCorrelationExpr[A]` /
+  `WithReleaseExpr[A]` — the canonical SpEL aggregator use (correlation-by-expr + release-by-expr). Each compiles
+  once at construction; a bad expr is `ErrInvalidExpression`. **Aggregate-by-expr is deferred** (§2 non-goals, see
+  §3.5 D14): expr cannot build an arbitrary struct, so it adds a `NewAggregatorExpr` constructor for little gain
+  over a Go aggregate fn; non-breaking to add later.
 - **G6 — Zero new dependencies.** All of the above uses only the current core dep set (`expr` already in-core;
   `clockwork` for the reaper). `sql.GroupStore` adds no dep beyond the existing `sql` module.
 - **G7 — Full reliability reuse.** Every endpoint is a `MessageHandler`/`Step`, so a composed flow driven by the
@@ -94,6 +100,11 @@ primitive from Spec 008.
   deferred `ChannelStore` backends, Spec 007 O7-1).
 - **Exactly-once / dedup-of-late-members after completion** — v1 is at-least-once with a **documented** "late
   message after completion" caveat (§4.3); a completed-group marker/dedup layer is a future refinement.
+- **Aggregate-by-expr** (an expr producing the aggregate result) — **deferred** (settled 2026-07-21). expr cannot
+  construct an arbitrary Go struct, and the aggregate fn is a required `NewAggregator` constructor arg (not an
+  option), so an expr aggregate needs a separate `NewAggregatorExpr[A,B]` constructor for scalar/slice/map results
+  only — little gain over a Go aggregate fn. Non-breaking to add later. Phase 4 ships the correlation/release exprs
+  (the higher-value SpEL surfaces) only.
 - **`WithExprEnv` custom functions/variables** (Spec 008 O8-3) — remains deferred; the aggregator group-env is a
   fixed, documented shape, not a general extension point.
 - No change to the adapter SPI, the external-adapter settlement contract, or message immutability.
@@ -215,18 +226,79 @@ the durable realization is [ADR 0021](../adrs/0021-sql-group-store.md). Summary:
   false` (wire). Lease TTL default 5m (`WithGroupLeaseTTL`). At-least-once **across restart and across processes**;
   crash in the claim→settle window recovers via lease expiry → re-claim → duplicate (never loss).
 
-### 3.5 expr sugar (Phase 4)
+### 3.5 expr sugar (Phase 4 — design settled 2026-07-21; Plan 018 / ADR 0019 addendum)
 
-- **D12 — `TransformExpr[A, B](expression string, opts ...) (Step, error)`.** Projection expr evaluated to a value
-  asserted to B. Adds an `exprAny` output kind to `compile` (no `AsKind` constraint; the result is asserted to B at
-  eval, a non-B result → evaluation error → retry/DLQ). Reuses `WithPayload` for header propagation.
-- **D13 — `SplitExpr[A](expression string, opts ...) (Step, error)`.** Expr evaluated to a slice; each element is
-  wrapped (via `WithPayload` off the parent) into a child, then handed to the Phase-1 Split machinery (sequence
-  headers included).
-- **D14 — Aggregator exprs.** `WithCorrelationExpr[A](expr)` reuses the existing `exprString` compile (per-message
-  string key). `WithReleaseExpr(expr)` and aggregate-by-expr evaluate against a **new fixed group-scoped env**
-  `{ messages []A, size int }` (`expr:"messages"`, `expr:"size"`) — the one genuinely new expr surface; documented,
-  not a general extension point (`WithExprEnv` stays deferred, Spec 008 O8-3).
+The user settled the Phase-4 shape (2026-07-21): four additive expr surfaces, **dual-param `[A,B]` projection
+typing** (O9-4 resolved), a **per-member view env** for the group exprs, and **aggregate-by-expr deferred**
+(§2 non-goals). No DB, no new dependency (`expr` already in-core). Two `compile` extensions (both internal). The
+only shipped Phase-2/3 code Phase 4 touches is the Aggregator's *internal* release-strategy signature (D14c).
+
+- **D12 — `TransformExpr[A, B any](expression string) (Step, error)`.** A Message-Translator whose projection is a
+  runtime expr evaluated against `exprEnv[A]` (`{payload, header(k)}`) to a value **asserted to B**. Adds an
+  `exprAny` output kind to `compile` (no `AsKind`/`AsBool` constraint; the raw result is returned as `any` and
+  asserted to B at eval — a non-B result is a typed evaluation error naming the mismatch → retry/DLQ). Wraps the
+  result via `WithPayload(parent, b)` so id/correlation headers propagate. Option-free (matches `Transform`); a
+  bad/empty/mistyped expr is `ErrInvalidExpression` at construction. **struct-B limit (documented):** expr cannot
+  construct an arbitrary Go struct, so B is realistically a scalar/slice/map/named-field type the expression can
+  yield; a struct B simply never asserts (eval error) — use `Transform` (Go func) for struct projection.
+  **numeric-B ceiling (M-3, audit R1):** expr integer math yields Go `int` and float math yields `float64`; `out.(B)`
+  is an exact assertion, so B must be exactly `int`/`float64`/`string`/`bool` (or a concrete element type) — an
+  `int64`/`uint`/`float32` B fails at eval with `ErrExprResultType`. Documented on the godoc + a tested contract.
+- **D13 — `SplitExpr[A, B any](expression string) (Step, error)`** (O9-4: **dual-param, per-element assert to B**).
+  Expr evaluated against `exprEnv[A]` to a **slice** (a non-slice/array result is a typed eval error). Each element
+  is asserted to B, wrapped via `WithPayload(parent, b)` into a `Message[B]` child, then forwarded through the
+  **same sequence-stamping loop `Split` uses** (factored into a shared unexported helper) — sequence headers +
+  deterministic child id + correlation id exactly as D2. Option-free (matches `Split`). Same struct-B / numeric-B
+  ceilings as D12 (per-element assertion). `filter`/`map` builtins yield `[]any` (elements boxed) — the per-element
+  `elem.(B)` assertion handles both `[]T` and `[]any` (spike-verified, audit R1).
+- **D14 — Aggregator exprs (`WithCorrelationExpr[A]`, `WithReleaseExpr[A]`).** `WithCorrelationExpr[A any](expr)`
+  reuses the existing `exprString` compile (per-message string key over `exprEnv[A]`), producing the correlation
+  strategy (asserts `Message[any]`→A internally, then evaluates; eval error propagates through the existing
+  `func(Message[any]) (string, error)` strategy signature). `WithReleaseExpr[A any](expr)` compiles a **bool** over
+  a **new fixed group-scoped env** (D14a). **Aggregate-by-expr is deferred** (§2 non-goals): expr cannot build an
+  arbitrary struct B, and the aggregate fn is a required constructor arg (not an option), so it would need a
+  separate `NewAggregatorExpr` constructor for little gain over a Go aggregate fn — added later, non-breaking, if a
+  real need appears.
+  - **D14a — group-scoped env is a per-member `{payload, header}` view, not raw `Message[A]`.** `Message[A]`'s header
+    accessors are expr-hostile (`Header`/`Headers().Get` return `(any, bool)`, which expr cannot call) and its
+    fields are unexported, so each member is projected into the same shape the single-message `exprEnv[A]` already
+    uses:
+    ```go
+    type exprMember[A any] struct {
+        Payload A                `expr:"payload"`
+        Header  func(string) any `expr:"header"`
+    }
+    type groupExprEnv[A any] struct {
+        Messages []exprMember[A] `expr:"messages"` // members in arrival order
+        Size     int             `expr:"size"`     // group's HeaderSequenceSize (0 if absent)
+    }
+    ```
+    Enables `size > 0 && len(messages) >= size`, `all(messages, .payload.Amount > 0)`,
+    `messages[0].header("priority") == "high"`. The one genuinely new expr surface; a fixed, documented shape, not a
+    general extension point (`WithExprEnv` stays deferred, Spec 008 O8-3).
+    - **canonical form is size-gated (M-4, audit R1):** `size` is `HeaderSequenceSize`, **0 when absent**, so the
+      un-gated `len(messages) >= size` releases a group-of-one (`1 >= 0`) — opposite to `defaultRelease`, which gates
+      on presence. The documented canonical example is therefore `size > 0 && len(messages) >= size` everywhere.
+    - **eval-error & poison-member semantics (audit R1 H-1/H-2/M-5):** a release-expr eval error propagates from
+      `Handle` (→ retry/DLQ); the reaper's expiry branch is entered on a release **error** as well as on
+      not-yet-complete (so an unevaluable group is surfaced to `WithExpiredGroupChannel`, never busy-spun/stranded —
+      requires `WithGroupTimeout`). The drain loop **swallows** a residual release error (the main group already
+      settled the current member; a Nack would double-count it). A release expr evaluates over **all** members, so
+      write **total** expressions — one member's bad data poisons the group's release check.
+  - **D14b — expr options report compile errors through the constructor.** An `AggregatorOption` cannot return an
+    error, so `WithCorrelationExpr`/`WithReleaseExpr` compile eagerly and stash the first compile error in the
+    config; `NewAggregator` surfaces it as `ErrInvalidExpression` at construction — the established
+    validate-in-constructor pattern (`WithMaxInFlight`/`WithAttemptTTL`). A later expr option does not clobber an
+    earlier option's stored error (first error wins).
+  - **D14c — internal release strategy evolves to `func(MessageGroup) (bool, error)`; public
+    `WithReleaseStrategy(func(MessageGroup) bool)` unchanged.** A release expr can error at eval; per the
+    debuggability criterion and the `FilterExpr` precedent (its predicate is `(bool, error)`), that error must
+    propagate to `Handle`/reaper → retry/DLQ, never be swallowed as "not released". The **public**
+    `WithReleaseStrategy` keeps its `func(MessageGroup) bool` signature (wrapped to always-nil-error); `defaultRelease`,
+    `WithCompletionSize`, `Handle`'s release check, and `reapGroup`'s release check are updated to the `(bool,
+    error)` internal shape. This is the sole Phase-4 change to shipped Phase-2/3 code — the whole-branch gate must
+    regression-cover it. Rejected alternative (swallow eval-error → held-until-expiry): purely additive but silently
+    swallows the error, against the debuggability gate and inconsistent with `FilterExpr`.
 
 ### 3.6 Cross-cutting
 
@@ -317,8 +389,14 @@ release strategy must tolerate a singleton/partial re-group. A completed-group d
     `WithExpiredGroupChannel`→construction error; nil `fn`→construction error; `Run`/reaper start+stop+join.
   - *`MessageGroupStore` (memory + sql, shared conformance table):* Add returns growing group; idempotent Add by
     id; Remove; Expired boundary (`before` inclusive/exclusive); EmitsLiveValue value; empty-group Remove no-op.
-  - *expr:* `TransformExpr` compile error→`ErrInvalidExpression`; eval→B / non-B result error; `SplitExpr`
-    →slice / non-slice error; `WithCorrelationExpr`/`WithReleaseExpr` compile + eval branches.
+  - *expr (Phase 4):* `TransformExpr` empty/bad expr→`ErrInvalidExpression`; eval→B / non-B result→typed eval
+    error; header propagation via `WithPayload`. `SplitExpr` →slice (children stamped like `Split`) / non-slice
+    result→eval error / non-B element→eval error / empty slice→forward nothing. `WithCorrelationExpr` compile
+    error surfaced by `NewAggregator`→`ErrInvalidExpression` / eval→key / eval error propagates.
+    `WithReleaseExpr` compile error via `NewAggregator`→`ErrInvalidExpression` / release true (size reached) /
+    false (held) / member-`header()` + `size` env access / eval error propagates through `Handle` (D14c).
+    First-expr-option-error-wins (D14b). Regression: `WithReleaseStrategy` (public bool) + `WithCompletionSize` +
+    `defaultRelease` still behave identically under the new internal `(bool,error)` shape (D14c).
 - **Settlement / durability tests.** Driven through the existing `Consumer` so the reused reliability path is
   exercised end-to-end: hold-then-release Ack timing (`memory`); crash-simulation across restart (`sql` — a fresh
   store over the same DB re-releases a persisted group); expiry reaping under a fake clock.
@@ -364,8 +442,9 @@ plan is approved and the user gives an explicit per-phase go-ahead** (CLAUDE.md)
   (a new key beyond the cap → `ErrOverflowDropped`, never evicting a partial group); `sql.GroupStore` is
   **DB-bounded** (no in-store cap in v1 — a never-completing-group DoS is handled by expiry reaping + table
   monitoring, matching ADR 0018 §4's sql-is-DB-bounded stance). No `OverflowPolicy` knob on the sql store.
-- **O9-4** — expr `SplitExpr` element typing: `[]any` elements asserted per-item to A/B vs a homogeneous `[]A`
-  expr result. Confirm in the Phase-4 plan.
+- **O9-4** (RESOLVED, 2026-07-21, §3.5 D13) — `SplitExpr` is **dual-param `[A,B]`**: the expr yields a slice and
+  each element is asserted per-item to B, producing `Message[B]` children (consistent with `Split[A,B]`/
+  `Transform[A,B]`; `B=any` still available). A non-slice result or a non-B element is a typed eval error → retry/DLQ.
 - **O9-5** — Whether `Split` should offer a `WithoutSequenceHeaders()` escape for callers who don't aggregate
   downstream, or always stamp (lean: always stamp; the headers are harmless if unused). Confirm in ADR 0020.
 - **O9-6** (Phase 2, from audit R2) — **Nested split→aggregate is not covered by the default correlation.** Because

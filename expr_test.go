@@ -239,6 +239,77 @@ func ExampleRouterExpr() {
 	// Output: 1 1
 }
 
+func TestTransformExpr(t *testing.T) {
+	tests := []struct {
+		name   string
+		assert func(t *testing.T)
+	}{
+		{
+			name: "empty expression is ErrInvalidExpression at construction",
+			assert: func(t *testing.T) {
+				_, err := msgin.TransformExpr[exprOrder, int]("   ")
+				require.ErrorIs(t, err, msgin.ErrInvalidExpression)
+			},
+		},
+		{
+			name: "unparseable (non-empty) expression is ErrInvalidExpression (L-4: the Compile-failure branch)",
+			assert: func(t *testing.T) {
+				_, err := msgin.TransformExpr[exprOrder, int]("payload.")
+				require.ErrorIs(t, err, msgin.ErrInvalidExpression)
+			},
+		},
+		{
+			name: "scalar projection propagates parent headers via WithPayload",
+			assert: func(t *testing.T) {
+				step, err := msgin.TransformExpr[exprOrder, int]("payload.Amount * 2")
+				require.NoError(t, err)
+				var got msgin.Message[any]
+				next := msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error { got = m; return nil })
+				parent := msgin.New[any](exprOrder{Amount: 21}).WithHeader(msgin.HeaderCorrelationID, "c1")
+				require.NoError(t, step(next).Handle(t.Context(), parent))
+				require.Equal(t, 42, got.Payload())
+				cid, _ := got.Header(msgin.HeaderCorrelationID)
+				require.Equal(t, "c1", cid) // WithPayload copied the parent's headers
+			},
+		},
+		{
+			name: "non-B result is ErrExprResultType at eval",
+			assert: func(t *testing.T) {
+				// A=any → no compile-time result type-check; expr yields int, B=string.
+				step, err := msgin.TransformExpr[any, string]("1 + 1")
+				require.NoError(t, err)
+				next := msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { return nil })
+				err = step(next).Handle(t.Context(), msgin.New[any](0))
+				require.ErrorIs(t, err, msgin.ErrExprResultType)
+			},
+		},
+		{
+			name: "numeric ceiling (M-3): int-yielding expr with B=int64 is ErrExprResultType",
+			assert: func(t *testing.T) {
+				// expr integer math yields Go int, not int64; out.(int64) fails.
+				// Documents the numeric-B ceiling as a tested contract.
+				step, err := msgin.TransformExpr[exprOrder, int64]("payload.Amount")
+				require.NoError(t, err)
+				next := msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { return nil })
+				err = step(next).Handle(t.Context(), msgin.New[any](exprOrder{Amount: 7}))
+				require.ErrorIs(t, err, msgin.ErrExprResultType)
+			},
+		},
+		{
+			name: "runtime eval error propagates",
+			assert: func(t *testing.T) {
+				step, err := msgin.TransformExpr[exprOrder, any](`header("missing") > 100`)
+				require.NoError(t, err)
+				next := msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { return nil })
+				require.Error(t, step(next).Handle(t.Context(), msgin.New[any](exprOrder{})))
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) { tt.assert(t) })
+	}
+}
+
 func TestRouterExpr(t *testing.T) {
 	tests := []struct {
 		name   string

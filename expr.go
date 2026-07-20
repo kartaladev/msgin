@@ -24,6 +24,7 @@ type exprOutputKind int
 const (
 	exprBool exprOutputKind = iota
 	exprString
+	exprAny // no AsBool/AsKind constraint; the result is asserted by the caller
 )
 
 // compile parses and type-checks expression once against exprEnv[A], enforcing the
@@ -39,6 +40,8 @@ func compile[A any](expression string, kind exprOutputKind) (func(Message[A]) (a
 	switch kind {
 	case exprString:
 		opts = append(opts, expr.AsKind(reflect.String))
+	case exprAny:
+		// no output constraint; caller asserts the result type at eval
 	default:
 		opts = append(opts, expr.AsBool())
 	}
@@ -134,4 +137,47 @@ func RouterExpr[A any](keyExpr string, routes map[string]MessageChannel, opts ..
 		key, _ := out.(string)  // AsKind(String) guarantees a string result
 		return routes[key], nil // miss → nil → NewRouter's default/ErrNoRoute handling
 	}, opts...), nil
+}
+
+// TransformExpr is a Transformer (see Transform) whose projection is a runtime
+// expr-lang expression evaluated against the payload (A) and headers, e.g.
+// `payload.Amount * 2`. The expression is compiled once at construction; an
+// invalid or unparseable expression returns ErrInvalidExpression. At each
+// evaluation the result is asserted to B; a mismatch returns ErrExprResultType
+// as the endpoint's handler error (into the runtime's retry/DLQ path) rather
+// than panicking. It returns the same Step as Transform, and the child message
+// carries the parent's headers via WithPayload (id/correlation propagation).
+//
+// Because it returns (Step, error), it cannot be passed inline to Chain like a
+// bare Transform — construct it first, check the error, then compose.
+//
+// Trade-offs vs a Go-func Transform: same as FilterExpr (type safety only for
+// concrete A, opaque to a Go debugger, expr's default node/memory limits, no
+// ctx-cancellation) — see FilterExpr's godoc.
+//
+// Result-type ceilings on B:
+//   - Struct ceiling: expr cannot construct an arbitrary Go struct; B is
+//     realistically a scalar/slice/map/named-field type — use Transform for
+//     struct projection.
+//   - Numeric ceiling: expr integer math yields Go int and float math yields
+//     float64; out.(B) is an exact type assertion, so B must be exactly
+//     int/float64/string/bool or a concrete element type — an int64/uint/
+//     float32 B fails at eval with ErrExprResultType even though the
+//     expression's value is numerically representable in B.
+func TransformExpr[A, B any](expression string) (Step, error) {
+	eval, err := compile[A](expression, exprAny)
+	if err != nil {
+		return nil, err
+	}
+	return Transform(func(_ context.Context, m Message[A]) (Message[B], error) {
+		out, err := eval(m)
+		if err != nil {
+			return Message[B]{}, err
+		}
+		b, ok := out.(B)
+		if !ok {
+			return Message[B]{}, fmt.Errorf("%w: result %T is not %T", ErrExprResultType, out, *new(B))
+		}
+		return WithPayload(m, b), nil
+	}), nil
 }
