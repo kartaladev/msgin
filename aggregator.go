@@ -344,26 +344,32 @@ func (a *Aggregator) reap(ctx context.Context) {
 		return // transient; next tick
 	}
 	for _, g := range groups {
-		mu := a.keyLock(g.Key())
-		mu.Lock()
+		a.reapGroup(ctx, g, cutoff)
+	}
+}
 
-		removed, rerr := a.store.Remove(ctx, g.Key())
-		if rerr != nil || removed == nil {
-			mu.Unlock()
-			continue // released concurrently, or already gone
-		}
-		if !removed.CreatedAt().Before(cutoff) {
-			// A fresh group re-formed at this key since Expired(): restore it
-			// rather than expired-route a live, still-fillable group.
-			for _, m := range removed.Messages() {
-				_, _ = a.store.Add(ctx, g.Key(), m)
-			}
-			mu.Unlock()
-			continue
-		}
+// reapGroup runs the expiry sweep's per-group body under g's shard lock,
+// released via defer so a panic from a downstream Send (via
+// WithExpiredGroupChannel) cannot leak the lock — see Run's doc for the full
+// re-check contract.
+func (a *Aggregator) reapGroup(ctx context.Context, g MessageGroup, cutoff time.Time) {
+	mu := a.keyLock(g.Key())
+	mu.Lock()
+	defer mu.Unlock()
+
+	removed, err := a.store.Remove(ctx, g.Key())
+	if err != nil || removed == nil {
+		return // released concurrently, or already gone
+	}
+	if !removed.CreatedAt().Before(cutoff) {
+		// A fresh group re-formed at this key since Expired(): restore it
+		// rather than expired-route a live, still-fillable group.
 		for _, m := range removed.Messages() {
-			_ = a.cfg.expired.Send(ctx, m)
+			_, _ = a.store.Add(ctx, g.Key(), m)
 		}
-		mu.Unlock()
+		return
+	}
+	for _, m := range removed.Messages() {
+		_ = a.cfg.expired.Send(ctx, m)
 	}
 }
