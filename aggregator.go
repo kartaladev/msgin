@@ -2,7 +2,6 @@ package msgin
 
 import (
 	"context"
-	"sync"
 	"time"
 
 	"github.com/jonboulle/clockwork"
@@ -26,8 +25,17 @@ type AggregatorOption func(*aggregatorConfig)
 // to. NewAggregator returns ErrNilOutput if this is never set.
 //
 // Never wire this channel back into the same Aggregator's input under the
-// same correlation key: Handle holds a per-key lock across the call to
-// Send, and that lock is not reentrant — a cycle deadlocks.
+// same correlation key: Handle's release path is not reentrant for that key
+// (it is mid-claim on the store) — a cycle deadlocks/re-enters incorrectly.
+//
+// Settlement is a store-level lease-claim (MessageGroupStore.ClaimGroup/
+// SettleGroup), giving at-least-once release both WITHIN and ACROSS
+// processes sharing a durable store. A crash between claim and settle
+// recovers via the reaper's recovery sweep, which re-emits the recovered
+// group to THIS channel — so go agg.Run(ctx) is REQUIRED (not merely for
+// expiry) whenever the store is durable (RecoverInterval() > 0). A member
+// that arrives while a group is under lease forms a fresh residual group
+// rather than joining the in-flight claim.
 func WithOutputChannel(ch MessageChannel) AggregatorOption {
 	return func(c *aggregatorConfig) { c.output = ch }
 }
@@ -44,28 +52,36 @@ func WithCorrelationStrategy(fn func(Message[any]) (string, error)) AggregatorOp
 // WithReleaseStrategy overrides when a group is complete and ready to
 // aggregate. The default (defaultRelease) is len(group) >= HeaderSequenceSize,
 // read number-tolerantly (int/int64/float64).
+//
+// The release decision is made against the LIVE snapshot Add returns, but
+// ClaimGroup then freezes whatever the store holds at claim time — the same
+// set for a monotonic strategy (one that only grows more true as members
+// accumulate), but a non-monotonic strategy may end up aggregating a
+// slightly different member set than the one it decided on. Prefer a
+// monotonic strategy (e.g. >=, never <) for this reason.
 func WithReleaseStrategy(fn func(MessageGroup) bool) AggregatorOption {
 	return func(c *aggregatorConfig) { c.release = fn }
 }
 
 // WithCompletionSize releases a group once it holds n messages — sugar for a
 // fixed-size release strategy when there is no HeaderSequenceSize to read.
-// Exact-count (>= n, effectively == n once release fires and the group is
-// immediately removed) is safe WITHIN one process because Handle serializes
-// same-key work under the per-key lock; it is not a safe boundary across
-// processes sharing a durable store with no cross-process lock (Phase 3 sql),
-// nor against id-less duplicate members (no dedup).
+// Exact-count release is now safe both WITHIN one process and ACROSS
+// processes sharing a durable store: the store's atomic ClaimGroup is the
+// sole serializer, not a per-key lock. It is not safe against id-less
+// duplicate members (no dedup).
 func WithCompletionSize(n int) AggregatorOption {
 	return func(c *aggregatorConfig) {
 		c.release = func(g MessageGroup) bool { return len(g.Messages()) >= n }
 	}
 }
 
-// WithGroupTimeout enables the optional expiry reaper (Run): a group whose
-// CreatedAt is older than d, and still unreleased at a reap tick, is routed
-// to the expired-group channel (WithExpiredGroupChannel) and removed rather
-// than held forever. Unset (the default), no timeout applies and Run blocks
-// until its context is cancelled without reaping anything.
+// WithGroupTimeout enables the age-expiry side of the reaper (Run): a group
+// whose CreatedAt is older than d, and still incomplete at a reap tick, is
+// routed to the expired-group channel (WithExpiredGroupChannel) and settled
+// rather than held forever. Unset (the default), no age-expiry applies; Run
+// still starts a recovery sweep if the store is durable (RecoverInterval() >
+// 0), or otherwise blocks until its context is cancelled without reaping
+// anything.
 //
 // WithGroupTimeout without a paired WithExpiredGroupChannel makes
 // NewAggregator return ErrExpiryChannelRequired: a partial group's members
@@ -75,14 +91,16 @@ func WithGroupTimeout(d time.Duration) AggregatorOption {
 	return func(c *aggregatorConfig) { c.timeout = d }
 }
 
-// WithExpiredGroupChannel sets the channel an expired partial group's members
-// are sent to by the reaper (Run), one message at a time, in the group's
-// arrival order. Required whenever WithGroupTimeout is set.
+// WithExpiredGroupChannel sets the channel an age-expired, still-incomplete
+// group's members are sent to by the reaper (Run), one message at a time, in
+// the group's arrival order. Required whenever WithGroupTimeout is set. A
+// group the reaper finds COMPLETE (a crashed or newly-complete release) goes
+// to the output channel instead — see WithOutputChannel.
 //
 // Never wire this channel back into the same Aggregator's input under the
-// same correlation key: the reaper holds a per-key lock across the call to
-// Send, and that lock is not reentrant — a cycle deadlocks (see
-// WithOutputChannel's doc for the identical Handle-side caveat).
+// same correlation key: the reaper's release path is not reentrant for that
+// key (it is mid-claim on the store) — a cycle deadlocks/re-enters
+// incorrectly (see WithOutputChannel's doc for the identical caveat).
 func WithExpiredGroupChannel(ch MessageChannel) AggregatorOption {
 	return func(c *aggregatorConfig) { c.expired = ch }
 }
@@ -149,44 +167,40 @@ func asInt(v any) (int, bool) {
 	}
 }
 
-// numShardLocks is the number of correlation-key shards an Aggregator locks
-// over. Handle/the expiry reaper hold locks[hash(key)%numShardLocks] across
-// their whole store-mutating sequence for that key, so distinct keys hashing
-// to distinct shards proceed concurrently while same-key work serializes.
-const numShardLocks = 256
-
 // Aggregator is an EIP Aggregator endpoint: it correlates incoming messages
 // into groups held in a MessageGroupStore, and when a group's release
-// strategy is satisfied it aggregates the group's payloads (fn, supplied to
-// NewAggregator) into one Message[B] sent to the output channel. It
-// implements MessageHandler; place it as a chain's next (Subscribe) or a
-// flow head (NewConsumer[any](src, agg.Handle)). Optionally it reaps expired
-// partial groups via Run(ctx) — see WithGroupTimeout.
+// strategy is satisfied it claims, aggregates, and forwards the group's
+// payloads (fn, supplied to NewAggregator) as one Message[B] sent to the
+// output channel. It implements MessageHandler; place it as a chain's next
+// (Subscribe) or a flow head (NewConsumer[any](src, agg.Handle)). Optionally
+// it runs a recovery+expiry reaper via Run(ctx) — see WithGroupTimeout and
+// WithOutputChannel's settlement note.
 //
-// Concurrency: Handle holds a lock sharded by the message's correlation key
-// (an FNV-1a hash of the key, mod numShardLocks) across the entire
-// correlate-result→Add→release-check→aggregate→Send→Remove sequence for that
-// key, so concurrent Handle calls for DIFFERENT keys (mostly) proceed in
-// parallel while calls for the SAME key serialize — this is what makes
-// WithCompletionSize's exact-count release safe under WithConcurrency > 1
-// within one process. It is correct for a single process only; multi-process
-// durability (sharing one store across processes with no cross-process lock)
-// is a Phase 3 sql concern (transactional release).
+// Concurrency: Handle holds NO per-key lock. Instead, the store's
+// MessageGroupStore.ClaimGroup is the sole serializer: only one caller (in
+// this process or another, for a durable store) can hold a group's lease at
+// a time, so concurrent Handle calls for the SAME key never double-release —
+// this is what makes WithCompletionSize's exact-count release safe under
+// WithConcurrency > 1 within a process AND across processes sharing a
+// durable store. Handle never recurses into itself or blocks on another
+// Handle call for the same key (no lock to deadlock on) — but see
+// WithOutputChannel's caveat about wiring the output channel back into this
+// Aggregator's own input.
 //
 // Settlement: store.Add persists a member before Handle returns (before the
-// source Acks), and a release forwards to the output channel before
-// store.Remove — documented at-least-once (within-process on
-// memory.GroupStore; across restart on a future sql.GroupStore). A member
-// redelivered after its group already completed forms a fresh group
-// (idempotent downstream expected). A persistently-failing aggregate function
-// orphans its group until expiry reaps it — set WithGroupTimeout if that
-// matters for your flow.
+// source Acks). A release claims the group (ClaimGroup), aggregates and
+// forwards it to the output channel, then settles the claim
+// (store.SettleGroup) — at-least-once, within a process AND, for a durable
+// store, across a crash (see WithOutputChannel). A member redelivered after
+// its group already settled forms a fresh group (idempotent downstream
+// expected). A persistently-failing aggregate function leaves its claim
+// abandoned (retried on the next Handle/reaper tick) until expiry reaps it —
+// set WithGroupTimeout if that matters for your flow.
 type Aggregator struct {
 	store  MessageGroupStore
 	assert func(Message[any]) error
 	agg    func(ctx context.Context, group []Message[any]) (Message[any], error)
 	cfg    aggregatorConfig
-	locks  [numShardLocks]sync.Mutex
 }
 
 var _ MessageHandler = (*Aggregator)(nil)
@@ -249,28 +263,13 @@ func boxAggFn[A, B any](fn func(ctx context.Context, group []Message[A]) (Messag
 	}
 }
 
-// keyLock returns the shard lock for key. It computes FNV-1a (32-bit) inline
-// rather than via fnv.New32a(), whose hash.Hash32 return escapes to the heap —
-// keyLock is on the per-message hot path (every Handle and every reapGroup), so
-// the inline form keeps it allocation-free.
-func (a *Aggregator) keyLock(key string) *sync.Mutex {
-	const (
-		offset32 = 2166136261
-		prime32  = 16777619
-	)
-	h := uint32(offset32)
-	for i := 0; i < len(key); i++ {
-		h ^= uint32(key[i])
-		h *= prime32
-	}
-	return &a.locks[h%numShardLocks]
-}
-
 // Handle correlates msg, adds it to its group, and — once the group's
-// release strategy is satisfied — aggregates and forwards it to the output
-// channel, then removes the group. A held (not-yet-released) group returns
-// nil (the source Acks; durability now rests on the store). See the
-// Aggregator doc for the concurrency and settlement contract.
+// release strategy is satisfied against the live snapshot — atomically
+// claims, aggregates, and forwards the group to the output channel. A held
+// (not-yet-released) group, or a release-ready group whose claim another
+// Handle/process is already releasing, returns nil (the source Acks;
+// durability now rests on the store). See the Aggregator doc for the
+// concurrency and settlement contract.
 func (a *Aggregator) Handle(ctx context.Context, msg Message[any]) error {
 	if err := a.assert(msg); err != nil {
 		return err // ErrPayloadType: fail fast, never added to the store
@@ -279,11 +278,6 @@ func (a *Aggregator) Handle(ctx context.Context, msg Message[any]) error {
 	if err != nil {
 		return err // e.g. Permanent(ErrNoCorrelation)
 	}
-
-	mu := a.keyLock(key)
-	mu.Lock()
-	defer mu.Unlock()
-
 	group, err := a.store.Add(ctx, key, msg)
 	if err != nil {
 		return err
@@ -291,49 +285,110 @@ func (a *Aggregator) Handle(ctx context.Context, msg Message[any]) error {
 	if !a.cfg.release(group) {
 		return nil // held; source Acks — durability now on the store
 	}
-	out, err := a.agg(ctx, group.Messages())
+	claim, err := a.store.ClaimGroup(ctx, key)
 	if err != nil {
-		return err // group NOT removed → a retry can re-release
+		return err
 	}
-	if err := a.cfg.output.Send(ctx, out); err != nil {
-		return err // NOT removed → retry
+	if claim == nil {
+		return nil // another Handle/process is releasing this group; held
 	}
-	_, err = a.store.Remove(ctx, key)
-	return err
+	return a.release(ctx, claim)
 }
 
-// Run drives the optional expiry reaper: it periodically finds groups whose
-// CreatedAt is older than WithGroupTimeout and are still unreleased, routes
-// their held members to WithExpiredGroupChannel, and removes them, so a
-// partial group with no matching final member does not wait forever.
+// releaseOnce aggregates a claimed group, forwards it to the output channel,
+// and settles the claim. It DEFERS an abandon-unless-settled so that an
+// agg/Send error OR a PANIC (recovered by the driving Consumer) always frees
+// the lease — else a panic mid-release would wedge the correlation key
+// forever on the memory store (no TTL to age it out). at-least-once, never
+// loss.
+func (a *Aggregator) releaseOnce(ctx context.Context, claim MessageGroupClaim) (err error) {
+	settled := false
+	defer func() {
+		if !settled {
+			_ = a.store.AbandonGroup(ctx, claim) // runs on error return AND on panic unwind
+		}
+	}()
+	out, aggErr := a.agg(ctx, claim.Messages())
+	if aggErr != nil {
+		return aggErr
+	}
+	if sendErr := a.cfg.output.Send(ctx, out); sendErr != nil {
+		return sendErr
+	}
+	if err = a.store.SettleGroup(ctx, claim); err != nil {
+		return err
+	}
+	settled = true
+	return nil
+}
+
+// release settles claim, THEN drains any already-complete residual left at
+// the key. A residual forms when members arrive during a holder's lease;
+// after the settle it may itself be complete, but nothing else re-checks it
+// (the recovery sweep surfaces only crashed *leases*, not unleased-complete
+// residuals), so under count-based release + a recurring key + no expiry
+// timeout it would be silently stranded. The drain loop claims and releases
+// the key until the residual is incomplete or gone — store-agnostic,
+// immediate, and it terminates (each iteration either emits a complete batch
+// or abandons an incomplete residual).
 //
-// If WithGroupTimeout is unset (timeout <= 0), Run has nothing to reap: it
-// blocks until ctx is cancelled and returns ctx.Err(), starting no ticker
-// goroutine. Otherwise it ticks every timeout (via the clock injected by
-// WithAggregatorClock, or the real clock by default) and, on each tick, reaps
-// every group Expired as of clock.Now().Add(-timeout). A transient store
-// error from Expired is skipped and retried on the next tick. Run returns
-// ctx.Err() when ctx is cancelled; callers that want reaping typically start
-// Run in its own goroutine alongside the flow that calls Handle.
+// The drain closes the common case immediately, but WithGroupTimeout is
+// still the guarantee-bearer under concurrency: a residual can be left
+// complete-but-untriggered by a crash mid-drain, or a concurrent Add landing
+// during the drain's speculative claim-then-abandon of an incomplete
+// residual. Neither loses data (at-least-once holds); both are recovered by
+// the reaper's age-scan release-check→output. Count-based recurring-key
+// aggregation under Competing Consumers should set WithGroupTimeout; the
+// canonical Splitter→Aggregator (exactly-N-once) forms no residual and needs
+// none. Fairness note: under a pathological same-key feeder the drain can
+// keep one worker/tick busy emitting — inherent (each iteration is a real,
+// required emit), acceptable, with no artificial bound (a bound would
+// re-open the strand).
+func (a *Aggregator) release(ctx context.Context, claim MessageGroupClaim) error {
+	if err := a.releaseOnce(ctx, claim); err != nil {
+		return err
+	}
+	for {
+		next, err := a.store.ClaimGroup(ctx, claim.Key())
+		if err != nil || next == nil {
+			return err // nothing more to drain (empty / leased by another / gone)
+		}
+		if !a.cfg.release(next) {
+			_ = a.store.AbandonGroup(ctx, next) // residual not yet complete; leave it live
+			return nil
+		}
+		if err := a.releaseOnce(ctx, next); err != nil {
+			return err // failed re-release already abandoned its claim; retry later
+		}
+	}
+}
+
+// Run drives the reaper: a RECOVERY + expiry sweep. It starts a ticker when
+// EITHER WithGroupTimeout>0 OR the store's RecoverInterval()>0, ticking at
+// the min positive of the two; otherwise (neither set) it blocks until ctx
+// is cancelled without reaping anything, starting no ticker goroutine.
 //
-// Each expired group is re-checked after being atomically removed: the SPI
-// has no keyed read, so Run cannot check-then-remove atomically. Instead it
-// removes first (under the same per-key lock Handle uses for that
-// correlation key) and inspects what it actually removed. If that group's
-// CreatedAt is no longer before the cutoff — a concurrent Handle released and
-// re-formed a fresh group at the same key between Run's Expired() snapshot
-// and this Remove — the removed members are restored (re-Added) rather than
-// expired-routed, so a live, still-fillable group is never prematurely
-// diverted. A group that failed to send to the expired channel is dropped
-// after removal (at-most-once to the expired sink): Remove already
-// committed, so there is nothing left to retry from.
+// On each tick, every group from store.Expired(cutoff) is re-examined: a
+// COMPLETE group (crashed mid-release, or newly complete) is re-aggregated
+// and sent to the OUTPUT channel (recovery — via the same release path
+// Handle uses); an age-expired INCOMPLETE group (cutoff is non-zero and the
+// group predates it) is routed to WithExpiredGroupChannel; otherwise the
+// claim is abandoned (a fresh residual re-formed since the Expired() scan,
+// or not yet due). A durable store (RecoverInterval() = its lease TTL) gets
+// crash-recovery sweeps even with no expiry timeout set — so go agg.Run(ctx)
+// is REQUIRED for multi-process/crash safety whenever the store is durable,
+// not only when WithGroupTimeout is set. A transient Expired error is
+// skipped and retried on the next tick. Run returns ctx.Err() when ctx is
+// cancelled; callers that want reaping typically start Run in its own
+// goroutine alongside the flow that calls Handle.
 func (a *Aggregator) Run(ctx context.Context) error {
-	if a.cfg.timeout <= 0 {
+	interval := a.reapInterval()
+	if interval <= 0 {
 		<-ctx.Done()
 		return ctx.Err()
 	}
 
-	ticker := a.cfg.clock.NewTicker(a.cfg.timeout)
+	ticker := a.cfg.clock.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -345,9 +400,23 @@ func (a *Aggregator) Run(ctx context.Context) error {
 	}
 }
 
-// reap runs one expiry sweep: see Run's doc for the full re-check contract.
+// reapInterval is the reaper's tick cadence: the min positive of
+// WithGroupTimeout and the store's RecoverInterval(), or 0 (no sweep) if
+// neither is set.
+func (a *Aggregator) reapInterval() time.Duration {
+	interval := a.cfg.timeout
+	if storeInterval := a.store.RecoverInterval(); storeInterval > 0 && (interval <= 0 || storeInterval < interval) {
+		interval = storeInterval
+	}
+	return interval
+}
+
+// reap runs one recovery+expiry sweep: see Run's doc for the full contract.
 func (a *Aggregator) reap(ctx context.Context) {
-	cutoff := a.cfg.clock.Now().Add(-a.cfg.timeout)
+	var cutoff time.Time
+	if a.cfg.timeout > 0 {
+		cutoff = a.cfg.clock.Now().Add(-a.cfg.timeout)
+	}
 	groups, err := a.store.Expired(ctx, cutoff)
 	if err != nil {
 		return // transient; next tick
@@ -357,28 +426,27 @@ func (a *Aggregator) reap(ctx context.Context) {
 	}
 }
 
-// reapGroup runs the expiry sweep's per-group body under g's shard lock,
-// released via defer so a panic from a downstream Send (via
-// WithExpiredGroupChannel) cannot leak the lock — see Run's doc for the full
-// re-check contract.
+// reapGroup runs the sweep's per-group body: see Run's doc for the full
+// recovery/expiry/abandon contract.
 func (a *Aggregator) reapGroup(ctx context.Context, g MessageGroup, cutoff time.Time) {
-	mu := a.keyLock(g.Key())
-	mu.Lock()
-	defer mu.Unlock()
-
-	removed, err := a.store.Remove(ctx, g.Key())
-	if err != nil || removed == nil {
-		return // released concurrently, or already gone
+	claim, err := a.store.ClaimGroup(ctx, g.Key())
+	if err != nil || claim == nil {
+		return // released/leased concurrently, or gone
 	}
-	if !removed.CreatedAt().Before(cutoff) {
-		// A fresh group re-formed at this key since Expired(): restore it
-		// rather than expired-route a live, still-fillable group.
-		for _, m := range removed.Messages() {
-			_, _ = a.store.Add(ctx, g.Key(), m)
-		}
+	if a.cfg.release(claim) {
+		_ = a.release(ctx, claim) // RECOVERY: re-emit a crashed/complete group to OUTPUT (+ settle)
 		return
 	}
-	for _, m := range removed.Messages() {
-		_ = a.cfg.expired.Send(ctx, m)
+	if !cutoff.IsZero() && claim.CreatedAt().Before(cutoff) {
+		// genuinely expired incomplete group → route members to the expired sink.
+		for _, m := range claim.Messages() {
+			if sendErr := a.cfg.expired.Send(ctx, m); sendErr != nil {
+				_ = a.store.AbandonGroup(ctx, claim) // retry next tick rather than drop (audit R2 L-I)
+				return
+			}
+		}
+		_ = a.store.SettleGroup(ctx, claim)
+		return
 	}
+	_ = a.store.AbandonGroup(ctx, claim) // fresh residual re-formed since the Expired() scan, or not yet due
 }

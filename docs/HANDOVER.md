@@ -1,153 +1,129 @@
 # HANDOVER — msgin
 
 > **Next session: read this first, then trust the referenced files over any memory.** Read, in order:
-> `CLAUDE.md`, then for the active increment: `docs/specs/009-splitter-aggregator-endpoints.md`,
-> `docs/adrs/0020-splitter-aggregator-group-store.md`, and `docs/plans/016-aggregator.md`. The SDD ledger
-> `.superpowers/sdd/progress.md` (gitignored, local) holds per-task history — trust it + `git log` over memory.
+> `CLAUDE.md`, then for the active increment: `docs/specs/009-splitter-aggregator-endpoints.md` (§3.4),
+> `docs/adrs/0020-splitter-aggregator-group-store.md` (§8), `docs/adrs/0021-sql-group-store.md`, and
+> `docs/plans/017-sql-group-store.md`. The SDD ledger `.superpowers/sdd/progress.md` (gitignored, local) holds
+> per-task history — trust it + `git log` over memory.
 
-## LATEST: Phase 2 (Aggregator) MERGED to `main` (`94cda1f`, --no-ff) and PUSHED; `feat/aggregator` deleted. Whole-branch gate passed (code-review 0 bugs/1 fixed/3 triaged, security clean, -race/lint/gofmt/CGO/tidy/govulncheck all green). NEXT = Phase 3 (sql.GroupStore, Plan 017/ADR 0021). See the Phase-3 design fork note at the bottom.
+## LATEST: Phase 3 (`sql.GroupStore`, Plan 017) implementation COMPLETE on branch `feat/sql-groupstore` — Tasks 1-4 all done (core SPI reshape + `memory.GroupStore` rework, `sql.GroupStore` facade + `GroupDialect` SPI, 3 per-engine dialects + 4-engine conformance, and this finalize task: runnable Example, review-polish fixes, `go mod tidy` hygiene, docs coherence). Mechanical gate green (see below). **NOT YET MERGED**: the coordinator still owes the whole-branch `/code-review` + `/security-review` over `main..HEAD` (CLAUDE.md §5 final pre-merge gate) before `main` merge + branch delete + user's explicit push/merge approval.
 
-## Where we are (2026-07-20)
+## Where we are (2026-07-21)
 
 Executing **Spec 009** — Splitter + Aggregator endpoints (+ durable group store, + expr sugar) — a **4-phase**
 increment. Phases each get their own plan + ADR + 2-round adversarial audit + SDD + whole-branch gate.
 
-- **Phase 1 — Splitter (Plan 015): DONE & MERGED to `main`** (merge `e4b346d`, `--no-ff`). Whole-branch gate
-  passed (code-review 0 bugs, security-review clean, `-race`/lint/gofmt/CGO/tidy/govulncheck all clean). Branch
-  `feat/splitter` deleted. **`main` is NOT pushed** — `git push origin main` awaits explicit user approval
-  (main is ahead of origin/main by the Phase-1 commits).
-- **Phase 2 — Aggregator (Plan 016): SHIPPED & MERGED to `main` (`94cda1f`, --no-ff) and PUSHED; `feat/aggregator` deleted.**
-  Full flow: 2-round audit (R1 caught H-1 concurrency) → SDD (4 tasks, per-task reviewed; locking opus-reviewed;
-  N>1 stress test empirically proves H-1) → whole-branch gate (code-review 0 bugs/1 fixed/3 triaged, security clean,
-  full `-race`/lint/gofmt/CGO/tidy/govulncheck green). Shipped: `MessageGroupStore` SPI, `memory.GroupStore`,
-  `NewAggregator[A,B]`/`Handle`/`Run(ctx)` reaper, sharded per-key lock. Additive → minor SemVer.
-- **Phases 3 (sql.GroupStore, Plan 017/ADR 0021) and 4 (expr sugar, Plan 018/ADR 0019 addendum): not started.**
+- **Phase 1 — Splitter (Plan 015): DONE & MERGED to `main`** (merge `e4b346d`, `--no-ff`). Branch `feat/splitter`
+  deleted. **`main` is NOT pushed** — `git push origin main` awaits explicit user approval.
+- **Phase 2 — Aggregator (Plan 016): SHIPPED & MERGED to `main`** (`94cda1f`, `--no-ff`) and PUSHED; `feat/aggregator`
+  deleted. Shipped: `MessageGroupStore` SPI (Phase-2 shape, since superseded), `memory.GroupStore`,
+  `NewAggregator[A,B]`/`Handle`/`Run(ctx)` reaper, sharded per-key lock (also since superseded).
+- **Phase 3 — `sql.GroupStore` (Plan 017 / ADR 0021 + the ADR 0020 §8 revision): IMPLEMENTATION COMPLETE, NOT YET
+  MERGED.** Branch `feat/sql-groupstore`, commits `c481ece` (core SPI reshape), `3f02f0e` (GroupDialect SPI + sql
+  facade + sequence-header int framing), `5b2d680` (per-engine dialects + 4-engine conformance), plus this
+  session's finalize work (Example + polish + tidy + docs, not yet committed as of writing this handover — see
+  "Exact state"). Reopened the Phase-2 settlement into a store-level lease-claim
+  (`ClaimGroup`/`SettleGroup`/`AbandonGroup`, claim tags a member set, fenced by epoch) that serializes both
+  within AND across processes; the per-key `[256]sync.Mutex` was removed. See "What shipped in Phase 3" below.
+- **Phase 4 (expr sugar, Plan 018 / ADR 0019 addendum): not started.**
+
+## What shipped in Phase 3 (for a fresh session with zero context)
+
+- **Core (`groupstore.go`, `aggregator.go`):** `MessageGroupStore` SPI reshaped — `Remove` replaced by
+  `ClaimGroup(ctx, key) (MessageGroupClaim, error)` / `SettleGroup(ctx, claim) error` /
+  `AbandonGroup(ctx, claim) error`, plus `Expired`/`RecoverInterval`/`EmitsLiveValue` unchanged in shape.
+  `Aggregator.Handle` reworked to claim-before-send; the per-key lock is gone (the store's atomic claim is now the
+  sole serializer). `memory.GroupStore` reworked to the same lease shape (unconditional in-process lease, no TTL,
+  `RecoverInterval()==0`).
+- **`adapter/database/sql` (root module):** `GroupDialect` — a new segregated SPI (like `InboxDialect`) — plus
+  `groupstore.go`'s `GroupStore` facade: `NewGroupStore(db, table, dialect, opts ...GroupStoreOption)`. Options:
+  `WithGroupLeaseTTL` (default 5m, matches the Source's default — NOT a tighter value, see its godoc for why),
+  `WithGroupLockedBy`. `framing.go`'s `EncodeHeaders`/`DecodeHeaders` extended so
+  `msgin.sequence-number`/`msgin.sequence-size` round-trip losslessly as `int` (ADR 0021 §2 M-1).
+- **Per-engine dialects (`postgres`/`mysql`/`sqlite` submodules):** `GroupDialect()` + `GroupDDL(table)` each,
+  implementing the two-table schema (`<table>` group-lease row + `<table>_member` append-only member rows,
+  `claimed_epoch NULL` = live). Postgres/MySQL use `SELECT ... FOR UPDATE` / row locking inside a tx; SQLite has no
+  `FOR UPDATE`, so its multi-statement ops run on a dedicated `*sql.Conn` via raw `BEGIN IMMEDIATE`/`COMMIT`
+  (`sqlite/groupdialect.go`'s `withImmediateConn`).
+- **`harness/groupstore.go`'s `RunGroupStore`:** the full contract conformance suite, run against real
+  Postgres/MySQL/MariaDB/SQLite containers via `dbtest`. Covers idempotent `Add`, exclusive `ClaimGroup`, fenced
+  `Settle`/`Abandon`, late-member survival + `created_at` reset, crashed-lease `Expired`, cross-connection races
+  (`ConcurrentFirstAddCompletionDetection_H1`, `TwoConnectionClaimRace`, `StaleEpochCrashRecovery_H2`), the
+  crash-mid-release reaper recovery proof (`CrashMidReleaseReEmitsToOutput_HA` — now also asserts the recovered
+  group's expired-channel count is 0, not just outCount==1), and a deadlock-freedom stress test
+  (`NoDeadlockUnderConcurrentAddSettle_HB`).
+- **Example:** `adapter/database/sql/postgres/example_sql_groupstore_test.go` — `Example_memoryGroupStore`
+  (Output-checked, runs with no container, shows `go agg.Run(ctx)`) and `Example_sqlGroupStore` (compile-only, no
+  `Output:` comment so `go test` never executes it — shows the durable `msginsql.NewGroupStore(db, "msgin_group",
+  postgres.GroupDialect())` swap and reiterates why `Run` is required for that store's crash-recovery).
 
 ## Exact state
 
-- **Branch:** `feat/aggregator` (current). `git status --short`: `M .claude/settings.json` (pre-existing, unrelated,
-  NEVER stage), `M docs/adrs/0020-splitter-aggregator-group-store.md` (uncommitted Phase-2 API edits — KEEP),
-  `?? docs/plans/016-aggregator.md` (uncommitted — KEEP). **No code files touched on this branch** → tree builds
-  and `go test ./... -race` is green (Phase-1 code only). This is a clean safepoint.
-- **`main` @ `e4b346d`** (Phase-1 merged). Unpushed.
-- The Phase-2 design bundle (ADR 0020 edits + Plan 016) is **uncommitted**; it will ride with Task 1's first code
-  commit once revised (couple plan/ADR with code) — or commit standalone if you prefer a cross-session safety net
-  (needs user approval either way).
+- **Branch:** `feat/sql-groupstore`. `git status --short` at the start of this finalize session:
+  `M .claude/settings.json` (pre-existing, unrelated, NEVER stage), plus uncommitted `docs/` edits (spec 009, ADR
+  0021, plan 017 — the `NewGroupStore(db, table, dialect, opts)` reconciliation, folded in this session along with
+  the Phase-3-status/pseudocode-drift fixes below).
+- **This session's finalize work (Task 4), staged for two commits (not yet committed as of writing — commit after
+  the mechanical gate is confirmed green; see the task-4 report for the exact gate output):**
+  1. `chore(sql): go mod tidy adapter modules (expr indirect via core, Plan-014 residue)` — `go mod tidy` in every
+     `go.work` module; adds `github.com/expr-lang/expr v1.17.8 // indirect` to the sql submodules (transitive via
+     the core `msgin` import, not a new direct dep).
+  2. `test(sql): GroupStore example + review-polish; docs finalize` — the Example above; the
+     `sqlite/groupdialect.go` `discardConn` bad-conn-on-failed-ROLLBACK fix (`Conn.Raw` + `driver.ErrBadConn`, the
+     documented `database/sql` mechanism to evict a pooled connection); the H-A expired-channel assertion in
+     `harness/groupstore.go`; a postgres `groupdialect.go` godoc note on the `ON CONFLICT DO UPDATE` dead-tuple
+     cost (correctness-neutral, autovacuum-reclaimed); the core `groupstore.go` `ClaimGroup` godoc de-cross-ref
+     (no dangling `WithGroupLeaseTTL` symbol from core); the `framing.go` godoc addition for
+     sequence-number/sequence-size round-tripping; the `groupstore.go` `decodeGroupRows` all-or-nothing-decode
+     godoc note; plus the spec/ADR doc-coherence fixes (Status line, §4.2 pseudocode signature drift, D16
+     supersession pointer) and this HANDOVER rewrite.
+- **`main` @ `b509db6`** (Phase-2 handover commit; Phase 1+2 merged, Phase 1 unpushed). Phase 3 has NOT been merged
+  to `main` yet.
 
 ## Traceability pointers (read first)
 
 - `CLAUDE.md` — workflow/gates (SDD, 2-round audit, table-test/goleak/testcontainers, Go 1.25 `GOTOOLCHAIN=go1.25.12`).
-- `docs/specs/009-splitter-aggregator-endpoints.md` — §3.2/§3.3 Aggregator + MessageGroupStore; §8 open items (O9-6 nested correlation).
-- `docs/adrs/0020-splitter-aggregator-group-store.md` — §1 Splitter (shipped), §2 SPI + memory store, §3 Aggregator, §4 settlement, §5 expiry, §6.
-- `docs/plans/016-aggregator.md` — the Phase-2 plan (4 tasks). **Currently pre-revision — see below.**
-
-## Phase 2 — REQUIRED REVISIONS before implementation (round-1 audit, Opus, NEEDS-REVISION)
-
-Fold these into ADR 0020 + Spec 009 D16 + Plan 016, then **run a round-2 re-audit** (H-1 reshapes the SPI, so
-re-audit is mandatory per the project's two-round norm). Full audit reasoning is in the round-1 transcript; summary:
-
-- **H-1 (High, design/SPI-level) — concurrent double-release / data-loss.** `Handle` does
-  `Add → release-check → agg → output.Send → Remove` as separate un-serialized store calls; the coarse
-  `Remove`-by-key is not atomic with the release decision. Under `WithConcurrency>1`, two `Handle`s for the same
-  key can both see a complete group → **double-emit** (`>=` release), or a member arriving during the window is
-  **silently lost** (exact-count release). The reaper (`Expired → Send → Remove`) races the same way vs `Handle`
-  (a group both released to output AND routed to the expired channel). **Invisible to `-race`** (logical, not a
-  data race) — so "`-race` clean" is false assurance. The 3-method SPI has no atomic-release seam.
-  - **RECOMMENDED FIX (single-process/memory, Phase 2):** give the `Aggregator` a **sharded per-correlation-key
-    lock** (e.g. `[256]sync.Mutex`, `key→fnv%256`) held across the WHOLE `Handle` sequence (correlate→Add→
-    release→agg→Send→Remove) for a key; different keys stay concurrent (competing-consumers preserved across
-    groups). The **reaper acquires the same per-key lock** around its re-check+route+Remove for each expired key.
-  - **SPI change:** make `Remove(ctx, key) (MessageGroup, error)` **return the removed group** (nil if absent), so
-    the reaper routes exactly what it atomically removed (and `Handle` ignores the return). This avoids a stale
-    `Expired` snapshot being routed after `Handle` already released the group.
-  - **Document the guarantee honestly:** safe under N>1 **within one process** (memory store). **Multi-process
-    durable (Phase 3 sql) needs transactional atomic release** (`DELETE … RETURNING` in one tx) — record as a
-    Phase-3/ADR-0021 requirement and note that a per-process lock does NOT cover multi-process. Update ADR §3/§4/§6
-    + Spec D16 to state the ACTUAL guarantee (the current "serialized by Add" claim is wrong).
-  - **Caveat to document:** exact-count release strategies (`== n`) are inherently racy under concurrency even with
-    the key lock if members can exceed n; steer callers to `>=`/`WithCompletionSize` (which the key lock makes
-    correct) or worker=1 for exact-count.
-- **M-1 — `ErrNoCorrelation` not permanent.** `isPermanent` (reliability.go) matches only `ErrPayloadType`/
-  `ErrPayloadDecode`/`ErrPayloadTooLarge` + explicit `Permanent()`. A bare `ErrNoCorrelation` is treated
-  **transient → retried to DLQ**, contradicting "permanent → invalid channel". **Fix:** `defaultCorrelate` returns
-  `Permanent(ErrNoCorrelation)` (or add it to `isPermanent`), and test the ROUTING (diverted as permanent), not
-  just that `Handle` returns the error.
-- **M-2 — missing ingress `PayloadOf[A]` fail-fast.** Plan's `Handle` correlates on headers and calls `store.Add`
-  WITHOUT asserting the payload → a mistyped message enters the group and only fails at release-time re-assert,
-  which (group not removed on error) **permanently stuck-locks the whole group** (every retry re-fails). **Fix:**
-  `if _, err := PayloadOf[A](msg); err != nil { return err }` BEFORE `store.Add`; test that a mistyped message
-  never reaches the store (group stays empty).
-- **M-3 — untested error branches.** `store.Add` error and `output.Send` error branches have no covering test
-  (the plan drives a real store/DirectChannel that don't error on demand). **Fix:** add a fake `MessageGroupStore`
-  (Add→sentinel) and fake `MessageChannel` (Send→sentinel); assert group NOT removed on Send error.
-- **L-1** orphaned group on persistently-failing `agg` (godoc note; expiry mitigates). **L-2** id-less duplicate
-  double-counts toward `>=` release (already documented; note spurious-release risk). **L-3** reaper test MUST
-  `clock.BlockUntil(1)` before `clock.Advance` (else lost tick → flake/hang). **L-4** pick no-timeout `Run` =
-  block-until-cancel returning `ctx.Err()`; drop the unused `strings` import.
-
-**Confirmed CORRECT by the audit (no change needed):** generic boxing (`boxMessage`/`PayloadOf[A]`), **clockwork
-v0.5.0 ticker API is exactly as the plan uses** (`NewTicker(d).Chan()/.Stop()`, `FakeClock.Advance/BlockUntil`;
-`NewFakeClock().NewTicker` panics on d<=0 but reaper only builds one when timeout>0), snapshot immutability
-(`slices.Clone`), `asInt` int/int64/float64 tolerance, `defaultRelease` `msgs[0]` guarded by len==0 early-return,
-dependency-inward layering, Splitter→Aggregator `int`-size round-trip, and the 4-task decomposition.
+- `docs/specs/009-splitter-aggregator-endpoints.md` — §3.4 (Phase 3, revised); §3.6 D16 (Phase-2 guarantee,
+  superseded pointer added this session); §8 open items (O9-6 nested correlation, still open/deferred).
+- `docs/adrs/0020-splitter-aggregator-group-store.md` — §8 (Phase-3 revision: SPI reshape, supersedes §2/§3).
+- `docs/adrs/0021-sql-group-store.md` — the full `sql.GroupStore` design: schema, `GroupDialect`, safe defaults,
+  4-round audit history.
+- `docs/plans/017-sql-group-store.md` — the Phase-3 plan (4 tasks, all done). Task 4's brief:
+  `.superpowers/sdd/task-4-brief.md`; its report (this session): `.superpowers/sdd/task-4-report.md`.
 
 ## Next actions (resume here)
 
-1. ✅ DONE this session: Phase 1 (Splitter) AND Phase 2 (Aggregator) both shipped, merged to `main`, pushed
-   (`main` @ `94cda1f`). Branches deleted.
-2. **Phase 3 — `sql.GroupStore`, FULL multi-process (user's choice).** This is a FRESH DESIGN CYCLE, not a plain
-   port: brainstorm the claim-lease settlement → spec-delta (Spec 009 §3.4 / a new §) → ADR 0021 (+ likely an
-   ADR 0020 addendum for the Handle-order/SPI change) → Plan 017 → **2-round adversarial audit** → SDD (memory claim
-   + sql claim + Aggregator `Handle` rework + 4-engine testcontainers conformance) → whole-branch gate → merge.
-   **Read the "Phase 3 — DESIGN DIRECTION" section below FIRST** — the lease-based claim-before-send design + the
-   loss-vs-duplicate trap are worked out there; don't rediscover them. Ask the user before writing implementation
-   code (CLAUDE.md) and confirm the ADR 0020 addendum-vs-supersede call.
-3. Then Phase 4 (expr sugar `TransformExpr`/`SplitExpr`/aggregator exprs, Plan 018 / ADR 0019 addendum — lighter,
-   reuses `compile[A]`, no DB).
-
-## Phase 3 (sql.GroupStore) — DESIGN DIRECTION (user chose FULL multi-process, 2026-07-20)
-
-The user chose the **full multi-process** option (not single-process-durable). This REOPENS the Phase-2 aggregation
-settlement — it is a fresh design cycle (brainstorm → spec-delta → ADR 0021 → Plan 017 → 2-round audit → SDD), NOT
-just a new store. Start it fresh with full context.
-
-**The crux design insight (worked out with the user — do not lose it):**
-- The Phase-2 `Handle` order is `Add → release-check → agg → Send → Remove` under a PER-PROCESS per-key lock. That
-  lock does not serialize across processes, and `Send` before `Remove` means two aggregator processes sharing one
-  `sql.GroupStore` (e.g. competing consumers over a SKIP-LOCKED source) could both emit. Multi-process safety needs
-  **claim-before-send**.
-- **TRAP:** a naive "claim = atomic `DELETE … RETURNING` before Send" IS multi-process-safe but trades
-  duplicate-risk for **LOSS-risk** — a crash in the claim→Send window loses a group already deleted (worse than
-  Phase-2's duplicate-on-crash). The other members' source messages were already Acked while held, so redelivery
-  can't reconstitute the group.
-- **CORRECT shape = a LEASE-based atomic claim**, mirroring the sql adapter's existing Source lease/claim/ack
-  (ADR 0010/0018): `Add(persist member) → release-check → ClaimGroup(atomic lease — one winner, sets
-  locked_by/locked_at/epoch, returns members) → agg → Send → settle(fenced delete)`. On crash the lease **expires →
-  another process re-claims → re-releases (DUPLICATE, at-least-once preserved)**. Reuses the lease/fencing model +
-  `LeaseDialect` seam already in `adapter/database/sql`.
-- **Scope of change:** (1) a new atomic-claim primitive on the `MessageGroupStore` SPI (add via optional interface /
-  embedding to stay non-breaking for the shipped Add/Remove/Expired; memory implements it under its mutex, sql
-  transactionally); (2) the Aggregator's `Handle` changes to claim-before-send (a behavior change to Phase-2 merged
-  code — needs the N>1 stress test extended to CROSS-PROCESS simulation, re-audit); (3) `sql.GroupStore` over the
-  `Dialect` seam (new group-store dialect methods: upsert-member, claim-lease, fenced-delete, expired-scan) with
-  4-engine testcontainers conformance (reuse `harness` + `RunTestDatabase`, like `sql.QueueStore`); (4) M-1 is
-  ALREADY handled by the Aggregator's `asInt` (tolerates the float64 sql-framing round-trips) — no framing change
-  needed.
-- Consider whether this warrants amending ADR 0020 (the Handle-order/SPI change) vs a fresh ADR 0021 — likely both:
-  ADR 0021 for sql specifics + an ADR 0020 addendum (or supersede) for the claim-lease Handle/SPI change.
-- Existing precedent to copy: `adapter/database/sql/queuestore.go` (thin facade), `source.go`/`lock.go` (lease/claim/
-  fence), `dialect.go` (`LeaseDialect`), `harness/` + `dbtest/` (4-engine conformance). `sql.QueueStore` is the model.
+1. **Confirm the mechanical gate is green** (this session's report has the exact command output —
+   `.superpowers/sdd/task-4-report.md`): `go build ./...`, `go test ./... -race` (all `go.work` modules, including
+   the 4-engine `dbtest` conformance under Docker), `go vet ./...`, `golangci-lint run ./...`, `gofmt -l .`,
+   `CGO_ENABLED=0 go build ./...`, `go mod tidy` no-diff, `govulncheck ./...`.
+2. **If not already committed:** commit the two commits described in "Exact state" above (chore first, then the
+   finalize commit) — the user must approve each `git commit` per CLAUDE.md.
+3. **Run the whole-branch pre-merge gate** (CLAUDE.md §5, the coordinator's job, NOT part of Task 4's scope):
+   `/code-review` and `/security-review` over `main..HEAD`, resolve/triage every finding, re-confirm `-race` green.
+4. **On explicit user approval:** merge `feat/sql-groupstore` to `main` (`--no-ff`), delete the branch (local +
+   remote if pushed), and decide on pushing `main` (still pending from Phase 1 — `main` has been unpushed since
+   before Phase 2 per prior handovers; confirm current push state before assuming).
+5. **Then Phase 4** (expr sugar `TransformExpr`/`SplitExpr`/aggregator exprs, Plan 018 / ADR 0019 addendum —
+   lighter, reuses `compile[A]`, no DB). Spec 009 §3.5/D12-D14 has the design; not yet planned/audited.
 
 ## Gotchas / environment
 
 - Go 1.25: prefix every go cmd with `GOTOOLCHAIN=go1.25.12`. `golangci-lint`/`govulncheck` needed for the gate
-  (govulncheck may be at `$(go env GOPATH)/bin/govulncheck`).
-- Blackbox `_test` packages only; assert-closure tables; `t.Context()`; `goleak` on the reaper; `clockwork` fake
-  clock for time. Core must NOT import `adapter/memory` (dependency-inward).
-- Reserved headers from Phase 1: `HeaderSequenceNumber`/`HeaderSequenceSize` (int), and `Split` stamps a
-  deterministic child id `parentID#seq` + `HeaderCorrelationID` = parent id. The Aggregator's default correlation
-  reads `HeaderCorrelationID`; default release reads `HeaderSequenceSize` (number-tolerant).
+  (govulncheck may be at `$(go env GOPATH)/bin/govulncheck`). The local default toolchain is newer (1.26) —
+  `go.work` pins 1.25.0; do not let a stray `go` invocation silently build on 1.26+.
+- Blackbox `_test` packages only; assert-closure tables; `t.Context()`; `goleak` on the reaper/dbtest `TestMain`;
+  `clockwork` fake clock for time. Core must NOT import `adapter/memory` or any `adapter/database/sql/*`
+  (dependency-inward) — the new `example_sql_groupstore_test.go` lives in the `postgres` SUBMODULE precisely to
+  respect this (it can import core `msgin` + `adapter/memory` + `adapter/database/sql`, but the CORE module itself
+  never imports postgres).
+- The 4-engine conformance (`dbtest` module) needs Docker running locally (testcontainers); it's part of the
+  `-race` gate.
+- Reserved headers: `HeaderSequenceNumber`/`HeaderSequenceSize` (int, and now also proven to round-trip through
+  the sql JSON header framing per this session's `framing.go` godoc fix). `Split` stamps a deterministic child id
+  `parentID#seq` + `HeaderCorrelationID` = parent id.
 - SDD helper scripts: `~/.claude/plugins/cache/claude-plugins-official/superpowers/6.1.1/skills/subagent-driven-development/scripts/{task-brief,review-package}`.
 
-_Updated 2026-07-20: Phase 1 (Splitter) merged to main (e4b346d, unpushed); Phase 2 (Aggregator) design drafted +
-round-1 audited = NEEDS-REVISION (H-1 concurrency), awaiting fold + round-2 re-audit + SDD._
+_Updated 2026-07-21: Phase 3 (`sql.GroupStore`, Plan 017) implementation complete on `feat/sql-groupstore`
+(Tasks 1-4, including this finalize task) — pending commit confirmation, the coordinator's whole-branch
+`/code-review` + `/security-review` gate, and user-approved merge to `main`._

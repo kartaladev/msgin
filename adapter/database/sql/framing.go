@@ -21,7 +21,9 @@ import (
 //   - msgin.timestamp is written as an RFC3339 (nanosecond) string. A time.Time
 //     would otherwise marshal to a string that DecodeHeaders could not restore
 //     to a time.Time.
-//   - msgin.delivery-count is written as a JSON number and restored to an int.
+//   - msgin.delivery-count, msgin.sequence-number, and msgin.sequence-size are
+//     each written as a JSON number and restored to an int by DecodeHeaders
+//     (ADR 0021 §2 M-1).
 //
 // All other keys — the reserved string keys (msgin.id, msgin.content-type,
 // msgin.correlation-id) and any custom keys — are marshaled as-is; a numeric
@@ -50,11 +52,13 @@ func EncodeHeaders(h msgin.Headers) ([]byte, error) {
 
 // DecodeHeaders reconstructs Headers from the framed JSON bytes written by
 // EncodeHeaders, per the on-wire format documented on EncodeHeaders (the
-// stability contract): msgin.timestamp is parsed back to a time.Time and
-// msgin.delivery-count back to an int. Custom keys are returned with the types
-// JSON produces (a numeric custom header comes back as float64 — the standard
-// encoding/json behavior, so callers store immutable, JSON-round-trippable
-// values). Empty input yields empty Headers; malformed JSON is an error.
+// stability contract): msgin.timestamp is parsed back to a time.Time,
+// msgin.delivery-count back to an int, and (ADR 0021 §2 M-1)
+// msgin.sequence-number / msgin.sequence-size back to an int. Custom keys are
+// returned with the types JSON produces (a numeric custom header comes back as
+// float64 — the standard encoding/json behavior, so callers store immutable,
+// JSON-round-trippable values). Empty input yields empty Headers; malformed
+// JSON is an error.
 func DecodeHeaders(b []byte) (msgin.Headers, error) {
 	if len(b) == 0 {
 		return msgin.NewHeaders(nil), nil
@@ -71,7 +75,7 @@ func DecodeHeaders(b []byte) (msgin.Headers, error) {
 					raw[k] = t
 				}
 			}
-		case msgin.HeaderDeliveryCount:
+		case msgin.HeaderDeliveryCount, msgin.HeaderSequenceNumber, msgin.HeaderSequenceSize:
 			if f, ok := v.(float64); ok {
 				raw[k] = int(f)
 			}

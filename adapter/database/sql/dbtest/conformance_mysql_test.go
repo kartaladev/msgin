@@ -35,6 +35,8 @@ func mysqlKit(openDB func(t *testing.T) *sql.DB) harness.TestKit {
 		HeadersTextExpr: func(col string) string { return col },
 		DDL:             mysql.DDL,
 		InboxDDL:        mysql.InboxDDL,
+		Group:           mysql.GroupDialect(),
+		GroupDDL:        mysql.GroupDDL,
 		OpenDB:          openDB,
 	}
 }
@@ -57,6 +59,7 @@ func TestMySQLConformance(t *testing.T) {
 	t.Run("Inbox", func(t *testing.T) { harness.RunInbox(t, kit, db) })
 	t.Run("Dialect", func(t *testing.T) { harness.RunDialect(t, kit, db) })
 	t.Run("QueueStore", func(t *testing.T) { harness.RunQueueStore(t, kit, db) })
+	t.Run("GroupStore", func(t *testing.T) { harness.RunGroupStore(t, kit, db) })
 }
 
 // TestMariaDBConformance is the MariaDB peer of TestMySQLConformance: the same
@@ -75,6 +78,7 @@ func TestMariaDBConformance(t *testing.T) {
 	t.Run("Inbox", func(t *testing.T) { harness.RunInbox(t, kit, db) })
 	t.Run("Dialect", func(t *testing.T) { harness.RunDialect(t, kit, db) })
 	t.Run("QueueStore", func(t *testing.T) { harness.RunQueueStore(t, kit, db) })
+	t.Run("GroupStore", func(t *testing.T) { harness.RunGroupStore(t, kit, db) })
 }
 
 // TestMySQLClaimInExistingTransaction is Plan 006 Task 5 carry-forward item
