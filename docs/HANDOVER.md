@@ -5,6 +5,8 @@
 > `docs/adrs/0020-splitter-aggregator-group-store.md`, and `docs/plans/016-aggregator.md`. The SDD ledger
 > `.superpowers/sdd/progress.md` (gitignored, local) holds per-task history — trust it + `git log` over memory.
 
+## LATEST: Phase 2 (Aggregator) MERGED to `main` (`94cda1f`, --no-ff) and PUSHED; `feat/aggregator` deleted. Whole-branch gate passed (code-review 0 bugs/1 fixed/3 triaged, security clean, -race/lint/gofmt/CGO/tidy/govulncheck all green). NEXT = Phase 3 (sql.GroupStore, Plan 017/ADR 0021). See the Phase-3 design fork note at the bottom.
+
 ## Where we are (2026-07-20)
 
 Executing **Spec 009** — Splitter + Aggregator endpoints (+ durable group store, + expr sugar) — a **4-phase**
@@ -14,12 +16,11 @@ increment. Phases each get their own plan + ADR + 2-round adversarial audit + SD
   passed (code-review 0 bugs, security-review clean, `-race`/lint/gofmt/CGO/tidy/govulncheck all clean). Branch
   `feat/splitter` deleted. **`main` is NOT pushed** — `git push origin main` awaits explicit user approval
   (main is ahead of origin/main by the Phase-1 commits).
-- **Phase 2 — Aggregator (Plan 016): DESIGN COMPLETE, 2-ROUND AUDITED (SOUND-WITH-NITS, all folded), IMPLEMENTATION-READY. NO CODE YET.**
-  On branch **`feat/aggregator`** (off `main` @ `e4b346d`; design bundle committed). Round-1 (NEEDS-REVISION: H-1
-  concurrency + M-1/M-2/M-3/L) and round-2 (SOUND-WITH-NITS: F1 reaper re-check, F2 cyclic-Send deadlock doc, F3
-  `==n` caveat scope, F4 de-stale snippets, F5/F6) BOTH folded into ADR 0020 (§2/§3), Spec 009 (D16), and Plan 016
-  (the "⚠️ Audit fold" + "Round-2 re-audit folds" sections — they OVERRIDE the inline task code, esp. the 2-return
-  `Remove` signature). **NEXT = SDD execution of Plan 016** (no round-3 needed). See §Phase-2 below.
+- **Phase 2 — Aggregator (Plan 016): SHIPPED & MERGED to `main` (`94cda1f`, --no-ff) and PUSHED; `feat/aggregator` deleted.**
+  Full flow: 2-round audit (R1 caught H-1 concurrency) → SDD (4 tasks, per-task reviewed; locking opus-reviewed;
+  N>1 stress test empirically proves H-1) → whole-branch gate (code-review 0 bugs/1 fixed/3 triaged, security clean,
+  full `-race`/lint/gofmt/CGO/tidy/govulncheck green). Shipped: `MessageGroupStore` SPI, `memory.GroupStore`,
+  `NewAggregator[A,B]`/`Handle`/`Run(ctx)` reaper, sharded per-key lock. Additive → minor SemVer.
 - **Phases 3 (sql.GroupStore, Plan 017/ADR 0021) and 4 (expr sugar, Plan 018/ADR 0019 addendum): not started.**
 
 ## Exact state
@@ -92,17 +93,50 @@ dependency-inward layering, Splitter→Aggregator `int`-size round-trip, and the
 
 ## Next actions (resume here)
 
-1. ✅ DONE: both audit rounds folded (ADR 0020 §2/§3, Spec D16, Plan 016 "⚠️ Audit fold" + "Round-2 re-audit folds").
-   ✅ DONE: `git push origin main` (Phase 1). ✅ DONE: design bundle committed on `feat/aggregator` (a `docs:` commit).
-2. **SDD execution of Plan 016** — `superpowers:subagent-driven-development`, fresh implementer + reviewer per task
-   (4 tasks). **Follow the fold sections in Plan 016 over the inline task code where they conflict** — critically the
-   2-return `Remove(ctx,key) (MessageGroup,error)`, the per-key lock in `Handle`+reaper (F1 loop), the ingress
-   `PayloadOf[A]` assert, `Permanent(ErrNoCorrelation)`, and the N>1 same-key concurrency stress test (the H-1 proof
-   `-race` can't provide). The inline snippets are otherwise-correct starting points but were written pre-fold.
-3. Whole-branch gate (`/code-review` + `/security-review` over `main..HEAD`, `-race`/lint/gofmt/CGO/tidy/govulncheck),
-   then propose merge (needs explicit approval).
-4. Then Phase 3 (sql.GroupStore, Plan 017/ADR 0021 — the multi-process transactional atomic release H-1 needs) and
-   Phase 4 (expr sugar, Plan 018).
+1. ✅ DONE this session: Phase 1 (Splitter) AND Phase 2 (Aggregator) both shipped, merged to `main`, pushed
+   (`main` @ `94cda1f`). Branches deleted.
+2. **Phase 3 — `sql.GroupStore`, FULL multi-process (user's choice).** This is a FRESH DESIGN CYCLE, not a plain
+   port: brainstorm the claim-lease settlement → spec-delta (Spec 009 §3.4 / a new §) → ADR 0021 (+ likely an
+   ADR 0020 addendum for the Handle-order/SPI change) → Plan 017 → **2-round adversarial audit** → SDD (memory claim
+   + sql claim + Aggregator `Handle` rework + 4-engine testcontainers conformance) → whole-branch gate → merge.
+   **Read the "Phase 3 — DESIGN DIRECTION" section below FIRST** — the lease-based claim-before-send design + the
+   loss-vs-duplicate trap are worked out there; don't rediscover them. Ask the user before writing implementation
+   code (CLAUDE.md) and confirm the ADR 0020 addendum-vs-supersede call.
+3. Then Phase 4 (expr sugar `TransformExpr`/`SplitExpr`/aggregator exprs, Plan 018 / ADR 0019 addendum — lighter,
+   reuses `compile[A]`, no DB).
+
+## Phase 3 (sql.GroupStore) — DESIGN DIRECTION (user chose FULL multi-process, 2026-07-20)
+
+The user chose the **full multi-process** option (not single-process-durable). This REOPENS the Phase-2 aggregation
+settlement — it is a fresh design cycle (brainstorm → spec-delta → ADR 0021 → Plan 017 → 2-round audit → SDD), NOT
+just a new store. Start it fresh with full context.
+
+**The crux design insight (worked out with the user — do not lose it):**
+- The Phase-2 `Handle` order is `Add → release-check → agg → Send → Remove` under a PER-PROCESS per-key lock. That
+  lock does not serialize across processes, and `Send` before `Remove` means two aggregator processes sharing one
+  `sql.GroupStore` (e.g. competing consumers over a SKIP-LOCKED source) could both emit. Multi-process safety needs
+  **claim-before-send**.
+- **TRAP:** a naive "claim = atomic `DELETE … RETURNING` before Send" IS multi-process-safe but trades
+  duplicate-risk for **LOSS-risk** — a crash in the claim→Send window loses a group already deleted (worse than
+  Phase-2's duplicate-on-crash). The other members' source messages were already Acked while held, so redelivery
+  can't reconstitute the group.
+- **CORRECT shape = a LEASE-based atomic claim**, mirroring the sql adapter's existing Source lease/claim/ack
+  (ADR 0010/0018): `Add(persist member) → release-check → ClaimGroup(atomic lease — one winner, sets
+  locked_by/locked_at/epoch, returns members) → agg → Send → settle(fenced delete)`. On crash the lease **expires →
+  another process re-claims → re-releases (DUPLICATE, at-least-once preserved)**. Reuses the lease/fencing model +
+  `LeaseDialect` seam already in `adapter/database/sql`.
+- **Scope of change:** (1) a new atomic-claim primitive on the `MessageGroupStore` SPI (add via optional interface /
+  embedding to stay non-breaking for the shipped Add/Remove/Expired; memory implements it under its mutex, sql
+  transactionally); (2) the Aggregator's `Handle` changes to claim-before-send (a behavior change to Phase-2 merged
+  code — needs the N>1 stress test extended to CROSS-PROCESS simulation, re-audit); (3) `sql.GroupStore` over the
+  `Dialect` seam (new group-store dialect methods: upsert-member, claim-lease, fenced-delete, expired-scan) with
+  4-engine testcontainers conformance (reuse `harness` + `RunTestDatabase`, like `sql.QueueStore`); (4) M-1 is
+  ALREADY handled by the Aggregator's `asInt` (tolerates the float64 sql-framing round-trips) — no framing change
+  needed.
+- Consider whether this warrants amending ADR 0020 (the Handle-order/SPI change) vs a fresh ADR 0021 — likely both:
+  ADR 0021 for sql specifics + an ADR 0020 addendum (or supersede) for the claim-lease Handle/SPI change.
+- Existing precedent to copy: `adapter/database/sql/queuestore.go` (thin facade), `source.go`/`lock.go` (lease/claim/
+  fence), `dialect.go` (`LeaseDialect`), `harness/` + `dbtest/` (4-engine conformance). `sql.QueueStore` is the model.
 
 ## Gotchas / environment
 
