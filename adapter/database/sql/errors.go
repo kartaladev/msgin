@@ -121,4 +121,15 @@ var (
 	// exported so callers can errors.Is it. Postgres has no equivalent path (its
 	// ON CONFLICT ... RETURNING distinguishes insert from conflict exactly).
 	ErrInboxInsertFailed = errors.New("msgin/sql: inbox insert did not take effect and is not a duplicate")
+
+	// ErrMissingMsgID is returned by GroupStore.Add (and, defensively, by a
+	// GroupDialect's own AddMember) when the message being added carries an
+	// empty msgin.id. Group members are keyed (group_key, msg_id) for
+	// idempotent, redelivery-safe add, so durable aggregation REQUIRES message
+	// ids (audit R1 H3, ADR 0021 §2) — a source delivery always carries
+	// msgin.HeaderID and the Splitter stamps a deterministic child id, so this
+	// is not a real-world restriction. GroupStore.Add checks this at the
+	// facade (belt-and-suspenders with the dialect's own check) so the error
+	// is returned before any query runs.
+	ErrMissingMsgID = errors.New("msgin/sql: group member requires a non-empty message id")
 )

@@ -100,6 +100,32 @@ func TestEncodeDecodeHeadersRoundTrip(t *testing.T) {
 	}
 }
 
+// TestDecodeHeadersSequenceHeadersIntRestoration covers the ADR 0021 §2 (M-1)
+// framing touchpoint: msgin.sequence-number and msgin.sequence-size round-trip
+// as int (like msgin.delivery-count), not the raw float64 encoding/json would
+// otherwise produce, so a live-value-consuming default release reads them as
+// int without relying on the runtime's float64-tolerant asInt fallback.
+func TestDecodeHeadersSequenceHeadersIntRestoration(t *testing.T) {
+	t.Parallel()
+
+	b, err := msginsql.EncodeHeaders(msgin.NewHeaders(map[string]any{
+		msgin.HeaderSequenceNumber: 2,
+		msgin.HeaderSequenceSize:   5,
+	}))
+	require.NoError(t, err)
+
+	got, err := msginsql.DecodeHeaders(b)
+	require.NoError(t, err)
+
+	num, ok := got.Int(msgin.HeaderSequenceNumber)
+	assert.True(t, ok, "sequence-number must decode back to int")
+	assert.Equal(t, 2, num)
+
+	size, ok := got.Int(msgin.HeaderSequenceSize)
+	assert.True(t, ok, "sequence-size must decode back to int")
+	assert.Equal(t, 5, size)
+}
+
 func TestDecodeHeadersMalformedJSON(t *testing.T) {
 	t.Parallel()
 
