@@ -47,6 +47,8 @@ func postgresKit() harness.TestKit {
 		HeadersTextExpr: func(col string) string { return col + "::text" },
 		DDL:             postgres.DDL,
 		InboxDDL:        postgres.InboxDDL,
+		Group:           postgres.GroupDialect(),
+		GroupDDL:        postgres.GroupDDL,
 		// OpenDB opens an ADDITIONAL, independently-pooled *sql.DB for RunLock's
 		// separate-pool DLQ assertion. The property under test is pool
 		// separation, not physical-container separation (harness TestKit doc),
@@ -73,4 +75,5 @@ func TestPostgresConformance(t *testing.T) {
 	t.Run("Inbox", func(t *testing.T) { harness.RunInbox(t, kit, db) })
 	t.Run("Dialect", func(t *testing.T) { harness.RunDialect(t, kit, db) })
 	t.Run("QueueStore", func(t *testing.T) { harness.RunQueueStore(t, kit, db) })
+	t.Run("GroupStore", func(t *testing.T) { harness.RunGroupStore(t, kit, db) })
 }

@@ -78,6 +78,23 @@ type TestKit struct {
 	// RunInbox.
 	Inbox msginsql.InboxDialect
 
+	// Group is the GroupDialect under test — the dialect a real
+	// msginsql.NewGroupStore would be constructed with. It is its own
+	// segregated SPI (ADR 0021 §3): group-keyed idempotent add, a per-group
+	// lease, claimed-set fencing, and an expiry scan are not row-oriented
+	// queue operations, so a GroupDialect value is supplied separately from
+	// Lease/Inbox. Required for RunGroupStore.
+	Group msginsql.GroupDialect
+
+	// GroupDDL returns the engine's reference CREATE TABLE statements
+	// (group-lease table + member table + indexes) for the durable Aggregator
+	// group store — the harness peer of the per-dialect
+	// postgres.GroupDDL/mysql.GroupDDL/sqlite.GroupDDL package functions, and
+	// itself exercises those functions' ValidateIdent guard (RunGroupStore
+	// calls it with both a valid and a deliberately invalid identifier).
+	// Required for RunGroupStore.
+	GroupDDL func(table string) (string, error)
+
 	// Quote wraps a raw identifier in the engine's quoting style (backticks
 	// for MySQL-family, double quotes for Postgres) for the RAW verification
 	// SQL the harness issues directly (row counts, column probes) — NOT used

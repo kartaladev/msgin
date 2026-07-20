@@ -29,7 +29,10 @@ func sqliteKit() harness.TestKit {
 		HeadersTextExpr: func(col string) string { return col },
 		DDL:             sqlite.DDL,
 		InboxDDL:        sqlite.InboxDDL,
-		// OpenDB intentionally nil: RunLock is not run for SQLite.
+		Group:           sqlite.GroupDialect(),
+		GroupDDL:        sqlite.GroupDDL,
+		// OpenDB intentionally nil: RunLock is not run for SQLite, and
+		// RunGroupStore drives cross-connection races over the same db pool.
 	}
 }
 
@@ -47,6 +50,7 @@ func TestSQLiteConformance(t *testing.T) {
 	t.Run("Inbox", func(t *testing.T) { harness.RunInbox(t, kit, db) })
 	t.Run("Dialect", func(t *testing.T) { harness.RunDialect(t, kit, db) })
 	t.Run("QueueStore", func(t *testing.T) { harness.RunQueueStore(t, kit, db) })
+	t.Run("GroupStore", func(t *testing.T) { harness.RunGroupStore(t, kit, db) })
 }
 
 // TestSQLiteLockStrategyUnsupported asserts the lease-only sqlite dialect does
