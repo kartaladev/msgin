@@ -311,6 +311,39 @@ One plan (`docs/plans/019-messaging-gateway.md`), TDD red→green per task, each
   additive public-API extension to `message.go` that lands with Plan 019 Task 4; confirm the name/shape in the plan
   (additive → minor SemVer, no break).
 
+### 8.1 Multi-instance / distributed reply routing — a HARD constraint on the future external adapter
+
+**This is not an open question for *this* increment (which is in-process only) — it is a forward requirement the future
+external `RequestReplyExchange` adapter (HTTP/NATS/broker, §2 non-goals) MUST satisfy, recorded here so the adapter's
+design cycle picks it up as a first-class constraint rather than rediscovering it.** See CLAUDE.md → *Production
+robustness → Multi-instance / distributed-deployment awareness*.
+
+- **Why the in-process design is complete for N instances behind a proxy.** The correlator (§3.2) matches a reply to a
+  blocked waiter through a **process-local Go channel** — a reply can only reach the waiter registered on the **same
+  `ChannelExchange` instance**. For a horizontally-scaled app (N instances behind a load balancer/proxy) running the
+  **in-process** flow, each instance serves a request end-to-end in its own memory: the request enters, the flow runs,
+  and the reply returns **all within one instance**. Requests and replies never cross instances, each instance's
+  correlator has an independent correlation-id space, and there is **nothing to coordinate**. The shipped design is
+  correct under horizontal scaling for the in-process topology.
+
+- **Where multi-instance breaks, and the required pattern.** The moment the exchange sends the request over an
+  **external transport** (HTTP to a responder pool, NATS/Kafka/Redis) and the reply returns via that transport to
+  **any** instance, correlation-id-only matching fails: the reply can land on an instance with **no** waiter (→
+  unmatched/drop) while the **originating** instance's waiter times out. The external adapter therefore MUST implement
+  the EIP **Return Address** pattern — each instance owns a **unique reply destination** (a per-instance reply
+  queue/topic/inbox, or an instance id in the request) stamped on the outgoing request, so the reply returns to the
+  *originating* instance; correlation id then matches the *specific* request **within** that instance. (Note the N1
+  sequential-reuse caveat gets sharper over a shared cross-instance id space — the per-instance return address also
+  contains it.)
+
+- **Why the core does not (and must not) solve this.** A Go channel cannot cross a process boundary; the core correlator
+  is single-process **by construction**. The `RequestReplyExchange` SPI is deliberately synchronous and self-contained
+  (`Exchange(ctx, req) (rep, error)`) precisely so the adapter can encapsulate "send with **my** return address, block
+  for **my** correlated reply on **my** reply destination." Return-address + reply-demux is the **adapter's**
+  responsibility; attempting it in the core would leak an in-process construct into a contract a distributed deployment
+  breaks. The external-adapter increment must design its return-address scheme, its reply-destination lifecycle
+  (cleanup on instance shutdown), and its own dedicated security review (untrusted inbound reply bytes) up front.
+
 ## 9. Traceability
 
 Spec 010 realizes [Spec 001](001-messaging-core.md) §1 (the deferred **Messaging Gateway**) and un-defers

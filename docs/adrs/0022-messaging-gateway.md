@@ -183,3 +183,17 @@ correlation id, G1). ctx cancellation returns `ctx.Err()`, distinguishable from 
 **Neutral / deferred.** One-way gateway, async/future gateway, a header-carrying `RequestMessage` variant, external
 request-reply adapters, and a `NewChannelGateway` convenience constructor are all out of this increment and
 non-breaking to add later (Spec §2, §8).
+
+**Constraint carried forward — the correlator is single-process by construction; multi-instance reply routing is the
+external adapter's job (Spec §8.1).** The reply correlator (§2) matches a reply through a **process-local Go channel**,
+so a reply only reaches the waiter registered on the **same `ChannelExchange` instance**. This is *complete* for the
+in-process topology under horizontal scaling — N instances behind a proxy each serve a request end-to-end in their own
+memory, so requests/replies never cross instances and there is nothing to coordinate. It is *insufficient* the moment a
+reply returns via an **external transport** to *any* instance: correlation-id-only matching lets a reply land on an
+instance with no waiter (dropped) while the origin waiter times out. A future external `RequestReplyExchange` adapter
+therefore **MUST implement the EIP Return Address pattern** (each instance owns a unique reply destination stamped on
+the request, so the reply returns to the originating instance; correlation id matches within it). The core does not and
+**must not** attempt this — a Go channel cannot cross processes; the synchronous, self-contained `Exchange` seam exists
+precisely so the adapter encapsulates return-address + reply-demux. This constraint is recorded now so the
+external-adapter increment designs it in from the start (see CLAUDE.md → *Production robustness → Multi-instance /
+distributed-deployment awareness*).
