@@ -1,6 +1,7 @@
 package msgin_test
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -84,6 +85,23 @@ func TestExponentialBackoff_Delay(t *testing.T) {
 					assert.Positive(t, d,
 						"draw %d: jitter must never produce a negative delay", i)
 				}
+			}},
+		{"an infinite randomization factor cannot produce a negative delay",
+			msgin.ExponentialBackoff{Initial: time.Second, Max: 0, Mult: 2, RandomizationFactor: math.Inf(1)}, 1,
+			func(t *testing.T, d time.Duration) {
+				// An infinite factor makes delta = +Inf, so lo = -Inf and
+				// j = -Inf + rand*(+Inf) = NaN. NaN compares false against BOTH
+				// `j < 0` and `j >= MaxInt64`, so before the IsNaN guard it
+				// reached the conversion and yielded MinInt64 on amd64 — a
+				// negative delay that the Max re-clamp cannot catch either.
+				assert.Positive(t, d, "a NaN jitter draw must not become a negative duration")
+			}},
+		{"a NaN randomization factor skips jitter entirely",
+			msgin.ExponentialBackoff{Initial: time.Second, Max: 0, Mult: 2, RandomizationFactor: math.NaN()}, 1,
+			func(t *testing.T, d time.Duration) {
+				// NaN fails the `RandomizationFactor > 0` test, so jitter is
+				// never called and the computed backoff stands.
+				assert.Equal(t, 2*time.Second, d)
 			}},
 		{"jitter never exceeds Max after cap", msgin.ExponentialBackoff{Initial: 100 * time.Millisecond, Max: time.Second, Mult: 2, RandomizationFactor: 0.5}, 10,
 			func(t *testing.T, d time.Duration) {

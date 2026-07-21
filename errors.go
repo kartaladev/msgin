@@ -49,6 +49,22 @@ var (
 	// goroutine, so the producer rejects it at construction. It stays valid on
 	// NewConsumer, where "retry forever, immediately" means broker redelivery,
 	// not a spin. Set a MaxAttempts (with a DeadLetter) or a Backoff, or both.
+	//
+	// The check is deliberately STRUCTURAL — it tests Backoff for nil rather than
+	// evaluating it — because BackoffStrategy is a public interface and calling
+	// caller code inside a constructor may panic, may block, and is
+	// non-deterministic for a jittered strategy. Two consequences follow, both
+	// accepted:
+	//
+	//   - A non-nil strategy that always yields 0 (ExponentialBackoff{}) is
+	//     accepted here and bounded at RUNTIME instead, by the 100ms floor and
+	//     the always-on WithProducerRetryBudget.
+	//   - A TYPED-NIL strategy (a nil *T stored in the interface) is non-nil to
+	//     this check, so it is accepted and panics on the first retry, on the
+	//     caller's goroutine. That panic is the caller's own nil pointer and
+	//     propagates with their stack intact, which is the debuggable outcome;
+	//     msgin does not recover it, exactly as it does not recover a panicking
+	//     OutboundAdapter.Send.
 	ErrUnboundedRetry = errors.New("msgin: producer retry policy must bound attempts or delay")
 
 	// ErrRetryBudgetExhausted is joined onto the error returned by Producer.Send
@@ -81,6 +97,17 @@ var (
 	// it into an error of its own, so errors.Is(err, ErrDeadLettered) on an error
 	// that did not come out of Producer.Send proves nothing. Do not use it as an
 	// authorization or audit primitive.
+	//
+	// NESTING BREAKS THE "THE DLQ" READING, and this is reachable with supported
+	// configuration, not just a hostile adapter. RetryPolicy.DeadLetter may itself
+	// be another msgin adapter, including a Producer with its own retry — so when
+	// an OUTER divert fails, the joined inner error can carry ErrDeadLettered from
+	// the INNER producer. errors.Is then reports true although the outer divert
+	// did not happen. The same applies when p.out is a nested retrying Producer,
+	// whose error passes through the isPermanent and no-DLQ arms unchanged. The
+	// sentinel therefore answers "was something dead-lettered somewhere in this
+	// chain", not "is this message in the sink I configured". Where the
+	// distinction matters, give each level its own sink and inspect that sink.
 	ErrDeadLettered = errors.New("msgin: message diverted to the dead-letter sink")
 	// ErrInvalidMaxInFlight is returned when WithMaxInFlight is given n < 1.
 	ErrInvalidMaxInFlight = errors.New("msgin: max in-flight must be >= 1")

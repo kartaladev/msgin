@@ -259,10 +259,19 @@ func WithProducerRetryBudget[T any](d time.Duration) ProducerOption[T] {
 // WithProducerDeadLetterTimeout bounds the dead-letter divert. The divert runs
 // on a ctx DETACHED from the caller's — otherwise a cancelled caller could not
 // be dead-lettered at all, which is the loss this design exists to prevent — so
-// this timeout is the ONLY thing standing between a hung DeadLetter sink
-// (blackholed TCP, wedged DB) and a caller goroutine blocked forever, immune to
-// its own cancel. Default: 30 seconds. d MUST be > 0
-// (ErrInvalidDeadLetterTimeout); there is deliberately no "unlimited" value.
+// this timeout is what stands between a hung DeadLetter sink (blackholed TCP,
+// wedged DB) and a caller goroutine blocked forever, immune to its own cancel.
+// Default: 30 seconds. d MUST be > 0 (ErrInvalidDeadLetterTimeout); there is
+// deliberately no "unlimited" value.
+//
+// IT IS A COOPERATIVE BOUND, NOT A HARD ONE. context.WithTimeout only signals;
+// it cannot interrupt work in progress. A sink that honours ctx returns within
+// d, and every msgin-supplied adapter does. A sink that IGNORES ctx — a driver
+// blocked mid-Exec, a client with its own longer internal timeout, contention on
+// a mutex — still holds the caller's goroutine for as long as it likes, exactly
+// as p.out.Send does. Enforcing a hard bound would mean abandoning a goroutine
+// to an operation that never returns, which trades a visible block for an
+// invisible leak; this library does not make that trade anywhere.
 //
 // It is also what a CANCELLING caller waits for. A cancel during backoff diverts
 // (see WithProducerRetry), and the divert is detached, so Send returns only after
@@ -275,9 +284,17 @@ func WithProducerDeadLetterTimeout[T any](d time.Duration) ProducerOption[T] {
 }
 
 // WithProducerHooks installs optional, nil-safe observability callbacks on the
-// retry loop. Only OnRetry (fired before each wait, with the causing error) and
-// OnDeadLetter (fired once, after a divert) are used by a Producer; the other
+// retry loop. Only OnRetry and OnDeadLetter are used by a Producer; the other
 // Hooks fields belong to the Consumer's settlement path and are ignored here.
+//
+// OnRetry means "a retry was SCHEDULED", not "a retry was attempted". It fires
+// before the wait, so a cancellation landing during that wait ends the send with
+// no further attempt — an OnRetry already reported. Metrics derived from it
+// therefore over-count attempts by one on every cancelled send, which a mass
+// shutdown turns into a systematic skew rather than noise. Count attempts on the
+// adapter side if you need the exact figure. OnDeadLetter fires once, after a
+// divert, on both its success and failure arms, carrying exactly the error Send
+// returns — so errors.Is(err, ErrDeadLettered) distinguishes them there too.
 //
 // Hooks run synchronously on the caller's goroutine, so a slow hook slows the
 // send. A panicking hook is recovered and logged — an observability callback

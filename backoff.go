@@ -77,7 +77,14 @@ func jitter(d time.Duration, f float64) time.Duration {
 	// Same out-of-range conversion hazard as Delay: jitter can push a large
 	// uncapped backoff above MaxInt64, and the caller's Max re-clamp cannot
 	// catch the resulting negative.
-	if j >= float64(math.MaxInt64) {
+	//
+	// The IsNaN arm is NOT redundant with the j < 0 test above, and missing it
+	// was a real gap: an infinite RandomizationFactor makes delta = +Inf, hence
+	// lo = -Inf and j = -Inf + rand*(+Inf) = NaN. NaN compares false against
+	// BOTH `< 0` and `>= MaxInt64`, so it reached the conversion and produced
+	// MinInt64 on amd64 — a negative delay that Delay's `out > b.Max` re-clamp
+	// cannot catch either, which is the exact failure this guard exists for.
+	if math.IsNaN(j) || j >= float64(math.MaxInt64) {
 		return time.Duration(math.MaxInt64)
 	}
 	return time.Duration(j)
