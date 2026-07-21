@@ -102,7 +102,14 @@ func runSend(t *testing.T, p msgin.Producer[[]byte], clock *clockwork.FakeClock,
 // by "did it return?" is true by construction — Plan 021 lesson.)
 func (h *retryHarness) stepTo(t *testing.T, want time.Duration) {
 	t.Helper()
-	require.NoError(t, h.clock.BlockUntilContext(t.Context(), 1), "producer never parked on a timer")
+	// BOUNDED, deliberately. With t.Context() this blocks until the PACKAGE
+	// timeout when a regression means the producer never parks, taking the whole
+	// binary down with "panic: test timed out" instead of reporting the useful
+	// message below. Verified: removing the minRetryDelay floor, or flipping
+	// attempt >= MaxAttempts to >, produced a 60-90s hang rather than a failure.
+	blockCtx, blockCancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer blockCancel()
+	require.NoError(t, h.clock.BlockUntilContext(blockCtx, 1), "producer never parked on a timer")
 	if want > 0 {
 		h.clock.Advance(want - time.Nanosecond)
 		select {
@@ -472,12 +479,16 @@ func TestProducerRetryContextCancel(t *testing.T) {
 		// preCancel cancels before Send is ever entered; otherwise the driver
 		// waits for the producer to park on the backoff timer and cancels there.
 		preCancel bool
-		assert    func(t *testing.T, out *scriptedOutbound, err error)
+		// withDLQ gives the policy a DeadLetter sink, so the divert on the
+		// cancellation path is OBSERVABLE. Without one, deadLetter returns the
+		// cause unchanged and the divert cannot be told from a bare return.
+		withDLQ bool
+		assert  func(t *testing.T, out, dlq *scriptedOutbound, err error)
 	}{
 		{
 			name:      "cancel during backoff",
 			preCancel: false,
-			assert: func(t *testing.T, out *scriptedOutbound, err error) {
+			assert: func(t *testing.T, out, dlq *scriptedOutbound, err error) {
 				t.Helper()
 				assert.ErrorIs(t, err, context.Canceled)
 				assert.ErrorIs(t, err, transient, "the last attempt's error must stay visible")
@@ -485,9 +496,31 @@ func TestProducerRetryContextCancel(t *testing.T) {
 			},
 		},
 		{
+			// THE pin for the cancellation divert. A whole-branch code review
+			// proved this behaviour was unverified: replacing the divert with a
+			// bare `return errors.Join(err, waitErr)` — i.e. silently DROPPING
+			// the message on the common cancellation path, the exact loss the
+			// divert exists to prevent — left the entire suite green, because
+			// the only cancel case ran with DeadLetter: nil. 100% line coverage,
+			// zero behaviour pinned.
+			name:      "cancel during backoff still dead-letters",
+			preCancel: false,
+			withDLQ:   true,
+			assert: func(t *testing.T, out, dlq *scriptedOutbound, err error) {
+				t.Helper()
+				assert.ErrorIs(t, err, context.Canceled)
+				assert.ErrorIs(t, err, transient)
+				assert.ErrorIs(t, err, msgin.ErrDeadLettered,
+					"a cancelled send must report that the message was diverted, not merely that it was cancelled")
+				require.Equal(t, 1, dlq.attempts(), "the message must reach the DLQ, not be dropped")
+				assert.NoError(t, dlq.lastCtxErr(),
+					"the divert must run detached: the sink must not observe the caller's cancellation")
+			},
+		},
+		{
 			name:      "a pre-cancelled ctx stops after one attempt",
 			preCancel: true,
-			assert: func(t *testing.T, out *scriptedOutbound, err error) {
+			assert: func(t *testing.T, out, dlq *scriptedOutbound, err error) {
 				t.Helper()
 				assert.ErrorIs(t, err, context.Canceled)
 				assert.Equal(t, 1, out.attempts(), "an already-cancelled ctx must stop after one attempt")
@@ -499,26 +532,33 @@ func TestProducerRetryContextCancel(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			clock := clockwork.NewFakeClock()
 			out := newScriptedOutbound(transient)
+			dlq := newScriptedOutbound(nil)
+
+			policy := msgin.RetryPolicy{Backoff: msgin.ExponentialBackoff{Initial: time.Minute}}
+			if tt.withDLQ {
+				policy.DeadLetter = dlq
+			}
 			p, err := msgin.NewProducer[[]byte](out,
 				msgin.WithProducerClock[[]byte](clock),
-				msgin.WithProducerRetry[[]byte](msgin.RetryPolicy{
-					Backoff: msgin.ExponentialBackoff{Initial: time.Minute},
-				}), // MaxAttempts 0 = bounded only by the budget and ctx
+				msgin.WithProducerCodec[[]byte](msgin.BytesPayloadCodec{}),
+				msgin.WithProducerRetry[[]byte](policy), // MaxAttempts 0 = bounded by budget and ctx
 			)
 			require.NoError(t, err)
 
 			ctx, cancel := context.WithCancel(t.Context())
 			if tt.preCancel {
 				cancel()
-				tt.assert(t, out, p.Send(ctx, msgin.New[[]byte]([]byte("payload"))))
+				tt.assert(t, out, dlq, p.Send(ctx, msgin.New[[]byte]([]byte("payload"))))
 				return
 			}
 
 			h := runSend(t, p, clock, ctx)
-			require.NoError(t, clock.BlockUntilContext(t.Context(), 1),
+			blockCtx, blockCancel := context.WithTimeout(t.Context(), 2*time.Second)
+			defer blockCancel()
+			require.NoError(t, clock.BlockUntilContext(blockCtx, 1),
 				"producer never parked on the backoff timer")
 			cancel()
-			tt.assert(t, out, h.wait(t))
+			tt.assert(t, out, dlq, h.wait(t))
 		})
 	}
 }

@@ -79,10 +79,10 @@ func TestBytesPayloadCodec(t *testing.T) {
 				t.Helper()
 				enc, err := codec.Encode(nil)
 				require.NoError(t, err)
-				assert.Empty(t, enc)
+				assert.Nil(t, enc, "Encode(nil) must return nil, not an empty slice: the documented NOT NULL consequence depends on it")
 				dec, err := codec.Decode(nil)
 				require.NoError(t, err)
-				assert.Empty(t, dec)
+				assert.Nil(t, dec, "Decode(nil) must return nil, not an empty slice")
 			},
 		},
 		{
