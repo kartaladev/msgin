@@ -1,52 +1,69 @@
 # Session handover — msgin
 
 > **READ FIRST, before doing anything.** Read `CLAUDE.md` (root), then §3's artifacts. Trust those files over this
-> handover and over any memory. **Safepoint: the tree builds, `go test ./... -race` is green on all 6 packages, and NO
-> Go file has been touched this session.** All work is design documents only.
+> handover and over any memory. **Safepoint: `go test ./... -race` green on all 6 packages, lint 0 issues,
+> `govulncheck` clean, working tree clean apart from `.claude/settings.json`.**
 
 ## 1. Objective & roadmap position
 
-**Previous increment (DELIVERED, merged + pushed):** Plan 021 — panic-safe `ChannelExchange` cleanup.
-
-**Active work: producer-side outbound retry + HTTP outbound, split into THREE increments.**
+**Plan 023 — producer-side outbound retry — is DELIVERED, gate-cleared and MERGED to `main`.**
 
 | Plan | Scope | State |
 |---|---|---|
-| **023** — core producer retry | Spec 013 / ADR 0025 | **WRITTEN + round-1 audited (2 auditors, both NOT READY, all findings folded in).** ⚠️ **Needs a round-2 audit before implementation** — the round-1 fixes were destabilizing (see §4). |
-| **022** — `HeaderMessageID` rename | ADR 0026; zero coupling to the retry work | **WRITTEN + round-3 audited (NOT READY, all findings folded in).** Ready to implement. |
-| **024** — HTTP outbound O1/O2 | Spec 011 Phase 2 | **NOT WRITTEN.** A 40-defect source brief is ready — see §6. |
+| **023** — core producer retry | Spec 013 / ADR 0025 | ✅ **MERGED.** 5 tasks + 2 gate-fix commits. |
+| **022** — `HeaderMessageID` rename | ADR 0026 | **Plan written + round-3 audited, NOT started.** Next increment. |
+| **024** — HTTP outbound O1/O2 | Spec 011 Phase 2 | **NOT WRITTEN.** 40-defect brief at `docs/plans/024-http-outbound-source-brief.md`. |
 
-**EXECUTION ORDER IS 023 → 022 → 024, and this is a deliberate reversal** of the order the plan numbers suggest.
-Reason: ADR 0026 and Plan 022 are already committed on the current branch inside `8459d07`, **together with ADR 0025**,
-so `8459d07` cannot be cherry-picked into a rename-only branch. Landing 023 first puts both artifacts on `main` for
-free, after which the rename branch can be cut off `main` carrying a diff that is *purely* the rename — which is what
-ADR 0026 §4 requires. Recorded in Plan 022 Step 0a and ADR 0026 §Traceability.
+**NEXT ACTION: Plan 022, on a FRESH branch off `main`** (`refactor/header-message-id-rename`). ADR 0026 §4 requires the
+rename to ship alone. Its Step 0a precondition is now satisfied: ADR 0026 and Plan 022 are already on `main`, so the
+branch needs no cherry-pick. Run Step 0 (`test -z "$(git status --porcelain)"`) first — `.claude/settings.json` is
+permanently dirty and must be stashed, never committed.
 
-**Exact position: the next action is a round-2 adversarial audit of Plan 023.** No implementation has started.
+## 2. What shipped in Plan 023
 
-## 2. Exact state
+New exported surface (all additive → **minor** bump): `WithProducerRetry`, `WithProducerRetryAfterCap`,
+`WithProducerRetryBudget`, `WithProducerDeadLetterTimeout`, `WithProducerHooks`, `WithProducerLogger`; `RetryAfter`;
+`BytesPayloadCodec`; sentinels `ErrInvalidRetryAfterCap`, `ErrInvalidRetryBudget`, `ErrInvalidDeadLetterTimeout`,
+`ErrUnboundedRetry`, `ErrDeadLettered`, `ErrRetryBudgetExhausted`.
 
-- **Branch:** `feat/producer-retry-http-outbound`, off `main` @ `1f17e64`.
-- **`git status --short`:**
+Defaults, and the two inequalities that are load-bearing (NOT the numbers):
+`cap 60s < budget 2m < adapter/database/sql's 5m defaultLeaseTTL`, floor 100ms, dead-letter timeout 30s.
+A budget below the cap would defeat `Retry-After` compliance; a budget above the lease would let the source reclaim
+and redeliver mid-send.
 
-  ```
-   M .claude/settings.json     ← pre-existing, intentional, UNRELATED. Leave it alone. Do NOT commit it.
-  ```
+Coverage: **every function in `producer.go`, `codec.go`, `backoff.go` at 100%**; package total 99.1% → 99.2%.
 
-  Everything else this session produced is **committed** (see the last commit line via `git log --oneline main..HEAD`).
-- **No Go code changed.** Baseline re-measured and confirmed this session: all 6 packages `ok` under `-race`;
-  coverage core **99.1%**, `adapter/http` **100.0%**, `adapter/http/stdlib` **100.0%**, `adapter/database/sql`
-  **93.7%**, `adapter/memory` **71.3%**, `adapter/cron` **50.8%**. `golangci-lint run ./...` → `0 issues`.
-  **Note: an auditor claimed core was 99.3%; it is 99.1% — re-measured directly. The plans are right.**
+## 2.1 ⚠️ The lesson that cost the most this session
+
+**"Fix the class, not the instance" recurred FOUR times**, twice in my own fixes:
+
+1. Plan 022 took three audit rounds — `git add -A` → a curated path list (incomplete *and* polluting) → `git add -u`
+   behind a precondition that did not actually assert tree state.
+2. Round 2 of Plan 023 found the defaults changed in the constants block only, leaving six stale sites incl. two tests
+   that would HANG.
+3. The budget fix for one finding reopened the ~900k-attempt flood through `MaxAttempts > 0`.
+4. The `jitter` overflow fix guarded `>= MaxInt64` but not `NaN` — **the same defect class, in the sibling function of
+   the same commit.** Only caught by the whole-branch `/security-review`.
+
+**And twice a test was 100%-covered while pinning nothing**: the cancellation divert (mutating it to silently drop the
+message left the suite green) and `BytesPayloadCodec`'s nil round-trip (`assert.Empty` accepts `[]byte{}`). Both found
+by mutation testing in the whole-branch review, not by coverage. **Mutate before believing a green test.**
+
+## 2.2 Process finding worth keeping
+
+Implementing exposed defects two full audit rounds had missed — a self-contradictory gate, a commit body contradicting
+its own fix, and **five places where Spec 013 / ADR 0025 / MESSAGING.md disagreed with the code**, including the ADR
+specifying `Retry-After` semantics BACKWARDS (a server could shorten the client's backoff to zero) and MESSAGING.md
+documenting cenkalti/backoff as an accepted core dependency in four places. None was findable by reviewing a design
+against itself. **Prefer writing the code earlier; let the compiler and tests carry the verification.**
 
 ## 3. Traceability pointers — read in this order
 
 1. `CLAUDE.md` — workflow, dependency policy, testing rules, coverage gate, multi-instance rule, commit discipline.
-2. `docs/plans/023-producer-outbound-retry.md` — **the active artifact.** Its "Design deltas the audit forced" table
-   and its "Round-1 audit of THIS plan" section are the two things to read before touching anything.
+2. `docs/plans/022-header-message-id-rename.md` — **the active artifact.** Read Step 0a and Step 0 first.
 3. `docs/specs/013-producer-outbound-retry.md` and `docs/adrs/0025-producer-outbound-retry.md` — ⚠️ **both still
    describe the PRE-AUDIT design.** Plan 023 Task 5 Step 2 reconciles them. Do not treat them as current.
-4. `docs/plans/022-header-message-id-rename.md` + `docs/adrs/0026-header-message-id-rename.md`.
+4. `docs/specs/013-producer-outbound-retry.md` + `docs/adrs/0025-producer-outbound-retry.md` — now RECONCILED with the shipped code (Accepted).
 5. `docs/plans/024-http-outbound-source-brief.md` — the input to Plan 024.
 6. `docs/specs/011-http-adapter.md` §3.4 — the O1/O2 design.
 7. `docs/specs/012-exchange-panic-safe-cleanup.md` §7 + `docs/adrs/0022-messaging-gateway.md` Addendum A3 — the
