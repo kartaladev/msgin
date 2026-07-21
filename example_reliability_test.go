@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/kartaladev/msgin"
 	"github.com/kartaladev/msgin/adapter/memory"
@@ -59,4 +60,54 @@ func ExampleConsumer_deadLetter() {
 
 	fmt.Println("routed to invalid-message sink")
 	// Output: routed to invalid-message sink
+}
+
+// ExampleWithProducerRetry shows a Producer retrying a transient outbound
+// failure. The first attempt fails with a plain (transient) error, so the
+// runtime waits the policy's backoff and re-sends; the second attempt succeeds,
+// so nothing is dead-lettered and Send returns nil.
+//
+// It also shows the pairing BytesPayloadCodec exists for: with T == []byte and a
+// wire adapter, the codec resolution would otherwise default to JSON and put the
+// payload on the wire as a quoted base64 string ("aGVsbG8=") rather than the raw
+// bytes the caller handed in.
+//
+// Unlike the rest of the suite, this example runs on a REAL clock with a 1 ms
+// Initial — an Example cannot inject a fake clock through an // Output: block.
+// The outcome is deterministic on any machine regardless: nothing here asserts
+// elapsed time.
+func ExampleWithProducerRetry() {
+	dlq := &recordingSink{}
+	attempts := 0
+	flaky := outboundFunc(func(context.Context, msgin.Message[any]) error {
+		attempts++
+		if attempts < 2 {
+			return errors.New("connection reset")
+		}
+		return nil
+	})
+
+	p, err := msgin.NewProducer[[]byte](flaky,
+		msgin.WithProducerCodec[[]byte](msgin.BytesPayloadCodec{}),
+		msgin.WithProducerRetry[[]byte](msgin.RetryPolicy{
+			MaxAttempts: 3,
+			Backoff:     msgin.ExponentialBackoff{Initial: time.Millisecond, Mult: 2},
+			DeadLetter:  dlq,
+		}),
+	)
+	if err != nil {
+		fmt.Println("construct:", err)
+		return
+	}
+
+	if err := p.Send(context.Background(), msgin.New[[]byte]([]byte("hello"))); err != nil {
+		fmt.Println("send:", err)
+		return
+	}
+
+	fmt.Println("attempts:", attempts)
+	fmt.Println("dead-lettered:", dlq.count())
+	// Output:
+	// attempts: 2
+	// dead-lettered: 0
 }

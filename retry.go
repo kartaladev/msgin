@@ -17,6 +17,27 @@ import (
 //   - Backoff nil       : immediate redelivery (zero delay).
 //
 // The zero value is valid and means "retry forever, immediately, no DLQ".
+//
+// THE SAME POLICY READS DIFFERENTLY ON THE TWO PATHS. The description above is
+// the CONSUMER path (NewConsumer), where a retry is a broker REDELIVERY: the
+// message goes back to the source and the broker paces it, so "forever,
+// immediately" costs no local resource. On the PRODUCER path
+// (WithProducerRetry) a retry is a live re-send on the CALLER'S OWN goroutine
+// with no broker in between, so the same fields are bounded further:
+//
+//   - MaxAttempts == 0 does NOT mean forever. Every producer retry is bounded by
+//     WithProducerRetryBudget (2 minutes by default, always on) — including a
+//     finite MaxAttempts, which the budget can cut short. A stop caused by the
+//     budget rather than by spent attempts is marked ErrRetryBudgetExhausted so
+//     the two remain distinguishable.
+//   - Backoff nil, or any strategy yielding a non-positive delay, is floored to
+//     100ms per wait rather than spinning.
+//   - The ZERO VALUE IS REJECTED by NewProducer with ErrUnboundedRetry:
+//     MaxAttempts == 0 with a nil Backoff is a zero-delay infinite loop on the
+//     caller's goroutine, which is a caller mistake worth failing loudly on.
+//     It remains valid for a Consumer.
+//
+// See WithProducerRetry, WithProducerRetryBudget and ADR 0025 §1.1.
 type RetryPolicy struct {
 	MaxAttempts int
 	Backoff     BackoffStrategy

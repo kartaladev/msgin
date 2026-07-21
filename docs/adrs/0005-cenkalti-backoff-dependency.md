@@ -1,6 +1,12 @@
 # ADR 0005 — Use cenkalti/backoff for retry backoff
 
-- **Status:** Accepted (2026-07-16)
+- **Status:** Accepted (2026-07-16) — **PARTIALLY SUPERSEDED 2026-07-21 by
+  [ADR 0025](0025-producer-outbound-retry.md).** The closed-form `RetryPolicy.Backoff` decision below **stands**. The
+  **outbound-HTTP clause** ("the outbound HTTP adapter's POST-retry loop … uses `cenkalti/backoff/v4` directly", and
+  with it the adoption of the dependency) is **superseded**: outbound retry is implemented at the **producer** in core,
+  reusing the existing `RetryPolicy`/`BackoffStrategy`, with `Retry-After` carried by a stdlib `RetryAfter(err, d)`
+  marker. **`cenkalti/backoff/v4` is NOT adopted** — note it was never actually added to `go.mod` in the ~5 days this
+  ADR stood, precisely because the only use it justified had not shipped.
 - **Context source:** [Spec 001 — Messaging core](../specs/001-messaging-core.md) §6–§7; `CLAUDE.md` → Dependency policy
 - **Related:** [ADR 0002 — Adapter SPI](0002-adapter-spi.md) (runtime-owned reliability), [ADR 0004 — clockwork](0004-clockwork-dependency.md)
 

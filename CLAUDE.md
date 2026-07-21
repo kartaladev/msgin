@@ -170,7 +170,7 @@ The vocabulary is EIP's; the shape mirrors Spring Integration but is pure, idiom
 - **pgx** (`adapter/database/pgx`, own module) — PostgreSQL-native (`jackc/pgx/v5`) + wire-compatible derivatives; adds **`LISTEN`/`NOTIFY` event-driven** (`StreamingSource`) alongside polling, `pgxpool`, `COPY` bulk outbound.
 - **Redis** (`adapter/redis`, own module) — list (`LPUSH`/`BRPOP`, at-most-once) or streams (`XADD`/`XREADGROUP`/`XACK`, consumer groups, at-least-once, native redelivery).
 - **NATS** (`adapter/nats`, own module) — core subject pub/sub (at-most-once) or JetStream (pull *and* push, at-least-once, `Ack`/`Nak`/`Term`).
-- **HTTP** (`adapter/http`, core module) — `net/http`; inbound server (sync request-reply → `Ack`=2xx/`Nack`=5xx, or async 202) + outbound webhook `POST` with cenkalti/backoff retry.
+- **HTTP** (`adapter/http`, core module) — `net/http`; inbound server (sync request-reply → `Ack`=2xx/`Nack`=5xx, or async 202) + outbound webhook `POST`, retried by the producer's `RetryPolicy` (ADR 0025).
 
 Payload (de)serialization (`T`↔`[]byte`) lives in the typed **runtime** (a `PayloadCodec[T]`, which knows `T`); adapters do only type-agnostic **envelope framing** (headers+body↔storage) — see [ADR 0001](docs/adrs/0001-message-payload-typing.md). Heavy-client adapters (`pgx`, `redis`, `nats`) are separate modules importing their real client directly (ADR 0003).
 
@@ -208,9 +208,8 @@ These were the open decisions; all are now ratified in [`docs/specs/001-messagin
 
 Minimal dependencies is a **hard requirement** for this library — every direct dep is a transitive dep forced on every consumer.
 
-- **The core (root module) depends on the Go standard library only — with four accepted, ADR-justified third-party exceptions**, each verified/required to add **zero net-new transitive dependencies**:
+- **The core (root module) depends on the Go standard library only — with three accepted, ADR-justified third-party exceptions**, each verified/required to add **zero net-new transitive dependencies**:
   - **`github.com/jonboulle/clockwork`** — injectable time, used directly by the pattern core (see Testing rules; [ADR 0004](docs/adrs/0004-clockwork-dependency.md)).
-  - **`github.com/cenkalti/backoff/v4`** — retry backoff strategy, used by the pattern core ([ADR 0005](docs/adrs/0005-cenkalti-backoff-dependency.md)).
   - **`github.com/robfig/cron/v3`** — cron/recurring schedule parser, imported by the `adapter/cron` package (root module; [ADR 0016](docs/adrs/0016-robfig-cron-dependency.md)).
   - **`github.com/expr-lang/expr`** — runtime expression evaluation for `FilterExpr`/`RouterExpr` in the pattern core ([ADR 0019](docs/adrs/0019-runtime-expression-evaluation.md)); v1.17.8 verified zero-transitive (`go mod tidy` after `go get` touched only `expr-lang/expr` lines in `go.sum`).
 
