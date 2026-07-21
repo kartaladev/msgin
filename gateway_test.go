@@ -2,6 +2,7 @@ package msgin_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -282,4 +283,62 @@ func TestOutboundGateway(t *testing.T) {
 			tt.assert(t, col, err, reqCorr)
 		})
 	}
+}
+
+// ExampleGateway_Request wires the inbound Gateway over a real ChannelExchange
+// and a flow that doubles the payload, showing the whole request-reply
+// round-trip: Request sends 21 in, the flow doubles it, and the correlated
+// reply comes back as 42. The activator uses WithPayload (not New) so the
+// reply keeps the request's HeaderCorrelationID — required for the exchange
+// to demux the reply back to this waiter.
+func ExampleGateway_Request() {
+	request := msgin.NewDirectChannel()
+	reply := msgin.NewDirectChannel()
+	flow := msgin.Chain(
+		msgin.Activate(func(_ context.Context, m msgin.Message[int]) (msgin.Message[int], error) {
+			return msgin.WithPayload(m, m.Payload()*2), nil
+		}),
+		msgin.To(reply),
+	)
+	if err := request.Subscribe(flow); err != nil {
+		panic(err)
+	}
+
+	ex, err := msgin.NewChannelExchange(request, reply)
+	if err != nil {
+		panic(err)
+	}
+	gw, err := msgin.NewGateway[int, int](ex)
+	if err != nil {
+		panic(err)
+	}
+
+	rep, err := gw.Request(context.Background(), 21)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(rep)
+	// Output: 42
+}
+
+// ExampleOutboundGateway drives a flow whose middle step is an OutboundGateway
+// over a small in-process echo exchange, showing the reply forwarded
+// downstream to the next step.
+func ExampleOutboundGateway() {
+	echo := fakeExchange{fn: func(_ context.Context, req msgin.Message[any]) (msgin.Message[any], error) {
+		return msgin.New[any](fmt.Sprintf("echo:%v", req.Payload())), nil
+	}}
+
+	flow := msgin.Chain(
+		msgin.OutboundGateway(echo),
+		msgin.Consume(func(_ context.Context, m msgin.Message[string]) error {
+			fmt.Println(m.Payload())
+			return nil
+		}),
+	)
+
+	if err := flow.Handle(context.Background(), msgin.New[any]("hello")); err != nil {
+		panic(err)
+	}
+	// Output: echo:hello
 }
