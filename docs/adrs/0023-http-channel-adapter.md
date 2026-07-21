@@ -25,7 +25,7 @@
     the typed runtime owns `PayloadCodec[T]`; header framing is the type-agnostic adapter concern.
   - [ADR 0003 — Multi-module layout](0003-multi-module-repository-layout.md) — the heavy-client-adapter-as-separate-module
     precedent (`database/pgx`) applied to the gin binding.
-- **Scoped follow-on ADR:** **ADR 0024** — the `gin` dependency justification (authored with Plan 024, Phase 5). This
+- **Scoped follow-on ADR:** **ADR 0024** — the `gin` dependency justification (authored with Plan 025, Phase 5). This
   ADR fixes the *architecture* that keeps gin isolated; ADR 0024 fixes the *dependency admission*.
 
 ## Context
@@ -140,7 +140,7 @@ runtime already understands:
   or invalid-message path owns it.
 - `5xx`, `408`, `429`, network error, timeout → **transient** error — the runtime retries per `RetryPolicy`.
 
-**Open point (resolved in Plan 021, recorded here):** if the `Producer`/outbound path already applies a `RetryPolicy`
+**Open point (resolved in Plan 022, recorded here):** if the `Producer`/outbound path already applies a `RetryPolicy`
 to `OutboundAdapter.Send`, the adapter adds **no** backoff (reliability stays runtime-owned). If it does not, Phase 2
 adds a thin producer-side retry rather than importing `cenkalti/backoff` into the adapter. Either way, backoff is never
 adapter-private state.
@@ -164,7 +164,7 @@ default; the client's `Content-Type` demoted to inert `http.content-type` metada
 [A2](#a2--correlation-id-always-server-minted-advisory-and-trusted-split-security-reversal) (correlation key always
 server-minted; advisory/trusted split), [A3](#a3--nil-safe-config-accessors-replace-the-planned-statusfor-helper) (no
 panic on a hand-built `Config`) and [A5](#a5--panic-recovery-at-both-handler-cores-fault-isolation-and-the-residual-it-cannot-fix)
-(panic containment, plus the residual correlator-slot leak it cannot fix). "Caller-owned server hardening
+(panic containment; its correlator-slot residual is now resolved — see A5). "Caller-owned server hardening
 (documented)" is now discharged concretely: the `adapter/http/stdlib` **package godoc** carries a "Deploying these
 handlers safely" section with the required `http.Server` timeouts and the explicit no-authn/authz/CSRF/CORS/method
 statement, and both constructors' godoc point at it.
@@ -191,11 +191,12 @@ statement, and both constructors' godoc point at it.
 - `gin` remains a *future* admitted dependency (ADR 0024); this ADR only guarantees it can be isolated when admitted.
 
 **Follow-ups**
-- ADR 0024 admits `github.com/gin-gonic/gin` to the `adapter/http/gin` module (Plan 024).
+- ADR 0024 admits `github.com/gin-gonic/gin` to the `adapter/http/gin` module (Plan 025).
 - The async-callback request-reply variant (cross-instance Return Address) is a named future increment.
-- Plan 021 resolves the outbound-retry open point (§5).
+- Plan 022 resolves the outbound-retry open point (§5).
 - [Spec 012 — panic-safe `ChannelExchange` cleanup](../specs/012-exchange-panic-safe-cleanup.md): the core-side
-  correlator-slot leak that Phase 1's panic recovery **contains but cannot fix** (Addendum A5).
+  correlator-slot leak that Phase 1's panic recovery contained but could not fix — **resolved**, see the
+  resolution note appended to Addendum A5.
 
 ---
 
@@ -294,6 +295,9 @@ delegate-to-`DefaultErrorStatus` pattern as the recommended form. Purely additiv
 
 ### A5 — panic recovery at both handler cores (fault isolation), and the residual it cannot fix
 
+> **Heading retained as the stable anchor target** (ADR 0022 Addendum A and Spec 012 both link to it). The residual it
+> names is **RESOLVED** — see the "Resolved." paragraph below. The `recover()` boundary itself is still required.
+
 **Decision.** `ServeAsync` and `ServeGateway` each install a deferred `recover()` boundary over a `responseTracker`
 wrapper: a panic is logged with its stack through the injected logger and answered with a plain `500` **when the
 response has not been committed**; the tracker also drops a second `WriteHeader`. **`http.ErrAbortHandler` is
@@ -315,6 +319,12 @@ with a reused client value. Either way it takes a panicking handler — a bug in
 **core-side** (`exchange.go`), was deliberately scoped out of this branch by the user, and is tracked as
 [Spec 012](../specs/012-exchange-panic-safe-cleanup.md). Until it lands, **the recover must not be removed** — the
 adapter godoc says so at the recovery site.
+
+**Resolved.** `ChannelExchange.Exchange` now reclaims its reply-waiter slot on every exit path, including a panic
+unwind, per [ADR 0022 Addendum A](0022-messaging-gateway.md#addendum-a--panic-safe-cleanup-2026-07-21) (Spec 012 /
+Plan 021). The recover at this boundary was never *only* about the slot — it is the fault-isolation guard that stops
+a panicking flow handler from taking down the server regardless of what the exchange does with its own state — so it
+stays, unchanged, now with no correlator-slot caveat attached to it.
 
 ### A6 — post-commit write failure is `ErrWriteResponse`, and is logged only
 

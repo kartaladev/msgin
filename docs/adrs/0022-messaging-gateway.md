@@ -317,6 +317,16 @@ not yet exist.
   HTTP server), which is orthogonal to slot reclamation; only its "…and cannot reclaim the slot" caveat is removed.
   [ADR 0023 Addendum A5](0023-http-channel-adapter.md#a5--panic-recovery-at-both-handler-cores-fault-isolation-and-the-residual-it-cannot-fix)
   is annotated to point here as its resolution.
+- **SECURITY consequence of that change (audit MEDIUM-1, whole-branch review).** The freed id joins the **N1
+  sequential-reuse window** documented in §2 above: a genuinely-late reply for the abandoned request can be delivered
+  to whoever registers that id next. A whole-branch security review proved this end to end — on the pre-fix tree an
+  attacker re-registering a victim's id after a panic got `ErrDuplicateCorrelation` (fail-closed); on the fixed tree
+  the attacker received the victim's payload. **This is an accepted trade, not a regression in kind:** the same review
+  proved the identical hijack already works on BOTH trees via the **timeout** arm, so the panic arm is a *fourth
+  trigger* for a pre-existing, opt-in-gated hazard — and the alternative is the unbounded slot leak A1 exists to fix.
+  The façades mint fresh 128-bit CSPRNG ids and are unaffected; only a **client-keyed** exchange
+  (`msghttp.WithTrustedCorrelationID`, which already carries a REPLY HIJACK warning) is exposed, and it must treat
+  values as unguessable and single-use. Disclosed in `register`'s godoc and in that option's security warning.
 - **Caller-visible behaviour change (intended).** A correlation id abandoned by a panic is no longer permanently
   poisoned with `ErrDuplicateCorrelation`; reusing it succeeds. This is also the blackbox probe the tests use, since
   `replyCorrelator` is unexported (Spec 012 §6).

@@ -29,7 +29,9 @@ const defaultReplyTimeout = 30 * time.Second
 // that cleans up at each return site alone will leak whenever a caller-supplied
 // handler panics. An implementation MUST NOT recover such a panic into an error
 // return: the panic belongs to the caller's code and must propagate with its
-// original value and stack (ADR 0022 Addendum A3; Spec 012).
+// original value and stack (ADR 0022 Addendum A3; Spec 012) — unless a
+// CALLER-SUPPLIED hook on the cleanup path itself panics, which replaces the
+// original (see WithUnmatchedReplySink and WithExchangeLogger).
 type RequestReplyExchange interface {
 	Exchange(ctx context.Context, req Message[any]) (Message[any], error)
 }
@@ -55,10 +57,18 @@ func newReplyCorrelator() *replyCorrelator {
 //
 // Uniqueness is required across the exchange LIFETIME, not just concurrently
 // (audit N1): the guard blocks a concurrent duplicate, but a caller that REUSES
-// an id sequentially after a prior request gave up (timeout/cancel) can have the
-// prior request's genuinely-late reply delivered to the new waiter. The façades
-// mint fresh 128-bit ids so they never hit this; direct ChannelExchange callers
-// must use unique ids.
+// an id sequentially after a prior request gave up — timeout, cancel, send
+// error, OR A PANIC UNWINDING OUT OF THE FLOW — can have the prior request's
+// genuinely-late reply delivered to the new waiter. The façades mint fresh
+// 128-bit ids so they never hit this; direct ChannelExchange callers must use
+// unique ids.
+//
+// SECURITY: the panic arm joins this window as of Spec 012. Before that fix a
+// panic leaked the slot, so reuse of that id failed closed with
+// ErrDuplicateCorrelation; it now succeeds. That is the intended trade (the
+// leak was unbounded), but it means a CLIENT-KEYED exchange — msghttp's
+// WithTrustedCorrelationID — must still treat values as unguessable and
+// single-use. See ADR 0022 Addendum A4.
 //
 // deregister returns true only if it removed OUR slot (the waiter still owned
 // it, so no delivery is in flight). It returns false if our slot was already
@@ -156,7 +166,9 @@ func WithReplyTimeout(d time.Duration) ExchangeOption {
 // The sink must also neither panic nor block: it can run inside Exchange's
 // deferred cleanup while a handler panic is already unwinding. A second panic
 // would replace — and therefore mask — the consumer's original one, and a
-// blocking sink stalls the unwind itself (Spec 012 §5.3).
+// blocking sink stalls the unwind itself (Spec 012 §5.3). A caller parked in a
+// blocking sink CANNOT be rescued by Close: it is not waiting on the reply slot
+// or on ctx, so only the sink returning frees it.
 func WithUnmatchedReplySink(out OutboundAdapter) ExchangeOption {
 	return func(c *exchangeConfig) {
 		if out != nil {

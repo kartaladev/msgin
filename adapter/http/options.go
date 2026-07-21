@@ -189,6 +189,12 @@ func WithAdvisoryCorrelationID(f func(*http.Request) string) Option {
 //   - TARGETED DENIAL: a peer that pre-registers a victim's value first makes
 //     every victim request fail with msgin.ErrDuplicateCorrelation (409).
 //
+// A waiter is released early — freeing its id for reuse, and with it the
+// hijack window above — by a reply timeout, a ctx cancel, a request-channel
+// send error, OR A PANICKING FLOW HANDLER (Spec 012 / ADR 0022 Addendum A4).
+// The panic arm is the newest of the four: it used to leak the slot and so
+// fail closed on reuse.
+//
 // Only enable this when the resolved values are UNGUESSABLE (high-entropy,
 // not a sequential or user-derived id such as "user-42-req-1") and SINGLE-USE
 // per client, and when the endpoint is authenticated so a value can be scoped

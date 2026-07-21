@@ -86,9 +86,18 @@ Stated honestly in both directions; this is a **real leak** but a narrow one:
   ([ADR 0023 Addendum A2](../adrs/0023-http-channel-adapter.md#a2--correlation-id-always-server-minted-advisory-and-trusted-split-security-reversal)),
   so a leaked slot is never re-keyed and can never collide with a later request. Cost = one map entry + one `cap 1`
   channel per panic, until the exchange is `Close`d.
-- **Poisoning variant needs an opt-in.** A leaked slot only breaks *later* requests if a subsequent request reuses the
-  same correlation key — which requires `msghttp.WithTrustedCorrelationID` (or a direct `Exchange` caller that reuses
-  ids). Then each reuse fails `ErrDuplicateCorrelation` → `409`, permanently, for that key.
+- **Poisoning variant needs an opt-in (PRE-FIX behaviour — see the note below).** A leaked slot only breaks *later*
+  requests if a subsequent request reuses the same correlation key — which requires
+  `msghttp.WithTrustedCorrelationID` (or a direct `Exchange` caller that reuses ids). Then each reuse fails
+  `ErrDuplicateCorrelation` → `409`, permanently, for that key.
+
+  > **After this increment this bullet no longer describes runtime behaviour.** §1–§3 are a *defect report* of the
+  > pre-fix state, retained as the record of what was wrong. Post-fix the id is reclaimed, so reuse **succeeds** — which
+  > removes the permanent 409 but places the id in [ADR 0022](../adrs/0022-messaging-gateway.md) audit N1's
+  > sequential-reuse window. A whole-branch security review proved the resulting reply-hijack on a client-keyed
+  > exchange, and proved the *same* hijack already reachable pre-fix via the **timeout** arm — so this is a fourth
+  > trigger for a pre-existing opt-in-gated hazard, accepted deliberately against the unbounded leak. See
+  > [ADR 0022 Addendum A4](../adrs/0022-messaging-gateway.md#a4--consequences).
 - **In-process only.** `ChannelExchange` is single-process by construction (Spec 010 §8.1); there is no cross-instance
   amplification.
 - **Not a data-loss bug *in this leak itself*:** no message is lost or double-delivered; a reply that arrives for a
