@@ -1,96 +1,119 @@
-# HANDOVER — msgin
+# Session handover — msgin
 
-> **Next session: read this first, then trust the referenced files over any memory.** Read, in order:
-> `CLAUDE.md` (note the NEW mandatory *Production robustness → Multi-instance / distributed-deployment awareness* rule),
-> then — since the Messaging Gateway (Spec 010) is now shipped — the governing artifacts for whatever the next increment
-> is (see "Next actions"). For the just-shipped increment: `docs/specs/010-messaging-gateway.md` (esp. **§8.1
-> multi-instance Return Address constraint**), `docs/adrs/0022-messaging-gateway.md`, `docs/plans/019-messaging-gateway.md`.
-> The SDD ledger `.superpowers/sdd/progress.md` (gitignored, local) holds per-task history — trust it + `git log` over memory.
+> **READ FIRST, before doing anything.** Read `CLAUDE.md` (root) and then the governing artifacts named in
+> §3 below — **`docs/specs/011-http-adapter.md`**, **`docs/adrs/0023-http-channel-adapter.md`**, and
+> **`docs/plans/020-http-adapter-inbound.md`** — and trust those files over anything in this handover or in memory.
+> This document orients you; the spec/ADR/plan are the source of truth. The design is at a clean safepoint: **design
+> docs are authored, adversarially audited, and committed — there is NO implementation code yet.**
 
-## LATEST: Messaging Gateway (Spec 010 / Plan 019 / ADR 0022) SHIPPED, MERGED to `main` (`9ae2275`, `--no-ff`), pushed to origin; `feat/messaging-gateway` deleted.
+## 1. Objective & roadmap position
 
-The EIP **Messaging Gateway** (in-process request-reply). Additive to the core `msgin` package, **no new dependency**
-(stdlib + clockwork), additive API → **minor SemVer**. What shipped:
-- **`RequestReplyExchange` SPI** — `Exchange(ctx, Message[any]) (Message[any], error)`; the seam a future external
-  (HTTP/NATS) request-reply adapter implements without a core change.
-- **`ChannelExchange`** (in-process impl) — a **zero-goroutine reply correlator** (`sync.Mutex` map `HeaderCorrelationID`
-  → cap-1 slot; a receiver `Subscribe`d to the reply channel demuxes replies to blocked waiters). 30s default reply
-  timeout (`min(ctx, timeout)`, `WithReplyTimeout`); graceful `Close`; unmatched replies warn-log+drop or
-  `WithUnmatchedReplySink`. Guards: empty corr-id → `ErrNoCorrelation`, duplicate in-flight → `ErrDuplicateCorrelation`.
-  `giveUp` drains a delivered-but-abandoned reply (timeout/close race) to the unmatched path — never silently lost.
-- **Inbound `Gateway[Req,Rep]`** — `NewGateway(exchange)` + `Request(ctx, Req) (Rep, error)`: mint fresh id, box, unbox
-  reply → `ErrPayloadType` on mismatch.
-- **In-flow `OutboundGateway(x) Step`** — runs the exchange mid-flow, forwards reply to `next`; **saves/restores the
-  incoming `HeaderCorrelationID`** (raw `Header` presence, not `String` — audit G5) so an upstream splitter/aggregator
-  key survives and split-children get unique registry keys.
-- **Additive `Message.WithoutHeader` / `Headers.without`** (copy-on-write header removal, needed by the outbound strip).
-- New sentinels: `ErrGatewayClosed`, `ErrReplyTimeout`, `ErrNilExchange`, `ErrNilChannel`, `ErrInvalidReplyTimeout`,
-  `ErrDuplicateCorrelation` (+ reuse `ErrPayloadType`/`ErrNoCorrelation`).
+**Building:** the **HTTP channel adapter** for `msgin` (Spec 011) — the sixth adapter family, and the first external
+transport for the `RequestReplyExchange` SPI shipped in Plan 019.
 
-**Quality gate PASSED.** Design **2-round Opus-audited** (R1 NEEDS-REVISION: G1 dup/empty-id guard, G2 async+concurrent
-`-race` tests, G3 reply-channel is `DirectChannel`-only wording, G4 giveUp drain, G5 raw-presence, G6–G8; R2
-SOUND-WITH-NITS, no must-fix: N1 lifetime-uniqueness doc, N2 close-races-giveUp test, N3 direct-caller-guard godoc —
-all folded). Whole-branch **Opus code review = Ready-to-merge YES** (0 Critical/0 Important; correlator proven
-correct/leak-free every interleaving; 99.1% cov, 100% exchange hot paths) + **security review = no blocker** (0 HIGH/0
-MEDIUM; 1 LOW = documented N1 sequential-reuse, façade-unreachable, crypto/rand fresh ids). `-race`/goleak/vet/gofmt/
-golangci-lint0/govulncheck/CGO0/`go mod tidy` no-diff all green.
+**Structure:** one spec, **five phased plans**, one merged increment per phase (the Spec 009 → Plans 015-018 pattern):
 
-## Where we are (2026-07-21)
+| Phase | Plan | Content | Status |
+|-------|------|---------|--------|
+| **1** | **020** | `adapter/http` core (`msghttp`) + `adapter/http/stdlib` inbound: **I1** async + **I2** sync gateway → `http.Handler` | **design done + audited; NO CODE** |
+| 2 | 021 | `adapter/http/stdlib` outbound: **O1** webhook + **O2** request-reply (`RequestReplyExchange`, Return Address) | not started |
+| 3 | 022 | SSE **server** (S-out) | not started |
+| 4 | 023 | SSE **client** (S-in, `StreamingSource`) | not started |
+| 5 | 024 | `adapter/http/gin` module + **ADR 0024** (gin dependency) | not started |
 
-`main` @ **`ba6284a`** (pushed to origin). Increment commits (all reviewed clean):
-`f54069f` (exchange core) → `dda93cd` (inbound Gateway) → `33d9785` (OutboundGateway + WithoutHeader; 1 review fix:
-vacuous strip test → echoes fresh id, mutation-verified) → `c66182d` (Examples + gate) → `a477e8a` (review polish:
-WithUnmatchedReplySink nil-guard + non-blocking-sink godoc) → `9ae2275` (merge `--no-ff` to main) → `57b3ffd`
-(docs: HANDOVER) → **`ba6284a` (docs: multi-instance Return Address constraint — Spec 010 §8.1 / ADR 0022 / CLAUDE.md
-distributed-deployment rule)**.
+**Active position: Plan 020, pre-implementation.** The immediate next step is to get the **user's explicit go-ahead**
+and then implement Plan 020 via **SDD** (CLAUDE.md hard rule: never start implementation code without asking).
 
-**Working tree:** `.claude/settings.json` is modified — pre-existing, UNRELATED, intentionally never committed.
+## 2. Exact state
 
-**`git status --short`:** ` M .claude/settings.json`  ·  **last commit:** `ba6284a docs: record multi-instance Return Address constraint + distributed-deployment design rule`
+- **Branch:** `feat/http-adapter-inbound` (off `main` @ `57b3ffd`), **3 commits ahead**, not pushed, not merged.
+- **`git status --short`:** only ` M .claude/settings.json` — a **pre-existing intentional** uncommitted local
+  settings change (present since before this increment; leave it alone, keep it out of commits).
+- **Last commits (newest first):**
+  - `fb9d48b` docs: ADR 0023 + Plan 020 — HTTP adapter Phase 1 (inbound server), Opus-audited
+  - `8df9611` spec: add Spec 011 — HTTP channel adapter (inbound + outbound + SSE, stdlib & gin)
+  - `7f9b544` docs: HANDOVER … (the previous increment's handover, on `main`)
+- **Safepoint:** yes. No source files were touched — the tree builds and the existing test suite is unaffected (this
+  session only added Markdown under `docs/`). No half-done edits.
+- **Design docs were committed standalone AHEAD of code** — the CLAUDE.md handoff exception: the audited spec/ADR/plan
+  survive a fresh clone / tree wipe. When you implement, each Plan-020 task's code lands in its own `feat(http)` commit
+  carrying `Spec: 011` / `Plan: 020` / `ADR: 0023` trailers (the plan spells out the exact commit messages).
 
-## Traceability
-Spec [`010`](specs/010-messaging-gateway.md) → Plan [`019`](plans/019-messaging-gateway.md) → ADR
-[`0022`](adrs/0022-messaging-gateway.md). Realizes Spec 001 §1 (deferred Messaging Gateway) + un-defers Spec 003 §2.
-Builds on ADR 0013 (composition backbone) / 0001 (payload typing) / 0004 (clockwork).
+## 3. Traceability pointers — read these first (in order)
 
-## ⚠️ HARD CONSTRAINT for the future external `RequestReplyExchange` adapter — multi-instance / Return Address
-Recorded in **Spec 010 §8.1** + **ADR 0022 Consequences** + the new **CLAUDE.md** rule; read those before designing the
-adapter. Summary: the shipped `ChannelExchange` correlator matches a reply through a **process-local Go channel**, so a
-reply only reaches the waiter on the **same instance**. This is *complete* for the in-process flow under horizontal
-scaling — **N app instances behind a load balancer/proxy each serve a request end-to-end in their own memory**, so
-requests/replies never cross instances (nothing to coordinate). It is *insufficient* the moment a reply returns via an
-**external transport** (HTTP pool / NATS / Kafka / Redis) to **any** instance: correlation-id-only matching lets the
-reply land on an instance with no waiter (dropped) while the origin waiter times out. The external adapter **MUST
-implement the EIP Return Address pattern** — each instance owns a **unique reply destination** (per-instance reply
-queue/topic/inbox, or an instance id in the request) stamped on the outgoing request, so the reply returns to the
-originating instance; correlation id then matches within it. The core does **not** and **must not** attempt this (a Go
-channel can't cross processes); the synchronous, self-contained `Exchange(ctx,req)(rep,error)` seam exists precisely so
-the adapter encapsulates return-address + reply-demux. Also design: the reply-destination lifecycle (cleanup on instance
-shutdown) and a dedicated security review of untrusted inbound reply bytes. (The N1 sequential-reuse caveat below gets
-sharper over a shared cross-instance id space — a per-instance return address also contains it.)
+1. `CLAUDE.md` (root) — the mandatory workflow, dependency policy, multi-instance rule, sensible-defaults + coverage gates.
+2. `docs/specs/011-http-adapter.md` — the whole HTTP adapter surface: six modes, five phases, delivery guarantees, security.
+3. `docs/adrs/0023-http-channel-adapter.md` — the architecture: framework-agnostic core + stdlib/gin bindings; the
+   Return-Address-by-construction reasoning; the outbound classification; the per-mode SPI mapping.
+4. `docs/plans/020-http-adapter-inbound.md` — the Phase-1 implementation plan (4 tasks, hot-path branches, test strategy).
+5. Context the design reuses: `docs/adrs/0022-messaging-gateway.md` + `docs/specs/010-messaging-gateway.md`
+   (the `RequestReplyExchange` SPI), `docs/adrs/0002-adapter-spi.md`, `docs/adrs/0001-message-payload-typing.md`.
+   Source seams the plan binds to: `exchange.go` (`RequestReplyExchange`/`ChannelExchange`), `channel.go`
+   (`MessageChannel`/`DirectChannel`), `message.go` (`New`/`WithHeaders`/`ID`/header constants), `spi.go`,
+   `handler.go` (`To`/`Chain`), `errors.go` (the exported gateway sentinels).
 
-## Backlog (non-blocking, triaged from reviews)
-- **External request-reply adapter** (HTTP/NATS implementing `RequestReplyExchange`) — the untrusted-input boundary;
-  will need its own dedicated security review when built. **AND must implement Return Address (see the ⚠️ HARD
-  CONSTRAINT section above) — do not design it correlation-id-only.**
-- **N1 sequential correlation-id reuse** — direct `ChannelExchange` callers reusing an id after a give-up can get a
-  stale reply; documented, façade-unreachable. Revisit only if a direct-`ChannelExchange` public pattern emerges.
-- One-way / async-future gateway, header-carrying `RequestMessage`, `NewChannelGateway` convenience ctor — all deferred
-  (Spec 010 §2/§8), non-breaking to add later.
-- `GatewayOption`/`gatewayConfig` are empty scaffolding (kept for SemVer variadic-stability) — first real `WithX`
-  option closes the ~83% `NewGateway` opts-loop coverage.
+## 4. Decisions, deviations & pending approvals
 
-## Next actions
-Start a **fresh design cycle for a NEW increment** (user's choice): candidates — **Resequencer** (note: a distributed
-Resequencer needs a durable store per the CLAUDE.md multi-instance rule, not an in-memory buffer), the deferred external
-request-reply **HTTP/NATS adapter** (now unblocked by the `RequestReplyExchange` SPI — **must implement Return Address,
-see the ⚠️ HARD CONSTRAINT section**), redis/pgx/nats group stores, or aggregate-by-expr. Follow CLAUDE.md: brainstorm →
-spec → ADR → plan → **2-round adversarial Opus audit** (which now treats an unstated single-process assumption as a
-finding) → **ask before implementation** → SDD (fresh implementer per task, coordinator commits, adversarial review).
-Fresh branch off `main`.
+**Decisions settled with the user this session (in brainstorming):**
+- One spec, five **phased** plans; foundational-first order (inbound → outbound → SSE server → SSE client → gin).
+- **Both** SSE directions (server *and* client).
+- **Framework-agnostic core + separate gin module**, with the stdlib binding placed at **`adapter/http/stdlib`** (the
+  user explicitly asked for this path, symmetric with `adapter/http/gin`). The core package is `msghttp` (dir
+  `adapter/http`) — named `msghttp`, not `http`, to avoid the `net/http` import clash.
 
-## Gotchas
-- **Go 1.25 pin:** `GOTOOLCHAIN=go1.25.12` on every go command (local default is newer).
-- Reply channel must be a `Subscribe`-based `MessageChannel` = **`DirectChannel` only** in core (`QueueChannel`/pubsub
-  do NOT satisfy `MessageChannel`); "async" = who calls `reply.Send`, not the channel type.
-- SDD ledger `.superpowers/sdd/progress.md` is gitignored/local — per-task history + Minors triage live there.
+**Adversarial design audit — DONE for Phase 1 (round 1, Opus, fresh context): verdict SOUND-WITH-NITS.** Architecture
+verified sound against the actual code (SPI reuse, Return-Address reasoning, every load-bearing API). Four must-fix
+items and all nits were **folded** into the spec/ADR/plan already committed:
+- **H1** — the request→message path uses **`msgin.New`** (fresh id+timestamp), not `NewMessage`. The spec had said
+  `NewMessage`; following it would have left `ID()` empty and — since the default correlation id is the message's own
+  `ID()` — made **every I2 request fail `ErrNoCorrelation`→400**. Corrected in Spec §3.2 / ADR §2.
+- **M1** — I2 success status is **200** (never 202); `WithSuccessStatus` governs **I1 only**.
+- **M2** — the custom `WithErrorStatus` branch is factored into a shared `statusFor` helper and given covering tests.
+- **M3** — an `errReader` fixture covers the non-oversize read-error → 400 branch (distinct from oversize → 413).
+- Nits **M4** (inbound-payload-is-`[]byte` / no inbound codec seam, documented symmetrically), **L1** (I1 over a
+  `DirectChannel` is synchronous + `reqCtx`-coupled; steer at-least-once users to `QueueChannel`), **L2** (honest
+  error→status: `ErrNoCorrelation`→500, `ErrDuplicateCorrelation`→409), **L3** (`ErrNilTarget` justified vs
+  `msgin.ErrNilChannel`), **L4** (extract reply bytes before writing any header), **L5** (reserved-strip test uses
+  `delivery-count`), **L6** (method-not-restricted godoc). **P1** (1 MiB body-cap default) confirmed defensible.
+- **No re-audit round warranted** (the status-model change did not ripple into new option surface).
+
+**Pending approval (BLOCKING the next step):** the user has **not yet given the go-ahead to write implementation
+code.** Per CLAUDE.md this is a hard gate — you must ask first, and state the intended execution mode (SDD). Do not
+start coding Plan 020 without it.
+
+**One open point deliberately deferred to Plan 021 (Phase 2), not blocking Phase 1:** whether the `Producer`/outbound
+path already applies a `RetryPolicy` to `OutboundAdapter.Send`. If it does, O1/O2 add no adapter-side backoff
+(reliability stays runtime-owned, ADR 0002); if not, Phase 2 adds a thin producer-side retry. Recorded in ADR 0023 §5.
+
+## 5. Next actions
+
+1. **Ask the user for the go-ahead to implement Plan 020, via SDD** (state the execution mode). Wait for explicit
+   approval — this is the CLAUDE.md gate.
+2. On approval, execute **Plan 020** with `superpowers:subagent-driven-development`: a fresh implementer subagent per
+   task (TDD red→green, starting from `cc-skills-golang:golang-how-to`, `gopls`, the `table-test` override), the
+   coordinator verifies green + commits each task (per-task commits are pre-authorized once the plan+mode are chosen),
+   then an adversarial reviewer per task. The four tasks:
+   - **Task 1** — `msghttp` core: `Config`/`Option`/`WithX`, sentinels, `DecodeRequest`/`EncodeResponse`.
+   - **Task 2** — I1 async: `ServeAsync` + `stdlib.NewInbound`.
+   - **Task 3** — I2 sync gateway: `ServeGateway` + `stdlib.NewInboundGateway` + `Register`.
+   - **Task 4** — `Example` tests + whole-branch gate (**`/code-review` + `/security-review`** — inbound is the
+     untrusted boundary — + `-race`/lint/vet/govulncheck/CGO0/tidy, coverage ≥85% with every hot-path branch tested).
+3. On green + gate-clean, ask the user before merging; then merge `--no-ff` to `main` and delete the branch
+   (`git branch -d`). Phases 2-5 each start fresh off `main` with their own brainstorm-delta → plan/ADR →
+   **adversarial audit** → ask → SDD.
+4. Build/test with `GOTOOLCHAIN=go1.25.12` (the local default is newer; the module pins Go 1.25).
+
+## 6. Gotchas / environment
+
+- **Go 1.25 pin:** always `GOTOOLCHAIN=go1.25.12` for build/test (bare `go1.25` is rejected).
+- **`adapter/http` + `adapter/http/stdlib` are ROOT-module packages** (like `adapter/memory`, `adapter/cron`) —
+  **no new `go.mod`, no `go.work` change, no new dependency** in Phase 1. The gin dependency + its module land only in
+  Phase 5 (ADR 0024).
+- **Package name is `msghttp`** (directory `adapter/http`) to avoid shadowing `net/http`; import with that alias.
+- **Tests are fully hermetic** — `httptest.Server` / `httptest.ResponseRecorder`, **no testcontainers** (a deliberate
+  contrast with the SQL adapter). `goleak` `VerifyTestMain` in both new packages even though Phase-1 handlers start no
+  goroutines (SSE, Phase 3, is the first mode that owns goroutines).
+- **Blackbox tests only** (`package msghttp_test`, `package stdlib_test`); assert-closure tables; `t.Context()`.
+- **Inbound is the untrusted boundary** — the Phase-1 whole-branch gate includes a real `/security-review`, not just
+  `/code-review`.
+- **Leave `.claude/settings.json` alone** — it is an intentional pre-existing local modification, not part of this work.
