@@ -248,7 +248,7 @@ func WithRequestHeaders(headers ...string) Option {
 // names because they come from an untrusted client, whereas this list is
 // trusted operator config and an operator may legitimately want to expose,
 // say, a correlation id to their own clients. Listing msgin.correlation-id,
-// msgin.id, msgin.delivery-count or similar therefore DOES leak internal flow
+// msgin.message-id, msgin.delivery-count or similar therefore DOES leak internal flow
 // metadata to every caller of the endpoint — list only what you mean to
 // publish.
 //

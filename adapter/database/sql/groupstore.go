@@ -168,10 +168,10 @@ func WithGroupLockedBy(id string) GroupStoreOption {
 // Delivery guarantee: at-least-once across restarts AND across processes. A
 // crash between ClaimGroup and SettleGroup is recovered by lease expiry ->
 // re-claim -> re-release (a duplicate emit, never a loss — ADR 0020 §8).
-// Message ids are REQUIRED: Add rejects a message whose msgin.id is empty with
+// Message ids are REQUIRED: Add rejects a message whose msgin.message-id is empty with
 // ErrMissingMsgID (members are keyed (group_key, msg_id) for idempotent,
 // redelivery-safe add — audit R1 H3). Source deliveries always carry
-// msgin.HeaderID and the Splitter stamps a deterministic child id, so this is
+// msgin.HeaderMessageID and the Splitter stamps a deterministic child id, so this is
 // not a real-world restriction.
 //
 // # go agg.Run(ctx) is REQUIRED for crash-recovery with a durable store
@@ -231,7 +231,7 @@ func NewGroupStore(db *stdsql.DB, table string, dialect GroupDialect, opts ...Gr
 // (EncodeHeaders) and requires a []byte payload (ErrInvalidPayload otherwise —
 // GroupStore is a wire adapter, mirroring Outbound.Send/SendAfter; the paired
 // runtime always encodes T to []byte before Add is reached), rejects an empty
-// msgin.id with ErrMissingMsgID BEFORE any query runs (H3, belt-and-suspenders
+// msgin.message-id with ErrMissingMsgID BEFORE any query runs (H3, belt-and-suspenders
 // with GroupDialect.AddMember's own check), and delegates to
 // GroupDialect.AddMember on the pool. It returns the resulting group snapshot
 // of the LIVE (unclaimed) members, decoded from the dialect's raw framed

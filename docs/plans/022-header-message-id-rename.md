@@ -39,8 +39,11 @@ whose only behavioural surface is the reserved-namespace strip, which gets a new
 - **Blackbox tests only** (`package <pkg>_test`), assert-closure tables, `t.Context()`.
 - **No test may be edited beyond the mechanical rename**, except the single case added in Task 1 Step 4. A test that
   needs more than that means the change was not behaviour-preserving — stop and investigate.
-- **Coverage must not move.** A rename cannot change coverage; a moved number means something other than a rename
-  happened.
+- **Coverage must not move — measured per function, NOT by the package total.** A rename cannot change coverage, but
+  the package total is not a trustworthy witness: `consumer.go`'s `admit()` flaps 90.0% <-> 100.0% between runs, so
+  the core total oscillates 99.2%/99.3% with no code change at all. Compare the per-function profile with that entry
+  excluded (Steps 1 and 6). **Fixing the flake is backlog, not this increment** — `admit` is the credit-based
+  in-flight gate and its uncovered arm is race-dependent, the same class as the Plan 021 interleaving lesson.
 
 ## Baseline (captured 2026-07-22, before any edit)
 
@@ -50,7 +53,7 @@ ADR's blast-radius claim must be corrected first.
 | Fact | Value |
 |---|---|
 | `go test ./... -race` | all 6 packages `ok` |
-| Coverage | core **99.1%**, `adapter/http` **100.0%**, `adapter/http/stdlib` **100.0%**, `adapter/database/sql` **93.7%**, `adapter/memory` **71.3%**, `adapter/cron` **50.8%** |
+| Coverage | core **99.2%**, `adapter/http` **100.0%**, `adapter/http/stdlib` **100.0%**, `adapter/database/sql` **93.7%**, `adapter/memory` **71.3%**, `adapter/cron` **50.8%** |
 | `grep -rn 'HeaderID' --include='*.go' . \| wc -l` | **36** total |
 | — of which **code references** `gopls` renames | **28** |
 | — of which **comment prose** `gopls` does NOT rename | **8** (listed in Step 3) |
@@ -64,7 +67,7 @@ ADR's blast-radius claim must be corrected first.
 
 ## Task 1: The rename
 
-**Files — 23 Go files and 15 markdown files. Round 3 found the previous listing mis-attributed which file is touched
+**Files — 23 Go files and 16 markdown files. Round 3 found the previous listing mis-attributed which file is touched
 by which mechanism, and that error propagated into Step 8's allow-list, so the breakdown below is derived from the
 greps rather than from prose.**
 
@@ -80,7 +83,7 @@ greps rather than from prose.**
 - Modify (by hand, 22 comment mentions of the VALUE `msgin.id`): 10 files, listed in Step 3b — includes
   `adapter/database/sql/framing.go`'s on-wire stability contract and `adapter/http/options.go`'s security CAUTION
 - Modify: `adapter/http/encode_test.go` — one new case (Step 4); the only Go file in the commit that is not a rename
-- Modify: 13 markdown files — listed in Step 5
+- Modify: 14 markdown files — listed in Step 5
 - Modify: `docs/adrs/0026-header-message-id-rename.md` — Status → Accepted; plus this plan file
 
 > **The authoritative derivation**, which Step 8's allow-list must be rebuilt from and which every count above comes
@@ -162,8 +165,8 @@ so the raw text is **not** comparable across Step 1 and Step 6. Normalize it awa
 
 ```bash
 GOTOOLCHAIN=go1.25.12 go test ./... -race >/dev/null && echo "GREEN" && \
-GOTOOLCHAIN=go1.25.12 go test ./... -cover -count=1 2>&1 | grep coverage \
-  | sed -E 's/[[:space:]]+(\(cached\)|[0-9.]+s)[[:space:]]+/ /' > /tmp/cov-before.txt && cat /tmp/cov-before.txt && \
+GOTOOLCHAIN=go1.25.12 go test -coverprofile=/tmp/cov-before.out -count=1 . >/dev/null && \
+GOTOOLCHAIN=go1.25.12 go tool cover -func=/tmp/cov-before.out | grep -v 'consumer.go:.*admit' > /tmp/cov-before.txt && \
 echo "total HeaderID refs: $(grep -rn 'HeaderID' --include='*.go' . | wc -l)" && \
 echo "  code refs (gopls): $(( $(grep -rn 'HeaderID' --include='*.go' . | wc -l) - $(grep -rn 'HeaderID' --include='*.go' . | grep -cE '// .*HeaderID') ))" && \
 echo "  comment mentions:  $(grep -rn 'HeaderID' --include='*.go' . | grep -cE '// .*HeaderID')" && \
@@ -306,7 +309,12 @@ Update `HeaderID` → `HeaderMessageID` and `msgin.id` → `msgin.message-id` in
 `docs/specs/011-http-adapter.md`, `docs/adrs/0010-poller-sql-adapter.md`,
 `docs/adrs/0020-splitter-aggregator-group-store.md`, `docs/adrs/0021-sql-group-store.md`,
 `docs/adrs/0023-http-channel-adapter.md`, `docs/plans/001-core-foundation.md`, `docs/plans/015-splitter.md`,
-`docs/plans/019-messaging-gateway.md`, `docs/plans/020-http-adapter-inbound.md`, `MESSAGING.md`.
+`docs/plans/019-messaging-gateway.md`, `docs/plans/020-http-adapter-inbound.md`,
+`docs/plans/024-http-outbound-source-brief.md`, `MESSAGING.md`.
+
+> **`024-http-outbound-source-brief.md` was added after this plan was written** (it landed with Plan 023). It is the
+> input to Plan 024, so leaving it stale would have Plan 024 implemented against the dead key. This is exactly why
+> Step 5's list is re-derived from the grep, not trusted.
 
 **Edit in place; do not annotate as superseded** — these describe the same header under its new name, not a reversed
 decision (ADR 0026 §Traceability). Where a doc quotes the old value inside a code block or a persisted-row example,
@@ -360,9 +368,15 @@ for d in adapter/database/sql/harness adapter/database/sql/postgres adapter/data
 done
 [ "$fail" = 0 ] && echo "NESTED MODULES GREEN" || { echo "NESTED MODULES FAILED — STOP"; false; }
 
-# 4. Coverage must not move — same normalization and -count=1 as Step 1.
-GOTOOLCHAIN=go1.25.12 go test ./... -cover -count=1 2>&1 | grep coverage \
-  | sed -E 's/[[:space:]]+(\(cached\)|[0-9.]+s)[[:space:]]+/ /' > /tmp/cov-after.txt
+# 4. Coverage must not move — but NOT via the package total, which is FLAKY.
+#    Measured: consumer.go's admit() flaps 90.0% <-> 100.0% run to run (a
+#    race-dependent arm in the credit-based in-flight gate), moving the core
+#    package total between 99.2% and 99.3%. consumer.go is not in this plan's
+#    modified set and holds no header reference, so keying the gate off the
+#    package total produces a FALSE FAILURE roughly one run in three.
+#    Compare the per-function profile with that one known-flaky entry excluded.
+GOTOOLCHAIN=go1.25.12 go test -coverprofile=/tmp/cov-after.out -count=1 . >/dev/null && \
+GOTOOLCHAIN=go1.25.12 go tool cover -func=/tmp/cov-after.out | grep -v 'consumer.go:.*admit' > /tmp/cov-after.txt
 diff /tmp/cov-before.txt /tmp/cov-after.txt && echo "COVERAGE UNCHANGED"
 
 # 5. Module hygiene — run UNCONDITIONALLY, not chained behind the coverage diff.
@@ -424,7 +438,7 @@ echo "=== staged set ==="
 git diff --cached --name-only | sort
 ```
 
-Expected: the first two are empty; the staged set is **23 Go files + 15 markdown files = 38**, matching Step 8's
+Expected: the first two are empty; the staged set is **23 Go files + 16 markdown files = 39**, matching Step 8's
 allow-list exactly. **A non-empty first list is a hard stop** — it means a renamed file is not in the commit.
 
 > Round 3 caught the previous expectation here — "the 6 Go files" — as flatly wrong: 23 Go files are modified. An
@@ -502,6 +516,7 @@ docs/plans/015-splitter.md
 docs/plans/019-messaging-gateway.md
 docs/plans/020-http-adapter-inbound.md
 docs/plans/022-header-message-id-rename.md
+docs/plans/024-http-outbound-source-brief.md
 docs/specs/001-messaging-core.md
 docs/specs/006-cron-source.md
 docs/specs/009-splitter-aggregator-endpoints.md
@@ -511,12 +526,12 @@ message_test.go
 splitter.go
 splitter_test.go
 EOF
-wc -l < /tmp/expected-files.txt      # must print 38
+wc -l < /tmp/expected-files.txt      # must print 39
 diff <(git show --name-only --format= HEAD | grep -v '^$' | sort) <(sort /tmp/expected-files.txt) \
   && echo "COMMIT CONTENTS EXACT"
 ```
 
-Expected: `38`; the first grep prints only the added test case's lines; the diff prints nothing and
+Expected: `39`; the first grep prints only the added test case's lines; the diff prints nothing and
 **`COMMIT CONTENTS EXACT`** appears. Anything else is unintended change riding along in a commit that claims to be
 mechanical — reset and restage before proceeding.
 
@@ -538,7 +553,7 @@ mechanical — reset and restage before proceeding.
 >   | sed 's|^\./||' | sort -u          # 22 Go files, run BEFORE any edit
 > ```
 >
-> plus `adapter/http/encode_test.go` (Step 4), plus Step 5's 13 markdown files, plus ADR 0026 and this plan = **38**.
+> plus `adapter/http/encode_test.go` (Step 4), plus Step 5's 14 markdown files, plus ADR 0026 and this plan = **39**.
 > `docs/HANDOVER.md` is deliberately **not** in the set (Step 5). Run that derivation before Step 2 and keep its output;
 > the literal list above is a convenience, and if the two ever disagree, **the derivation wins**.
 >

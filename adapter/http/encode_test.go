@@ -195,6 +195,56 @@ func TestDecodeRequest(t *testing.T) {
 			},
 		},
 		{
+			name: "a client cannot forge the renamed message-id header",
+			// Allow-listed ON PURPOSE: even a misconfigured operator allow-list
+			// naming a reserved key must not let the client set it.
+			//
+			// NOTE what this case does and does NOT prove. The id has TWO
+			// independent defenses: the reserved-prefix strip here, and New's
+			// unconditional restamp (message.go, m[HeaderMessageID] = cfg.id,
+			// which runs AFTER WithHeaders is copied). The restamp alone makes
+			// this assertion pass, so disabling the strip does NOT fail this
+			// case — verified by mutation. It pins the OUTCOME (a client can
+			// never dictate the id) which is what callers depend on; the strip
+			// itself is pinned by the two sibling cases below that use reserved
+			// keys New does not stamp.
+			opts: []msghttp.Option{msghttp.WithRequestHeaders(msgin.HeaderMessageID)},
+			request: func() *http.Request {
+				req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("x"))
+				req.Header.Set(msgin.HeaderMessageID, "forged-by-client")
+				return req
+			},
+			assert: func(t *testing.T, msg msgin.Message[any], err error) {
+				require.NoError(t, err)
+				got, ok := msg.Header(msgin.HeaderMessageID)
+				require.True(t, ok, "the server-minted id must be present")
+				assert.NotEqual(t, "forged-by-client", got,
+					"a client must never be able to dictate the message id")
+				assert.Equal(t, msg.ID(), got, "the id must be the server-minted one")
+			},
+		},
+		{
+			// THE strip pin for the renamed key. Unlike the case above, this uses
+			// a reserved key New does NOT stamp, so the prefix strip is the ONLY
+			// thing that can remove it: disabling the strip fails this case.
+			// Without it, the rename's one security-relevant property — that the
+			// new value stays inside the reserved msgin. namespace — would be
+			// asserted by nothing.
+			name: "a reserved key derived from the renamed one is stripped by the prefix alone",
+			opts: []msghttp.Option{msghttp.WithRequestHeaders(msgin.HeaderMessageID + "-forged")},
+			request: func() *http.Request {
+				req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("x"))
+				req.Header.Set(msgin.HeaderMessageID+"-forged", "forged-by-client")
+				return req
+			},
+			assert: func(t *testing.T, msg msgin.Message[any], err error) {
+				require.NoError(t, err)
+				_, ok := msg.Header(msgin.HeaderMessageID + "-forged")
+				assert.False(t, ok,
+					"the reserved msgin. prefix strip must still cover the renamed key's namespace")
+			},
+		},
+		{
 			name: "allow-listed header copied, non-allow-listed header absent",
 			opts: []msghttp.Option{msghttp.WithRequestHeaders("X-Custom")},
 			request: func() *http.Request {

@@ -52,7 +52,7 @@ func TestOutbound_SendFramesPayload(t *testing.T) {
 
 		decoded, err := msginsql.DecodeHeaders(row.headers)
 		require.NoError(t, err)
-		id, ok := decoded.String(msgin.HeaderID)
+		id, ok := decoded.String(msgin.HeaderMessageID)
 		require.True(t, ok)
 		assert.Equal(t, "m-42", id)
 	})

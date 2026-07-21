@@ -12,7 +12,7 @@ import (
 
 // Reserved header keys live under the "msgin." namespace.
 const (
-	HeaderID            = "msgin.id"
+	HeaderMessageID     = "msgin.message-id"
 	HeaderTimestamp     = "msgin.timestamp"
 	HeaderContentType   = "msgin.content-type"
 	HeaderCorrelationID = "msgin.correlation-id"
@@ -99,7 +99,7 @@ func (h Headers) without(key string) Headers {
 }
 
 // Message is the immutable EIP envelope: a typed payload plus header
-// metadata. Every Message is stamped with a msgin.id and msgin.timestamp by
+// metadata. Every Message is stamped with a msgin.message-id and msgin.timestamp by
 // New; transformers and enrichers return a new Message rather than mutating
 // one in place, so a Message shared across a pub-sub channel is safe to read
 // concurrently.
@@ -130,22 +130,22 @@ func WithClock(c clockwork.Clock) MessageOption {
 	}
 }
 
-// WithID sets an explicit msgin.id instead of New's default random 128-bit
+// WithID sets an explicit msgin.message-id instead of New's default random 128-bit
 // hex id. An empty string is treated as unset: New falls back to generating
-// a random id rather than stamping an empty msgin.id.
+// a random id rather than stamping an empty msgin.message-id.
 func WithID(id string) MessageOption {
 	return func(o *msgConfig) { o.id = id }
 }
 
 // WithHeaders seeds additional headers on the Message. The reserved
-// msgin.id and msgin.timestamp keys are always overwritten by New,
+// msgin.message-id and msgin.timestamp keys are always overwritten by New,
 // regardless of what is passed here.
 func WithHeaders(m map[string]any) MessageOption {
 	return func(o *msgConfig) { o.headers = m }
 }
 
 // New builds an immutable Message wrapping payload, always stamping
-// msgin.id (random unless WithID is given) and msgin.timestamp (from the
+// msgin.message-id (random unless WithID is given) and msgin.timestamp (from the
 // clock, real by default).
 //
 // New is the PRODUCING-path constructor: it always stamps a fresh id and
@@ -165,13 +165,13 @@ func New[T any](payload T, opts ...MessageOption) Message[T] {
 	if cfg.id == "" {
 		cfg.id = randomID()
 	}
-	m[HeaderID] = cfg.id
+	m[HeaderMessageID] = cfg.id
 	m[HeaderTimestamp] = cfg.clock.Now()
 	return Message[T]{payload: payload, headers: Headers{m: m}}
 }
 
 // NewMessage wraps an explicit payload and a pre-built Headers set as a
-// Message, WITHOUT stamping msgin.id/msgin.timestamp — for adapters
+// Message, WITHOUT stamping msgin.message-id/msgin.timestamp — for adapters
 // reconstructing a message that already exists in an external system (its id,
 // timestamp, and custom headers were framed at publish time and decoded back
 // from storage). Contrast New, which STAMPS a fresh id + timestamp for a
@@ -179,14 +179,14 @@ func New[T any](payload T, opts ...MessageOption) Message[T] {
 //
 // The Headers are used verbatim: NewMessage neither adds nor overwrites any
 // reserved key, so a caller building a FRESH message this way (rather than
-// reconstructing a persisted one) is responsible for supplying msgin.id and
+// reconstructing a persisted one) is responsible for supplying msgin.message-id and
 // msgin.timestamp in headers if it needs them — prefer New for that case.
 func NewMessage[T any](payload T, headers Headers) Message[T] {
 	return Message[T]{payload: payload, headers: headers}
 }
 
 // randomID returns a random 128-bit id, hex-encoded, used as the default
-// msgin.id when New is not given an explicit WithID.
+// msgin.message-id when New is not given an explicit WithID.
 func randomID() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])
@@ -202,9 +202,9 @@ func (m Message[T]) Headers() Headers { return m.headers }
 // Header returns the raw header value for key and whether it was present.
 func (m Message[T]) Header(key string) (any, bool) { return m.headers.Get(key) }
 
-// ID returns the message's msgin.id header.
+// ID returns the message's msgin.message-id header.
 func (m Message[T]) ID() string {
-	id, _ := m.headers.String(HeaderID)
+	id, _ := m.headers.String(HeaderMessageID)
 	return id
 }
 

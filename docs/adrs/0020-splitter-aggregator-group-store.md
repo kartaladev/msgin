@@ -67,9 +67,9 @@ func Split[A, B any](fn func(ctx context.Context, m Message[A]) ([]Message[B], e
   (`"msgin.sequence-number"`, 1-based `int`) and `HeaderSequenceSize` (`"msgin.sequence-size"`, `int` = N). On every
   child `Split` stamps:
   - both sequence headers;
-  - a **deterministic child `HeaderID` = `parentID#seq`** (only when the parent has an id). This is the load-bearing
+  - a **deterministic child `HeaderMessageID` = `parentID#seq`** (only when the parent has an id). This is the load-bearing
     fix: the canonical child constructor `WithPayload(parent, x)` copies the parent's headers *verbatim including
-    `HeaderID`*, so without this every child would share the parent id — and the Aggregator (which dedups group
+    `HeaderMessageID`*, so without this every child would share the parent id — and the Aggregator (which dedups group
     members by `msg.ID()`, §2) would collapse all N into one member and the group would **never release** (silent
     loss). A `parentID#seq` id is unique within one split (the group fills to N) **and** stable across a redelivery
     of the same parent (so the Aggregator's idempotent `Add` recognizes redelivered members — the §4 guarantee).

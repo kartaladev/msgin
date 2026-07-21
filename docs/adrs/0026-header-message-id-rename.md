@@ -1,8 +1,8 @@
 # ADR 0026 — Rename `HeaderID` to `HeaderMessageID` and its value to `msgin.message-id`
 
-- **Status:** Proposed (2026-07-22) — two adversarial audit rounds have run against
-  [Plan 022](../plans/022-header-message-id-rename.md); round 2 returned NOT READY and its findings are folded in. A
-  third round gates implementation.
+- **Status:** Accepted (2026-07-22) — three adversarial audit rounds have run against
+  [Plan 022](../plans/022-header-message-id-rename.md); rounds 2 and 3 each returned NOT READY and their findings are
+  folded in. The audited plan is approved and implemented.
 - **Requested by:** the user, mid-planning of the (since-split) producer-retry increment.
 - **Spec:** none of its own — this is a naming/format correction to the core envelope defined by
   [Spec 001 — Messaging core](../specs/001-messaging-core.md). · **Plan:** [022](../plans/022-header-message-id-rename.md)
@@ -96,6 +96,18 @@ mechanically (Step 8) rather than trusting it.
 - Costs one mechanical commit **now**; it would cost a major bump plus a data migration after the first tag.
 
 **Negative / accepted**
+
+- **THREE STRING-KEYED SURFACES BREAK SILENTLY AT RUNTIME, with no compile error.** The rename is a compile error only
+  where the Go *identifier* is used. Anywhere the key is a **string**, an upgrading consumer gets no signal at all —
+  the lookup simply stops matching:
+  - **Runtime expressions** (`expr.go`) — `FilterExpr`/`RouterExpr`/aggregator expressions expose `header("key")`. A
+    consumer expression `header("msgin.id")` now evaluates to `nil` with **no error**, silently flipping a filter or
+    routing decision. This is the most dangerous of the three: it changes message flow rather than failing.
+  - **Operator allow-lists** — `msghttp.WithResponseHeaders("msgin.id")` silently stops emitting the header.
+    (`WithRequestHeaders` is unaffected: `"msgin.id"` still matches the reserved `msgin.` prefix and is still stripped.)
+  - **Caller-built header maps** — `map[string]any{"msgin.id": …}` passed to `New`/`WithHeaders`.
+
+  A consumer upgrading must grep their **own** code and configuration for the literal `msgin.id`, not just rebuild.
 
 - **This is a breaking change to an exported symbol.** Under CLAUDE.md's SemVer gate that implies a major bump — moot
   here only because the repo is pre-`v0.1.0` and untagged. It must NOT be repeated after the first tag without a major

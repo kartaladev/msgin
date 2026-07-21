@@ -39,7 +39,7 @@ func RunDialect(t *testing.T, kit TestKit, db *sql.DB) {
 
 	insert := func(t *testing.T, ctx context.Context, table, msgID string, payload []byte) {
 		t.Helper()
-		headers, err := msginsql.EncodeHeaders(msgin.NewHeaders(map[string]any{msgin.HeaderID: msgID}))
+		headers, err := msginsql.EncodeHeaders(msgin.NewHeaders(map[string]any{msgin.HeaderMessageID: msgID}))
 		require.NoError(t, err)
 		require.NoError(t, kit.Lease.Insert(ctx, db, table, msgID, headers, payload, 0))
 	}
@@ -240,7 +240,7 @@ func RunDialect(t *testing.T, kit TestKit, db *sql.DB) {
 
 		hdrs, err := msginsql.DecodeHeaders(rows[0].Headers)
 		require.NoError(t, err)
-		id, ok := hdrs.String(msgin.HeaderID)
+		id, ok := hdrs.String(msgin.HeaderMessageID)
 		require.True(t, ok)
 		require.Equal(t, "m-1", id)
 

@@ -408,11 +408,11 @@ var (
 	_ msginsql.InboxDialect = (*fakeDialect)(nil)
 )
 
-// encodeHeadersT frames a minimal Headers set carrying only msgin.id, for
+// encodeHeadersT frames a minimal Headers set carrying only msgin.message-id, for
 // tests that need a decodable headers blob (DecodeHeaders' happy path).
 func encodeHeadersT(t *testing.T, id string) []byte {
 	t.Helper()
-	b, err := msginsql.EncodeHeaders(msgin.NewHeaders(map[string]any{msgin.HeaderID: id}))
+	b, err := msginsql.EncodeHeaders(msgin.NewHeaders(map[string]any{msgin.HeaderMessageID: id}))
 	require.NoError(t, err)
 	return b
 }

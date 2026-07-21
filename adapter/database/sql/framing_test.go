@@ -25,7 +25,7 @@ func TestEncodeDecodeHeadersRoundTrip(t *testing.T) {
 		{
 			name: "reserved and custom headers round-trip with correct types",
 			headers: msgin.NewHeaders(map[string]any{
-				msgin.HeaderID:            "abc123",
+				msgin.HeaderMessageID:     "abc123",
 				msgin.HeaderTimestamp:     ts,
 				msgin.HeaderDeliveryCount: 3,
 				msgin.HeaderContentType:   "application/json",
@@ -36,7 +36,7 @@ func TestEncodeDecodeHeadersRoundTrip(t *testing.T) {
 				require.NoError(t, encErr)
 				require.NoError(t, decErr)
 
-				id, ok := got.String(msgin.HeaderID)
+				id, ok := got.String(msgin.HeaderMessageID)
 				assert.True(t, ok)
 				assert.Equal(t, "abc123", id)
 

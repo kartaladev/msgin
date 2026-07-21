@@ -14,7 +14,7 @@ import (
 //
 // Each child is stamped for reassembly by a downstream Aggregator:
 // HeaderSequenceNumber (1-based) and HeaderSequenceSize (N); a deterministic
-// child id (HeaderID = parentID#seq — unique within the split yet stable across
+// child id (HeaderMessageID = parentID#seq — unique within the split yet stable across
 // a redelivery of the same parent, so the Aggregator's id-dedup holds); and
 // HeaderCorrelationID set to the parent's id UNLESS the child already carries a
 // correlation id (a caller-set/inherited one is preserved). With these, a
@@ -61,7 +61,7 @@ func forwardSplit[B any](ctx context.Context, next MessageHandler, parent Messag
 
 // stampSequence returns child stamped for reassembly by a downstream Aggregator:
 //   - HeaderSequenceNumber (1-based num) and HeaderSequenceSize (total).
-//   - A deterministic child HeaderID = parentID#num (only when the parent has an
+//   - A deterministic child HeaderMessageID = parentID#num (only when the parent has an
 //     id). It is unique within one split (so the group fills to size) AND stable
 //     across a redelivery of the same parent (so the Aggregator's id-dedup
 //     upholds at-least-once). This overwrites the id WithPayload copied from the
@@ -77,7 +77,7 @@ func stampSequence[B any](child Message[B], parent Message[any], num, size int) 
 	out := child.WithHeader(HeaderSequenceNumber, num).WithHeader(HeaderSequenceSize, size)
 	pid := parent.ID()
 	if pid != "" {
-		out = out.WithHeader(HeaderID, pid+"#"+strconv.Itoa(num))
+		out = out.WithHeader(HeaderMessageID, pid+"#"+strconv.Itoa(num))
 		if _, ok := out.Header(HeaderCorrelationID); !ok {
 			out = out.WithHeader(HeaderCorrelationID, pid)
 		}

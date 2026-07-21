@@ -166,7 +166,7 @@ Both bindings import `adapter/http`; neither reimplements decode/exchange/SSE lo
 ### 3.2 Shared encode layer (`adapter/http/encode.go`) — Phase 1 SHIPPED
 
 - **Request → `Message[any]`** — the request is **external input entering the system**, so it is built with
-  **`msgin.New`** (fresh `HeaderID` + timestamp), **not** `NewMessage` (which reconstructs a stored msgin envelope
+  **`msgin.New`** (fresh `HeaderMessageID` + timestamp), **not** `NewMessage` (which reconstructs a stored msgin envelope
   verbatim and stamps nothing — using it here would leave `ID()` empty and, since the correlation id is the
   message's own `ID()`, make every I2 request fail `ErrNoCorrelation`→500; audit H1). Payload = body read as `[]byte`,
   guarded by `http.MaxBytesReader` (default **1 MiB**, `WithMaxBodyBytes`); an **allow-listed** set of request headers
@@ -303,7 +303,7 @@ URL is **caller-configured and never derived from message payload/headers** (SSR
     `context` cancels. **One owned, cancellable goroutine per connection**, all joined on `Close()` within a deadline.
     `WithMaxConnections` bounds concurrent connections (default a safe finite cap; connection-exhaustion guard, §4).
     Optional keep-alive comment pings via `WithHeartbeat`.
-  - **`OutboundAdapter` (`Send`)**: formats the message as an SSE event — `id:` from `HeaderID`, `event:` from
+  - **`OutboundAdapter` (`Send`)**: formats the message as an SSE event — `id:` from `HeaderMessageID`, `event:` from
     `WithEventName` (or a header), `data:` from payload `[]byte` (multi-line-safe framing via `sse.go`) — and **fans
     out to all currently-connected clients**.
   - **Backpressure**: bounded per-connection buffer; `WithSlowClientPolicy` (**default drop-and-continue**, alt
@@ -348,12 +348,12 @@ adapter being the untrusted-input boundary (Spec 010 §8.1).
   copied onto each message are bounded instead by the caller's `http.Server.MaxHeaderBytes`, and on the async path that
   memory is retained for as long as the queued message lives.
 - **Reserved-header stripping** — client-supplied `msgin.*` headers are removed (**case-insensitively**) before
-  building the message; a client cannot forge `msgin.correlation-id`, `msgin.delivery-count`, `msgin.id`, etc., even
+  building the message; a client cannot forge `msgin.correlation-id`, `msgin.delivery-count`, `msgin.message-id`, etc., even
   through a misconfigured allow-list entry that names one.
 - **Header allow-list** — inbound copies only an allow-listed set of request headers into `Headers`; outbound forwards
   only an allow-listed set; no blanket copy (prevents header injection/smuggling into downstream systems). The
   **response** allow-list is deliberately *not* reserved-namespace-guarded (asymmetric with the request side): it is
-  trusted operator config, so listing `msgin.correlation-id`/`msgin.id`/… **does** publish internal flow metadata to
+  trusted operator config, so listing `msgin.correlation-id`/`msgin.message-id`/… **does** publish internal flow metadata to
   every caller of the endpoint — documented as a `CAUTION` on `WithResponseHeaders`.
 - **Correlation-id distrust — server-minted, always** (hardened during delivery; ADR 0023 Addendum A2). The exchange
   key is the message's own server-minted `ID()`; a client value keys the correlator **only** through the explicitly

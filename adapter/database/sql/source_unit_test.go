@@ -74,7 +74,7 @@ func TestSource_PollLease(t *testing.T) {
 		require.Len(t, dels, 2, "Poll must respect max (batching)")
 
 		for _, d := range dels {
-			id, ok := d.Msg.Header(msgin.HeaderID)
+			id, ok := d.Msg.Header(msgin.HeaderMessageID)
 			require.True(t, ok)
 			assert.Contains(t, []string{"m-1", "m-2", "m-3"}, id)
 			dc, ok := d.Msg.Header(msgin.HeaderDeliveryCount)

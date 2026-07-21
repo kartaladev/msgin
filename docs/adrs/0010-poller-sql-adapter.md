@@ -304,7 +304,7 @@ The **default** strategy. Schema (reference DDL; Postgres types shown):
 ```sql
 CREATE TABLE <table> (
   id             BIGSERIAL     PRIMARY KEY,
-  msg_id         VARCHAR(255)  NOT NULL,          -- msgin.id (idempotency/observability)
+  msg_id         VARCHAR(255)  NOT NULL,          -- msgin.message-id (idempotency/observability)
   headers        JSONB         NOT NULL,          -- envelope framing: Headers → JSON
   payload        BYTEA         NOT NULL,          -- the wire body ([]byte)
   locked_by      VARCHAR(255),                    -- lease owner (consumer instance id); NULL = unlocked
@@ -548,7 +548,7 @@ one-line "use `q` instead of `db`").
 tx, it is **invisible to the relay's `SELECT … FOR UPDATE SKIP LOCKED` until the caller commits**
 (transaction isolation), and **never exists if they roll back**. No `visible_after` coordination is
 needed; the relay only ever sees committed rows. End to end: `WithSharedTransaction` outbound (atomic
-write) → `PollingSource` relay (forward to Kafka/NATS/HTTP) → at-least-once with `msgin.id` for
+write) → `PollingSource` relay (forward to Kafka/NATS/HTTP) → at-least-once with `msgin.message-id` for
 downstream idempotency.
 
 **Documented invariant (unenforceable).** The resolved tx MUST be on the **same database** as the outbox
@@ -614,7 +614,7 @@ so msgin offers **two opt-in strategies** and a safe zero-config default:
 | | Strategy 1 — transactional consume (D9, **DEFERRED → Plan 006**) | Strategy 2 — idempotent consume / dedup inbox (D10, **ships in 005**) |
 | --- | --- | --- |
 | When | business data in the **same DB** as the source | business data in a **different DB** (can't share a tx) |
-| Guarantee | **exactly-once *delivery*** (handler writes + `Ack DELETE` in one local tx) | **exactly-once *effect*** (dedup by `msgin.id`; delivery stays at-least-once) |
+| Guarantee | **exactly-once *delivery*** (handler writes + `Ack DELETE` in one local tx) | **exactly-once *effect*** (dedup by `msgin.message-id`; delivery stays at-least-once) |
 | How | transparent: adapter injects its tx into the handler ctx | handler-cooperative: handler calls a dedup helper in its business tx |
 | Strategy | lock/`FOR UPDATE` only | any strategy / any source |
 
@@ -690,7 +690,7 @@ same DB by construction here (it *is* the source's tx), so this direction is saf
 
 **Problem.** When the business data lives in a **different database** than the message source, strategy 1
 is impossible — there is no shared transaction. The achievable guarantee is then **exactly-once
-*effect*** via the **idempotent-consumer (inbox) pattern**: record each processed `msgin.id` in a dedup
+*effect*** via the **idempotent-consumer (inbox) pattern**: record each processed `msgin.message-id` in a dedup
 table **in the business DB, inside the handler's business tx**, and skip a message already recorded. The
 dedup record commits atomically *with the business writes*, so a crash between commit and `Ack` (→
 redelivery) finds the id already present and skips — the business effect applies exactly once even though
@@ -772,10 +772,10 @@ transactional or different-DB idempotent), but both may appear in one applicatio
 ### D11 — A public `NewMessage` constructor for wire inbound adapters that reconstruct a persisted envelope
 
 **Problem surfaced by the first wire inbound adapter (Task 5).** `Message[T]` has unexported fields
-(`payload`, `headers`); the only public constructor is `New`, which **stamps** a fresh `msgin.id`
+(`payload`, `headers`); the only public constructor is `New`, which **stamps** a fresh `msgin.message-id`
 (random unless `WithID`) and **always overwrites** `msgin.timestamp` with `clock.Now()`. That is correct
 for *producing* a new message, but the `sql` `Source` (and every future wire inbound adapter) does the
-opposite: it **reconstructs** a message that already exists in storage — its `msgin.id`, `msgin.timestamp`,
+opposite: it **reconstructs** a message that already exists in storage — its `msgin.message-id`, `msgin.timestamp`,
 and custom headers were framed at publish time (§8) and decoded back by `DecodeHeaders`. The runtime
 builds `Message[T]{payload, headers}` from a `Delivery.Msg` using the *unexported* fields (it is in-package,
 `consumer.go`/`producer.go`), but an adapter in `adapter/database/sql` **cannot** — it is a different
@@ -795,7 +795,7 @@ use case the core should support cleanly, not force through the producing-path c
 
 ```go
 // NewMessage wraps an explicit payload and a pre-built Headers set as a Message,
-// WITHOUT stamping msgin.id/msgin.timestamp — for adapters reconstructing a
+// WITHOUT stamping msgin.message-id/msgin.timestamp — for adapters reconstructing a
 // message that already exists in an external system (its id, timestamp, and
 // custom headers were framed at publish time and decoded back from storage).
 // Contrast New, which STAMPS a fresh id + timestamp for a newly-produced message.

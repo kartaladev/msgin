@@ -76,7 +76,7 @@ the "you already run a database" philosophy that made `visible_after` the right 
 
 - **D3 — Caller-supplied message factory.** `cron.NewSource[T](spec string, factory func(fire time.Time) T,
   opts ...Option)`. On each fire the source builds `msgin.New[any](factory(fireTime), msgin.WithClock(clock))`
-  (stamps `msgin.id` + `msgin.timestamp`) and emits it. A fixed payload and a pure "tick" (`T = time.Time`) are
+  (stamps `msgin.message-id` + `msgin.timestamp`) and emits it. A fixed payload and a pure "tick" (`T = time.Time`) are
   the trivial factories.
 
 - **D4 — Live values, no codec.** `Source[T]` implements `LiveValueSource` (`EmitsLiveValue() → true`, like

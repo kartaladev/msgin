@@ -120,11 +120,11 @@ primitive from Spec 008.
   `fn` → `ErrNilFunc` (no panic on input).
 - **D2 — Sequence-header + child-identity convention (EIP; audit R1 H-1/M-1).** New reserved keys
   `HeaderSequenceNumber` ("msgin.sequence-number", 1-based `int`) and `HeaderSequenceSize` ("msgin.sequence-size",
-  `int` = N). On every child the Splitter stamps both sequence headers, a **deterministic child `HeaderID` =
+  `int` = N). On every child the Splitter stamps both sequence headers, a **deterministic child `HeaderMessageID` =
   `parentID#seq`** (only when the parent has an id), and `HeaderCorrelationID` = the **parent's id** *only if the
   child does not already carry one* (never overwrites a caller-set/inherited correlation).
   - **Child id is load-bearing:** the canonical constructor `WithPayload(parent, x)` copies the parent's headers
-    verbatim *including `HeaderID`*, so absent this every child would share the parent id and the Aggregator (which
+    verbatim *including `HeaderMessageID`*, so absent this every child would share the parent id and the Aggregator (which
     dedups members by `msg.ID()`, D8) would collapse the group to one member → it never releases → silent loss. A
     `parentID#seq` id is unique within a split (group fills) yet stable across a parent redelivery (idempotent Add).
   - **Durable type contract (M-1):** the default release reads `HeaderSequenceSize` **number-tolerantly**

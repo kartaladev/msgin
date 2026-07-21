@@ -37,7 +37,7 @@ func freshTable(t *testing.T, ctx context.Context, kit TestKit, db *sql.DB, coun
 // a table without going through the adapter under test.
 func insertJSON(t *testing.T, ctx context.Context, kit TestKit, db *sql.DB, table, id string, v any) {
 	t.Helper()
-	headers, err := msginsql.EncodeHeaders(msgin.NewHeaders(map[string]any{msgin.HeaderID: id}))
+	headers, err := msginsql.EncodeHeaders(msgin.NewHeaders(map[string]any{msgin.HeaderMessageID: id}))
 	require.NoError(t, err)
 	payload, err := json.Marshal(v)
 	require.NoError(t, err)

@@ -38,7 +38,7 @@ func WithInboxTable(table string) InboxOption {
 
 // InboxDeduper is the idempotent-consumer dedup inbox (ADR 0010 D10, durable
 // consume strategy 2): the different-DB idempotent consumer. It records each
-// processed msgin.id in a dedup table so a redelivery (msgin sources are
+// processed msgin.message-id in a dedup table so a redelivery (msgin sources are
 // at-least-once) can be recognized and its business effect skipped — turning
 // at-least-once delivery into exactly-once effect.
 //

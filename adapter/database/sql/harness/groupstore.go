@@ -48,7 +48,7 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 	}
 	mkMsg := func(id string, seq int) msgin.Message[any] {
 		return msgin.NewMessage[any]([]byte(`"payload"`),
-			msgin.NewHeaders(map[string]any{msgin.HeaderID: id, msgin.HeaderSequenceNumber: seq}))
+			msgin.NewHeaders(map[string]any{msgin.HeaderMessageID: id, msgin.HeaderSequenceNumber: seq}))
 	}
 	add := func(t *testing.T, ctx context.Context, s *msginsql.GroupStore, key, id string, seq int) (msgin.MessageGroup, error) {
 		t.Helper()
@@ -83,7 +83,7 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 		ctx := t.Context()
 		table := fresh(ctx)
 		s := newStore(t, table)
-		msg := msgin.NewMessage[any]([]byte(`"p"`), msgin.NewHeaders(nil)) // no HeaderID
+		msg := msgin.NewMessage[any]([]byte(`"p"`), msgin.NewHeaders(nil)) // no HeaderMessageID
 		_, err := s.Add(ctx, "k", msg)
 		require.ErrorIs(t, err, msginsql.ErrMissingMsgID)
 	})
@@ -329,7 +329,7 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 		// fenced stale-settle applied flag can be asserted with known lockedBy ids.
 		addRaw := func(key, id string, seq int64) {
 			headers, err := msginsql.EncodeHeaders(
-				msgin.NewHeaders(map[string]any{msgin.HeaderID: id, msgin.HeaderSequenceNumber: int(seq)}))
+				msgin.NewHeaders(map[string]any{msgin.HeaderMessageID: id, msgin.HeaderSequenceNumber: int(seq)}))
 			require.NoError(t, err)
 			_, err = kit.Group.AddMember(ctx, db, table, key, id, seq, headers, []byte(`"p"`))
 			require.NoError(t, err)

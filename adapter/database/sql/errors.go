@@ -124,10 +124,10 @@ var (
 
 	// ErrMissingMsgID is returned by GroupStore.Add (and, defensively, by a
 	// GroupDialect's own AddMember) when the message being added carries an
-	// empty msgin.id. Group members are keyed (group_key, msg_id) for
+	// empty msgin.message-id. Group members are keyed (group_key, msg_id) for
 	// idempotent, redelivery-safe add, so durable aggregation REQUIRES message
 	// ids (audit R1 H3, ADR 0021 §2) — a source delivery always carries
-	// msgin.HeaderID and the Splitter stamps a deterministic child id, so this
+	// msgin.HeaderMessageID and the Splitter stamps a deterministic child id, so this
 	// is not a real-world restriction. GroupStore.Add checks this at the
 	// facade (belt-and-suspenders with the dialect's own check) so the error
 	// is returned before any query runs.

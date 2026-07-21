@@ -27,7 +27,7 @@ const (
 )
 
 // reservedHeaderPrefix is msgin's reserved header namespace: every core
-// header constant (msgin.HeaderID, msgin.HeaderTimestamp,
+// header constant (msgin.HeaderMessageID, msgin.HeaderTimestamp,
 // msgin.HeaderContentType, msgin.HeaderCorrelationID,
 // msgin.HeaderDeliveryCount, msgin.HeaderSequenceNumber/Size, and any future
 // one) starts with it. DecodeRequest strips any allow-listed request header
@@ -75,7 +75,7 @@ const defaultResponseContentType = "application/octet-stream"
 // The message is built with msgin.New — never msgin.NewMessage — because a
 // decoded HTTP request is freshly-produced input entering the system, not a
 // message reconstructed from a persisted/previously-framed one; New always
-// stamps a fresh msgin.id and msgin.timestamp.
+// stamps a fresh msgin.message-id and msgin.timestamp.
 //
 // The exchange correlation key (msgin.HeaderCorrelationID) is ALWAYS the
 // message's own server-minted ID() unless the caller explicitly opts into
