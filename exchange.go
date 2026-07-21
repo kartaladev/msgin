@@ -132,8 +132,17 @@ func WithReplyTimeout(d time.Duration) ExchangeOption {
 // WithUnmatchedReplySink routes replies with no pending waiter (already
 // timed-out/cancelled, or an unknown correlation id) to out instead of logging
 // and dropping them. A sink error is logged, never propagated to the reply sender.
+//
+// The sink's Send should be non-blocking or promptly bounded: on the giveUp
+// drain path (a reply that raced a timeout/cancel) it runs on the abandoning
+// caller's goroutine, so a slow synchronous sink delays that Exchange's return.
+// A nil sink is a no-op (leaves the default log-and-drop behaviour).
 func WithUnmatchedReplySink(out OutboundAdapter) ExchangeOption {
-	return func(c *exchangeConfig) { c.unmatched = out }
+	return func(c *exchangeConfig) {
+		if out != nil {
+			c.unmatched = out
+		}
+	}
 }
 
 // WithExchangeClock injects the clock used for the reply timeout (tests use a
