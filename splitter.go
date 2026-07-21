@@ -39,16 +39,24 @@ func Split[A, B any](fn func(ctx context.Context, m Message[A]) ([]Message[B], e
 			if err != nil {
 				return err
 			}
-			n := len(children)
-			for i, child := range children {
-				stamped := stampSequence(child, msg, i+1, n)
-				if err := next.Handle(ctx, boxMessage(stamped)); err != nil {
-					return err
-				}
-			}
-			return nil
+			return forwardSplit(ctx, next, msg, children)
 		})
 	}
+}
+
+// forwardSplit stamps each child for reassembly (see stampSequence) and forwards
+// it to next IN ORDER, aborting on the first error (remaining children not sent).
+// An empty children slice forwards nothing and returns nil. Shared by Split and
+// SplitExpr.
+func forwardSplit[B any](ctx context.Context, next MessageHandler, parent Message[any], children []Message[B]) error {
+	n := len(children)
+	for i, child := range children {
+		stamped := stampSequence(child, parent, i+1, n)
+		if err := next.Handle(ctx, boxMessage(stamped)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // stampSequence returns child stamped for reassembly by a downstream Aggregator:

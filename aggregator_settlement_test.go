@@ -482,9 +482,15 @@ func TestAggregator_ReleaseDrainsCompleteResidualWithoutTimeoutOrNewMember(t *te
 // re-release-error branch: the first batch {m1,m2} settles normally, but the
 // drain loop's re-release of the complete residual {m3,m4} fails at
 // SettleGroup. Both batches are still aggregated and SENT (at-least-once —
-// the Send already happened before the second settle failed), the error
-// propagates out of Handle, and releaseOnce's defer-abandon leaves {m3,m4}
-// live for a retry rather than losing them.
+// the Send already happened before the second settle failed). Per audit
+// H-2/H-3, once the MAIN release has settled (here, {m1,m2}, which includes
+// the member Handle is processing), the drain loop is best-effort and MUST
+// swallow this residual re-release failure rather than propagate it: a
+// non-nil return here would Nack the already-settled m2, and its source
+// redelivery would idempotently re-Add it into a SECOND aggregate — a real
+// double-count. So Handle returns nil even though the residual's settle
+// failed; releaseOnce's defer-abandon leaves {m3,m4} live for a retry
+// (recovered by the reaper / a later Add) rather than losing them.
 func TestAggregator_ReleaseDrainLoopReleaseError(t *testing.T) {
 	base := newIntStore(t)
 	settleErr := errors.New("settle boom")
@@ -517,7 +523,8 @@ func TestAggregator_ReleaseDrainLoopReleaseError(t *testing.T) {
 	close(unblock) // {m1,m2}'s SettleGroup succeeds; the drain loop's re-release of {m3,m4} then fails at SettleGroup
 
 	handleErr := <-handleDone
-	assert.ErrorIs(t, handleErr, settleErr, "the drain loop's failed re-release error must propagate out of Handle")
+	assert.NoError(t, handleErr, "H-2/H-3: the drain loop's residual re-release failure must be swallowed, "+
+		"not propagated — the main member (m2) already settled, so a non-nil return here would wrongly Nack it")
 
 	require.Equal(t, 2, out.count(), "the residual {m3,m4} WAS aggregated and sent before its SettleGroup failed — at-least-once, not lost")
 	assert.Equal(t, 3, out.sent[0].Payload(), "first: m1+m2")

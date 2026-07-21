@@ -90,4 +90,14 @@ var (
 	// WithGroupTimeout is set without WithExpiredGroupChannel — an expired
 	// partial group must have a visible sink, never a silent drop.
 	ErrExpiryChannelRequired = errors.New("msgin: group timeout requires an expired-group channel")
+	// ErrExprResultType is returned (as the endpoint's handler error) by
+	// TransformExpr/SplitExpr when a compiled expression evaluates to a value that
+	// is not the asserted output type — a non-B TransformExpr result, or a
+	// non-slice SplitExpr result / non-B SplitExpr element. It is an EVALUATION
+	// (not construction) error: ErrInvalidExpression covers compile-time faults,
+	// this covers a well-typed-at-compile expression whose runtime value is the
+	// wrong Go type (possible when A/B is an interface, so expr cannot type-check
+	// the result). It propagates into the runtime's retry/DLQ path like any eval
+	// error.
+	ErrExprResultType = errors.New("msgin: expression result type mismatch")
 )

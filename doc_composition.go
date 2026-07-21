@@ -43,4 +43,16 @@
 // behave like their Go-func equivalents. The Go-func Filter/Router remain the
 // compile-time default: prefer them whenever the rule is known at build time,
 // for their type safety and debuggability.
+//
+// The same expr-lang sugar extends to projection, fan-out, and grouping
+// (Spec 009 §3.5 / ADR 0019 addendum): TransformExpr and SplitExpr are
+// runtime-expression counterparts to Transform and Split, and
+// WithCorrelationExpr/WithReleaseExpr override an Aggregator's correlation
+// and release strategy with a runtime expression evaluated per-message or
+// over the group. As with FilterExpr/RouterExpr, the Go-func forms —
+// Transform, Split, and a Go-func WithCorrelationStrategy/WithReleaseStrategy
+// — remain the compile-time default. Expr cannot construct an arbitrary Go
+// struct, so the result type these forms project or fan out into is
+// realistically a scalar/slice/map/named-field type, not an arbitrary struct
+// (the struct-B ceiling; use the Go-func form to project into a struct).
 package msgin

@@ -120,6 +120,107 @@ func (s *recoverIntervalStore) expiredCalls() int {
 
 var _ msgin.MessageGroupStore = (*recoverIntervalStore)(nil)
 
+// mixedTypeGroup is a hand-rolled msgin.MessageGroup snapshot holding a
+// member whose payload does NOT match the Aggregator's type parameter — the
+// MessageGroupStore SPI is exported, so a blackbox test can construct a
+// store returning any such snapshot; no conformant store reachable through
+// Handle's own ingress PayloadOf[A] assert can produce this (a wrong-typed
+// member must already be resident in the store, as here, not freshly added
+// via Handle).
+type mixedTypeGroup struct {
+	key  string
+	msgs []msgin.Message[any]
+}
+
+func (g mixedTypeGroup) Key() string                    { return g.key }
+func (g mixedTypeGroup) Messages() []msgin.Message[any] { return g.msgs }
+func (g mixedTypeGroup) CreatedAt() time.Time           { return time.Time{} }
+
+var _ msgin.MessageGroup = mixedTypeGroup{}
+
+// mixedTypeAddStore's Add always returns a group with a wrong-typed member (a
+// string payload) injected ahead of the just-added message — used to drive
+// toGroupEnv's non-A-member branch (M-6) for WithReleaseExpr.
+type mixedTypeAddStore struct {
+	msgin.MessageGroupStore
+}
+
+func (s *mixedTypeAddStore) Add(_ context.Context, key string, msg msgin.Message[any]) (msgin.MessageGroup, error) {
+	return mixedTypeGroup{key: key, msgs: []msgin.Message[any]{msgin.New[any]("not-an-int"), msg}}, nil
+}
+
+var _ msgin.MessageGroupStore = (*mixedTypeAddStore)(nil)
+
+// failNthClaimStore wraps a real msgin.MessageGroupStore and makes the Nth
+// ClaimGroup call (1-based, across the store's whole lifetime) fail with err,
+// delegating on every other call — used to deterministically drive release's
+// drain-loop transient ClaimGroup-error swallow, a branch otherwise
+// unreachable through Handle's own MAIN claim (which must succeed for the
+// drain loop to run at all).
+type failNthClaimStore struct {
+	msgin.MessageGroupStore
+	mu    sync.Mutex
+	n     int
+	calls int
+	err   error
+}
+
+func (s *failNthClaimStore) ClaimGroup(ctx context.Context, key string) (msgin.MessageGroupClaim, error) {
+	s.mu.Lock()
+	s.calls++
+	call := s.calls
+	s.mu.Unlock()
+	if call == s.n {
+		return nil, s.err
+	}
+	return s.MessageGroupStore.ClaimGroup(ctx, key)
+}
+
+var _ msgin.MessageGroupStore = (*failNthClaimStore)(nil)
+
+// failNthChannel is a MessageChannel that succeeds through call n-1 and fails
+// every Send from call n onward — used to make a LATER release's Send fail
+// while an EARLIER release on the same Aggregator instance succeeds,
+// deterministically covering release's drain-loop residual-releaseOnce-
+// failure branch (H-3) via a Send error (releaseOnce's agg/Send/Settle order
+// means a Send failure is reached before Settle — distinct from
+// TestAggregator_ReleaseDrainLoopReleaseError's Settle-error flavor of the
+// same swallow branch).
+type failNthChannel struct {
+	mu       sync.Mutex
+	failFrom int // 1-based Send() call number at which failures begin
+	calls    int
+	sent     []msgin.Message[any]
+	err      error
+}
+
+func (c *failNthChannel) Send(_ context.Context, m msgin.Message[any]) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	if c.calls >= c.failFrom {
+		return c.err
+	}
+	c.sent = append(c.sent, m)
+	return nil
+}
+
+func (c *failNthChannel) Subscribe(msgin.MessageHandler) error { return nil }
+
+func (c *failNthChannel) sentCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.sent)
+}
+
+func (c *failNthChannel) lastSent() msgin.Message[any] {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.sent[len(c.sent)-1]
+}
+
+var _ msgin.MessageChannel = (*failNthChannel)(nil)
+
 // sumFn aggregates a group of int payloads into their sum.
 func sumFn(_ context.Context, group []msgin.Message[int]) (msgin.Message[int], error) {
 	sum := 0
@@ -370,6 +471,43 @@ func TestAggregator_Handle(t *testing.T) {
 				require.NoError(t, agg.Handle(t.Context(), m2))
 				require.Equal(t, 1, out.count(), "sum 7 >= 5: released")
 				assert.Equal(t, 7, out.last().Payload())
+			},
+		},
+		{
+			// Regression for the internal release seam evolving to
+			// func(MessageGroup) (bool, error) (the public
+			// WithReleaseStrategy(func(MessageGroup) bool) signature is
+			// unchanged): proves the always-nil-error wrapper releases
+			// across multiple cycles exactly as the pre-refactor bool-only
+			// seam did — held, released-and-removed, held again for a
+			// fresh group at the same key.
+			name: "WithReleaseStrategy bool wrapper is transparent across release cycles",
+			assert: func(t *testing.T) {
+				store := newIntStore(t)
+				out := &fakeAggChannel{}
+				agg, err := msgin.NewAggregator[int, int](store, sumFn,
+					msgin.WithOutputChannel(out),
+					msgin.WithReleaseStrategy(func(g msgin.MessageGroup) bool {
+						return len(g.Messages()) >= 2
+					}),
+				)
+				require.NoError(t, err)
+
+				m1 := corrMsg(1, "m1", "g", nil)
+				m2 := corrMsg(2, "m2", "g", nil)
+				require.NoError(t, agg.Handle(t.Context(), m1))
+				assert.Equal(t, 0, out.count(), "1 of 2: held")
+				require.NoError(t, agg.Handle(t.Context(), m2))
+				require.Equal(t, 1, out.count(), "2 of 2: released")
+				assert.Equal(t, 3, out.last().Payload())
+
+				// group removed on release: a 3rd message to "g" starts a
+				// fresh (again held) group rather than immediately
+				// re-releasing — identical to the pre-refactor bool-only
+				// seam's behavior.
+				m3 := corrMsg(3, "m3", "g", nil)
+				require.NoError(t, agg.Handle(t.Context(), m3))
+				assert.Equal(t, 1, out.count(), "fresh group after removal is held again")
 			},
 		},
 		{
@@ -1091,4 +1229,230 @@ func TestAggregator_Run(t *testing.T) {
 			tc.assert(t)
 		})
 	}
+}
+
+// TestWithReleaseExpr_FakeStore drives the two toGroupEnv guards (expr.go)
+// via hand-rolled MessageGroupStore fakes — the exported MessageGroupStore
+// SPI makes this blackbox-legal: no conformant store reachable through
+// Handle's normal ingress can produce either scenario.
+func TestWithReleaseExpr_FakeStore(t *testing.T) {
+	tests := []struct {
+		name   string
+		assert func(t *testing.T)
+	}{
+		{
+			name: "an empty group snapshot from a non-conformant store does not panic the release check (M-1)",
+			assert: func(t *testing.T) {
+				store := &emptyGroupAddStore{}
+				out := &fakeAggChannel{}
+				agg, err := msgin.NewAggregator[int, int](store, sumFn,
+					msgin.WithOutputChannel(out),
+					msgin.WithReleaseExpr[int]("len(messages) >= 1"))
+				require.NoError(t, err)
+
+				require.NotPanics(t, func() {
+					err = agg.Handle(t.Context(), corrMsg(1, "m1", "g", nil))
+				})
+				require.NoError(t, err)
+				assert.Equal(t, 0, out.count(), "an empty group snapshot never releases")
+			},
+		},
+		{
+			name: "a non-A member in the group snapshot is ErrPayloadType from toGroupEnv (M-6)",
+			assert: func(t *testing.T) {
+				store := &mixedTypeAddStore{}
+				out := &fakeAggChannel{}
+				agg, err := msgin.NewAggregator[int, int](store, sumFn,
+					msgin.WithOutputChannel(out),
+					msgin.WithReleaseExpr[int]("len(messages) >= 1"))
+				require.NoError(t, err)
+
+				err = agg.Handle(t.Context(), corrMsg(1, "m1", "g", nil))
+				assert.ErrorIs(t, err, msgin.ErrPayloadType)
+				assert.Equal(t, 0, out.count())
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) { tc.assert(t) })
+	}
+}
+
+// TestAggregator_ReleaseExprReaperFallThrough covers reapGroup's H-1
+// fall-through: a WithReleaseExpr that ALWAYS errors on this group's data (no
+// "qty" header on its only member) means the group can never complete via the
+// normal release check. Paired with WithGroupTimeout, one reaper tick after
+// the group ages past the timeout must route it to the expired sink instead
+// of busy-spinning claim->error->abandon forever.
+func TestAggregator_ReleaseExprReaperFallThrough(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	clock := clockwork.NewFakeClock()
+	store, err := memory.NewGroupStore(memory.WithGroupClock(clock))
+	require.NoError(t, err)
+	out := &fakeAggChannel{}
+	expired := &fakeAggChannel{}
+	agg, err := msgin.NewAggregator[int, int](store, sumFn,
+		msgin.WithOutputChannel(out),
+		msgin.WithReleaseExpr[int](`messages[0].header("qty") > 0`),
+		msgin.WithGroupTimeout(30*time.Second),
+		msgin.WithExpiredGroupChannel(expired),
+		msgin.WithAggregatorClock(clock),
+	)
+	require.NoError(t, err)
+
+	m1 := corrMsg(1, "m1", "g", nil) // no "qty" header: the release expr always errors on this group
+	err = agg.Handle(t.Context(), m1)
+	require.Error(t, err, "the release-check error propagates from Handle (D14c)")
+	assert.Equal(t, 0, out.count())
+
+	ctx, cancel := context.WithCancel(t.Context())
+	errCh := make(chan error, 1)
+	go func() { errCh <- agg.Run(ctx) }()
+
+	require.NoError(t, clock.BlockUntilContext(t.Context(), 1))
+	clock.Advance(31 * time.Second)
+
+	require.Eventually(t, func() bool { return expired.count() == 1 }, 2*time.Second, 10*time.Millisecond,
+		"H-1: a persistently-erroring release check must fall through to age-expiry, routing the group to the expired sink rather than being stranded")
+	assert.Equal(t, 1, expired.last().Payload())
+	assert.Equal(t, 0, out.count(), "never released via the always-erroring release expr")
+
+	cancel()
+	select {
+	case err := <-errCh:
+		assert.ErrorIs(t, err, context.Canceled)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Aggregator.Run did not return after ctx cancel")
+	}
+
+	// group settled: a fresh member to "g" starts a new (held) group.
+	group, addErr := store.Add(t.Context(), "g", corrMsg(2, "probe", "g", nil))
+	require.NoError(t, addErr)
+	assert.Len(t, group.Messages(), 1, "the reaped group was settled; this starts fresh")
+}
+
+// TestAggregator_ReleaseExprDrainCheckError covers release's drain-loop
+// residual release-check error branch (H-2), newly reachable now that
+// WithReleaseExpr can itself error at eval (WithReleaseStrategy's bool-only
+// wrapper never can): the main group {m1,m2} releases normally, but a
+// residual {m3,m4} formed during its lease has no "qty" header on its first
+// member, so the residual's release check errors. Handle must still return
+// nil (the main member already settled) and the residual must be left live
+// for the reaper/a later Add, not lost.
+func TestAggregator_ReleaseExprDrainCheckError(t *testing.T) {
+	base := newIntStore(t)
+	settling := make(chan struct{})
+	unblock := make(chan struct{})
+	store := &blockingGroupStore{MessageGroupStore: base, settling: settling, unblock: unblock}
+
+	out := &fakeAggChannel{}
+	agg, err := msgin.NewAggregator[int, int](store, sumFn,
+		msgin.WithOutputChannel(out),
+		msgin.WithReleaseExpr[int](`len(messages) >= 2 && messages[0].header("qty") > 0`))
+	require.NoError(t, err)
+
+	m1 := corrMsg(1, "m1", "g", map[string]any{"qty": 1})
+	m2 := corrMsg(2, "m2", "g", map[string]any{"qty": 1})
+	require.NoError(t, agg.Handle(t.Context(), m1))
+
+	handleDone := make(chan error, 1)
+	go func() { handleDone <- agg.Handle(t.Context(), m2) }()
+
+	<-settling // release of {m1,m2} is blocked just before its SettleGroup delegates
+
+	// A residual {m3,m4} forms at the same key while {m1,m2} is under lease;
+	// m3 carries no "qty" header, so the residual's release check errors.
+	m3 := corrMsg(3, "m3", "g", nil)
+	m4 := corrMsg(4, "m4", "g", nil)
+	_, err = base.Add(t.Context(), "g", m3)
+	require.NoError(t, err)
+	_, err = base.Add(t.Context(), "g", m4)
+	require.NoError(t, err)
+
+	close(unblock)
+
+	handleErr := <-handleDone
+	assert.NoError(t, handleErr, "H-2: the drain loop's residual release-check error must be swallowed, not propagated")
+	require.Equal(t, 1, out.count(), "only the main group emits; the errored residual is left live, not aggregated")
+	assert.Equal(t, 3, out.last().Payload())
+
+	// {m3,m4} left live (abandoned): a probe grows it to 3.
+	group, addErr := base.Add(t.Context(), "g", corrMsg(5, "probe", "g", map[string]any{"qty": 1}))
+	require.NoError(t, addErr)
+	assert.Len(t, group.Messages(), 3)
+}
+
+// TestAggregator_ReleaseExprDrainSendError covers release's drain-loop
+// residual releaseOnce-failure branch (H-3) via a Send error rather than the
+// Settle-error flavor TestAggregator_ReleaseDrainLoopReleaseError already
+// covers: the main group {m1,m2} releases and sends fine, but the residual
+// {m3,m4}'s Send (the drain loop's re-release) fails. Handle must still
+// return nil and the residual must be left live for a retry.
+func TestAggregator_ReleaseExprDrainSendError(t *testing.T) {
+	base := newIntStore(t)
+	settling := make(chan struct{})
+	unblock := make(chan struct{})
+	store := &blockingGroupStore{MessageGroupStore: base, settling: settling, unblock: unblock}
+
+	sendErr := errors.New("send boom")
+	out := &failNthChannel{failFrom: 2, err: sendErr}
+	agg, err := msgin.NewAggregator[int, int](store, sumFn,
+		msgin.WithOutputChannel(out),
+		msgin.WithReleaseExpr[int]("len(messages) >= 2"))
+	require.NoError(t, err)
+
+	m1 := corrMsg(1, "m1", "g", nil)
+	m2 := corrMsg(2, "m2", "g", nil)
+	require.NoError(t, agg.Handle(t.Context(), m1))
+
+	handleDone := make(chan error, 1)
+	go func() { handleDone <- agg.Handle(t.Context(), m2) }()
+
+	<-settling // release of {m1,m2} is blocked just before its SettleGroup delegates
+
+	m3 := corrMsg(3, "m3", "g", nil)
+	m4 := corrMsg(4, "m4", "g", nil)
+	_, err = base.Add(t.Context(), "g", m3)
+	require.NoError(t, err)
+	_, err = base.Add(t.Context(), "g", m4)
+	require.NoError(t, err)
+
+	close(unblock) // {m1,m2}'s SettleGroup succeeds; the drain loop's residual Send then fails
+
+	handleErr := <-handleDone
+	assert.NoError(t, handleErr, "H-3: the drain loop's residual releaseOnce failure must be swallowed, not propagated")
+	require.Equal(t, 1, out.sentCount(), "only the main group's aggregate was actually sent; the residual's Send failed")
+	assert.Equal(t, 3, out.lastSent().Payload())
+
+	// {m3,m4} left live (releaseOnce's own defer-abandon-unless-settled ran):
+	// a probe grows it to 3.
+	group, addErr := base.Add(t.Context(), "g", corrMsg(5, "probe", "g", nil))
+	require.NoError(t, addErr)
+	assert.Len(t, group.Messages(), 3)
+}
+
+// TestAggregator_ReleaseDrainLoopTransientClaimError covers release's
+// drain-loop transient ClaimGroup-error swallow branch: the main group
+// {m1,m2} releases and settles normally, but the drain loop's own ClaimGroup
+// call (checking for a residual) fails transiently. Handle must still return
+// nil — the main member already settled, so a non-nil return here would
+// wrongly Nack it.
+func TestAggregator_ReleaseDrainLoopTransientClaimError(t *testing.T) {
+	base := newIntStore(t)
+	claimErr := errors.New("claim boom")
+	store := &failNthClaimStore{MessageGroupStore: base, n: 2, err: claimErr}
+
+	out := &fakeAggChannel{}
+	agg, err := msgin.NewAggregator[int, int](store, sumFn,
+		msgin.WithOutputChannel(out), msgin.WithCompletionSize(2))
+	require.NoError(t, err)
+
+	m1 := corrMsg(1, "m1", "g", nil)
+	m2 := corrMsg(2, "m2", "g", nil)
+	require.NoError(t, agg.Handle(t.Context(), m1))
+	err = agg.Handle(t.Context(), m2)
+	assert.NoError(t, err, "the drain loop's transient ClaimGroup error must be swallowed, not propagated")
+	require.Equal(t, 1, out.count())
+	assert.Equal(t, 3, out.last().Payload())
 }
