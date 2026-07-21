@@ -265,14 +265,28 @@ URL is **caller-configured and never derived from message payload/headers** (SSR
   - `4xx` **except `408`/`429`** → `msgin.Permanent(err)` — a request the runtime must **not** retry (dead-letter /
     invalid-message path); it is the caller's payload/target that is wrong.
   - `5xx`, `408`, `429`, network error, timeout → plain (transient) error — the runtime **retries** per `RetryPolicy`.
-  - **Open point (resolve in Plan 022):** confirm the outbound/`Producer` retry path applies a `RetryPolicy` to
-    `OutboundAdapter.Send`. If it does, this phase adds no adapter-side backoff (keep reliability runtime-owned). If it
-    does **not**, Phase 2 adds a thin producer-side retry rather than baking `cenkalti/backoff` into the adapter — the
-    decision is recorded in ADR 0023, not left implicit.
+  - **Open point RESOLVED (2026-07-21): it does NOT.** `Producer.Send` (`producer.go`) is a bare passthrough to
+    `OutboundAdapter.Send`; `RetryPolicy` lives only in `consumer.go`, governing *inbound* settlement. **The
+    "the runtime retries per `RetryPolicy`" wording above is therefore true only when the send sits inside a
+    Consumer-driven flow** (where a failed handler triggers full message redelivery, replaying prior steps) — a direct
+    `Producer.Send` had no retry at all. The gap is closed at the producer, in core, by
+    [Spec 013](013-producer-outbound-retry.md) / [ADR 0025](../adrs/0025-producer-outbound-retry.md), shipped **jointly
+    with this phase** in [Plan 022](../plans/022-producer-retry-http-outbound.md). ADR 0025 **supersedes ADR 0005's
+    outbound-HTTP clause**: no adapter-side backoff loop, and `cenkalti/backoff` is **not** adopted.
+  - **`Retry-After` (added by Spec 013).** A `429` or `503` carrying `Retry-After` — in either the delay-seconds or the
+    HTTP-date form — is classified as `msgin.RetryAfter(err, d)`, so the producer's retry loop honors the server's
+    instruction over its computed backoff (clamped, and bounded by `ctx`). Without the header it is a plain transient
+    error.
 - **O2 request-reply** — `NewExchange(url, opts…)` **is** an `msgin.RequestReplyExchange`. `Exchange(ctx, req)`:
   `POST` req body → read the **synchronous** HTTP response → build the reply `Message[any]` (body → payload;
   incoming `HeaderCorrelationID` propagated onto the reply so `OutboundGateway`'s save/restore is honored). Drops into
   `Gateway`/`OutboundGateway` (Plan 019) unchanged.
+  - **Bound by the `RequestReplyExchange` no-leak-on-unwind contract** ([Spec 012](012-exchange-panic-safe-cleanup.md)
+    §7 / [ADR 0022 Addendum A3](../adrs/0022-messaging-gateway.md)). `NewExchange` is the **first external
+    implementation** of that SPI and holds its own request-scoped state — an in-flight `*http.Request`, a response body
+    that must be closed — of exactly the class whose leak Spec 012 fixed in `ChannelExchange`. It MUST release that
+    state on **every** exit path including a panic unwind (deferred cleanup), and MUST NOT recover a caller panic into
+    an error return.
   - **Return Address — satisfied by construction.** The reply returns on the **same TCP connection** the sending
     instance holds; no reply arrives at a *different* instance, so the cross-process correlation problem the SPI exists
     to surface (CLAUDE.md multi-instance rule) **does not arise** for synchronous HTTP request-reply. This is stated
