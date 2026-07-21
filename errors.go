@@ -112,7 +112,10 @@ var (
 	// which returns the ctx error.
 	ErrReplyTimeout = errors.New("msgin: timed out awaiting reply")
 
-	// ErrNilExchange is returned by NewGateway when the RequestReplyExchange is nil.
+	// ErrNilExchange is returned by NewGateway when the RequestReplyExchange is
+	// nil. adapter/http/stdlib.NewInboundGateway (the I2 sync inbound gateway
+	// constructor) is a second legitimate caller: it returns this same
+	// sentinel when its exchange argument is nil.
 	ErrNilExchange = errors.New("msgin: request-reply exchange is nil")
 
 	// ErrNilChannel is returned by NewChannelExchange when the request or reply

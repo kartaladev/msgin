@@ -15,6 +15,13 @@ func statusFor(cfg *Config, err error) int {
 	if cfg.errorStatus != nil {
 		return cfg.errorStatus(err)
 	}
+	// Defensive fallback only: every *Config reaching here was built by
+	// NewConfig, which always back-fills a nil WithErrorStatus to
+	// defaultErrorStatus (see NewConfig). So cfg.errorStatus is never nil via
+	// the public API, and this branch is unreachable in practice — it exists
+	// purely as an internal-misuse guard (e.g. a hand-built *Config bypassing
+	// NewConfig) and is intentionally left uncovered by tests rather than
+	// removed (Plan 020 audit m5).
 	return defaultErrorStatus(err)
 }
 

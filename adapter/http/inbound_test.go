@@ -104,6 +104,21 @@ func TestServeAsync(t *testing.T) {
 			},
 		},
 		{
+			name: "WithErrorStatus(nil) after a real mapper does not clobber it",
+			opts: []msghttp.Option{
+				msghttp.WithErrorStatus(func(error) int { return http.StatusTeapot }),
+				msghttp.WithErrorStatus(nil),
+			},
+			handlerErr: errBoom,
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodPost, "/", strings.NewReader("x"))
+			},
+			assert: func(t *testing.T, rec *httptest.ResponseRecorder, sendCalled bool, _ msgin.Message[any]) {
+				assert.Equal(t, http.StatusTeapot, rec.Code, "a later WithErrorStatus(nil) must be a no-op, not clobber the earlier mapper")
+				assert.True(t, sendCalled)
+			},
+		},
+		{
 			name: "oversize body returns 413 and never reaches the target",
 			opts: []msghttp.Option{msghttp.WithMaxBodyBytes(4)},
 			request: func() *http.Request {

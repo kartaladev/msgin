@@ -1,7 +1,9 @@
 package stdlib_test
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -181,4 +183,82 @@ func TestRegister(t *testing.T) {
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	assert.Equal(t, "hello", string(body))
+}
+
+// ExampleNewInbound mounts the I1 async inbound handler on an httptest.Server
+// and POSTs a request to it, printing only the response status — the
+// fire-and-forget handoff has no reply body to show, so a deterministic 202
+// is the whole observable outcome.
+func ExampleNewInbound() {
+	target := msgin.NewDirectChannel()
+	if err := target.Subscribe(msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error {
+		return nil // accept every message
+	})); err != nil {
+		panic(err)
+	}
+
+	h, err := stdlib.NewInbound(target)
+	if err != nil {
+		panic(err)
+	}
+
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL, "text/plain", strings.NewReader("hello"))
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+
+	fmt.Println(resp.StatusCode)
+	// Output: 202
+}
+
+// ExampleNewInboundGateway mounts the I2 sync inbound gateway handler on an
+// httptest.Server, backed by a ChannelExchange whose flow uppercases the
+// request body and forwards it to the reply channel. The activator uses
+// msgin.WithPayload (never msgin.New) so the reply keeps the request's
+// msgin.HeaderCorrelationID — dropping it would leave the reply unmatched to
+// the waiting caller (Plan 019 G6).
+func ExampleNewInboundGateway() {
+	request := msgin.NewDirectChannel()
+	reply := msgin.NewDirectChannel()
+
+	flow := msgin.Chain(
+		msgin.Activate(func(_ context.Context, m msgin.Message[[]byte]) (msgin.Message[[]byte], error) {
+			return msgin.WithPayload(m, bytes.ToUpper(m.Payload())), nil
+		}),
+		msgin.To(reply),
+	)
+	if err := request.Subscribe(flow); err != nil {
+		panic(err)
+	}
+
+	exchange, err := msgin.NewChannelExchange(request, reply)
+	if err != nil {
+		panic(err)
+	}
+	defer exchange.Close()
+
+	h, err := stdlib.NewInboundGateway(exchange)
+	if err != nil {
+		panic(err)
+	}
+
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL, "text/plain", strings.NewReader("hello"))
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(string(body))
+	// Output: HELLO
 }

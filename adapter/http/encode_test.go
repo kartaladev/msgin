@@ -223,6 +223,22 @@ func TestDecodeRequest(t *testing.T) {
 			},
 		},
 		{
+			name: "WithCorrelationID(nil) after a real resolver does not clobber it",
+			opts: []msghttp.Option{
+				msghttp.WithCorrelationID(func(*http.Request) string { return "custom-id" }),
+				msghttp.WithCorrelationID(nil),
+			},
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodPost, "/", strings.NewReader("x"))
+			},
+			assert: func(t *testing.T, msg msgin.Message[any], err error) {
+				require.NoError(t, err)
+				cid, ok := msg.Header(msgin.HeaderCorrelationID)
+				require.True(t, ok)
+				assert.Equal(t, "custom-id", cid, "a later WithCorrelationID(nil) must be a no-op, not clobber the earlier resolver")
+			},
+		},
+		{
 			name: "WithCorrelationID returning empty falls back to msg.ID()",
 			opts: []msghttp.Option{msghttp.WithCorrelationID(func(*http.Request) string { return "" })},
 			request: func() *http.Request {
@@ -303,6 +319,19 @@ func TestEncodeResponse(t *testing.T) {
 			assert: func(t *testing.T, rec *httptest.ResponseRecorder, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, "value1", rec.Header().Get("X-Reply"))
+			},
+		},
+		{
+			name: "allow-listed response header with a non-string value is silently skipped",
+			opts: []msghttp.Option{msghttp.WithResponseHeaders("X-Reply")},
+			msg: func() msgin.Message[any] {
+				return msgin.New[any]([]byte("ok")).WithHeader("X-Reply", 42)
+			},
+			assert: func(t *testing.T, rec *httptest.ResponseRecorder, err error) {
+				require.NoError(t, err)
+				assert.Empty(t, rec.Header().Get("X-Reply"))
+				_, ok := rec.Header()["X-Reply"]
+				assert.False(t, ok, "a non-string allow-listed header value must not be emitted at all")
 			},
 		},
 		{

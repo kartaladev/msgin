@@ -65,9 +65,16 @@ func WithMaxBodyBytes(n int64) Option {
 // with f set, an empty string it returns falls back to the server-minted id
 // rather than producing an empty correlation key.
 //
-// A nil f is a no-op: the default (server-minted) resolution stays in place.
+// A nil f is a no-op: the default (server-minted) resolution stays in place,
+// even if WithCorrelationID(nil) is applied after an earlier WithCorrelationID
+// call in the same Option list — a nil f never clobbers an already-set
+// resolver (mirrors WithLogger's nil-guard).
 func WithCorrelationID(f func(*http.Request) string) Option {
-	return func(c *Config) { c.correlationID = f }
+	return func(c *Config) {
+		if f != nil {
+			c.correlationID = f
+		}
+	}
 }
 
 // WithRequestHeaders sets the allow-list of request header names
@@ -77,7 +84,13 @@ func WithCorrelationID(f func(*http.Request) string) Option {
 // itself an untrusted-input surface (CLAUDE.md untrusted-input boundary); the
 // safe default is opt-in, not implicit passthrough. An allow-list entry
 // naming a reserved msgin.* header is defensively ignored by DecodeRequest —
-// listing one here can never let a client forge a core header.
+// listing one here can never let a client forge a core header. That strip
+// matches case-SENSITIVELY against the reserved constant's exact lowercase
+// spelling (e.g. "msgin.delivery-count"); this is not attacker-exploitable
+// (the allow-list is trusted operator config, not client input, and the
+// incoming header lookup itself is case-insensitive via http.Header.Get), but
+// an allow-list entry must match a reserved constant's exact lowercase
+// casing to be stripped.
 func WithRequestHeaders(headers ...string) Option {
 	return func(c *Config) { c.requestHeaders = headers }
 }
@@ -118,9 +131,16 @@ func WithSuccessStatus(code int) Option {
 // mapping over the msgin.*/msghttp.* sentinels and an oversize
 // *http.MaxBytesError, with any unclassified error mapped to 500.
 //
-// A nil f is a no-op: the default mapping stays in place.
+// A nil f is a no-op: the default mapping stays in place, even if
+// WithErrorStatus(nil) is applied after an earlier WithErrorStatus call in
+// the same Option list — a nil f never clobbers an already-set mapper
+// (mirrors WithLogger's nil-guard).
 func WithErrorStatus(f func(error) int) Option {
-	return func(c *Config) { c.errorStatus = f }
+	return func(c *Config) {
+		if f != nil {
+			c.errorStatus = f
+		}
+	}
 }
 
 // WithLogger injects the structured logger the inbound handler cores use for

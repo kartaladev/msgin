@@ -61,7 +61,7 @@ func (e *decodeError) Unwrap() error { return e.err }
 // stamps a fresh msgin.id and msgin.timestamp.
 //
 // The correlation id (msgin.HeaderCorrelationID) defaults to the message's
-// own server-minted ID(<>) unless cfg's WithCorrelationID resolves a
+// own server-minted ID() unless cfg's WithCorrelationID resolves a
 // non-empty override from r — DecodeRequest never trusts a client-supplied
 // correlation value by default (CLAUDE.md untrusted-input boundary).
 //

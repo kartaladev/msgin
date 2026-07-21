@@ -23,10 +23,10 @@
 // # Phase
 //
 // Phase 1 (this package plus adapter/http/stdlib) ships the two inbound
-// server modes: I1 async inbound and I2 sync request-reply gateway (over any
-// msgin.RequestReplyExchange). This file's siblings land the core building
-// blocks both handlers share — Config/Option/WithX and
-// DecodeRequest/EncodeResponse; the handler cores themselves (ServeAsync,
-// ServeGateway) land in a later increment. Outbound (webhook + client
-// request-reply) and SSE are later phases still (Spec 011 §6).
+// server modes: I1 async inbound (ServeAsync) and I2 sync request-reply
+// gateway (ServeGateway, over any msgin.RequestReplyExchange). This file's
+// siblings hold the Config/Option/WithX surface and DecodeRequest/
+// EncodeResponse both handler cores share, plus the handler cores
+// themselves. Outbound (webhook + client request-reply) and SSE are later
+// phases still (Spec 011 §6).
 package msghttp
