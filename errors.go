@@ -100,4 +100,34 @@ var (
 	// the result). It propagates into the runtime's retry/DLQ path like any eval
 	// error.
 	ErrExprResultType = errors.New("msgin: expression result type mismatch")
+
+	// ErrGatewayClosed is returned by ChannelExchange.Exchange (and any Gateway
+	// built on it) once Close has been called: new exchanges are rejected and
+	// any waiter pending at Close time fails with it. Part of graceful shutdown.
+	ErrGatewayClosed = errors.New("msgin: request-reply exchange is closed")
+
+	// ErrReplyTimeout is returned by Exchange when no correlated reply arrives
+	// before the effective deadline (min of the caller ctx deadline and the
+	// configured reply timeout, default 30s). Distinct from ctx cancellation,
+	// which returns the ctx error.
+	ErrReplyTimeout = errors.New("msgin: timed out awaiting reply")
+
+	// ErrNilExchange is returned by NewGateway when the RequestReplyExchange is nil.
+	ErrNilExchange = errors.New("msgin: request-reply exchange is nil")
+
+	// ErrNilChannel is returned by NewChannelExchange when the request or reply
+	// MessageChannel is nil.
+	ErrNilChannel = errors.New("msgin: request or reply channel is nil")
+
+	// ErrInvalidReplyTimeout is returned by NewChannelExchange when an explicit
+	// WithReplyTimeout is set to a non-positive duration. An unset timeout takes
+	// the 30s default and never yields this error.
+	ErrInvalidReplyTimeout = errors.New("msgin: reply timeout must be > 0")
+
+	// ErrDuplicateCorrelation is returned by Exchange when the request's
+	// HeaderCorrelationID already has an in-flight request registered on the same
+	// exchange (audit G1). Correlation ids must be unique per concurrent
+	// in-flight request; the gateway façades mint a fresh id so they never trigger
+	// this — it guards direct ChannelExchange users who set the header by hand.
+	ErrDuplicateCorrelation = errors.New("msgin: correlation id already has an in-flight request")
 )

@@ -87,6 +87,17 @@ func (h Headers) with(key string, v any) Headers {
 	return Headers{m: nm}
 }
 
+// without returns a copy with key removed (copy-on-write; used by
+// Message.WithoutHeader). Removing an absent key returns an equivalent copy.
+func (h Headers) without(key string) Headers {
+	if _, ok := h.m[key]; !ok {
+		return Headers{m: maps.Clone(h.m)}
+	}
+	nm := maps.Clone(h.m)
+	delete(nm, key)
+	return Headers{m: nm}
+}
+
 // Message is the immutable EIP envelope: a typed payload plus header
 // metadata. Every Message is stamped with a msgin.id and msgin.timestamp by
 // New; transformers and enrichers return a new Message rather than mutating
@@ -201,4 +212,12 @@ func (m Message[T]) ID() string {
 // leaving the receiver unchanged (copy-on-write).
 func (m Message[T]) WithHeader(key string, v any) Message[T] {
 	return Message[T]{payload: m.payload, headers: m.headers.with(key, v)}
+}
+
+// WithoutHeader returns a copy of the message with key removed from its headers,
+// leaving the receiver unchanged (copy-on-write). Removing an absent key is a
+// no-op copy. Used by OutboundGateway to strip a transient correlation id when
+// the inbound message carried none.
+func (m Message[T]) WithoutHeader(key string) Message[T] {
+	return Message[T]{payload: m.payload, headers: m.headers.without(key)}
 }

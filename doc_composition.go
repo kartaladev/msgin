@@ -55,4 +55,14 @@
 // struct, so the result type these forms project or fan out into is
 // realistically a scalar/slice/map/named-field type, not an arbitrary struct
 // (the struct-B ceiling; use the Go-func form to project into a struct).
+//
+// Messaging Gateway (Spec 010 / ADR 0022). Gateway and OutboundGateway are the
+// request-reply members of the composition set, both built over the shared
+// RequestReplyExchange SPI. The inbound Gateway[Req, Rep] is the
+// application-facing entry point: Request turns a Req into a message, drives
+// it through the exchange, and returns the correlated Rep. OutboundGateway is
+// the in-flow counterpart — a Step that performs the exchange mid-flow and
+// forwards the reply to next, saving and restoring the message's
+// HeaderCorrelationID around a fresh per-exchange id so an upstream split/
+// aggregate group key survives the round-trip.
 package msgin
