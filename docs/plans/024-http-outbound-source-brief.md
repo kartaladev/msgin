@@ -437,7 +437,7 @@ succeeds; body closed on success / on non-2xx / on panic unwind; ctx cancellable
   Aggregator. **Fix:** seed the reply from the request's headers (`req.Headers().All()` is an `iter.Seq2`,
   `message.go:69`; `msgin.NewHeaders`/`msgin.WithHeaders` take a `map[string]any`) and then overlay the
   response-derived ones. Decide explicitly which reserved request headers are re-stamped vs. carried
-  (`msgin.id`/`msgin.timestamp` should be fresh).
+  (`msgin.message-id`/`msgin.timestamp` should be fresh).
 - **D6.4 — the Gateway integration test is wrong on three counts. VERIFIED.**
   - `Gateway` exposes **`Request(ctx, req Req) (Rep, error)`** (`gateway.go:64`), **not `Exchange`**.
   - `Request` takes a **raw `Req`**, not a `msgin.Message[Req]`; it mints the correlation id itself
@@ -513,7 +513,7 @@ as `WithTrustedCorrelationID` (`options.go:173-219`) is the awkward opt-in on th
 
 **D. Reply header provenance.** (D6.3)
 **Recommend: seed the reply from the request's headers**, then overlay response-derived ones, re-stamping
-`msgin.id`/`msgin.timestamp` fresh and preserving `msgin.correlation-id` + any sequence headers. Add a branch-table row
+`msgin.message-id`/`msgin.timestamp` fresh and preserving `msgin.correlation-id` + any sequence headers. Add a branch-table row
 proving a Splitter sequence header survives an `OutboundGateway` hop. Alternative (status quo) loses Aggregator
 correctness silently — reject it.
 

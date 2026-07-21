@@ -128,7 +128,7 @@ func TestSplit_SequenceHeaders(t *testing.T) {
 		{
 			name: "WithPayload children: distinct deterministic ids, parent-id correlation, 1-based seq",
 			// The documented construction path: WithPayload copies the parent's
-			// headers (incl. HeaderID), so Split MUST overwrite each child id.
+			// headers (incl. HeaderMessageID), so Split MUST overwrite each child id.
 			fn: func(_ context.Context, m msgin.Message[int]) ([]msgin.Message[int], error) {
 				return []msgin.Message[int]{msgin.WithPayload(m, 1), msgin.WithPayload(m, 2)}, nil
 			},

@@ -91,7 +91,7 @@ CREATE TABLE msgin_group_member (
   rows, so the late member survives as a fresh live group. Deleting by `group_key` alone would silently lose it.
 - **Message ids are required (audit R1 H3).** Members are keyed `PRIMARY KEY(group_key, msg_id)`, so id-less members
   (`msg_id=""`) collapse to a single row — durable aggregation therefore **requires message ids** (documented on
-  `NewGroupStore`). This is not a real restriction: source-delivered messages carry `HeaderID`, and the Splitter
+  `NewGroupStore`). This is not a real restriction: source-delivered messages carry `HeaderMessageID`, and the Splitter
   stamps a deterministic `parentID#seq` child id (ADR 0020 §1). `AddMember` rejects an empty `msgID` with a typed
   error rather than silently collapsing. (The in-process `memory.GroupStore` tolerates id-less members via its
   prefix-length fence, but without idempotent-`Add`-by-id redelivery dedup — ADR 0020 §8.)

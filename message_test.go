@@ -201,7 +201,7 @@ func TestNew_WithHeaders(t *testing.T) {
 	clk := clockwork.NewFakeClockAt(time.Unix(500, 0))
 	m := msgin.New("body", msgin.WithClock(clk), msgin.WithID("explicit-id"), msgin.WithHeaders(map[string]any{
 		"custom":              "v",
-		msgin.HeaderID:        "attacker-id",
+		msgin.HeaderMessageID: "attacker-id",
 		msgin.HeaderTimestamp: time.Unix(1, 0),
 	}))
 
@@ -227,7 +227,7 @@ func TestNew_WithHeaders(t *testing.T) {
 			v, ok := h.String("custom")
 			assert.True(t, ok)
 			assert.Equal(t, "v", v)
-			id, ok := h.String(msgin.HeaderID)
+			id, ok := h.String(msgin.HeaderMessageID)
 			assert.True(t, ok)
 			assert.Equal(t, "explicit-id", id)
 		}},
@@ -244,7 +244,7 @@ func TestNewMessage_PreservesHeadersWithoutRestamping(t *testing.T) {
 	// storage: an explicit id, timestamp, and custom key already present.
 	ts := time.Unix(1000, 0)
 	headers := msgin.NewHeaders(map[string]any{
-		msgin.HeaderID:        "stored-id",
+		msgin.HeaderMessageID: "stored-id",
 		msgin.HeaderTimestamp: ts,
 		"x-custom":            "trace-42",
 	})
@@ -283,19 +283,19 @@ func TestNewMessage_PreservesHeadersWithoutRestamping(t *testing.T) {
 
 // TestNewMessage_NoStampContrastWithNew pins the behavioral contrast between
 // NewMessage (reconstruct verbatim, no stamping) and New (produce with a fresh
-// stamped id): NewMessage given empty Headers carries NO msgin.id, whereas New
+// stamped id): NewMessage given empty Headers carries NO msgin.message-id, whereas New
 // always stamps one.
 func TestNewMessage_NoStampContrastWithNew(t *testing.T) {
 	t.Parallel()
 
 	reconstructed := msgin.NewMessage("body", msgin.NewHeaders(nil))
-	_, hasID := reconstructed.Header(msgin.HeaderID)
-	assert.False(t, hasID, "NewMessage must not stamp msgin.id")
+	_, hasID := reconstructed.Header(msgin.HeaderMessageID)
+	assert.False(t, hasID, "NewMessage must not stamp msgin.message-id")
 	_, hasTS := reconstructed.Header(msgin.HeaderTimestamp)
 	assert.False(t, hasTS, "NewMessage must not stamp msgin.timestamp")
 
 	produced := msgin.New("body")
-	assert.NotEmpty(t, produced.ID(), "New always stamps a msgin.id for contrast")
+	assert.NotEmpty(t, produced.ID(), "New always stamps a msgin.message-id for contrast")
 }
 
 func TestMessage_ZeroValue_WithHeader(t *testing.T) {

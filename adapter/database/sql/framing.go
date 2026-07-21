@@ -25,7 +25,7 @@ import (
 //     each written as a JSON number and restored to an int by DecodeHeaders
 //     (ADR 0021 §2 M-1).
 //
-// All other keys — the reserved string keys (msgin.id, msgin.content-type,
+// All other keys — the reserved string keys (msgin.message-id, msgin.content-type,
 // msgin.correlation-id) and any custom keys — are marshaled as-is; a numeric
 // custom value therefore returns as float64 (the standard encoding/json
 // behavior). A value JSON cannot marshal (a channel, a func) surfaces as an

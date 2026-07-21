@@ -101,7 +101,7 @@ func RunOutbox(t *testing.T, kit TestKit, db *sql.DB) {
 				require.NoError(t, err)
 
 				msg := msgin.NewMessage[any](any([]byte(`"atomicity-payload"`)),
-					msgin.NewHeaders(map[string]any{msgin.HeaderID: "atomic-1"}))
+					msgin.NewHeaders(map[string]any{msgin.HeaderMessageID: "atomic-1"}))
 				require.NoError(t, out.Send(txCtx, msg), "Send must enlist the outbox INSERT in the caller's tx")
 
 				require.NoError(t, tc.finalize(tx))
@@ -131,7 +131,7 @@ func RunOutbox(t *testing.T, kit TestKit, db *sql.DB) {
 		txCtx := outboxWithTx(ctx, tx)
 
 		msg := msgin.NewMessage[any](any([]byte(`"commit-gate-payload"`)),
-			msgin.NewHeaders(map[string]any{msgin.HeaderID: "commit-gate-1"}))
+			msgin.NewHeaders(map[string]any{msgin.HeaderMessageID: "commit-gate-1"}))
 		require.NoError(t, out.Send(txCtx, msg))
 
 		uncommittedDeliveries, err := src.Poll(ctx, 10)
@@ -220,7 +220,7 @@ func RunOutbox(t *testing.T, kit TestKit, db *sql.DB) {
 				out, logs := tc.build(t, table)
 
 				msg := msgin.NewMessage[any](any([]byte(`"policy-payload"`)),
-					msgin.NewHeaders(map[string]any{msgin.HeaderID: "policy-1"}))
+					msgin.NewHeaders(map[string]any{msgin.HeaderMessageID: "policy-1"}))
 				// ctx carries no tx (outboxWithTx was never applied), so any
 				// configured resolver either errors or reports "no shared transaction".
 				sendErr := out.Send(ctx, msg)
@@ -244,7 +244,7 @@ func RunOutbox(t *testing.T, kit TestKit, db *sql.DB) {
 		txCtx := outboxWithTx(ctx, tx)
 
 		msg := msgin.NewMessage[any](any([]byte(`"borrow-payload"`)),
-			msgin.NewHeaders(map[string]any{msgin.HeaderID: "borrow-1"}))
+			msgin.NewHeaders(map[string]any{msgin.HeaderMessageID: "borrow-1"}))
 		require.NoError(t, out.Send(txCtx, msg))
 
 		_, err = tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s (id) VALUES (2)", kit.Quote(bizTable)))

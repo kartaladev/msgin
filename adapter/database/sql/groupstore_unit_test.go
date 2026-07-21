@@ -120,7 +120,7 @@ func TestNewGroupStore_Construction(t *testing.T) {
 	}
 }
 
-// TestGroupStore_Add covers Add's guard branches (empty msgin.id ->
+// TestGroupStore_Add covers Add's guard branches (empty msgin.message-id ->
 // ErrMissingMsgID BEFORE any dialect call; a non-[]byte payload ->
 // ErrInvalidPayload) and the happy path: headers+payload framed via
 // EncodeHeaders and delegated to AddMember, returning a MessageGroup decoded
@@ -134,7 +134,7 @@ func TestGroupStore_Add(t *testing.T) {
 		store, err := msginsql.NewGroupStore(openDB(t, fakeDriverName), "groups", fd)
 		require.NoError(t, err)
 
-		// NewMessage (not New) so no msgin.id is stamped — the guard under test.
+		// NewMessage (not New) so no msgin.message-id is stamped — the guard under test.
 		msg := msgin.NewMessage[any]([]byte("p"), msgin.NewHeaders(nil))
 		_, err = store.Add(t.Context(), "corr-1", msg)
 		require.ErrorIs(t, err, msginsql.ErrMissingMsgID)

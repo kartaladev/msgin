@@ -71,7 +71,7 @@ built to receive. Building it raises four architectural questions the one-way st
 ### 2. `Message` ⇄ HTTP mapping and the type-agnostic boundary (ADR 0001)
 
 - **Request → `Message[any]`**: the request is *external input entering the system*, so it is built with **`msgin.New`**
-  (fresh `HeaderID` + timestamp), **not** `NewMessage` (which is for reconstructing a stored msgin envelope verbatim).
+  (fresh `HeaderMessageID` + timestamp), **not** `NewMessage` (which is for reconstructing a stored msgin envelope verbatim).
   Payload = request body as **`[]byte`**; ~~`HeaderContentType` ← `Content-Type`~~ (⚠️ **superseded by
   [Addendum A1](#a1--the-client-never-chooses-the-response-media-type-security)**: the client's `Content-Type` lands on
   the non-reserved `http.content-type`); method/path/query recorded under non-reserved `http.*` header keys; only
@@ -97,7 +97,7 @@ built to receive. Building it raises four architectural questions the one-way st
   other→500 (server/wiring faults — the adapter always mints a non-empty id, so `ErrNoCorrelation` is not a client
   error; audit L2). Overridable via `WithErrorStatus`.
 - **Reserved-header stripping**: client-supplied headers whose key has the reserved **`msgin.`** prefix are removed
-  before construction, so a client cannot forge `msgin.correlation-id`, `msgin.id`, `msgin.delivery-count`, etc.
+  before construction, so a client cannot forge `msgin.correlation-id`, `msgin.message-id`, `msgin.delivery-count`, etc.
 
 ### 3. Per-mode → existing core SPI (the pattern core does not change)
 

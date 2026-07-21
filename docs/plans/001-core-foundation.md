@@ -43,7 +43,7 @@
 - Test: `message_test.go`
 
 **Interfaces:**
-- Produces: `type Headers` (opaque, immutable); `func (Headers) Get(key string) (any, bool)`; `func (Headers) String(key string) (string, bool)`; `func (Headers) Int(key string) (int, bool)`; `func (Headers) Time(key string) (time.Time, bool)`; `func (Headers) All() iter.Seq2[string, any]`; reserved-key consts `HeaderID = "msgin.id"`, `HeaderTimestamp = "msgin.timestamp"`, `HeaderContentType = "msgin.content-type"`, `HeaderCorrelationID = "msgin.correlation-id"`, `HeaderDeliveryCount = "msgin.delivery-count"`.
+- Produces: `type Headers` (opaque, immutable); `func (Headers) Get(key string) (any, bool)`; `func (Headers) String(key string) (string, bool)`; `func (Headers) Int(key string) (int, bool)`; `func (Headers) Time(key string) (time.Time, bool)`; `func (Headers) All() iter.Seq2[string, any]`; reserved-key consts `HeaderMessageID = "msgin.message-id"`, `HeaderTimestamp = "msgin.timestamp"`, `HeaderContentType = "msgin.content-type"`, `HeaderCorrelationID = "msgin.correlation-id"`, `HeaderDeliveryCount = "msgin.delivery-count"`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -130,7 +130,7 @@ import (
 
 // Reserved header keys live under the "msgin." namespace.
 const (
-	HeaderID            = "msgin.id"
+	HeaderMessageID     = "msgin.message-id"
 	HeaderTimestamp     = "msgin.timestamp"
 	HeaderContentType   = "msgin.content-type"
 	HeaderCorrelationID = "msgin.correlation-id"
@@ -296,7 +296,7 @@ git commit -m "feat: exported error sentinels" -m "Spec: 001" -m "ADR: 0002"
 - Test: `message_test.go` (append)
 
 **Interfaces:**
-- Consumes: `Headers` (Task 1), `HeaderID`/`HeaderTimestamp` consts.
+- Consumes: `Headers` (Task 1), `HeaderMessageID`/`HeaderTimestamp` consts.
 - Produces: `type Message[T any]`; `func New[T any](payload T, opts ...MessageOption) Message[T]`; methods `Payload() T`, `ID() string`, `Header(key string) (any, bool)`, `Headers() Headers`, `WithHeader(key string, v any) Message[T]`; `type MessageOption`; `func WithClock(c clockwork.Clock) MessageOption`; `func WithID(id string) MessageOption`; `func WithHeaders(m map[string]any) MessageOption`.
 
 - [ ] **Step 1: Write the failing test**
@@ -386,13 +386,13 @@ type MessageOption func(*msgConfig)
 // WithClock injects the clock used to stamp msgin.timestamp (default: real clock).
 func WithClock(c clockwork.Clock) MessageOption { return func(o *msgConfig) { o.clock = c } }
 
-// WithID sets an explicit msgin.id (default: a random 128-bit hex id).
+// WithID sets an explicit msgin.message-id (default: a random 128-bit hex id).
 func WithID(id string) MessageOption { return func(o *msgConfig) { o.id = id } }
 
 // WithHeaders seeds additional headers.
 func WithHeaders(m map[string]any) MessageOption { return func(o *msgConfig) { o.headers = m } }
 
-// New builds an immutable Message, always stamping msgin.id and msgin.timestamp.
+// New builds an immutable Message, always stamping msgin.message-id and msgin.timestamp.
 func New[T any](payload T, opts ...MessageOption) Message[T] {
 	cfg := msgConfig{clock: clockwork.NewRealClock()}
 	for _, opt := range opts {
@@ -405,7 +405,7 @@ func New[T any](payload T, opts ...MessageOption) Message[T] {
 	if cfg.id == "" {
 		cfg.id = randomID()
 	}
-	m[HeaderID] = cfg.id
+	m[HeaderMessageID] = cfg.id
 	m[HeaderTimestamp] = cfg.clock.Now()
 	return Message[T]{payload: payload, headers: Headers{m: m}}
 }
@@ -421,7 +421,7 @@ func (m Message[T]) Headers() Headers           { return m.headers }
 func (m Message[T]) Header(k string) (any, bool) { return m.headers.Get(k) }
 
 func (m Message[T]) ID() string {
-	id, _ := m.headers.String(HeaderID)
+	id, _ := m.headers.String(HeaderMessageID)
 	return id
 }
 

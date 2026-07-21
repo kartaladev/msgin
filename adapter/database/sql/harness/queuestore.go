@@ -34,7 +34,7 @@ func RunQueueStore(t *testing.T, kit TestKit, db *sql.DB) {
 
 	enqueue := func(t *testing.T, ctx context.Context, s *msginsql.QueueStore, id string, payload []byte) {
 		t.Helper()
-		msg := msgin.NewMessage[any](any(payload), msgin.NewHeaders(map[string]any{msgin.HeaderID: id}))
+		msg := msgin.NewMessage[any](any(payload), msgin.NewHeaders(map[string]any{msgin.HeaderMessageID: id}))
 		require.NoError(t, s.Enqueue(ctx, msg))
 	}
 

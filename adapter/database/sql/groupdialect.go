@@ -95,7 +95,7 @@ type ClaimedGroup struct {
 // Members are keyed (group_key, msg_id): AddMember rejects an empty msgID with
 // a typed error (audit R1 H3) rather than silently colliding id-less members
 // into one row. Durable aggregation therefore requires message ids — source
-// deliveries carry msgin.HeaderID and the Splitter stamps a deterministic
+// deliveries carry msgin.HeaderMessageID and the Splitter stamps a deterministic
 // child id, so this is not a real-world restriction (ADR 0021 §2).
 //
 // A dialect author implementing GroupDialect for a new engine or

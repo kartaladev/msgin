@@ -92,7 +92,7 @@ type Message[T any] struct {
     headers Headers
 }
 
-func New[T any](payload T, opts ...MessageOption) Message[T] // sets msgin.id + msgin.timestamp
+func New[T any](payload T, opts ...MessageOption) Message[T] // sets msgin.message-id + msgin.timestamp
 func (m Message[T]) Payload() T                 { return m.payload }
 func (m Message[T]) ID() string                 { return m.headers.id }
 func (m Message[T]) Header(key string) (any, bool)
@@ -100,7 +100,7 @@ func (m Message[T]) WithHeader(key string, v any) Message[T] // copy-on-write; r
 func (m Message[T]) Headers() iter.Seq2[string, any]         // read-only iteration (no mutable map handed out)
 
 // Headers is an immutable metadata set with typed accessors. Reserved keys ("msgin." namespace):
-//   msgin.id, msgin.timestamp, msgin.content-type, msgin.correlation-id, msgin.delivery-count
+//   msgin.message-id, msgin.timestamp, msgin.content-type, msgin.correlation-id, msgin.delivery-count
 type Headers struct { /* unexported backing map + id/timestamp */ }
 func (h Headers) String(key string) (string, bool)
 func (h Headers) Int(key string) (int, bool)
@@ -113,7 +113,7 @@ read by the whole worker pool (or a future pub-sub broadcast) with no copy and n
 `go test -race` stays clean. Immutability is **shallow**, so the documented contract is that a
 reference-typed payload `T` or reference-typed header *value* (a slice/map/pointer) must be treated as
 **read-only** by handlers once sent — the library does not deep-copy it (audit NF-15). The injected
-`clockwork.Clock` (ADR 0004) stamps `msgin.timestamp`; `New` always sets a stable `msgin.id`.
+`clockwork.Clock` (ADR 0004) stamps `msgin.timestamp`; `New` always sets a stable `msgin.message-id`.
 
 ## 5. Caller-facing API (Layer 1, typed)
 
@@ -451,7 +451,7 @@ type BackoffStrategy interface { Delay(attempt int) time.Duration } // stateless
       read/write timeouts by default.
   - **Outbound** → `OutboundAdapter`: POSTs each message to a URL (webhook); transient failures
     (`5xx`, network) retried with **cenkalti/backoff**, honoring `Retry-After` on `429`; receiver
-    idempotency via `msgin.id`.
+    idempotency via `msgin.message-id`.
 
 **Delivery guarantee is a documented, tested contract per adapter** (§11), not an implied behavior.
 

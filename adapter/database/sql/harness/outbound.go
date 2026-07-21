@@ -60,7 +60,7 @@ func RunOutbound(t *testing.T, kit TestKit, db *sql.DB) {
 
 		decoded, err := msginsql.DecodeHeaders(headers)
 		require.NoError(t, err)
-		gotID, hasID := decoded.String(msgin.HeaderID)
+		gotID, hasID := decoded.String(msgin.HeaderMessageID)
 		require.True(t, hasID)
 		require.Equal(t, "prod-1", gotID)
 		custom, hasCustom := decoded.String("custom")
@@ -221,7 +221,7 @@ func RunOutbound(t *testing.T, kit TestKit, db *sql.DB) {
 
 				decoded, err := msginsql.DecodeHeaders(headers)
 				require.NoError(t, err)
-				gotID, _ := decoded.String(msgin.HeaderID)
+				gotID, _ := decoded.String(msgin.HeaderMessageID)
 				require.Equal(t, "poison-1", gotID)
 
 				var gotPayload string
@@ -240,7 +240,7 @@ func RunOutbound(t *testing.T, kit TestKit, db *sql.DB) {
 		require.ErrorIs(t, out.Ready(ctx), msginsql.ErrSchemaNotReady)
 
 		msg := msgin.NewMessage[any](any([]byte(`"payload"`)),
-			msgin.NewHeaders(map[string]any{msgin.HeaderID: "missing-1"}))
+			msgin.NewHeaders(map[string]any{msgin.HeaderMessageID: "missing-1"}))
 
 		sendErr := out.Send(ctx, msg)
 		require.ErrorIs(t, sendErr, msginsql.ErrSchemaNotReady)
@@ -258,7 +258,7 @@ func RunOutbound(t *testing.T, kit TestKit, db *sql.DB) {
 			{
 				name: "non-[]byte payload returns ErrInvalidPayload",
 				msg: msgin.NewMessage[any](any("not-bytes"),
-					msgin.NewHeaders(map[string]any{msgin.HeaderID: "bad-payload-1"})),
+					msgin.NewHeaders(map[string]any{msgin.HeaderMessageID: "bad-payload-1"})),
 				assert: func(t *testing.T, err error) {
 					require.ErrorIs(t, err, msginsql.ErrInvalidPayload)
 				},
@@ -266,7 +266,7 @@ func RunOutbound(t *testing.T, kit TestKit, db *sql.DB) {
 			{
 				name: "unencodable header value fails framing",
 				msg: msgin.NewMessage[any](any([]byte("ok")),
-					msgin.NewHeaders(map[string]any{msgin.HeaderID: "bad-header-1", "custom": make(chan int)})),
+					msgin.NewHeaders(map[string]any{msgin.HeaderMessageID: "bad-header-1", "custom": make(chan int)})),
 				assert: func(t *testing.T, err error) {
 					require.Error(t, err)
 					require.NotErrorIs(t, err, msginsql.ErrInvalidPayload)

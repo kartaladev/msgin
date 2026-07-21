@@ -58,7 +58,7 @@ on top later without breaking the SPI — the same layering Spring Integration u
   `BRPOP` / NATS push / pgx `LISTEN` stream.
 - **Guaranteed Delivery + Transactional Client + Idempotent Receiver** → the reliability model: per-
   adapter **at-least-once vs at-most-once** contracts, ack/nack, and consumer-side idempotency via a
-  stable `msgin.id`.
+  stable `msgin.message-id`.
 - **Invalid Message Channel + Dead Letter Channel** → the runtime's **invalid-message** path (malformed
   / permanent errors) and **dead-letter** path (retries exhausted).
 - **Competing Consumers** → the worker pool (`WithConcurrency(N)`): each message to exactly one worker.

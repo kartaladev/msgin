@@ -237,15 +237,15 @@ git commit -m "$(printf 'feat(core): Split — Splitter endpoint core forwarding
 
 Stamp `HeaderSequenceNumber`/`HeaderSequenceSize` on every child, assign each child a **deterministic-yet-unique id** derived from the parent (`parentID#seq`), and set `HeaderCorrelationID` to the parent's id **only when the child has none**.
 
-**Why child-id stamping is here (audit H-1):** the canonical way to build a child is `WithPayload(parent, x)`, which copies the parent's headers **verbatim including `HeaderID`** — so *all N children would share the parent's id*. The Phase-2 Aggregator dedups group members by `msg.ID()`, so identical child ids would collapse the group to one member and it would **never release** (silent data loss). Random ids (`New`) would instead break idempotency across a source redelivery. The fix — a deterministic id `parentID + "#" + seq` — is unique within one split (the group fills to N) *and* reproducible across a redelivery of the same parent (the Aggregator's idempotent `Add` recognizes the members). This identity contract is born in the Splitter, so it is fixed here in Phase 1.
+**Why child-id stamping is here (audit H-1):** the canonical way to build a child is `WithPayload(parent, x)`, which copies the parent's headers **verbatim including `HeaderMessageID`** — so *all N children would share the parent's id*. The Phase-2 Aggregator dedups group members by `msg.ID()`, so identical child ids would collapse the group to one member and it would **never release** (silent data loss). Random ids (`New`) would instead break idempotency across a source redelivery. The fix — a deterministic id `parentID + "#" + seq` — is unique within one split (the group fills to N) *and* reproducible across a redelivery of the same parent (the Aggregator's idempotent `Add` recognizes the members). This identity contract is born in the Splitter, so it is fixed here in Phase 1.
 
 **Files:**
 - Modify: `splitter.go` (add `stampSequence`; import `strconv`; call it in the forward loop)
 - Test: `splitter_test.go` (add `TestSplit_SequenceHeaders`)
 
 **Interfaces:**
-- Consumes: `Message.WithHeader`, `Message.Header`, `Message.ID`, `HeaderID`, `HeaderCorrelationID`, `HeaderSequenceNumber`, `HeaderSequenceSize`, `WithPayload`.
-- Produces: private `func stampSequence[B any](child Message[B], parent Message[any], num, size int) Message[B]` (implementation detail; not exported) — stamps sequence number/size, a deterministic child `HeaderID`, and the correlation-id fallback.
+- Consumes: `Message.WithHeader`, `Message.Header`, `Message.ID`, `HeaderMessageID`, `HeaderCorrelationID`, `HeaderSequenceNumber`, `HeaderSequenceSize`, `WithPayload`.
+- Produces: private `func stampSequence[B any](child Message[B], parent Message[any], num, size int) Message[B]` (implementation detail; not exported) — stamps sequence number/size, a deterministic child `HeaderMessageID`, and the correlation-id fallback.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -262,7 +262,7 @@ func TestSplit_SequenceHeaders(t *testing.T) {
 		{
 			name: "WithPayload children: distinct deterministic ids, parent-id correlation, 1-based seq",
 			// The documented construction path: WithPayload copies the parent's
-			// headers (incl. HeaderID), so Split MUST overwrite each child id.
+			// headers (incl. HeaderMessageID), so Split MUST overwrite each child id.
 			fn: func(_ context.Context, m msgin.Message[int]) ([]msgin.Message[int], error) {
 				return []msgin.Message[int]{msgin.WithPayload(m, 1), msgin.WithPayload(m, 2)}, nil
 			},
@@ -364,7 +364,7 @@ with the now-shipped behavior:
 ```go
 // Each child is stamped for reassembly by a downstream Aggregator:
 // HeaderSequenceNumber (1-based) and HeaderSequenceSize (N); a deterministic
-// child id (HeaderID = parentID#seq — unique within the split yet stable across
+// child id (HeaderMessageID = parentID#seq — unique within the split yet stable across
 // a redelivery of the same parent, so the Aggregator's id-dedup holds); and
 // HeaderCorrelationID set to the parent's id UNLESS the child already carries a
 // correlation id (a caller-set/inherited one is preserved). With these, a
@@ -376,7 +376,7 @@ Then add the helper:
 ```go
 // stampSequence returns child stamped for reassembly by a downstream Aggregator:
 //   - HeaderSequenceNumber (1-based num) and HeaderSequenceSize (total).
-//   - A deterministic child HeaderID = parentID#num (only when the parent has an
+//   - A deterministic child HeaderMessageID = parentID#num (only when the parent has an
 //     id). It is unique within one split (so the group fills to size) AND stable
 //     across a redelivery of the same parent (so the Aggregator's id-dedup
 //     upholds at-least-once). This overwrites the id WithPayload copied from the
@@ -392,7 +392,7 @@ func stampSequence[B any](child Message[B], parent Message[any], num, size int) 
 	out := child.WithHeader(HeaderSequenceNumber, num).WithHeader(HeaderSequenceSize, size)
 	pid := parent.ID()
 	if pid != "" {
-		out = out.WithHeader(HeaderID, pid+"#"+strconv.Itoa(num))
+		out = out.WithHeader(HeaderMessageID, pid+"#"+strconv.Itoa(num))
 		if _, ok := out.Header(HeaderCorrelationID); !ok {
 			out = out.WithHeader(HeaderCorrelationID, pid)
 		}
@@ -559,7 +559,7 @@ git commit -m "$(printf 'test(core): Split mid-child error propagation + Example
 **Round 2 verdict: SOUND-WITH-NITS — implement.** The re-audit (Opus) verified every round-1 fix against the real `message.go`/`payload.go`/`framing.go`/`consumer.go`: the `parentID#seq` id scheme is provably collision-free (injective — the final segment is always a bare decimal), overwrites the `WithPayload`-inherited id as intended, keeps the round-trip idempotent across redelivery, and disturbs nothing in the Consumer's id-keyed retry/limiter/breaker/tracker path (children never re-enter the delivery loop). The only nit — **L-1**: Task 1's committed godoc over-promised stamping that lands in Task 2 — is folded (Task 1 godoc trimmed to a forward-reference; Task 2 restores the full godoc). No round-3 needed.
 
 Round-1 adversarial audit (Opus, verified against the real API + sql framing) found the compile/Example mechanics sound but flagged identity/durability contracts. Folded here:
-- **H-1 (child identity)** → Task 2 now stamps a deterministic child `HeaderID = parentID#seq` (unique within a split so the group fills; stable across redelivery so the Aggregator's id-dedup holds). Without it, `WithPayload` children all share the parent id and the group never releases (silent loss). Tests build children via `WithPayload` (the documented path) + an idempotent re-split case.
+- **H-1 (child identity)** → Task 2 now stamps a deterministic child `HeaderMessageID = parentID#seq` (unique within a split so the group fills; stable across redelivery so the Aggregator's id-dedup holds). Without it, `WithPayload` children all share the parent id and the group never releases (silent loss). Tests build children via `WithPayload` (the documented path) + an idempotent re-split case.
 - **M-1 (int headers on sql)** → recorded as a cross-phase contract in ADR 0020 §2/§5 and Spec D2/D8: the default release reads `HeaderSequenceSize` number-tolerantly and `sql.DecodeHeaders` restores the two sequence headers to `int` (Phase 3/ADR 0021). No Phase-1 code change.
 - **M-2 (coverage + wrong test path)** → `TestSplit_SequenceHeaders` now uses `WithPayload`, covers the id-less-parent branch (`parent.ID()==""`), and asserts idempotent re-split ids.
 - **L-1** Example dead `Chain(split)` scaffold removed. **L-2** mid-child test relabeled a characterization lock (no fake-red). **L-3** inherited-correlation semantics documented in the godoc + covered by a test case.

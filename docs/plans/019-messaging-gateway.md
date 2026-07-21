@@ -587,7 +587,7 @@ func (g *Gateway[Req, Rep]) Request(ctx context.Context, req Req) (Rep, error) {
 }
 ```
 
-Note: `New(req)` stamps a fresh `HeaderID`; `WithHeader(HeaderCorrelationID, randomID())` adds a distinct correlation id (kept separate from the message id so a caller-visible id and the reply-correlation key are not conflated). `randomID()` is the existing unexported generator in `message.go`.
+Note: `New(req)` stamps a fresh `HeaderMessageID`; `WithHeader(HeaderCorrelationID, randomID())` adds a distinct correlation id (kept separate from the message id so a caller-visible id and the reply-correlation key are not conflated). `randomID()` is the existing unexported generator in `message.go`.
 
 - [ ] **Step 4: Run to verify it passes.** `GOTOOLCHAIN=go1.25.12 go test . -run 'TestGateway|TestNewGateway' -race` → PASS. Then `-cover` + `go vet ./...`.
 
