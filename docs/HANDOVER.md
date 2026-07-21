@@ -1,123 +1,111 @@
 # HANDOVER — msgin
 
 > **Next session: read this first, then trust the referenced files over any memory.** Read, in order:
-> `CLAUDE.md`, then for the active increment: `docs/specs/009-splitter-aggregator-endpoints.md` (§3.4),
-> `docs/adrs/0020-splitter-aggregator-group-store.md` (§8), `docs/adrs/0021-sql-group-store.md`, and
-> `docs/plans/017-sql-group-store.md`. The SDD ledger `.superpowers/sdd/progress.md` (gitignored, local) holds
+> `CLAUDE.md`, then — since Spec 009 is now fully shipped — the governing artifacts for whatever the next
+> increment is (see "Next actions"). For the just-shipped Phase 4: `docs/specs/009-splitter-aggregator-endpoints.md`
+> (§3.5 D12–D14), `docs/adrs/0019-runtime-expression-evaluation.md` (the "Addendum (2026-07-21)"), and
+> `docs/plans/018-expr-sugar.md`. The SDD ledger `.superpowers/sdd/progress.md` (gitignored, local) holds
 > per-task history — trust it + `git log` over memory.
 
-## LATEST: Phase 3 (`sql.GroupStore`, Plan 017) SHIPPED, MERGED to `main` (`c7eb673`, `--no-ff`) and PUSHED to origin; `feat/sql-groupstore` deleted. Whole-branch gate PASSED — `/code-review` high (0 Critical/Important; 2 low triaged: decodeGroupRows poison-group has no dead-letter escape [needs externally-corrupt DB bytes; conservative all-or-nothing decode documented], compile-only `Example_sqlGroupStore` nil-db panic is unreachable since Go never runs a no-Output example); `/security-review` clean (SQL injection-guarded via `ValidateIdent`+bound params, `DecodeHeaders` stock `encoding/json`, no secrets/crypto/auth surface); full `-race`/vet/lint(0)/gofmt/CGO0/tidy/govulncheck green incl the 4-engine testcontainers conformance. Design was **4-rounds adversarially audited (SOUND-WITH-NITS)** before any code. **NEXT = Phase 4 (expr sugar, Plan 018 / ADR 0019 addendum) — not started.** Deferred backlog: decodeGroupRows dead-letter-after-N escape; the two Task-review polish Minors already folded.
+## LATEST: Phase 4 (expr sugar, Plan 018) SHIPPED, MERGED to `main` (`e7ef491`, `--no-ff`), and PUSHED to origin; `feat/expr-sugar` deleted. **Spec 009 (Splitter + Aggregator + durable group store + expr sugar) is now COMPLETE — all four phases shipped.** Whole-branch gate PASSED — whole-branch Opus review (code 8-angles + security): **0 Critical / 0 Important**; the audit-critical release-`(bool,error)` refactor verified correct + behavior-preserving; security clean (pure in-process expr-over-Go-values, no new unsafe surface, expr posture = ADR 0019 §6 accepted). Two non-blocking Minors triaged to backlog (see below). Design was **2-round Opus-audited (SOUND-WITH-NITS, all folded)** + an isolated expr v1.17.8 compile+run spike before any code.
 
 ## Where we are (2026-07-21)
 
-Executing **Spec 009** — Splitter + Aggregator endpoints (+ durable group store, + expr sugar) — a **4-phase**
-increment. Phases each get their own plan + ADR + 2-round adversarial audit + SDD + whole-branch gate.
+**Spec 009 fully delivered.** All four phases merged to `main` and pushed:
+- **Phase 1 — Splitter (Plan 015):** merged `e4b346d`.
+- **Phase 2 — Aggregator + `MessageGroupStore` SPI + `memory.GroupStore` (Plan 016):** merged `94cda1f`.
+- **Phase 3 — `sql.GroupStore` durable multi-process (Plan 017 / ADR 0021 + ADR 0020 §8):** merged `c7eb673`.
+- **Phase 4 — expr sugar (Plan 018 / ADR 0019 addendum):** merged `e7ef491` (this session), pushed.
 
-- **Phase 1 — Splitter (Plan 015): DONE & MERGED to `main`** (merge `e4b346d`, `--no-ff`). Branch `feat/splitter`
-  deleted. **`main` is NOT pushed** — `git push origin main` awaits explicit user approval.
-- **Phase 2 — Aggregator (Plan 016): SHIPPED & MERGED to `main`** (`94cda1f`, `--no-ff`) and PUSHED; `feat/aggregator`
-  deleted. Shipped: `MessageGroupStore` SPI (Phase-2 shape, since superseded), `memory.GroupStore`,
-  `NewAggregator[A,B]`/`Handle`/`Run(ctx)` reaper, sharded per-key lock (also since superseded).
-- **Phase 3 — `sql.GroupStore` (Plan 017 / ADR 0021 + the ADR 0020 §8 revision): SHIPPED & MERGED to `main`
-  (`c7eb673`, `--no-ff`) and PUSHED; `feat/sql-groupstore` deleted.** Branch commits (now on main via the merge):
-  `c481ece` (core SPI reshape + Aggregator claim rework + memory rework), `3f02f0e` (GroupDialect SPI + sql facade +
-  sequence-header int framing), `5b2d680` (per-engine dialects + 4-engine conformance), `c27990e` (chore: go mod
-  tidy — expr indirect), `668672d` (Example + review-polish + docs finalize). Reopened the Phase-2 settlement into a
-  store-level lease-claim (`ClaimGroup`/`SettleGroup`/`AbandonGroup`, claim tags a member set, fenced by epoch) that
-  serializes both within AND across processes; the per-key `[256]sync.Mutex` was removed. See "What shipped in
-  Phase 3" below.
-- **Phase 4 (expr sugar, Plan 018 / ADR 0019 addendum): NOT STARTED — this is the next increment.** Full expr sugar
-  `TransformExpr[A,B]` / `SplitExpr[A]` / aggregator `WithCorrelationExpr`/`WithReleaseExpr`/aggregate-by-expr,
-  reusing the `compile[A]` primitive (Spec 008 / ADR 0019); no DB, no new dependency (expr already in-core). Start a
-  fresh design cycle: spec-delta (Spec 009 §3.5 D12–D14 already sketches it) → ADR 0019 addendum → Plan 018 →
-  2-round adversarial audit → SDD → whole-branch gate → merge.
+`origin/main == main == <the push HEAD>` (see "Exact state").
 
-## What shipped in Phase 3 (for a fresh session with zero context)
+## What shipped in Phase 4 (for a fresh session with zero context)
 
-- **Core (`groupstore.go`, `aggregator.go`):** `MessageGroupStore` SPI reshaped — `Remove` replaced by
-  `ClaimGroup(ctx, key) (MessageGroupClaim, error)` / `SettleGroup(ctx, claim) error` /
-  `AbandonGroup(ctx, claim) error`, plus `Expired`/`RecoverInterval`/`EmitsLiveValue` unchanged in shape.
-  `Aggregator.Handle` reworked to claim-before-send; the per-key lock is gone (the store's atomic claim is now the
-  sole serializer). `memory.GroupStore` reworked to the same lease shape (unconditional in-process lease, no TTL,
-  `RecoverInterval()==0`).
-- **`adapter/database/sql` (root module):** `GroupDialect` — a new segregated SPI (like `InboxDialect`) — plus
-  `groupstore.go`'s `GroupStore` facade: `NewGroupStore(db, table, dialect, opts ...GroupStoreOption)`. Options:
-  `WithGroupLeaseTTL` (default 5m, matches the Source's default — NOT a tighter value, see its godoc for why),
-  `WithGroupLockedBy`. `framing.go`'s `EncodeHeaders`/`DecodeHeaders` extended so
-  `msgin.sequence-number`/`msgin.sequence-size` round-trip losslessly as `int` (ADR 0021 §2 M-1).
-- **Per-engine dialects (`postgres`/`mysql`/`sqlite` submodules):** `GroupDialect()` + `GroupDDL(table)` each,
-  implementing the two-table schema (`<table>` group-lease row + `<table>_member` append-only member rows,
-  `claimed_epoch NULL` = live). Postgres/MySQL use `SELECT ... FOR UPDATE` / row locking inside a tx; SQLite has no
-  `FOR UPDATE`, so its multi-statement ops run on a dedicated `*sql.Conn` via raw `BEGIN IMMEDIATE`/`COMMIT`
-  (`sqlite/groupdialect.go`'s `withImmediateConn`).
-- **`harness/groupstore.go`'s `RunGroupStore`:** the full contract conformance suite, run against real
-  Postgres/MySQL/MariaDB/SQLite containers via `dbtest`. Covers idempotent `Add`, exclusive `ClaimGroup`, fenced
-  `Settle`/`Abandon`, late-member survival + `created_at` reset, crashed-lease `Expired`, cross-connection races
-  (`ConcurrentFirstAddCompletionDetection_H1`, `TwoConnectionClaimRace`, `StaleEpochCrashRecovery_H2`), the
-  crash-mid-release reaper recovery proof (`CrashMidReleaseReEmitsToOutput_HA` — now also asserts the recovered
-  group's expired-channel count is 0, not just outCount==1), and a deadlock-freedom stress test
-  (`NoDeadlockUnderConcurrentAddSettle_HB`).
-- **Example:** `adapter/database/sql/postgres/example_sql_groupstore_test.go` — `Example_memoryGroupStore`
-  (Output-checked, runs with no container, shows `go agg.Run(ctx)`) and `Example_sqlGroupStore` (compile-only, no
-  `Output:` comment so `go test` never executes it — shows the durable `msginsql.NewGroupStore(db, "msgin_group",
-  postgres.GroupDialect())` swap and reiterates why `Run` is required for that store's crash-recovery).
+Four additive expr surfaces in the core `msgin` package, reusing the in-core `expr-lang/expr` engine — **no DB, no new
+dependency** (`go mod tidy` leaves `go.mod`/`go.sum` unchanged). All in `expr.go` (+ a small `aggregator.go` seam):
+
+- **`TransformExpr[A, B any](expression string) (Step, error)`** — projection expr over `{payload, header(k)}`,
+  result asserted to B (non-B → `ErrExprResultType`), wrapped via `WithPayload`; delegates to the existing
+  `Transform`. Adds an `exprAny` compile output kind (no `AsBool`/`AsKind`).
+- **`SplitExpr[A, B any](expression string) (Step, error)`** — expr → slice, each element asserted to B, forwarded
+  through the shared `forwardSplit` helper (extracted from `Split`, so sequence headers / `parentID#seq` id /
+  correlation are stamped identically). Non-slice/non-B → `ErrExprResultType`.
+- **`WithCorrelationExpr[A any](expression string) AggregatorOption`** — correlation key by expr (`exprString`
+  compile); empty key → `Permanent(ErrNoCorrelation)` (symmetry with `defaultCorrelate`).
+- **`WithReleaseExpr[A any](expression string) AggregatorOption`** — bool release over a NEW group-scoped env
+  `groupExprEnv[A]{Messages []exprMember[A]{payload, header(k)}, Size int}` (a per-member VIEW, not raw
+  `Message[A]`). Canonical form is **size-gated**: `size > 0 && len(messages) >= size`.
+- **New sentinel `ErrExprResultType`** (eval-time result-type mismatch). Expr options report compile errors through
+  `NewAggregator` via `aggregatorConfig.optErr` (first-error-wins) → `ErrInvalidExpression`, surfaced before
+  `ErrNilOutput`/`ErrExpiryChannelRequired`.
+- **Internal release strategy evolved to `func(MessageGroup) (bool, error)`** (public `WithReleaseStrategy(func(
+  MessageGroup) bool)` UNCHANGED, wrapped). This landed three audit-mandated correctness fixes in the shipped
+  release/reaper paths: **H-1** (`reapGroup` release-error falls through to age-expiry, not early-return), **H-2/H-3**
+  (the drain loop is best-effort after the main settle — ALL post-settle exits return nil; a non-nil return would
+  Nack an already-settled member → idempotent re-Add → a second aggregate / double-count). Only the top-level
+  `releaseOnce` failure still propagates. A shipped Phase-3 test that had enshrined the H-3 bug
+  (`TestAggregator_ReleaseDrainLoopReleaseError`, asserted `ErrorIs`) was corrected to assert the swallow (`NoError`).
+
+**Aggregate-by-expr is DEFERRED** (Spec 009 §2 / §3.5 D14): expr cannot build an arbitrary struct and the aggregate
+fn is a required constructor arg, so it would need a separate `NewAggregatorExpr` for scalar/slice/map results only —
+non-breaking to add later.
 
 ## Exact state
 
-- **`main` @ `c7eb673`** (the Phase-3 `--no-ff` merge) and **PUSHED to origin** (`b509db6..c7eb673`). Branch
-  `feat/sql-groupstore` **deleted** (was never on the remote). Working tree clean except the pre-existing
+- **`main` @ `e7ef491`** (the Phase-4 `--no-ff` merge) — pushed to origin (see below). Branch `feat/expr-sugar`
+  **deleted** (local; never pushed to the remote). Working tree clean except the pre-existing
   `M .claude/settings.json` (unrelated, NEVER stage).
-- Phase-3 commits now on `main` via the merge: `c481ece` (core SPI reshape + Aggregator + memory) → `3f02f0e`
-  (GroupDialect SPI + sql facade + framing) → `5b2d680` (per-engine dialects + 4-engine conformance) → `c27990e`
-  (chore: go mod tidy — expr indirect) → `668672d` (Example + review-polish + docs finalize).
-- **Phase 1's `main` is now pushed too** (this push carried the whole history forward), so the long-standing
-  "Phase 1 unpushed" caveat from prior handovers is resolved — `origin/main == main == c7eb673`.
+- Phase-4 commits now on `main` via the merge: `7647e1f` (TransformExpr + exprAny + ErrExprResultType + design docs)
+  → `50ab31b` (SplitExpr + forwardSplit) → `be4a859` (release `(bool,error)` refactor + H-1/H-2/H-3) → `cffdb2d`
+  (WithCorrelationExpr / WithReleaseExpr + group env + optErr) → `5b2a6f8` (examples + package doc).
+- **API additive** (5 new exported symbols); `WithReleaseStrategy` signature unchanged → **minor SemVer**; **no new
+  dependency**. `msgin` has no release tag yet — the tag itself is the distribution when a release is cut.
 
 ## Traceability pointers (read first)
 
 - `CLAUDE.md` — workflow/gates (SDD, 2-round audit, table-test/goleak/testcontainers, Go 1.25 `GOTOOLCHAIN=go1.25.12`).
-- `docs/specs/009-splitter-aggregator-endpoints.md` — §3.4 (Phase 3, revised); §3.6 D16 (Phase-2 guarantee,
-  superseded pointer added this session); §8 open items (O9-6 nested correlation, still open/deferred).
-- `docs/adrs/0020-splitter-aggregator-group-store.md` — §8 (Phase-3 revision: SPI reshape, supersedes §2/§3).
-- `docs/adrs/0021-sql-group-store.md` — the full `sql.GroupStore` design: schema, `GroupDialect`, safe defaults,
-  4-round audit history.
-- `docs/plans/017-sql-group-store.md` — the Phase-3 plan (4 tasks, all done). Task 4's brief:
-  `.superpowers/sdd/task-4-brief.md`; its report (this session): `.superpowers/sdd/task-4-report.md`.
+- `docs/specs/009-splitter-aggregator-endpoints.md` — §3.5 (Phase 4, D12–D14; O9-4 resolved dual-param); §2 (aggregate-by-expr deferred).
+- `docs/adrs/0019-runtime-expression-evaluation.md` — the "Addendum (2026-07-21)" (A1–A4): surfaces, the two `compile`
+  extensions, the per-member view env, and the A3 "Per-call-site error policy" (H-1/H-2/H-3, poison-member M-5).
+- `docs/plans/018-expr-sugar.md` — the Phase-4 plan (5 tasks, all done) + the two audit-fold sections.
 
 ## Next actions (resume here)
 
-Phase 3 is DONE, merged, and pushed — nothing outstanding on it. The next increment is **Phase 4 (expr sugar)**:
+Spec 009 is DONE. There is no active in-flight increment. Candidate next increments (each starts a FRESH design
+cycle: brainstorm → spec → ADR → plan → 2-round adversarial Opus audit → **ask the user before implementation** →
+SDD → whole-branch gate → merge):
 
-1. **Fresh design cycle for Phase 4** (Plan 018 / ADR 0019 addendum). Scope: `TransformExpr[A,B]` (payload
-   projection → asserted to B), `SplitExpr[A]` (expr → slice → Phase-1 Split machinery), and the aggregator exprs
-   `WithCorrelationExpr[A]` / `WithReleaseExpr` / aggregate-by-expr over a fixed group-scoped env
-   `{messages []A, size int}`. Reuses the `compile[A]` primitive (Spec 008 / ADR 0019); a bad expr is
-   `ErrInvalidExpression` at construction. **No DB, no new dependency** (`expr-lang/expr` already in-core).
-2. Follow the mandatory workflow: brainstorm → spec-delta (Spec 009 §3.5 D12–D14 already sketches it) → ADR 0019
-   addendum → Plan 018 → **2-round (min) adversarial Opus audit of spec+ADR+plan** → **ask the user before any
-   implementation** → SDD (fresh implementer per task, coordinator verifies+commits, adversarial reviewer) →
-   whole-branch `/code-review`+`/security-review` gate → merge.
-3. Backlog (deferred, not blocking Phase 4): `decodeGroupRows` dead-letter-after-N-reclaims escape for a
-   poison/corrupt-header group (`/code-review` low finding — needs externally-corrupt DB bytes; low priority);
-   O9-6 nested-correlation godoc note; Resequencer/other group-store backends (redis/pgx/nats).
+1. **Messaging Gateway** — the synchronous request-reply bridge; Spec 003 §2 named it as the increment after
+   Splitter/Aggregator. Likely the natural next EIP endpoint.
+2. **Resequencer** — the order-restoring sibling of the Aggregator (Spec 009 §2 non-goal); the sequence headers
+   Phase 1 stamps make it a clean addition.
+3. **Other group-store backends** — `redis`/`pgx`/`nats` `MessageGroupStore` (the SPI is the seam; Spec 009 §2).
+4. **Aggregate-by-expr** — `NewAggregatorExpr[A,B]` for scalar/slice/map aggregates (deferred, non-breaking).
+
+## Backlog (deferred, not blocking anything)
+
+- **Phase-4 Minor (triaged, backlog):** `compileGroup` duplicates `compile`'s ~8-line trim/`expr.Compile`/wrap
+  boilerplate — extract a `compileProgram(expression, opts...)` helper (behavior-identical, self-contained).
+- **Phase-4 Minor (accepted, no change):** `WithReleaseExpr` is O(n) per `Add` / O(n²) per group (the documented L-3
+  trade-off; recommend the Go-func `WithReleaseStrategy` for large groups).
+- **From Phase 3:** `decodeGroupRows` fails the whole call on one undecodable stored member header (poison group, no
+  dead-letter-after-N escape) — needs externally-corrupt DB bytes; low priority.
+- **From Phase 2:** O9-6 nested-correlation godoc note.
 
 ## Gotchas / environment
 
-- Go 1.25: prefix every go cmd with `GOTOOLCHAIN=go1.25.12`. `golangci-lint`/`govulncheck` needed for the gate
-  (govulncheck may be at `$(go env GOPATH)/bin/govulncheck`). The local default toolchain is newer (1.26) —
-  `go.work` pins 1.25.0; do not let a stray `go` invocation silently build on 1.26+.
-- Blackbox `_test` packages only; assert-closure tables; `t.Context()`; `goleak` on the reaper/dbtest `TestMain`;
-  `clockwork` fake clock for time. Core must NOT import `adapter/memory` or any `adapter/database/sql/*`
-  (dependency-inward) — the new `example_sql_groupstore_test.go` lives in the `postgres` SUBMODULE precisely to
-  respect this (it can import core `msgin` + `adapter/memory` + `adapter/database/sql`, but the CORE module itself
-  never imports postgres).
-- The 4-engine conformance (`dbtest` module) needs Docker running locally (testcontainers); it's part of the
-  `-race` gate.
-- Reserved headers: `HeaderSequenceNumber`/`HeaderSequenceSize` (int, and now also proven to round-trip through
-  the sql JSON header framing per this session's `framing.go` godoc fix). `Split` stamps a deterministic child id
-  `parentID#seq` + `HeaderCorrelationID` = parent id.
+- Go 1.25: prefix every go cmd with `GOTOOLCHAIN=go1.25.12`. `golangci-lint` (2.12.2) / `govulncheck`
+  (`~/go/bin/govulncheck`) needed for the gate. `go.work` pins 1.25.0; the local default toolchain is newer (1.26) —
+  do not let a stray `go` invocation silently build on 1.26+.
+- Blackbox `_test` packages only; assert-closure tables; `t.Context()`; `goleak` on the reaper; `clockwork` fake
+  clock for time. Phase 4 touches ONLY the core module (`./`) — the 4-engine `dbtest` conformance (needs Docker) is
+  unaffected but is still part of the full `-race` gate.
+- expr surface: `expr-lang/expr` is in-core (ADR 0019). New expr endpoints share the `compile[A]` primitive and the
+  `exprEnv[A]` (`{payload, header(k)}`) / `groupExprEnv[A]` (`{messages, size}`) envs. Reserved: expr's known
+  no-time-budget / no-ctx-cancellation gap is documented on every new godoc — operator/config-authored expressions
+  only, not untrusted end-user input.
 - SDD helper scripts: `~/.claude/plugins/cache/claude-plugins-official/superpowers/6.1.1/skills/subagent-driven-development/scripts/{task-brief,review-package}`.
 
-_Updated 2026-07-21: Phase 3 (`sql.GroupStore`, Plan 017) SHIPPED — merged to `main` (`c7eb673`, `--no-ff`) and
-pushed to origin; `feat/sql-groupstore` deleted; whole-branch `/code-review`+`/security-review` gate passed. Next
-increment: Phase 4 (expr sugar, Plan 018 / ADR 0019 addendum) — not started._
+_Updated 2026-07-21: Phase 4 (expr sugar, Plan 018) SHIPPED — merged to `main` (`e7ef491`, `--no-ff`) and pushed to
+origin; `feat/expr-sugar` deleted; whole-branch gate passed (0 Critical/Important). Spec 009 fully complete. Next
+increment: a fresh design cycle (Messaging Gateway / Resequencer / other group-store backends — user's choice)._
