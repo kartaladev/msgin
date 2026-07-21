@@ -21,6 +21,28 @@ import (
 // WithErrorStatus mapper overrides it.
 var errBoom = errors.New("boom: send failed")
 
+// fakeExchange is a minimal msgin.RequestReplyExchange test double that
+// returns a canned reply/err from every Exchange call, used to drive
+// ServeGateway's error->status mapping for each gateway sentinel without
+// wiring a full ChannelExchange round-trip per case.
+type fakeExchange struct {
+	reply msgin.Message[any]
+	err   error
+}
+
+func (f fakeExchange) Exchange(context.Context, msgin.Message[any]) (msgin.Message[any], error) {
+	return f.reply, f.err
+}
+
+// panicExchange is a msgin.RequestReplyExchange whose Exchange panics if
+// called — used to prove ServeGateway short-circuits on a DecodeRequest
+// failure and never reaches the exchange.
+type panicExchange struct{}
+
+func (panicExchange) Exchange(context.Context, msgin.Message[any]) (msgin.Message[any], error) {
+	panic("ServeGateway must not call Exchange on a decode error")
+}
+
 func TestServeAsync(t *testing.T) {
 	t.Parallel()
 
@@ -141,6 +163,169 @@ func TestServeAsync(t *testing.T) {
 			msghttp.ServeAsync(rec, tc.request(), target, cfg)
 
 			tc.assert(t, rec, sendCalled, captured)
+		})
+	}
+}
+
+func TestServeGateway(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name     string
+		opts     []msghttp.Option
+		exchange func(t *testing.T) msgin.RequestReplyExchange
+		request  func() *http.Request
+		assert   func(t *testing.T, rec *httptest.ResponseRecorder)
+	}
+
+	cases := []testCase{
+		{
+			name: "real ChannelExchange echo round-trip returns 200 with the request body",
+			exchange: func(t *testing.T) msgin.RequestReplyExchange {
+				t.Helper()
+				request := msgin.NewDirectChannel()
+				reply := msgin.NewDirectChannel()
+				require.NoError(t, request.Subscribe(msgin.Chain(msgin.To(reply))))
+				x, err := msgin.NewChannelExchange(request, reply)
+				require.NoError(t, err)
+				t.Cleanup(func() { assert.NoError(t, x.Close()) })
+				return x
+			},
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodPost, "/", strings.NewReader("hello gateway"))
+			},
+			assert: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				assert.Equal(t, http.StatusOK, rec.Code)
+				assert.Equal(t, "hello gateway", rec.Body.String())
+			},
+		},
+		{
+			name: "ErrReplyTimeout maps to 504",
+			exchange: func(*testing.T) msgin.RequestReplyExchange {
+				return fakeExchange{err: msgin.ErrReplyTimeout}
+			},
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodPost, "/", strings.NewReader("x"))
+			},
+			assert: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				assert.Equal(t, http.StatusGatewayTimeout, rec.Code)
+			},
+		},
+		{
+			name: "ErrGatewayClosed maps to 503",
+			exchange: func(*testing.T) msgin.RequestReplyExchange {
+				return fakeExchange{err: msgin.ErrGatewayClosed}
+			},
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodPost, "/", strings.NewReader("x"))
+			},
+			assert: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+			},
+		},
+		{
+			name: "ErrDuplicateCorrelation maps to 409",
+			exchange: func(*testing.T) msgin.RequestReplyExchange {
+				return fakeExchange{err: msgin.ErrDuplicateCorrelation}
+			},
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodPost, "/", strings.NewReader("x"))
+			},
+			assert: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				assert.Equal(t, http.StatusConflict, rec.Code)
+			},
+		},
+		{
+			name: "ErrNoCorrelation maps to 500",
+			exchange: func(*testing.T) msgin.RequestReplyExchange {
+				return fakeExchange{err: msgin.ErrNoCorrelation}
+			},
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodPost, "/", strings.NewReader("x"))
+			},
+			assert: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				assert.Equal(t, http.StatusInternalServerError, rec.Code)
+			},
+		},
+		{
+			name: "a generic exchange error maps to 500",
+			exchange: func(*testing.T) msgin.RequestReplyExchange {
+				return fakeExchange{err: errBoom}
+			},
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodPost, "/", strings.NewReader("x"))
+			},
+			assert: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				assert.Equal(t, http.StatusInternalServerError, rec.Code)
+			},
+		},
+		{
+			name: "a non-bytes reply payload maps to 500 with an empty body and no leaked headers",
+			opts: []msghttp.Option{msghttp.WithResponseHeaders("X-Secret")},
+			exchange: func(*testing.T) msgin.RequestReplyExchange {
+				reply := msgin.New[any](42, msgin.WithHeaders(map[string]any{"X-Secret": "leak-me"}))
+				return fakeExchange{reply: reply}
+			},
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodPost, "/", strings.NewReader("x"))
+			},
+			assert: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				assert.Equal(t, http.StatusInternalServerError, rec.Code)
+				assert.Zero(t, rec.Body.Len())
+				assert.Empty(t, rec.Header().Get("X-Secret"))
+			},
+		},
+		{
+			name: "WithErrorStatus custom mapper overrides an exchange error to 418",
+			opts: []msghttp.Option{msghttp.WithErrorStatus(func(error) int { return http.StatusTeapot })},
+			exchange: func(*testing.T) msgin.RequestReplyExchange {
+				return fakeExchange{err: errBoom}
+			},
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodPost, "/", strings.NewReader("x"))
+			},
+			assert: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				assert.Equal(t, http.StatusTeapot, rec.Code)
+			},
+		},
+		{
+			name: "oversize body returns 413 and never reaches the exchange",
+			opts: []msghttp.Option{msghttp.WithMaxBodyBytes(4)},
+			exchange: func(*testing.T) msgin.RequestReplyExchange {
+				return panicExchange{}
+			},
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodPost, "/", strings.NewReader("hello"))
+			},
+			assert: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+			},
+		},
+		{
+			name: "a non-oversize decode error returns 400 and never reaches the exchange",
+			exchange: func(*testing.T) msgin.RequestReplyExchange {
+				return panicExchange{}
+			},
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodPost, "/", errReader{})
+			},
+			assert: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				assert.Equal(t, http.StatusBadRequest, rec.Code)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, err := msghttp.NewConfig(tc.opts...)
+			require.NoError(t, err)
+
+			rec := httptest.NewRecorder()
+			msghttp.ServeGateway(rec, tc.request(), tc.exchange(t), cfg)
+
+			tc.assert(t, rec)
 		})
 	}
 }
