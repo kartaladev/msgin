@@ -28,6 +28,60 @@ var (
 	ErrNoDeadLetter = errors.New("msgin: finite MaxAttempts requires a DeadLetter sink")
 	// ErrInvalidMaxAttempts is returned when a RetryPolicy's MaxAttempts is negative.
 	ErrInvalidMaxAttempts = errors.New("msgin: MaxAttempts must be >= 0")
+
+	// ErrInvalidRetryAfterCap is returned by NewProducer when an explicit
+	// WithProducerRetryAfterCap is <= 0. Leaving the option unset takes the
+	// documented default instead of reaching this error (the set-flag pattern,
+	// as in WithMaxInFlight/WithAttemptTTL): only an explicit non-positive value
+	// is rejected, so a caller mistake is a construction error rather than a
+	// silently-disabled clamp.
+	ErrInvalidRetryAfterCap = errors.New("msgin: retry-after cap must be > 0")
+
+	// ErrInvalidRetryBudget is returned by NewProducer when an explicit
+	// WithProducerRetryBudget is <= 0. As with the cap, the unset case takes the
+	// documented default; only an explicit non-positive value is an error.
+	ErrInvalidRetryBudget = errors.New("msgin: retry budget must be > 0")
+
+	// ErrUnboundedRetry is returned by NewProducer for a producer RetryPolicy
+	// that is unbounded in BOTH dimensions: MaxAttempts == 0 (retry forever) with
+	// a nil Backoff (no delay). That combination — which is exactly the valid
+	// RetryPolicy zero value — is a zero-delay infinite loop on the CALLER'S
+	// goroutine, so the producer rejects it at construction. It stays valid on
+	// NewConsumer, where "retry forever, immediately" means broker redelivery,
+	// not a spin. Set a MaxAttempts (with a DeadLetter) or a Backoff, or both.
+	ErrUnboundedRetry = errors.New("msgin: producer retry policy must bound attempts or delay")
+
+	// ErrRetryBudgetExhausted is joined onto the error returned by Producer.Send
+	// when the retry loop stopped because the next wait would have overrun
+	// WithProducerRetryBudget, rather than because MaxAttempts was spent. The
+	// budget always applies — including to a finite MaxAttempts — so this
+	// sentinel is what stops it silently truncating an explicit attempt count:
+	// errors.Is(err, ErrRetryBudgetExhausted) says "the policy wanted more time
+	// than the caller allowed", which is a different operational signal from
+	// "we tried N times and gave up".
+	ErrRetryBudgetExhausted = errors.New("msgin: retry budget exhausted before attempts were spent")
+
+	// ErrInvalidDeadLetterTimeout is returned by NewProducer when an explicit
+	// WithProducerDeadLetterTimeout is <= 0. The unset case takes the documented
+	// 30-second default; there is deliberately no "no timeout" value, because the
+	// divert runs on a ctx detached from the caller's and an unbounded detached
+	// call can block the caller's goroutine forever.
+	ErrInvalidDeadLetterTimeout = errors.New("msgin: dead-letter timeout must be > 0")
+
+	// ErrDeadLettered is joined onto the error returned by Producer.Send when the
+	// retry loop ended — because attempts were spent, because the retry budget
+	// was exhausted, or because ctx was cancelled during a backoff wait — AND the
+	// message was successfully diverted to the policy's DeadLetter sink. It lets
+	// a caller tell "the message is safely in the DLQ" from "the send failed
+	// outright" — errors.Is(err, ErrDeadLettered) — while the causing error stays
+	// matchable through the same wrap chain.
+	//
+	// The guarantee is scoped to errors PRODUCED BY THIS PRODUCER. Being an
+	// exported sentinel, nothing stops a third-party OutboundAdapter from wrapping
+	// it into an error of its own, so errors.Is(err, ErrDeadLettered) on an error
+	// that did not come out of Producer.Send proves nothing. Do not use it as an
+	// authorization or audit primitive.
+	ErrDeadLettered = errors.New("msgin: message diverted to the dead-letter sink")
 	// ErrInvalidMaxInFlight is returned when WithMaxInFlight is given n < 1.
 	ErrInvalidMaxInFlight = errors.New("msgin: max in-flight must be >= 1")
 	// ErrInvalidRateLimit is returned when a rate-limit configuration is invalid
