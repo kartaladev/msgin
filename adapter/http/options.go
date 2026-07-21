@@ -85,7 +85,7 @@ func (c *Config) errStatus() func(error) int {
 	return c.errorStatus
 }
 
-// advisoryCorrelationID is the WithCorrelationID resolver, or nil.
+// advisoryCorrelationID is the WithAdvisoryCorrelationID resolver, or nil.
 func (c *Config) advisoryCorrelationID() func(*http.Request) string {
 	if c == nil {
 		return nil
@@ -146,11 +146,11 @@ func WithMaxBodyBytes(n int64) Option {
 	}
 }
 
-// WithCorrelationID sets a resolver for the client's ADVISORY correlation id:
-// f is called with the inbound *http.Request and, when it returns a non-empty
-// value, DecodeRequest records that value on the message's non-reserved
-// "http.correlation-id" header for the flow to read, log, or echo back.
-// Default: nil — no advisory header is added.
+// WithAdvisoryCorrelationID sets a resolver for the client's ADVISORY
+// correlation id: f is called with the inbound *http.Request and, when it
+// returns a non-empty value, DecodeRequest records that value on the
+// message's non-reserved "http.correlation-id" header for the flow to read,
+// log, or echo back. Default: nil — no advisory header is added.
 //
 // It does NOT influence msgin.HeaderCorrelationID, the key a
 // msgin.RequestReplyExchange correlates the reply on: that key is always the
@@ -160,8 +160,9 @@ func WithMaxBodyBytes(n int64) Option {
 // for callers who genuinely need client-keyed correlation).
 //
 // A nil f is a no-op: it never clobbers a resolver set by an earlier
-// WithCorrelationID in the same Option list (mirrors WithLogger's nil-guard).
-func WithCorrelationID(f func(*http.Request) string) Option {
+// WithAdvisoryCorrelationID in the same Option list (mirrors WithLogger's
+// nil-guard).
+func WithAdvisoryCorrelationID(f func(*http.Request) string) Option {
 	return func(c *Config) {
 		if f != nil {
 			c.correlationID = f
@@ -192,14 +193,14 @@ func WithCorrelationID(f func(*http.Request) string) Option {
 // not a sequential or user-derived id such as "user-42-req-1") and SINGLE-USE
 // per client, and when the endpoint is authenticated so a value can be scoped
 // to its owner. If you merely want the client's id visible to the flow, use
-// WithCorrelationID instead — it carries the value without giving it any
-// authority.
+// WithAdvisoryCorrelationID instead — it carries the value without giving it
+// any authority.
 //
-// The two options are orthogonal and may both be set: WithTrustedCorrelationID
-// decides the exchange key (msgin.HeaderCorrelationID), WithCorrelationID
-// decides the advisory "http.correlation-id" header, and neither overrides the
-// other. An empty value from f falls back to the server-minted id rather than
-// producing an empty correlation key.
+// The two options are orthogonal and may both be set:
+// WithTrustedCorrelationID decides the exchange key (msgin.HeaderCorrelationID),
+// WithAdvisoryCorrelationID decides the advisory "http.correlation-id" header,
+// and neither overrides the other. An empty value from f falls back to the
+// server-minted id rather than producing an empty correlation key.
 //
 // A nil f is a no-op: it never clobbers a resolver set by an earlier
 // WithTrustedCorrelationID in the same Option list.

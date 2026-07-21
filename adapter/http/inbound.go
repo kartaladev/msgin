@@ -45,6 +45,9 @@ func (t *responseTracker) Write(b []byte) (int, error) {
 // callback) is recovered, logged with its stack, and answered with a plain 500
 // when the response has not been committed yet.
 //
+// EXCEPTION: http.ErrAbortHandler is re-panicked rather than recovered, so
+// net/http's own silent-abort contract for that sentinel still holds.
+//
 // NOTE: this is load-bearing beyond ordinary robustness. msgin's
 // ChannelExchange.Exchange calls its giveUp cleanup NON-deferred, so a panic
 // unwinding through it leaves the reply waiter registered forever — a leaked
@@ -57,6 +60,16 @@ func recoverHandler(w *responseTracker, cfg *Config, op string) {
 	r := recover()
 	if r == nil {
 		return
+	}
+	// net/http's documented contract for this exact sentinel: abort the
+	// connection SILENTLY, without logging a stack trace. Re-panic so net/
+	// http's own top-level recover handles it, rather than turning a
+	// deliberate silent abort into a full ERROR log + synthesized 500. No
+	// msgin flow step raises this today; the guard is contract correctness
+	// for a caller whose flow embeds something like httputil.ReverseProxy,
+	// which does.
+	if r == http.ErrAbortHandler {
+		panic(r)
 	}
 
 	cfg.log().Error("msghttp: handler panicked",
@@ -154,9 +167,19 @@ func ServeAsync(w http.ResponseWriter, r *http.Request, target msgin.MessageChan
 //
 // A PANIC raised by the flow — msgin.ChannelExchange runs a DirectChannel
 // subscriber on this goroutine — is recovered and answered with a plain 500
-// when the response is not yet committed. That recover is load-bearing: the
-// core's reply-waiter cleanup is not panic-safe, so letting a panic escape
-// would leak a correlator slot per request; see recoverHandler.
+// when the response is not yet committed, so the panic never escapes the
+// request and the server keeps serving subsequent ones.
+//
+// The recover does NOT reclaim the exchange's reply-waiter slot: msgin.
+// ChannelExchange.Exchange registers the waiter BEFORE it sends the request,
+// and its giveUp cleanup is not deferred, so a panicking flow handler leaks
+// that correlator-map entry regardless of whether the panic is recovered here
+// or allowed to escape — recovering only contains the panic to this request
+// and yields a clean 500 instead of crashing the process. A flow that panics
+// repeatedly therefore grows msgin.ChannelExchange's correlator map
+// monotonically until the exchange is Close'd. The root cause is core-side
+// (ChannelExchange.Exchange's non-deferred cleanup) and is tracked as its own
+// follow-up increment; see recoverHandler.
 //
 // ServeGateway does not restrict r's HTTP method, and applies NO
 // authentication, NO authorization, NO CSRF and NO CORS defense; see the

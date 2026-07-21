@@ -69,8 +69,8 @@ const defaultResponseContentType = "application/octet-stream"
 //     client must never be able to choose the media type its own bytes are
 //     served back under (reflected-XSS vector).
 //   - http.correlation-id — the client's advertised correlation id, when
-//     cfg's WithCorrelationID resolves a non-empty one. Advisory only: it
-//     never becomes the exchange correlation key.
+//     cfg's WithAdvisoryCorrelationID resolves a non-empty one. Advisory
+//     only: it never becomes the exchange correlation key.
 //
 // The message is built with msgin.New — never msgin.NewMessage — because a
 // decoded HTTP request is freshly-produced input entering the system, not a

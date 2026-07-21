@@ -85,7 +85,7 @@ func TestNewConfig_validation(t *testing.T) {
 				msghttp.WithSuccessStatus(http.StatusCreated),
 				msghttp.WithRequestHeaders("X-Test"),
 				msghttp.WithResponseHeaders("X-Reply"),
-				msghttp.WithCorrelationID(func(*http.Request) string { return "" }),
+				msghttp.WithAdvisoryCorrelationID(func(*http.Request) string { return "" }),
 				msghttp.WithErrorStatus(func(error) int { return http.StatusTeapot }),
 				msghttp.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
 			},
@@ -225,8 +225,8 @@ func TestDecodeRequest(t *testing.T) {
 			},
 		},
 		{
-			name: "WithCorrelationID populates http.correlation-id but NOT the exchange key",
-			opts: []msghttp.Option{msghttp.WithCorrelationID(func(*http.Request) string { return "client-supplied" })},
+			name: "WithAdvisoryCorrelationID populates http.correlation-id but NOT the exchange key",
+			opts: []msghttp.Option{msghttp.WithAdvisoryCorrelationID(func(*http.Request) string { return "client-supplied" })},
 			request: func() *http.Request {
 				return httptest.NewRequest(http.MethodPost, "/", strings.NewReader("x"))
 			},
@@ -241,10 +241,10 @@ func TestDecodeRequest(t *testing.T) {
 			},
 		},
 		{
-			name: "WithCorrelationID(nil) after a real resolver does not clobber it",
+			name: "WithAdvisoryCorrelationID(nil) after a real resolver does not clobber it",
 			opts: []msghttp.Option{
-				msghttp.WithCorrelationID(func(*http.Request) string { return "custom-id" }),
-				msghttp.WithCorrelationID(nil),
+				msghttp.WithAdvisoryCorrelationID(func(*http.Request) string { return "custom-id" }),
+				msghttp.WithAdvisoryCorrelationID(nil),
 			},
 			request: func() *http.Request {
 				return httptest.NewRequest(http.MethodPost, "/", strings.NewReader("x"))
@@ -253,12 +253,12 @@ func TestDecodeRequest(t *testing.T) {
 				require.NoError(t, err)
 				advisory, ok := msg.Header("http.correlation-id")
 				require.True(t, ok)
-				assert.Equal(t, "custom-id", advisory, "a later WithCorrelationID(nil) must be a no-op, not clobber the earlier resolver")
+				assert.Equal(t, "custom-id", advisory, "a later WithAdvisoryCorrelationID(nil) must be a no-op, not clobber the earlier resolver")
 			},
 		},
 		{
-			name: "WithCorrelationID returning empty adds no advisory header",
-			opts: []msghttp.Option{msghttp.WithCorrelationID(func(*http.Request) string { return "" })},
+			name: "WithAdvisoryCorrelationID returning empty adds no advisory header",
+			opts: []msghttp.Option{msghttp.WithAdvisoryCorrelationID(func(*http.Request) string { return "" })},
 			request: func() *http.Request {
 				return httptest.NewRequest(http.MethodPost, "/", strings.NewReader("x"))
 			},
@@ -316,7 +316,7 @@ func TestDecodeRequest(t *testing.T) {
 		{
 			name: "both correlation options set are orthogonal: trusted keys the exchange, the other is advisory only",
 			opts: []msghttp.Option{
-				msghttp.WithCorrelationID(func(*http.Request) string { return "advisory-id" }),
+				msghttp.WithAdvisoryCorrelationID(func(*http.Request) string { return "advisory-id" }),
 				msghttp.WithTrustedCorrelationID(func(*http.Request) string { return "trusted-id" }),
 			},
 			request: func() *http.Request {

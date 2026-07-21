@@ -1,8 +1,10 @@
 package msghttp_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -61,7 +63,16 @@ func TestServeAsync(t *testing.T) {
 		request      func() *http.Request
 		handlerErr   error
 		handlerPanic bool
-		assert       func(t *testing.T, rec *httptest.ResponseRecorder, sendCalled bool, captured msgin.Message[any])
+		// handlerPanicValue overrides the value handlerPanic panics with;
+		// nil means the default "flow handler exploded" string.
+		handlerPanicValue any
+		// wantPanicPropagate asserts that ServeAsync itself panics (with
+		// handlerPanicValue) rather than recovering and writing a 500 — the
+		// http.ErrAbortHandler re-panic guard in recoverHandler.
+		wantPanicPropagate bool
+		assert             func(t *testing.T, rec *httptest.ResponseRecorder, sendCalled bool, captured msgin.Message[any])
+		// assertLog inspects the handler's log output, nil skips the check.
+		assertLog func(t *testing.T, logged string)
 	}
 
 	cases := []testCase{
@@ -175,6 +186,28 @@ func TestServeAsync(t *testing.T) {
 				assert.True(t, sendCalled)
 				assert.Zero(t, rec.Body.Len())
 			},
+			assertLog: func(t *testing.T, logged string) {
+				assert.Contains(t, logged, "handler panicked", "an ordinary panic must still be logged")
+			},
+		},
+		{
+			name:               "http.ErrAbortHandler propagates instead of being recovered into a 500",
+			handlerPanic:       true,
+			handlerPanicValue:  http.ErrAbortHandler,
+			wantPanicPropagate: true,
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodPost, "/", strings.NewReader("x"))
+			},
+			assert: func(t *testing.T, rec *httptest.ResponseRecorder, sendCalled bool, _ msgin.Message[any]) {
+				assert.True(t, sendCalled)
+				assert.Equal(t, http.StatusOK, rec.Code,
+					"recoverHandler must re-panic before writing any status (200 is the httptest.Recorder's untouched default)")
+				assert.Zero(t, rec.Body.Len())
+			},
+			assertLog: func(t *testing.T, logged string) {
+				assert.Empty(t, logged,
+					"net/http's documented contract for http.ErrAbortHandler is a SILENT abort — recoverHandler must not log it")
+			},
 		},
 	}
 
@@ -182,7 +215,11 @@ func TestServeAsync(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg, err := msghttp.NewConfig(tc.opts...)
+			logBuf := &bytes.Buffer{}
+			opts := make([]msghttp.Option, 0, len(tc.opts)+1)
+			opts = append(opts, tc.opts...)
+			opts = append(opts, msghttp.WithLogger(slog.New(slog.NewTextHandler(logBuf, nil))))
+			cfg, err := msghttp.NewConfig(opts...)
 			require.NoError(t, err)
 
 			target := msgin.NewDirectChannel()
@@ -194,17 +231,29 @@ func TestServeAsync(t *testing.T) {
 				sendCalled = true
 				captured = msg
 				if tc.handlerPanic {
+					if tc.handlerPanicValue != nil {
+						panic(tc.handlerPanicValue)
+					}
 					panic("flow handler exploded")
 				}
 				return tc.handlerErr
 			})))
 
 			rec := httptest.NewRecorder()
-			require.NotPanics(t, func() {
-				msghttp.ServeAsync(rec, tc.request(), target, cfg)
-			})
+			if tc.wantPanicPropagate {
+				require.PanicsWithValue(t, tc.handlerPanicValue, func() {
+					msghttp.ServeAsync(rec, tc.request(), target, cfg)
+				})
+			} else {
+				require.NotPanics(t, func() {
+					msghttp.ServeAsync(rec, tc.request(), target, cfg)
+				})
+			}
 
 			tc.assert(t, rec, sendCalled, captured)
+			if tc.assertLog != nil {
+				tc.assertLog(t, logBuf.String())
+			}
 		})
 	}
 }

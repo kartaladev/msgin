@@ -24,8 +24,8 @@
 //     metadata.
 //   - The exchange correlation key is the message's own server-minted ID(). A
 //     client value keys the exchange only through the explicit, separately
-//     named WithTrustedCorrelationID opt-in; WithCorrelationID merely records
-//     the client's id for the flow to read.
+//     named WithTrustedCorrelationID opt-in; WithAdvisoryCorrelationID merely
+//     records the client's id for the flow to read.
 //   - EncodeResponse never lets the client choose the response media type: it
 //     always sends X-Content-Type-Options: nosniff and a Content-Type taken
 //     from the FLOW's msgin.HeaderContentType, defaulting to
