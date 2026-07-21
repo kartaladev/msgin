@@ -48,14 +48,16 @@ func (t *responseTracker) Write(b []byte) (int, error) {
 // EXCEPTION: http.ErrAbortHandler is re-panicked rather than recovered, so
 // net/http's own silent-abort contract for that sentinel still holds.
 //
-// NOTE: this is load-bearing beyond ordinary robustness. msgin's
-// ChannelExchange.Exchange calls its giveUp cleanup NON-deferred, so a panic
-// unwinding through it leaves the reply waiter registered forever — a leaked
-// map entry plus channel per panicking request, and a 409
-// msgin.ErrDuplicateCorrelation for any later request reusing that correlation
-// key. Recovering here keeps the panic inside a single request. Making the
-// core's giveUp panic-safe is tracked as its own increment; until it lands,
-// do not remove this recover.
+// NOTE: this is load-bearing beyond ordinary robustness, independent of what
+// the exchange does with its own state. A flow handler is caller code
+// (custom `msgin.HandlerFunc`s, `msgin.RequestReplyExchange` implementations,
+// option callbacks) running synchronously on this goroutine, so its panic
+// would otherwise take the whole server down with it. Recovering here keeps
+// the panic inside a single request regardless of what runs downstream — do
+// not remove this recover. (As of Spec 012 / ADR 0022 Addendum A,
+// msgin.ChannelExchange.Exchange also reclaims its reply-waiter slot on a
+// panic unwind, closing a former residual of this boundary; that is a
+// property of the exchange, not a reason to drop the recover.)
 func recoverHandler(w *responseTracker, cfg *Config, op string) {
 	r := recover()
 	if r == nil {
@@ -170,16 +172,15 @@ func ServeAsync(w http.ResponseWriter, r *http.Request, target msgin.MessageChan
 // when the response is not yet committed, so the panic never escapes the
 // request and the server keeps serving subsequent ones.
 //
-// The recover does NOT reclaim the exchange's reply-waiter slot: msgin.
-// ChannelExchange.Exchange registers the waiter BEFORE it sends the request,
-// and its giveUp cleanup is not deferred, so a panicking flow handler leaks
-// that correlator-map entry regardless of whether the panic is recovered here
-// or allowed to escape — recovering only contains the panic to this request
-// and yields a clean 500 instead of crashing the process. A flow that panics
-// repeatedly therefore grows msgin.ChannelExchange's correlator map
-// monotonically until the exchange is Close'd. The root cause is core-side
-// (ChannelExchange.Exchange's non-deferred cleanup) and is tracked as its own
-// follow-up increment; see recoverHandler.
+// The recover contains the panic to this request and yields a clean 500
+// instead of crashing the process — that fault isolation is required
+// regardless of what the exchange does with its own state. As of Spec 012 /
+// ADR 0022 Addendum A, msgin.ChannelExchange.Exchange also reclaims its
+// reply-waiter slot on a panic unwind (RequestReplyExchange's godoc now
+// states this as part of the SPI contract), closing a former residual of
+// this boundary: a panicking flow used to leak one correlator-map entry per
+// attempt regardless of whether the panic was recovered here; it no longer
+// does. See recoverHandler.
 //
 // ServeGateway does not restrict r's HTTP method, and applies NO
 // authentication, NO authorization, NO CSRF and NO CORS defense; see the

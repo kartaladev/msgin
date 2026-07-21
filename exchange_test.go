@@ -1,20 +1,26 @@
 package msgin_test
 
-// NOTE on table-test skill compliance: TestNewChannelExchange_validation uses
-// the mandatory assert-closure table form (its three cases share an identical
-// construct+assert shape). Every other test below is a standalone TestXxx
-// because each exercises a genuinely different concurrency/synchronization
-// shape (fake-clock races, cross-goroutine delivery, Close/timeout races) —
-// forcing them into one table would hide the setup divergence the table-test
-// skill's exception clause calls out.
+// NOTE on table-test skill compliance: TestNewChannelExchange_validation,
+// TestChannelExchange_panickingFlow_propagatesAndReclaimsSlot, and
+// TestChannelExchange_abandonedArmsReclaimSlot use the mandatory
+// assert-closure table form — each folds two or more cases that share an
+// identical construct/trigger+assert shape. Every other test below is a
+// standalone TestXxx because each exercises a genuinely different
+// concurrency/synchronization shape (fake-clock races, cross-goroutine
+// delivery, Close/timeout races, panic-unwind draining) — forcing them into
+// one table would hide the setup divergence the table-test skill's exception
+// clause calls out.
 
 import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -555,6 +561,635 @@ func TestChannelExchange_closeRacesGiveUp(t *testing.T) {
 	select {
 	case <-sinkRecv:
 		t.Fatal("no reply should reach the sink: the slot was closed, never delivered")
+	default:
+	}
+}
+
+// Spec 012 §5.1 / §6 case 6 (audit H-1): with two callers reusing one
+// correlation id and replies delivered from another goroutine, a delete-by-id
+// deregister can (a) delete the OTHER caller's slot and return true, dropping
+// its own committed reply silently, and (b) orphan a slot so its owner's giveUp
+// blocks on <-slot forever — unreachable by deliver (not in the map) and by
+// closeAll (which iterates the map). Identity-checked deregister closes both.
+//
+// The window is a preemption between deliver's delete and its send, so this
+// stresses rather than forces it. Two detectors, because the hang half is only
+// probabilistically reachable: reply ACCOUNTING catches the silent drop
+// deterministically whenever the window is hit, and the outer budget catches
+// the hang. Bounded throughout: a regression must fail here, never wedge CI.
+func TestChannelExchange_reusedIDConcurrentAbandon_neverHangs(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	const (
+		iterations = 200
+		id         = "corr-reused-concurrent"
+		budget     = 30 * time.Second
+	)
+
+	// Nothing inside the loop may call require/t.Fatal: t.FailNow outside the
+	// test goroutine Goexits the worker, abandoning in-flight state and turning
+	// the real failure into a goleak storm. Record and return instead.
+	failures := make(chan string, 1)
+	fail := func(format string, args ...any) {
+		select {
+		case failures <- fmt.Sprintf(format, args...):
+		default:
+		}
+	}
+
+	var totalSent atomic.Int64
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < iterations; i++ {
+			var sunk atomic.Int64
+			sink := msgin.NewDirectChannel()
+			if err := sink.Subscribe(msgin.HandlerFunc(func(_ context.Context, _ msgin.Message[any]) error {
+				sunk.Add(1)
+				return nil
+			})); err != nil {
+				fail("iteration %d: sink subscribe: %v", i, err)
+				return
+			}
+
+			request := msgin.NewDirectChannel()
+			reply := msgin.NewDirectChannel()
+			ex, err := msgin.NewChannelExchange(request, reply, msgin.WithUnmatchedReplySink(sink))
+			if err != nil {
+				fail("iteration %d: new exchange: %v", i, err)
+				return
+			}
+
+			// The flow hands the reply to a worker goroutine, so deliver races
+			// the waiter's abandonment rather than running inline.
+			var (
+				workers sync.WaitGroup
+				sent    atomic.Int64
+			)
+			if err := request.Subscribe(msgin.Chain(msgin.Consume(func(_ context.Context, m msgin.Message[any]) error {
+				workers.Add(1)
+				go func() {
+					defer workers.Done()
+					sent.Add(1)
+					totalSent.Add(1)
+					_ = reply.Send(context.WithoutCancel(t.Context()), m)
+				}()
+				return nil
+			}))); err != nil {
+				fail("iteration %d: request subscribe: %v", i, err)
+				return
+			}
+
+			// Two callers, SAME id, both abandoning via ctx cancel. Whichever
+			// registers second only gets in once the first's slot has left the
+			// map — precisely the reuse window.
+			var (
+				callers  sync.WaitGroup
+				returned atomic.Int64
+			)
+			for c := 0; c < 2; c++ {
+				callers.Add(1)
+				go func() {
+					defer callers.Done()
+					ctx, cancel := context.WithCancel(t.Context())
+					defer cancel()
+
+					// Race the cancel against the exchange, but JOIN it so the
+					// final iteration cannot leave a straggler for goleak.
+					var canceller sync.WaitGroup
+					canceller.Add(1)
+					go func() {
+						defer canceller.Done()
+						cancel()
+					}()
+
+					req := msgin.New[any]("payload", msgin.WithHeaders(map[string]any{msgin.HeaderCorrelationID: id}))
+					// Every error here is legitimate (ctx.Err,
+					// ErrDuplicateCorrelation). What must hold is that this
+					// RETURNS AT ALL — a hang is the H-1 regression — and that
+					// a delivered reply is accounted for below.
+					if _, err := ex.Exchange(ctx, req); err == nil {
+						returned.Add(1)
+					}
+					canceller.Wait()
+				}()
+			}
+			callers.Wait()
+			workers.Wait()
+
+			// H-1's SILENT-DROP half: every reply the flow produced was either
+			// returned to its caller or routed to the unmatched sink. A
+			// delete-by-id deregister drops one on the floor here — a direct
+			// violation of ADR 0022 §2's G4 guarantee.
+			if got, want := returned.Load()+sunk.Load(), sent.Load(); got != want {
+				fail("iteration %d: %d replies accounted for but %d were sent — a committed reply was dropped (Spec 012 §5.1)", i, got, want)
+				return
+			}
+			if err := ex.Close(); err != nil {
+				fail("iteration %d: close: %v", i, err)
+				return
+			}
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(budget):
+		t.Fatal("a caller blocked forever in giveUp: deregister deleted another caller's slot and orphaned it (Spec 012 §5.1)")
+	}
+	select {
+	case msg := <-failures:
+		t.Fatal(msg)
+	default:
+	}
+	require.Positive(t, totalSent.Load(), "no iteration produced a reply — the accounting assertion was vacuous")
+}
+
+// scriptedChannel is a MessageChannel whose Send is supplied by the test, so a
+// test can drive the exact ordering of register/deliver/give-up that a real
+// DirectChannel leaves to the scheduler. Subscribe is a no-op: NewChannelExchange
+// only subscribes onto the REPLY channel, never the request channel.
+type scriptedChannel struct {
+	send func(ctx context.Context, msg msgin.Message[any]) error
+}
+
+func (c *scriptedChannel) Send(ctx context.Context, msg msgin.Message[any]) error {
+	return c.send(ctx, msg)
+}
+
+func (c *scriptedChannel) Subscribe(_ msgin.MessageHandler) error { return nil }
+
+// Spec 012 §5.1 / ADR 0022 Addendum A2, deterministic counterpart to
+// TestChannelExchange_reusedIDConcurrentAbandon_neverHangs: it forces
+// deregister's `ok && s != slot` arm through the exported API alone, with no
+// reliance on a scheduler preemption.
+//
+// The reuse window does NOT require a preemption inside deliver — only that
+// deliver COMPLETE, a second register land under the same id, and the first
+// caller then reach giveUp. Exchange's send-error arm reaches giveUp with no
+// select race at all, so scripting the request channel makes the whole ordering
+// deterministic:
+//
+//  1. A registers, then A's Send delivers the reply inline — deliver removes A's
+//     map entry and commits the reply to A's cap-1 slot.
+//  2. B registers the now-free id (getting a DIFFERENT slot) and parks inside its
+//     own Send, so B's slot is still in the map.
+//  3. A's Send returns an error, so A gives up: deregister finds B's slot under
+//     A's id. Identity-checked, it returns false and A drains its own committed
+//     reply to the unmatched sink. Delete-by-id would instead delete B's slot,
+//     return true, drop A's reply silently, and orphan B's slot forever.
+func TestChannelExchange_reusedIDAbandon_drainsOwnReply(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	const (
+		id       = "corr-reused-scripted"
+		joinWait = 10 * time.Second
+	)
+
+	testCtx := t.Context()
+
+	var sunk atomic.Int64
+	sink := msgin.NewDirectChannel()
+	require.NoError(t, sink.Subscribe(msgin.HandlerFunc(func(_ context.Context, _ msgin.Message[any]) error {
+		sunk.Add(1)
+		return nil
+	})))
+
+	reply := msgin.NewDirectChannel()
+	request := &scriptedChannel{}
+
+	ex, err := msgin.NewChannelExchange(request, reply, msgin.WithUnmatchedReplySink(sink))
+	require.NoError(t, err)
+
+	errSend := errors.New("scripted request-channel failure")
+
+	var (
+		calls        atomic.Int32
+		replySendErr atomic.Value // error from step 1's inline reply delivery
+		timedOut     atomic.Bool  // a bounded wait expired; asserted on the test goroutine
+		bJoined      atomic.Bool  // B's result was already consumed by the main path
+		bRegistered  = make(chan struct{})
+		releaseB     = make(chan struct{})
+		bDone        = make(chan error, 1) // buffered: B never blocks on the handoff
+	)
+	releaseOnce := sync.OnceFunc(func() { close(releaseB) })
+
+	// Unpark and join B on every exit path (including a failed assertion), before
+	// goleak runs: deferred funcs are LIFO, and goleak.VerifyNone was deferred first.
+	defer func() {
+		releaseOnce()
+		if bJoined.Load() {
+			return
+		}
+		select {
+		case <-bDone:
+		case <-time.After(joinWait):
+			timedOut.Store(true)
+		}
+	}()
+
+	request.send = func(ctx context.Context, msg msgin.Message[any]) error {
+		if calls.Add(1) != 1 { // caller B: park with its slot still registered
+			close(bRegistered)
+			select {
+			case <-releaseB:
+			case <-time.After(joinWait):
+				timedOut.Store(true)
+			}
+			return errSend
+		}
+
+		// Caller A, step 1: deliver the reply inline. deliver removes A's map
+		// entry and commits the reply into A's slot. WithoutCancel so the
+		// delivery does not depend on the caller ctx.
+		if err := reply.Send(context.WithoutCancel(ctx), msg); err != nil {
+			replySendErr.Store(err)
+			return errSend
+		}
+
+		// Step 2: B registers the (now free) id and parks inside its own Send.
+		go func() {
+			_, err := ex.Exchange(testCtx, msg)
+			bDone <- err
+		}()
+		select {
+		case <-bRegistered:
+		case <-time.After(joinWait):
+			timedOut.Store(true)
+		}
+
+		// Step 3: A abandons via the send-error arm -> giveUp -> deregister sees
+		// B's slot under A's id.
+		return errSend
+	}
+
+	req := msgin.New[any]("payload", msgin.WithHeaders(map[string]any{msgin.HeaderCorrelationID: id}))
+	_, aErr := ex.Exchange(testCtx, req)
+
+	require.Nil(t, replySendErr.Load(), "step 1's inline reply delivery must succeed")
+	require.False(t, timedOut.Load(), "a bounded wait expired: the scripted ordering did not complete")
+	require.ErrorIs(t, aErr, errSend)
+
+	// THE load-bearing assertion. Identity-checked deregister returns false, so A
+	// drains its own committed reply to the unmatched sink. Delete-by-id returns
+	// true and drops it (and orphans B's slot).
+	require.Equal(t, int64(1), sunk.Load(), "A's committed reply must reach the unmatched sink")
+
+	// B's slot was never orphaned: releasing it lets B settle normally.
+	releaseOnce()
+	select {
+	case bErr := <-bDone:
+		bJoined.Store(true)
+		require.ErrorIs(t, bErr, errSend)
+	case <-time.After(joinWait):
+		t.Fatal("caller B never returned: its slot was orphaned by A's deregister (Spec 012 §5.1)")
+	}
+	require.NoError(t, ex.Close())
+}
+
+// panicExchange builds a ChannelExchange whose request flow panics with
+// panicVal. Because a DirectChannel runs its subscriber chain synchronously on
+// the caller's goroutine, the panic unwinds out of request.Send inside
+// Exchange — the exact defect path of Spec 012 §1. Its only caller never
+// replies before panicking, so it has no use for the reply channel and does
+// not return one.
+func panicExchange(t *testing.T, panicVal any, opts ...msgin.ExchangeOption) *msgin.ChannelExchange {
+	t.Helper()
+	request := msgin.NewDirectChannel()
+	reply := msgin.NewDirectChannel()
+	ex, err := msgin.NewChannelExchange(request, reply, opts...)
+	require.NoError(t, err)
+	require.NoError(t, request.Subscribe(msgin.Chain(msgin.Consume(func(_ context.Context, _ msgin.Message[any]) error {
+		panic(panicVal)
+	}))))
+	return ex
+}
+
+// exchangeRecoveringPanic calls ex.Exchange and returns the recovered panic
+// value (nil if it did not panic) together with Exchange's returned error, so
+// a test can assert on either without the recover happening inside library
+// code. err is only meaningful when recovered is nil (no panic occurred): the
+// reclamation probes below drive Exchange a second time on a reused
+// correlation id, and if the fix under test regressed, that second call would
+// fail registration with ErrDuplicateCorrelation instead of reaching the
+// panicking flow at all — err carries that precise cause rather than leaving
+// the failure as a confusing "no panic".
+func exchangeRecoveringPanic(t *testing.T, ex *msgin.ChannelExchange, req msgin.Message[any]) (recovered any, err error) {
+	t.Helper()
+	defer func() { recovered = recover() }()
+	_, err = ex.Exchange(t.Context(), req)
+	return recovered, err
+}
+
+// Spec 012 §6 cases 1 & 2: a panicking flow handler must propagate its panic
+// UNCHANGED (no recover/re-panic laundering in the library) and must not leave
+// the correlation id registered. The reclamation probe is ErrDuplicateCorrelation:
+// replyCorrelator is unexported, so id reuse is the blackbox observable.
+func TestChannelExchange_panickingFlow_propagatesAndReclaimsSlot(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	tests := []struct {
+		name     string
+		panicVal any
+		assert   func(t *testing.T, recovered any)
+	}{
+		{
+			name:     "string panic value propagates identically",
+			panicVal: "boom",
+			assert: func(t *testing.T, recovered any) {
+				assert.Equal(t, "boom", recovered)
+			},
+		},
+		{
+			name:     "error panic value propagates as the same error instance",
+			panicVal: errors.New("handler exploded"),
+			assert: func(t *testing.T, recovered any) {
+				err, ok := recovered.(error)
+				require.True(t, ok, "expected the recovered value to still be an error, got %T", recovered)
+				assert.Equal(t, "handler exploded", err.Error())
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeClock := clockwork.NewFakeClock()
+			ex := panicExchange(t, tt.panicVal, msgin.WithExchangeClock(fakeClock))
+			const id = "corr-panic"
+			req := msgin.New[any]("payload", msgin.WithHeaders(map[string]any{msgin.HeaderCorrelationID: id}))
+
+			recovered, _ := exchangeRecoveringPanic(t, ex, req)
+
+			require.NotNil(t, recovered, "Exchange must not swallow the handler panic")
+			tt.assert(t, recovered)
+
+			// The reclamation probe (Spec 012 §6 case 2): the slot must be gone,
+			// so REUSING the id must get past register(). It panics again (same
+			// flow) rather than failing with ErrDuplicateCorrelation — which is
+			// exactly the proof. Capture the error too, so a leaked slot fails
+			// with the precise cause rather than a confusing "no panic".
+			second, secondErr := exchangeRecoveringPanic(t, ex, req)
+			require.NotErrorIs(t, secondErr, msgin.ErrDuplicateCorrelation,
+				"the panicking first request leaked its correlator slot — Spec 012 §1")
+			require.NotNil(t, second, "the reused correlation id must reach the flow again, not fail registration")
+		})
+	}
+}
+
+// Spec 012 §6 case 4: the ctx-cancel and reply-timeout arms lose their explicit
+// giveUp call in this task and are reconciled by the deferred path instead.
+// These pin that the slot is still reclaimed on both.
+func TestChannelExchange_abandonedArmsReclaimSlot(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	tests := []struct {
+		name string
+		// trigger drives the in-flight Exchange to its abandonment arm. It owns
+		// everything arm-specific — cancelling the ctx, or advancing the clock —
+		// so the shared body below needs no per-case branching.
+		trigger func(t *testing.T, cancel context.CancelFunc, fakeClock *clockwork.FakeClock)
+		assert  func(t *testing.T, err error)
+	}{
+		{
+			name: "ctx cancel reclaims the slot",
+			trigger: func(_ *testing.T, cancel context.CancelFunc, _ *clockwork.FakeClock) {
+				cancel()
+			},
+			assert: func(t *testing.T, err error) { assert.ErrorIs(t, err, context.Canceled) },
+		},
+		{
+			name: "reply timeout reclaims the slot",
+			trigger: func(t *testing.T, _ context.CancelFunc, fakeClock *clockwork.FakeClock) {
+				require.NoError(t, fakeClock.BlockUntilContext(t.Context(), 1))
+				fakeClock.Advance(30 * time.Second)
+			},
+			assert: func(t *testing.T, err error) { assert.ErrorIs(t, err, msgin.ErrReplyTimeout) },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeClock := clockwork.NewFakeClock()
+			ex, _, sinkHit := newBlockingExchange(t, msgin.WithExchangeClock(fakeClock))
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			const id = "corr-abandon"
+
+			// First request: registers the waiter, then abandons via tt.trigger.
+			req := msgin.New[any]("payload", msgin.WithHeaders(map[string]any{msgin.HeaderCorrelationID: id}))
+			errCh := make(chan error, 1)
+			go func() {
+				_, err := ex.Exchange(ctx, req)
+				errCh <- err
+			}()
+			<-sinkHit // the flow ran, so the waiter is registered
+			tt.trigger(t, cancel, fakeClock)
+			tt.assert(t, <-errCh)
+
+			// Reclamation probe: the id must be reusable. The second call hits
+			// the same never-replying flow, so drive it to its own timeout on
+			// a ctx the first case's cancel cannot affect.
+			second := msgin.New[any]("second", msgin.WithHeaders(map[string]any{msgin.HeaderCorrelationID: id}))
+			secondErrCh := make(chan error, 1)
+			go func() {
+				_, err := ex.Exchange(t.Context(), second)
+				secondErrCh <- err
+			}()
+			<-sinkHit
+			require.NoError(t, fakeClock.BlockUntilContext(t.Context(), 1))
+			fakeClock.Advance(30 * time.Second)
+			secondErr := <-secondErrCh
+			require.NotErrorIs(t, secondErr, msgin.ErrDuplicateCorrelation, "the abandoned slot was not reclaimed")
+			assert.ErrorIs(t, secondErr, msgin.ErrReplyTimeout)
+		})
+	}
+}
+
+// Spec 012 §5.3 / §6 case 3: when the flow sends its reply and THEN panics, a
+// deliver is already committed to the slot when the unwind reaches the deferred
+// reconciler. giveUp's deregister()==false arm must drain that reply to the
+// unmatched sink — identical treatment to the timeout/cancel arms — while the
+// panic still propagates unchanged.
+func TestChannelExchange_panickingFlowAfterReply_drainsToUnmatchedSink(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	sink := msgin.NewDirectChannel()
+	received := make(chan msgin.Message[any], 1)
+	require.NoError(t, sink.Subscribe(msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
+		received <- m
+		return nil
+	})))
+
+	request := msgin.NewDirectChannel()
+	reply := msgin.NewDirectChannel()
+	ex, err := msgin.NewChannelExchange(request, reply, msgin.WithUnmatchedReplySink(sink))
+	require.NoError(t, err)
+
+	const id = "corr-reply-then-panic"
+	// The flow replies (delivering into the waiter's slot) and only then panics.
+	require.NoError(t, request.Subscribe(msgin.Chain(msgin.Consume(func(ctx context.Context, m msgin.Message[any]) error {
+		if sendErr := reply.Send(ctx, msgin.WithPayload(m, any("echo"))); sendErr != nil {
+			return sendErr
+		}
+		panic("boom after reply")
+	}))))
+
+	req := msgin.New[any]("payload", msgin.WithHeaders(map[string]any{msgin.HeaderCorrelationID: id}))
+	recovered, _ := exchangeRecoveringPanic(t, ex, req)
+
+	require.Equal(t, "boom after reply", recovered, "the panic must propagate unchanged through the drain")
+
+	select {
+	case got := <-received:
+		assert.Equal(t, "echo", got.Payload())
+	default:
+		t.Fatal("expected the raced-in reply to be drained to the unmatched sink, not dropped")
+	}
+
+	// And the slot is still reclaimed: the id is reusable.
+	reused, reusedErr := exchangeRecoveringPanic(t, ex, req)
+	require.NotNil(t, reused, "the reused correlation id must reach the flow again (err=%v)", reusedErr)
+}
+
+// Spec 012 §6 case 5 (audit H-2): the flow hands the message to a worker
+// goroutine and THEN panics, so deliver genuinely races the deferred
+// reconciler rather than completing before it. close(ready) only makes the
+// worker goroutine RUNNABLE — left to the scheduler, the panic unwind almost
+// always reaches the deferred reconciler on THIS goroutine before the worker
+// is ever scheduled, so the drain arm below would go essentially untested.
+// runtime.Gosched() on every other iteration FORCES the split so both
+// orderings are actually exercised, not merely hoped for:
+//   - worker wins  -> deregister()==false -> giveUp drains to the sink
+//   - unwind wins  -> deregister()==true  -> the late reply is unmatched
+//
+// Either way the panic must propagate unchanged, the slot must be reclaimed,
+// and NOTHING may block. Bounded so a regression fails instead of wedging CI.
+func TestChannelExchange_panicRacesDelivery(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	const (
+		iterations = 30
+		id         = "corr-panic-race"
+		budget     = 30 * time.Second
+		grace      = 2 * time.Second
+	)
+
+	// Same discipline as Task 1: no require/t.Fatal off the test goroutine.
+	failures := make(chan string, 1)
+	fail := func(format string, args ...any) {
+		select {
+		case failures <- fmt.Sprintf(format, args...):
+		default:
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < iterations; i++ {
+			// cap 2: this iteration drives the flow twice (the probe re-enters
+			// it), so up to two replies can land on the unmatched path.
+			received := make(chan msgin.Message[any], 2)
+			sink := msgin.NewDirectChannel()
+			if err := sink.Subscribe(msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
+				received <- m
+				return nil
+			})); err != nil {
+				fail("iteration %d: sink subscribe: %v", i, err)
+				return
+			}
+
+			request := msgin.NewDirectChannel()
+			reply := msgin.NewDirectChannel()
+			ex, err := msgin.NewChannelExchange(request, reply, msgin.WithUnmatchedReplySink(sink))
+			if err != nil {
+				fail("iteration %d: new exchange: %v", i, err)
+				return
+			}
+
+			var workers sync.WaitGroup
+			if err := request.Subscribe(msgin.Chain(msgin.Consume(func(_ context.Context, m msgin.Message[any]) error {
+				// ready is per-INVOCATION, not per-iteration: this handler runs
+				// TWICE per iteration (the probe re-enters it), and an
+				// iteration-scoped channel would be closed twice — a "close of
+				// closed channel" panic masquerading as the flow's own panic
+				// (audit H-1n).
+				ready := make(chan struct{})
+				workers.Add(1)
+				go func() {
+					defer workers.Done()
+					<-ready // release the worker and the panic together
+					_ = reply.Send(context.WithoutCancel(t.Context()), msgin.WithPayload(m, any("echo")))
+				}()
+				close(ready)
+				if i%2 == 0 {
+					runtime.Gosched() // force the worker's deliver to win, exercising giveUp's drain arm
+				}
+				panic("boom racing delivery")
+			}))); err != nil {
+				fail("iteration %d: request subscribe: %v", i, err)
+				return
+			}
+
+			req := msgin.New[any]("payload", msgin.WithHeaders(map[string]any{msgin.HeaderCorrelationID: id}))
+
+			// First drive: the panic must propagate unchanged through the drain.
+			got, firstErr := exchangeRecoveringPanic(t, ex, req)
+			if got != "boom racing delivery" {
+				fail("iteration %d: first call recovered %#v, want the flow's own panic value (err=%v)", i, got, firstErr)
+				return
+			}
+			workers.Wait()
+
+			// The reply is accounted for on whichever arm won — drained by
+			// giveUp, or routed as unmatched by the receiver. Never lost.
+			select {
+			case got := <-received:
+				if got.Payload() != "echo" {
+					fail("iteration %d: unmatched sink got payload %#v, want \"echo\"", i, got.Payload())
+					return
+				}
+			case <-time.After(grace):
+				fail("iteration %d: the raced reply reached neither the drain nor the unmatched path", i)
+				return
+			}
+
+			// Second drive on the SAME id: proves the slot was reclaimed, and
+			// its panic value must be intact too (a "close of closed channel"
+			// regression would surface right here).
+			got2, secondErr := exchangeRecoveringPanic(t, ex, req)
+			if got2 != "boom racing delivery" {
+				fail("iteration %d: reused id recovered %#v — the slot was not reclaimed, or the barrier double-closed (err=%v)", i, got2, secondErr)
+				return
+			}
+			workers.Wait()
+
+			select {
+			case got := <-received:
+				if got.Payload() != "echo" {
+					fail("iteration %d: second unmatched sink got payload %#v, want \"echo\"", i, got.Payload())
+					return
+				}
+			case <-time.After(grace):
+				fail("iteration %d: the second raced reply was lost", i)
+				return
+			}
+			if err := ex.Close(); err != nil {
+				fail("iteration %d: close: %v", i, err)
+				return
+			}
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(budget):
+		t.Fatal("the deferred reconciler blocked during a panic unwind (Spec 012 §5.3)")
+	}
+	select {
+	case msg := <-failures:
+		t.Fatal(msg)
 	default:
 	}
 }

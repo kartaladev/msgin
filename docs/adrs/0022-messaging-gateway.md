@@ -11,7 +11,11 @@
   all five fixes CONFIRMED-FIXED (the `giveUp` blocking-drain proven leak-free across every deliver/closeAll/timeout
   interleaving); N1 (correlation-id uniqueness is a lifetime contract — §2), N2 (a defensive `giveUp` arm gets a
   covering test — Plan 019), N3 (guards are direct-caller only) folded. **Design gate cleared; ready to implement
-  (Plan 019).**
+  (Plan 019).** **Amended 2026-07-21 by [Addendum A](#addendum-a--panic-safe-cleanup-2026-07-21)** (Spec 012 /
+  Plan 021) — give-up cleanup moves to a single deferred, `settled`-guarded reconciler so a panicking flow handler can
+  no longer leak a correlator slot (A1), `deregister` becomes identity-checked to close a silent-drop + permanent-hang
+  window the reuse-is-now-safe claim would otherwise expose (A2), and the no-leak-on-unwind obligation is written into
+  the `RequestReplyExchange` SPI contract (A3). Not superseded; every decision below still stands.
 - **Spec:** [Spec 010 — Messaging Gateway](../specs/010-messaging-gateway.md).
 - **Depends on / builds on:** [ADR 0013 — Composition endpoints](0013-composition-endpoints.md) (the
   `MessageHandler`/`MessageChannel`/`Step`/`Chain` backbone + the synchronous-`DirectChannel` error model both
@@ -198,11 +202,131 @@ precisely so the adapter encapsulates return-address + reply-demux. This constra
 external-adapter increment designs it in from the start (see CLAUDE.md → *Production robustness → Multi-instance /
 distributed-deployment awareness*).
 
-**Known defect against this decision (filed 2026-07-21, not yet fixed).** `ChannelExchange.Exchange` registers its
-reply waiter **before** it sends the request and calls its `giveUp` cleanup **non-`defer`red**, so a **panicking**
-request-channel subscriber (a `DirectChannel` runs it synchronously on the caller's goroutine) unwinds past every
-cleanup arm and leaks the correlator entry + slot channel until `Close()`. Surfaced — and contained, not fixed — by
-Spec 011's HTTP inbound adapter ([ADR 0023 Addendum A5](0023-http-channel-adapter.md#a5--panic-recovery-at-both-handler-cores-fault-isolation-and-the-residual-it-cannot-fix)).
+**Known defect against this decision (filed 2026-07-21, FIXED by Addendum A below).** `ChannelExchange.Exchange`
+registered its reply waiter **before** it sent the request and called its `giveUp` cleanup **non-`defer`red**, so a
+**panicking** request-channel subscriber (a `DirectChannel` runs it synchronously on the caller's goroutine) unwound
+past every cleanup arm and leaked the correlator entry + slot channel until `Close()`. Surfaced — and contained, not
+fixed — by Spec 011's HTTP inbound adapter ([ADR 0023 Addendum A5](0023-http-channel-adapter.md#a5--panic-recovery-at-both-handler-cores-fault-isolation-and-the-residual-it-cannot-fix)).
 Impact, limits, and the design obligations for the fix are captured in
-[Spec 012 — Panic-safe `ChannelExchange` cleanup](../specs/012-exchange-panic-safe-cleanup.md); it is a **core** change
-requiring its own design cycle, and this ADR will be amended or superseded by that increment.
+[Spec 012 — Panic-safe `ChannelExchange` cleanup](../specs/012-exchange-panic-safe-cleanup.md). It is a **core** change,
+so it ran its own design cycle; the decision it reached is recorded in **Addendum A**.
+
+---
+
+## Addendum A — panic-safe cleanup (2026-07-21)
+
+- **Status:** Accepted (2026-07-21). Amends §2 (`replyCorrelator` / give-up reconciliation) and §1
+  (`RequestReplyExchange` contract) of this ADR. **Does not supersede it** — every decision above stands; A1 changes
+  *where* the existing `giveUp` is invoked, and A2 adds an obligation to the SPI contract.
+- **Driven by:** [Spec 012](../specs/012-exchange-panic-safe-cleanup.md) — realized by
+  [Plan 021](../plans/021-exchange-panic-safe-cleanup.md).
+- **Design gate:** two-round adversarial Opus audit of the complete bundle (spec + this addendum + plan).
+  **Round 1 NEEDS-REVISION** — A2 exists *because* of round-1 finding H-1: A1 alone would have traded a memory leak for
+  a permanently blocked goroutine. **Round 2 SOUND-WITH-NITS**, no must-fix in the design; identity-checked `deregister`
+  was independently re-traced against `deliver`/`closeAll`/`register`/`giveUp` with no remaining hang, silent drop or
+  orphan. Full finding list in Spec 012's status block.
+
+### A1 — cleanup moves to a single deferred, `settled`-guarded reconciler (correctness fix)
+
+**Context.** §2 above decided *what* give-up must do (the G4 reconciliation: `deregister()==false` ⇒ a `deliver` is
+committed ⇒ drain the slot and route the reply to the unmatched path). It did **not** decide *how* that cleanup is
+invoked, and the implementation placed it at three explicit call sites — one per abandonment arm. That placement is
+unsound: a panic unwinding out of `request.Send` bypasses all three (Spec 012 §1).
+
+**Decision.** `Exchange` declares `settled := false` and registers **one** deferred reconciler immediately after a
+successful `register`; the three explicit `e.giveUp(…)` calls are **deleted**. `settled = true` is set **only** in the
+`case reply, open := <-slot:` arm. Every other exit — send error, `ctx.Done`, reply timeout, **and a panic** — leaves
+`settled == false` and is reconciled exactly once.
+
+**Why the flag is load-bearing, and an unconditional `defer` is wrong.** On the success arm the slot was legitimately
+consumed by a `deliver`, so `deregister()` returns `false` and `giveUp` would then block on `<-slot` — an emptied,
+never-closed channel — **forever**. The flag is what distinguishes "settled" from "abandoned"; it is the answer to the
+open question Spec 012's first revision raised.
+
+**What is deliberately *not* changed.** `giveUp` itself, and the `register`/`deliver`/`closeAll` protocol. This
+addendum **widens `giveUp`'s trigger set by one arm; it does not alter `giveUp`'s logic**, so the interleaving this
+ADR's round-2 audit hand-traced as leak-free is preserved. The flag also keeps `giveUp` to **at most one invocation per
+call** — `deregister` is not idempotent against a concurrent `deliver` and must not become so, which is why a
+belt-and-braces "keep the explicit calls *and* add the defer" variant was rejected.
+
+**Panic transparency (unchanged contract).** No `recover()` is introduced. The deferred function only reconciles state,
+so a consumer panic keeps unwinding with its original value and stack. `Exchange` must never convert a consumer panic
+into an error return; §7's documented error set is unchanged. Registering the waiter *after* `Send` — the other way to
+close the window — was rejected: the request channel is a `DirectChannel` that delivers the reply synchronously
+*during* `Send`, so a late registration would make every in-process reply unmatched.
+
+**Raced-in reply on the panic arm — uniform treatment.** A reply committed before the panic is drained and routed to
+`routeUnmatched`, identically to the timeout/cancel arms (§5 above), because the only way to special-case a panic
+unwind is the rejected `recover()`+re-`panic`. The drain is bounded — a committed `deliver` sends non-blocking into a
+`cap 1` slot — **but only once A2 makes `deregister` identity-checked**; without A2 that claim is false. **Residual, accepted and documented:** anything caller-supplied that runs inside the
+reconciler can panic while the consumer's panic is already unwinding, masking it. That is **two** hooks, not one
+(audit M-1): the opt-in unmatched sink, and — on **both** branches of `routeUnmatched`, including the default
+warn-log-and-drop branch — the injected `*slog.Logger`. Both `WithUnmatchedReplySink` and `WithExchangeLogger` gain a
+**must-not-panic-and-must-not-block** clause: after this change a blocking hook stalls a panic *unwind*, which in
+`adapter/http` parks a request goroutine `recoverHandler` can never reach.
+
+### A2 — `deregister` becomes identity-checked (correctness prerequisite for A1)
+
+**Context.** A1's reconciler — and §2 above's G4 guarantee that a delivered-but-abandoned reply is never dropped —
+both rest on the premise that `deregister()==false` means *our* slot was taken by a `deliver` (committed to a
+non-blocking `cap 1` send) or closed by `closeAll`, so `giveUp`'s `<-slot` is bounded. **The shipped `register` does not
+honour that premise**: its `deregister` closure deletes **by id**, matching whatever slot currently sits under that key.
+
+**The hazard** (hand-traced in [Spec 012 §5.1](../specs/012-exchange-panic-safe-cleanup.md); audit H-1). With two
+callers reusing one correlation id — the window audit N1 above documented for *sequential* reuse — a `deliver` that has
+deleted the map entry but not yet sent can be interleaved with a second `register`, after which the first caller's
+`deregister` deletes the **second** caller's slot and returns `true`. Two things go wrong at once: the first caller
+returns without draining its own slot, so the committed reply is **silently dropped** (a direct G4 violation), and the
+second caller's slot is left **orphaned** — absent from the map, so no `deliver` can reach it and `closeAll` cannot
+close it. The second caller's `giveUp` then blocks on a bare `<-slot` **forever**, not selectable on `ctx` and not
+rescuable by `Close()`. A permanently wedged goroutine is strictly worse than the leak A1 fixes.
+
+**Decision.** `deregister` matches on slot identity, not just key:
+
+```go
+if s, ok := c.waiters[id]; ok && s == slot { delete(c.waiters, id); return true }
+```
+
+**Consequences.** `deregister()==false` now genuinely implies deliver-or-`closeAll`, which is what makes A1's bounded
+drain true rather than aspirational, and closes both the silent drop and the hang. `deliver`, `closeAll` and `giveUp`'s
+body are **unchanged**. This widens the increment beyond `Exchange` into the correlator protocol — accepted
+deliberately, because **A4**'s caller-visible change (an id abandoned by a panic is no longer permanently poisoned, so
+reuse now succeeds where it used to fail closed) is precisely what makes the window reachable. Shipping A1 without A2
+would trade a memory leak for a liveness bug.
+
+### A3 — the no-leak-on-unwind obligation belongs to the SPI, not to `ChannelExchange`
+
+**Decision.** The `RequestReplyExchange` godoc (§1) states that an implementation must release **all** request-scoped
+state on **every** exit path, including a panic unwind.
+
+**Why at the SPI.** `ChannelExchange` is no longer the only implementation on the roadmap: Spec 011 Phase 2's
+`NewExchange` (O2) is the second, and holds its own request-scoped state (an in-flight `*http.Request`, a response body
+to close) that can leak by the same mechanism. Leaving the obligation as an implementation note would make every future
+external exchange rediscover it. A shared **exported conformance-test helper** to enforce it mechanically was considered
+and **deferred** — it would add exported API surface and a new package decision for a second implementation that does
+not yet exist.
+
+### A4 — consequences
+
+- **API/SemVer: patch.** Behaviour and godoc only; no exported symbol is added, removed or changed.
+- **No new dependency**; pure stdlib control flow inside existing functions.
+- **Scope reaches `register`, not only `Exchange`** (A2). `deliver`, `closeAll` and `giveUp`'s body stay untouched, so
+  the interleaving this ADR's round-2 audit hand-traced is preserved; A2 *narrows* when `deregister` returns `true`,
+  which strictly tightens that trace rather than reopening it.
+- **The `adapter/http` `recover()` boundary stays.** It remains required fault isolation (a panic must not kill the
+  HTTP server), which is orthogonal to slot reclamation; only its "…and cannot reclaim the slot" caveat is removed.
+  [ADR 0023 Addendum A5](0023-http-channel-adapter.md#a5--panic-recovery-at-both-handler-cores-fault-isolation-and-the-residual-it-cannot-fix)
+  is annotated to point here as its resolution.
+- **SECURITY consequence of that change (audit MEDIUM-1, whole-branch review).** The freed id joins the **N1
+  sequential-reuse window** documented in §2 above: a genuinely-late reply for the abandoned request can be delivered
+  to whoever registers that id next. A whole-branch security review proved this end to end — on the pre-fix tree an
+  attacker re-registering a victim's id after a panic got `ErrDuplicateCorrelation` (fail-closed); on the fixed tree
+  the attacker received the victim's payload. **This is an accepted trade, not a regression in kind:** the same review
+  proved the identical hijack already works on BOTH trees via the **timeout** arm, so the panic arm is a *fourth
+  trigger* for a pre-existing, opt-in-gated hazard — and the alternative is the unbounded slot leak A1 exists to fix.
+  The façades mint fresh 128-bit CSPRNG ids and are unaffected; only a **client-keyed** exchange
+  (`msghttp.WithTrustedCorrelationID`, which already carries a REPLY HIJACK warning) is exposed, and it must treat
+  values as unguessable and single-use. Disclosed in `register`'s godoc and in that option's security warning.
+- **Caller-visible behaviour change (intended).** A correlation id abandoned by a panic is no longer permanently
+  poisoned with `ErrDuplicateCorrelation`; reusing it succeeds. This is also the blackbox probe the tests use, since
+  `replyCorrelator` is unexported (Spec 012 §6).

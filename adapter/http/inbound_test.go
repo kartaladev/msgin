@@ -444,11 +444,14 @@ func TestServeGateway(t *testing.T) {
 // With the recover in place every request gets a clean 500 and the server
 // keeps serving the next one.
 //
-// It deliberately does NOT assert that no correlator slot leaks: the core's
-// giveUp cleanup is not deferred, and making it panic-safe is a separate
-// tracked increment (see recoverHandler's NOTE). Each request here takes a
-// fresh server-minted correlation id, which is the default and the only shape
-// this adapter guarantees.
+// It deliberately does NOT assert that no correlator slot leaks: as of
+// Spec 012 the core reclaims the slot on a panic unwind, and that assertion
+// is owned core-side by
+// TestChannelExchange_panickingFlow_propagatesAndReclaimsSlot — duplicating
+// it here would test the same claim across a package boundary instead of
+// this adapter's own containment behaviour. Each request here takes a fresh
+// server-minted correlation id, which is the default and the only shape this
+// adapter guarantees.
 func TestServeGateway_panickingFlowIsContainedEndToEnd(t *testing.T) {
 	t.Parallel()
 
