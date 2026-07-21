@@ -1,132 +1,127 @@
 # Session handover — msgin
 
-> **READ FIRST, before doing anything.** Read `CLAUDE.md` (root), then the governing artifacts in §3 —
-> **`docs/specs/011-http-adapter.md`**, **`docs/adrs/0023-http-channel-adapter.md`** (incl. **Addendum A**), and
-> **`docs/plans/020-http-adapter-inbound.md`** — and trust those files over anything in this handover or in memory.
-> They were reconciled against the shipped code in `c691f67`, so they now describe what actually exists.
-> The branch is at a clean safepoint: **all code is written, reviewed, gate-clean and committed; nothing is merged.**
+> **READ FIRST, before doing anything.** Read `CLAUDE.md` (root), then the governing artifacts in §3.
+> Trust those files over anything in this handover or in memory. The tree is at a clean safepoint:
+> **Plan 021 is delivered, gate-clean, merged to `main` and pushed. Nothing is in flight.**
 
 ## 1. Objective & roadmap position
 
-**Building:** the **HTTP channel adapter** for `msgin` (Spec 011) — the sixth adapter family, and the first external
-transport built on the `RequestReplyExchange` SPI from Plan 019.
+**Last increment (COMPLETE):** **Plan 021 — panic-safe `ChannelExchange` cleanup** (Spec 012 / ADR 0022 Addendum A).
+A **core** correctness fix to the in-process request-reply primitive shipped by Plan 019.
 
-| Phase | Plan | Content | Status |
-|-------|------|---------|--------|
-| **1** | **020** | `adapter/http` (`msghttp`) + `adapter/http/stdlib`: **I1** async + **I2** sync gateway | **COMPLETE — awaiting merge approval** |
-| 2 | 021 | `adapter/http/stdlib` outbound: **O1** webhook + **O2** request-reply (`RequestReplyExchange`, Return Address) | not started |
-| 3 | 022 | SSE **server** (S-out) | not started |
-| 4 | 023 | SSE **client** (S-in, `StreamingSource`) | not started |
-| 5 | 024 | `adapter/http/gin` module + **ADR 0024** (gin dependency) | not started |
+**Active position: no increment in flight.** The next step is a **fresh design cycle** for a new increment (§5).
 
-**Active position: Plan 020 delivered; the only remaining step is the user's merge decision.**
+| Increment | Plan | Status |
+|---|---|---|
+| Messaging Gateway (in-process request-reply) | 019 | merged |
+| HTTP adapter **Phase 1** — inbound I1 async + I2 sync gateway | 020 | merged |
+| **Exchange panic-safe cleanup** | **021** | **merged (this session)** |
+| HTTP **Phase 2** — outbound O1 webhook + O2 request-reply | 022 | **not started** |
+| HTTP Phase 3 — SSE server · Phase 4 — SSE client · Phase 5 — gin module | 023 · 024 · 025 | not started |
+
+> ⚠️ **Plan numbers shifted.** Plan **021** was claimed by this increment, so Spec 011's HTTP phases moved to
+> **022–025**. Spec 011, ADR 0023 and Plan 020 were all reconciled — a stale cross-reference was caught by the
+> whole-branch review and fixed. Do not resurrect the old numbering.
 
 ## 2. Exact state
 
-- **Branch:** `feat/http-adapter-inbound`, **7 commits ahead of `main`**, **not pushed, not merged**.
-- **Base:** `main` @ **`7f9b544`** — verified with `git merge-base main HEAD`. ⚠️ The *previous* handover claimed
-  `57b3ffd`; that was **wrong**. Reviewing against it silently included two commits already on `main`.
+- **Branch:** `main` @ **`a7eef3b`** (merge commit), **pushed**. `fix/exchange-panic-safe-cleanup` **deleted** (local;
+  it was never pushed, so there is no remote copy).
 - **`git status --short`:** only ` M .claude/settings.json` — a **pre-existing, intentional, unrelated** local change.
-  It was deliberately kept out of every commit this session. **Leave it alone.**
-- **Commits (oldest → newest):**
+  It was deliberately kept out of every commit. **Leave it alone.**
+- **Commits merged (oldest → newest):**
 
   | SHA | Commit |
   |-----|--------|
-  | `8df9611` | `spec:` Spec 011 |
-  | `fb9d48b` | `docs:` ADR 0023 + Plan 020 (design, audited) |
-  | `2c7a886` | `docs:` previous handover |
-  | `6db0c12` | `feat(http)` Task 1 — `msghttp` core: Config/options, `DecodeRequest`/`EncodeResponse` |
-  | `99e3cb1` | `feat(http)` Task 2 — I1 async: `ServeAsync` + `stdlib.NewInbound` |
-  | `8ce81d0` | `feat(http)` Task 3 — I2 gateway: `ServeGateway` + `NewInboundGateway` + `Register` |
-  | `f6bff4c` | `test(http)` Task 4 — Examples + minors + mechanical gate |
-  | `e6f9a77` | `fix(http)` whole-branch review + security findings (F1–F10) |
-  | `1a9fe20` | `fix(http)` residual godoc, `ErrAbortHandler` passthrough, advisory-id rename |
-  | `c691f67` | `docs:` reconcile Spec 011 / ADR 0023 / Plan 020 with shipped code |
+  | `2a7fa7a` | `fix(core)` identity-checked `deregister` (+ Spec 012, ADR 0022 Addendum A, Plan 021) |
+  | `706b375` | `fix(core)` the deferred `settled`-guarded reconciler in `Exchange` |
+  | `ba4852a` | `test(core)` panic-drain coverage + the `RequestReplyExchange` SPI contract godoc |
+  | `a7de9f9` | `docs(http)` residual reconciliation + security disclosures |
+  | `a7eef3b` | merge to `main` |
 
-- **Safepoint: yes.** `go test ./... -race` green on all 6 packages; `adapter/http` and `adapter/http/stdlib` both at
-  **100.0%** statement coverage; `go vet`, `gofmt`, `golangci-lint` (0 issues), `govulncheck`, `CGO_ENABLED=0 go build`,
-  `go mod tidy` (no diff) and `go mod verify` all clean. **No new dependency.**
-- **API:** strictly **additive** relative to `main` (both packages are new; the only root-module change is a
-  comment-only hunk in `errors.go`) → **minor SemVer bump**.
+- **Gate (coordinator re-ran all of it independently — nothing taken on report):** `go test ./... -race -count=2`
+  green on all 6 packages; `golangci-lint` **0 issues**; `govulncheck` **no vulnerabilities**; `go mod tidy` leaves
+  `go.mod`/`go.sum` **byte-identical**; `go vet`, `gofmt`, `CGO_ENABLED=0 go build`, `go mod verify`, `Example` tests
+  all clean. Coverage: root **99.3%**, `adapter/http` + `stdlib` **100%**, and **100% on all 14 `exchange.go`
+  functions**.
+- **API: strictly behaviour + godoc.** No exported symbol added, removed or changed → **patch** SemVer.
 
 ## 3. Traceability pointers — read these first (in order)
 
-1. `CLAUDE.md` (root) — workflow, dependency policy, multi-instance rule, sensible-defaults + coverage gates.
-2. `docs/specs/011-http-adapter.md` — Phase 1 marked DELIVERED and rewritten to the as-shipped design.
-3. `docs/adrs/0023-http-channel-adapter.md` — architecture **plus Addendum A (A1–A6)**, the review-driven changes.
-   **A1 and A2 are recorded as genuine architectural *reversals*, not refinements** (see §4).
-4. `docs/plans/020-http-adapter-inbound.md` — the plan, all steps ticked, with a "Delivered — outcome and deviations" section.
-5. **`docs/specs/012-exchange-panic-safe-cleanup.md`** — the **open follow-up** this branch deliberately did not fix (§4).
-6. Reused context: `docs/adrs/0022-messaging-gateway.md` + `docs/specs/010-messaging-gateway.md` (the
-   `RequestReplyExchange` SPI), `docs/adrs/0002-adapter-spi.md`, `docs/adrs/0001-message-payload-typing.md`.
-7. Full session record incl. every review verdict: `.superpowers/sdd/progress.md` (git-ignored scratch — **not** in git;
-   it will not survive a fresh clone, so this handover is the durable record).
+1. `CLAUDE.md` (root) — workflow, dependency policy, testing rules, coverage gate, multi-instance rule.
+2. `docs/specs/012-exchange-panic-safe-cleanup.md` — the defect, the decided fix, the seven-arm exit table (§5), the
+   `deregister` prerequisite (§5.1), the raced-reply policy (§5.3), the seven required test cases (§6).
+3. `docs/adrs/0022-messaging-gateway.md` — **Addendum A (A1–A4)**: A1 the reconciler, A2 identity-checked `deregister`,
+   A3 the SPI contract, A4 consequences **including the security consequence**.
+4. `docs/plans/021-exchange-panic-safe-cleanup.md` — the 4-task plan, all steps ticked.
+5. `docs/specs/011-http-adapter.md` + `docs/adrs/0023-http-channel-adapter.md` — the HTTP adapter; **Phase 2 is next**.
+6. `.superpowers/sdd/progress.md` — the full session ledger (git-ignored scratch, **not** in git; will not survive a
+   fresh clone — this handover is the durable record).
 
-## 4. Decisions, deviations & the one open residual
+## 4. What shipped, and the two things worth knowing
 
-**Execution:** SDD — a fresh implementer subagent per task, coordinator verified green + committed, an adversarial
-reviewer per task, then whole-branch `/code-review` + `/security-review` (both Opus), one consolidated fix wave, and a
-re-review. Final verdicts: code review **READY TO MERGE: YES** (0 Critical / 0 Important), security **NO BLOCKER**
-(0 HIGH). The re-reviewer re-ran the original attack reproductions itself and applied **16 mutations, 15 caught**.
+**Two defects were fixed, not one.** The increment set out to fix a leak; the design audit found something worse.
 
-**User decisions made this session (all already implemented):**
-1. **Correlation id** — server-mint by default **plus** a separate explicit opt-in. `WithAdvisoryCorrelationID`
-   (renamed from `WithCorrelationID`) is advisory-only → non-reserved `http.correlation-id`;
-   **`WithTrustedCorrelationID`** is the sole path to a client-keyed exchange and carries a security warning.
-   *Why:* a **proven cross-user reply hijack** — attacker reusing a victim's id received the victim's reply body.
-2. **Content-Type** — full decouple: client `Content-Type` → non-reserved `http.content-type`; always
-   `X-Content-Type-Options: nosniff`; response defaults to `application/octet-stream`.
-   *Why:* **proven reflected XSS** — the client could choose the response media type, bypassing the response allow-list.
-3. **Core fix scoped out** — adapter-side `recover()` now; the core root cause is its own increment (see residual).
-4. Post-re-review polish: corrected the residual godoc, re-panic on `http.ErrAbortHandler`, and the advisory rename.
+1. **The panic leak (the stated goal).** `Exchange` called its `giveUp` cleanup at **three explicit call sites**. The
+   request channel is a `DirectChannel`, which runs handlers **synchronously on the caller's goroutine**, so a
+   panicking application handler is a panicking `request.Send` — and the panic unwound past all three, leaking the
+   correlator entry forever. Replaced by **one deferred reconciler guarded by a `settled` flag**, set only in the
+   `case reply, open := <-slot:` arm (the one state where the slot is provably no longer ours — running `giveUp` there
+   would **deadlock** on an emptied, never-closed channel). **No `recover()` was added**: panic transparency is a hard
+   requirement.
+2. **Delete-by-id (found by the round-1 design audit, worse than the target bug).** `deregister` deleted by correlation
+   id **without checking slot identity**. With a reused id, one caller could evict another's slot — **silently dropping
+   a committed reply** (a G4 violation) and **orphaning** the victim's slot, whose owner then blocked **forever** in
+   `giveUp`: unreachable by `deliver`, uncloseable by `closeAll`, no `ctx` escape. Fixed with `ok && s == slot`. This
+   was reachable *because* the increment makes id reuse succeed — so it had to land in the same increment, first.
 
-**Deviations from the audited plan** (all recorded in ADR 0023 Addendum A and Plan 020's deviations section):
-`statusFor` was **deleted** (a hand-built `&Config{}` / `nil *Config` is externally constructible and used to panic —
-the plan's premise that a `Config` only comes from `NewConfig` was false); replaced by nil-safe per-field accessors.
-New exported symbols: `DefaultErrorStatus`, `ErrDecodeRequest`, `ErrWriteResponse`, `WithTrustedCorrelationID`.
+**⚠️ ACCEPTED SECURITY TRADE — know this before touching the correlator.** Fixing the leak converts a **fail-closed**
+outcome into an exploitable one under an already-warned opt-in. With `msghttp.WithTrustedCorrelationID` (client-supplied
+keys), a flow that dispatches to a worker and *then* panics now frees the id immediately, so a late reply can reach
+whoever claims that id next. The whole-branch security review **proved the hijack on the fixed tree** and proved it
+**fail closed on the pre-fix tree**. It was accepted because the same review also proved the *identical* hijack already
+works on **both** trees via the **timeout** arm — so this is a **fourth trigger** for a pre-existing, opt-in-gated
+hazard (ADR 0022 audit N1), and the alternative is the unbounded leak. Disclosure is now in `register`'s godoc,
+`WithTrustedCorrelationID`'s security warning, ADR 0022 A4 and Spec 012 §3.
 
-**Two latent defects in Plan 020 were found and fixed in the doc:** `request.Subscribe(To(reply))` does not compile
-(`Subscribe` takes a `MessageHandler`, `To` returns a `Step` → use `Chain(To(reply))`), and a commit-message template
-that contradicted the binding 500/409 mapping. **Nothing shipped wrong** — `8ce81d0` already had the correct mapping.
-
-**⚠️ OPEN RESIDUAL — `docs/specs/012-exchange-panic-safe-cleanup.md`.** A panicking flow handler still leaks a
-`ChannelExchange` correlator slot: `exchange.go` registers the reply waiter **before** sending and its `giveUp` cleanup
-is **not** `defer`red, so the adapter's `recover` contains the panic (clean 500, server keeps serving) but cannot
-reclaim the slot. On the **default** path the impact is **memory-only** — a fresh server-minted id per request means no
-leaked slot is ever re-keyed. The 409-poisoning variant needs the opt-in `WithTrustedCorrelationID` with a reused
-client value. Either way it requires a **panicking handler** — a bug in the consumer's own code, not attacker-reachable
-alone (but attacker-*amplifiable*). The branch strictly **improves** the prior state, where the panic escaped into
-`net/http` and aborted the connection. Accepted for merge knowingly; **the fix is core-side and needs its own design cycle.**
-
-**Pending approval (BLOCKING):** the user has **not** approved merge, push, or branch deletion. Per CLAUDE.md these are
-per-action and never standing.
+**🔬 FORWARD AUDIT TRIGGER — treat any correlator change as a design-gate event.** `giveUp`'s drain is a bare
+`<-slot` with **no `ctx` escape**. Its boundedness rests **entirely** on the A2 invariant: a slot leaves `waiters` only
+via `deliver` (then committed to a non-blocking `cap 1` send) or `closeAll` (which closes it). **Any future removal path
+that neither sends nor closes — a TTL reaper, an eviction, a shard rebalance — reintroduces the permanent hang.**
 
 ## 5. Next actions
 
-1. **Ask the user for merge approval.** On approval: `git checkout main && git merge --no-ff feat/http-adapter-inbound`,
-   then **ask again** before `git push`, then delete the branch (`git branch -d feat/http-adapter-inbound`, and the
-   remote copy if it was ever pushed — it was not).
-2. **Then start the next increment with a fresh design cycle** (brainstorm → spec/plan/ADR → **adversarial audit** →
-   ask → SDD). Candidates, user's choice:
-   - **Spec 012** — the `exchange.go` panic-safe cleanup fix (small, closes the residual above).
-   - **Plan 021 / Phase 2** — HTTP outbound: O1 webhook + O2 request-reply (the first real **Return Address** case).
-   - Resequencer, `redis`/`pgx`/`nats` group stores, or aggregate-by-expr.
-3. **One point deferred to Phase 2** (recorded in ADR 0023 §5): whether `Producer`/outbound already applies a
-   `RetryPolicy` to `OutboundAdapter.Send`. If yes, O1/O2 add no adapter-side backoff (reliability stays runtime-owned
-   per ADR 0002); if no, Phase 2 adds a thin producer-side retry.
-4. **A forward risk to decide before v1** (ADR 0023 Addendum): one `Config`/`Option` type serves all six HTTP modes.
-   Every future option is additive, but the end state is a `Config` where most options are inert for a given mode
-   (`WithSuccessStatus` on I2 is already the first case). Splitting into per-mode configs **later would be a major bump**
-   — decide deliberately: accept it and add a per-option applicability matrix to `doc.go`, or split before v1.
+1. **Start a fresh design cycle** — `superpowers:brainstorming` → spec/ADR/plan → **adversarial Opus audit of the
+   complete bundle** → ask the user → SDD. Candidates:
+   - **Plan 022 / Spec 011 Phase 2 (recommended)** — HTTP outbound: **O1** webhook `OutboundAdapter` + **O2**
+     `NewExchange` as a real `RequestReplyExchange`. It is the first genuine **Return Address** case, and the **second
+     implementation of the SPI contract this increment just wrote** — it holds its own request-scoped state (an
+     in-flight `*http.Request`, a response body to close) that can leak by exactly the mechanism just fixed, so A3's
+     contract binds it directly. Open point to resolve there: whether `Producer` already applies a `RetryPolicy` to
+     `OutboundAdapter.Send` (ADR 0023 §5) — if yes, no adapter-side backoff.
+   - Resequencer; `redis`/`pgx`/`nats` group stores; aggregate-by-expr.
+2. **Backlog (triaged, not blocking):**
+   - `exchange_test.go`'s `asyncEcho` uses `context.Background()` where CLAUDE.md mandates `t.Context()` (pre-existing).
+   - Consider a defensive `select` with a clock escape on `giveUp`'s drain, so a future invariant break degrades to an
+     error instead of a hang.
+   - **`gorelease` cannot verify SemVer on this repo at all** — there are **zero git tags**, so it reports "inferred
+     base version: none". Every increment so far has established API compatibility *by construction* instead. Cutting a
+     first tag (e.g. `v0.1.0`) would close this blind spot permanently.
 
 ## 6. Gotchas / environment
 
-- **Go 1.25 pin:** always `GOTOOLCHAIN=go1.25.12` (bare `go1.25` is rejected — "a language version but not a toolchain version").
-- **`adapter/http` + `adapter/http/stdlib` are ROOT-module packages** — no new `go.mod`, no `go.work` change, **no new
-  dependency**. The gin dependency + its own module land only in Phase 5 (ADR 0024).
-- **Package name is `msghttp`** (directory `adapter/http`) to avoid shadowing `net/http`.
-- **Tests are fully hermetic** — `httptest.Server` / `httptest.ResponseRecorder`, **no testcontainers**. `goleak`
-  `VerifyTestMain` in both packages. Blackbox `_test` packages only; assert-closure tables; `t.Context()`.
-- **Inbound is the untrusted boundary.** Any change here re-runs `/security-review`, not just `/code-review`.
-- **`gopls`' MCP server disconnected mid-session** — the `LSP` tool may be unavailable; fall back to standard Go tooling.
+- **Go 1.25 pin:** always `GOTOOLCHAIN=go1.25.12` (a bare `go1.25` is rejected — "a language version but not a
+  toolchain version").
+- **`gofumpt` is NOT installed** in this environment; `golangci-lint` and `govulncheck` (via `go run`) are available.
+- **Blackbox tests only** (`package msgin_test`). `replyCorrelator` is unexported — the sanctioned probe for slot
+  residency is `ErrDuplicateCorrelation` on id reuse.
+- **Never call `require`/`t.Fatal`/`t.FailNow` from a spawned goroutine** — off the test goroutine `t.FailNow` calls
+  `runtime.Goexit`, abandoning in-flight state so `goleak` reports a straggler storm that **masks** the real failure.
+  Record into a buffered channel and assert on the test goroutine. This bit us once and is now a standing rule.
+- **Measure interleaving tests, don't trust them.** A concurrent test on this branch passed, was race-clean and
+  line-covered while hitting its target arm **0 times in 200 iterations**. Only instrumentation caught it; the fix was
+  `runtime.Gosched()` on alternating iterations (now ~50/50). Apply the same scepticism to any new concurrency test.
+- **`.superpowers/sdd/` is shared scratch across plans.** Stale `task-N-report.md` files from a *previous* plan sit at
+  the exact paths the next plan writes to — one nearly reached a reviewer as evidence for unrelated code. Archive or
+  delete them when starting a new plan.
 - **Leave `.claude/settings.json` alone** — intentional pre-existing local modification, unrelated to this work.
