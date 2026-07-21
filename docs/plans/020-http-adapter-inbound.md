@@ -1,5 +1,13 @@
 # HTTP channel adapter — Phase 1: inbound server (stdlib) — Implementation Plan
 
+> **STATUS: DELIVERED (2026-07-21)** — all four tasks shipped on branch `feat/http-adapter-inbound` (6 commits: 4 task
+> commits + a review-fix wave + a polish commit). **This document is a historical record**: the task bodies below are
+> the plan *as audited and approved*, and are left as written. Where implementation diverged, the divergence is
+> recorded in **["Delivered — outcome and deviations"](#delivered--outcome-and-deviations)** at the end, and the
+> governing design is [Spec 011](../specs/011-http-adapter.md) + [ADR 0023 incl. Addendum A](../adrs/0023-http-channel-adapter.md#addendum-a--review-driven-design-changes-phase-1-delivery),
+> **not** the task bodies. In particular `WithCorrelationID`, `statusFor` and `defaultErrorStatus` (unexported) appear
+> below as *planned* names that **do not exist in the shipped API**.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.
 >
 > **Go skills are mandatory (CLAUDE.md writing-plans override):** every task starts from **`cc-skills-golang:golang-how-to`**, uses **`superpowers:test-driven-development`** (red→green→refactor), navigates/refactors via **`gopls`**, and obeys the project testing overrides: **`table-test`** (assert-closure tables, `t.Context()`), **`use-mockgen`**, **`use-testcontainers`** (not needed here — HTTP tests are hermetic via `httptest`). Blackbox `_test` packages only.
@@ -68,14 +76,14 @@
 - **`WithSuccessStatus` governs I1 only** (audit M1): `ServeAsync` writes `cfg.successStatus` (default `202`) directly via `w.WriteHeader` on a successful `Send`; `ServeGateway` uses `EncodeResponse` (always `200`). The option's godoc must say it applies to the async inbound handler, not the gateway.
 - `defaultErrorStatus(err) int` (audit L2 — honest mapping): `ErrReplyTimeout`→504; `ErrGatewayClosed`→503; `ErrDuplicateCorrelation`→**409** (Conflict — only reachable when a caller opts into trusting client correlation ids and a client reuses one concurrently); `ErrNoCorrelation`→**500** and `ErrUnsupportedPayload`→**500** (server/wiring faults — the adapter always mints a non-empty `msg.ID()`, so a missing correlation id is never the client's fault); an oversize marker (`*http.MaxBytesError` via `errors.As`)→413; any other decode/read error→400; default→500. Uses `errors.Is`/`errors.As` against the `msgin.*` sentinels and `*http.MaxBytesError`.
 
-- [ ] **Step 1: Write failing tests** (`encode_test.go`, `package msghttp_test`, `goleak` `TestMain`). Assert-closure tables:
+- [x] **Step 1: Write failing tests** (`encode_test.go`, `package msghttp_test`, `goleak` `TestMain`). Assert-closure tables:
   - `TestNewConfig_validation` — cases: default (no opts) ok; `WithMaxBodyBytes(0)`/`(-1)` → `ErrInvalidMaxBodyBytes`; `WithSuccessStatus(99)`/`(600)` → `ErrInvalidStatusCode`; valid overrides ok.
   - `TestDecodeRequest` — cases (each builds an `*http.Request` via `httptest.NewRequest`): body becomes `[]byte` payload; oversize body (`WithMaxBodyBytes(4)` + 5-byte body) → error that maps to 413 (`errors.As(*http.MaxBytesError)`); **a non-oversize read error → maps to 400 (audit M3):** back the request with an `io.Reader` that returns a non-`MaxBytesError` on `Read` (`errReader{}`), assert `DecodeRequest` surfaces it and `defaultErrorStatus` maps it to 400 (distinct from the 413 arm); `Content-Type` → `HeaderContentType`; **a client `msgin.delivery-count` header is stripped (audit L5 — a reserved header nothing else overwrites, unlike `correlation-id` which the resolver overwrites anyway)** → assert `msg.Header(HeaderDeliveryCount)` is absent; allow-listed header copied, non-allow-listed header **absent**; default correlation id equals `msg.ID()`; `WithCorrelationID` returning `"x"` sets `"x"`; `WithCorrelationID` returning `""` falls back to `msg.ID()`.
   - `TestEncodeResponse` — cases (via `httptest.ResponseRecorder`): `[]byte` payload → body + `200`; `string` payload → body; non-bytes payload (e.g. `int`) → `ErrUnsupportedPayload` **and the recorder has no headers/status written (audit L4)** — assert `rec.Header()` is empty and the body is empty; allow-listed header emitted; a header value containing `\n` is sanitized (no CRLF in output); `HeaderContentType` → `Content-Type`.
-- [ ] **Step 2: Run to verify it fails.** `GOTOOLCHAIN=go1.25.12 go test ./adapter/http/ -run 'Config|Decode|Encode'` → `undefined: msghttp.NewConfig` etc.
-- [ ] **Step 3: Implement** `doc.go`, `errors.go`, `options.go`, `encode.go`.
-- [ ] **Step 4: Run to verify it passes.** `GOTOOLCHAIN=go1.25.12 go test ./adapter/http/ -run 'Config|Decode|Encode' -race -cover`; `go vet ./adapter/http/`.
-- [ ] **Step 5: Commit** (ADR 0023 + Spec 011 already committed standalone for handover; this task commits the code + Plan 020 reference).
+- [x] **Step 2: Run to verify it fails.** `GOTOOLCHAIN=go1.25.12 go test ./adapter/http/ -run 'Config|Decode|Encode'` → `undefined: msghttp.NewConfig` etc.
+- [x] **Step 3: Implement** `doc.go`, `errors.go`, `options.go`, `encode.go`.
+- [x] **Step 4: Run to verify it passes.** `GOTOOLCHAIN=go1.25.12 go test ./adapter/http/ -run 'Config|Decode|Encode' -race -cover`; `go vet ./adapter/http/`.
+- [x] **Step 5: Commit** (ADR 0023 + Spec 011 already committed standalone for handover; this task commits the code + Plan 020 reference).
 
 ```
 feat(http): msghttp core — Config/options, request⇄Message encode/decode
@@ -105,13 +113,13 @@ ADR: 0023
 
 **Design:** `ServeAsync`: `msg, err := DecodeRequest(r, cfg)`; on decode error → `statusFor(cfg, err)` (see below), log, return. Else `err := target.Send(r.Context(), msg)`; on error → `statusFor(cfg, err)`, log; on success → `w.WriteHeader(cfg.successStatus)` (default `202`). `statusFor(cfg, err)` is the shared helper both `Serve*` use: `if cfg.errorStatus != nil { return cfg.errorStatus(err) }; return defaultErrorStatus(err)` — factoring it means the `cfg.errorStatus != nil` branch is exercised once and tested once (audit M2). `NewInbound`: `cfg, err := msghttp.NewConfig(opts...); if err != nil { return nil, err }; if target == nil { return nil, msghttp.ErrNilTarget }; return http.HandlerFunc(func(w,r){ msghttp.ServeAsync(w,r,target,cfg) }), nil`. **Method note (audit L6):** the handler does not restrict the HTTP method — a `GET` reaches the same decode+send path; method filtering is the caller's mux concern. State this in the `NewInbound` godoc.
 
-- [ ] **Step 1: Write failing tests.**
+- [x] **Step 1: Write failing tests.**
   - `msghttp_test.TestServeAsync` (assert-closure table, driven via `httptest.NewRecorder` + `httptest.NewRequest`, target = an in-memory capture channel or `memory.New()`): success → default `202` and the target received a message whose payload is the body bytes and whose `HeaderCorrelationID` is set; **`WithSuccessStatus(201)` → success returns `201` (proves the option is read on I1)**; `Send` returns an error → `500`; **`WithErrorStatus(func(error) int{ return 418 })` + a `Send` error → `418` (covers the `cfg.errorStatus != nil` branch — audit M2)**; oversize body → `413`; the received message carries the request `Content-Type`.
   - `stdlib_test.TestNewInbound` (over `httptest.NewServer(h)`, real `http.Client`): `POST` a body → `202`; `NewInbound(nil, …)` → `ErrNilTarget`; an invalid option (`WithMaxBodyBytes(0)`) → error from `NewInbound`. `goleak` `TestMain`.
-- [ ] **Step 2: Run to verify it fails.** `GOTOOLCHAIN=go1.25.12 go test ./adapter/http/... -run 'ServeAsync|NewInbound'`.
-- [ ] **Step 3: Implement** `adapter/http/inbound.go` (`ServeAsync`) + `adapter/http/stdlib/{doc.go,inbound.go}` (`NewInbound`).
-- [ ] **Step 4: Run to verify it passes.** `GOTOOLCHAIN=go1.25.12 go test ./adapter/http/... -run 'ServeAsync|NewInbound' -race -cover`; `go vet ./adapter/http/...`.
-- [ ] **Step 5: Commit.**
+- [x] **Step 2: Run to verify it fails.** `GOTOOLCHAIN=go1.25.12 go test ./adapter/http/... -run 'ServeAsync|NewInbound'`.
+- [x] **Step 3: Implement** `adapter/http/inbound.go` (`ServeAsync`) + `adapter/http/stdlib/{doc.go,inbound.go}` (`NewInbound`).
+- [x] **Step 4: Run to verify it passes.** `GOTOOLCHAIN=go1.25.12 go test ./adapter/http/... -run 'ServeAsync|NewInbound' -race -cover`; `go vet ./adapter/http/...`.
+- [x] **Step 5: Commit.**
 
 ```
 feat(http): I1 async inbound handler (ServeAsync + stdlib.NewInbound)
@@ -139,22 +147,23 @@ ADR: 0023
 
 **Design:** `ServeGateway`: `msg, err := DecodeRequest(r, cfg)` → decode error mapped via `statusFor` (413/400). Else `reply, err := x.Exchange(r.Context(), msg)`; on error → `statusFor(cfg, err)` (default: `ErrReplyTimeout`→504, `ErrGatewayClosed`→503, `ErrDuplicateCorrelation`→409, `ErrNoCorrelation`→500, else→500), log. On success → `EncodeResponse(w, reply, cfg)` (writes `200`); if `EncodeResponse` returns `ErrUnsupportedPayload` (non-bytes reply), it has written **nothing** (audit L4), so `ServeGateway` then writes `statusFor(cfg, ErrUnsupportedPayload)` (=500) cleanly. `NewInboundGateway`: `NewConfig` → nil-exchange guard (`msgin.ErrNilExchange`) → `http.HandlerFunc` wrapping `ServeGateway`.
 
-- [ ] **Step 1: Write failing tests.**
-  - `msghttp_test.TestServeGateway` (table): happy path over a **real** `ChannelExchange` echo flow (`request := NewDirectChannel()`, `reply := NewDirectChannel()`, `request.Subscribe(To(reply))`, `x, _ := NewChannelExchange(request, reply)`) — the response body equals the request body and status `200`; error mapping via a `fakeExchange` returning each sentinel → asserts `ErrReplyTimeout`→504, `ErrGatewayClosed`→503, `ErrDuplicateCorrelation`→409, `ErrNoCorrelation`→500, a generic error→500; a `fakeExchange` returning a reply with a non-bytes payload → `500` (`ErrUnsupportedPayload` path) **and the response body is empty (no flow headers leaked — audit L4)**; **`WithErrorStatus` custom mapper → the custom code (audit M2)**. Use a **fake clock** on the real `ChannelExchange` where a timeout is asserted so it fails fast (no 30s wall wait), mirroring Plan 019's guidance.
+- [x] **Step 1: Write failing tests.**
+  - `msghttp_test.TestServeGateway` (table): happy path over a **real** `ChannelExchange` echo flow (`request := msgin.NewDirectChannel()`, `reply := msgin.NewDirectChannel()`, `request.Subscribe(msgin.Chain(msgin.To(reply)))`, `x, _ := msgin.NewChannelExchange(request, reply)`) — **[corrected 2026-07-21]** the plan as audited wrote `request.Subscribe(To(reply))`, which **does not compile**: `Subscribe` takes a `msgin.MessageHandler` while `To` returns a `msgin.Step`; `msgin.Chain` is what adapts one to the other, and is the form the shipped tests use — the response body equals the request body and status `200`; error mapping via a `fakeExchange` returning each sentinel → asserts `ErrReplyTimeout`→504, `ErrGatewayClosed`→503, `ErrDuplicateCorrelation`→409, `ErrNoCorrelation`→500, a generic error→500; a `fakeExchange` returning a reply with a non-bytes payload → `500` (`ErrUnsupportedPayload` path) **and the response body is empty (no flow headers leaked — audit L4)**; **`WithErrorStatus` custom mapper → the custom code (audit M2)**. Use a **fake clock** on the real `ChannelExchange` where a timeout is asserted so it fails fast (no 30s wall wait), mirroring Plan 019's guidance.
   - `stdlib_test.TestNewInboundGateway` (over `httptest.Server`): `POST` → echoed body `200`; `NewInboundGateway(nil, …)` → `msgin.ErrNilExchange`; `Register(mux, "/rr", h)` mounts and serves. `goleak` `TestMain`. Close the `ChannelExchange` in a `t.Cleanup` so no waiter lingers.
-- [ ] **Step 2: Run to verify it fails.**
-- [ ] **Step 3: Implement** `ServeGateway`, `NewInboundGateway`, `Register`.
-- [ ] **Step 4: Run to verify it passes** (`-race -cover`, `go vet`).
-- [ ] **Step 5: Commit.**
+- [x] **Step 2: Run to verify it fails.**
+- [x] **Step 3: Implement** `ServeGateway`, `NewInboundGateway`, `Register`.
+- [x] **Step 4: Run to verify it passes** (`-race -cover`, `go vet`).
+- [x] **Step 5: Commit.**
 
 ```
 feat(http): I2 sync inbound gateway (ServeGateway + stdlib.NewInboundGateway)
 
 An http.Handler over any RequestReplyExchange: decode the request, run the
 exchange, encode the correlated reply as the response. Error→status mapping
-(ErrReplyTimeout→504, ErrGatewayClosed→503, no/dup-correlation→400). A
-ChannelExchange gives HTTP-in → in-process request/reply → HTTP-out with no
-new correlation code. Adds a ServeMux Register helper.
+(ErrReplyTimeout→504, ErrGatewayClosed→503, ErrDuplicateCorrelation→409,
+ErrNoCorrelation→500). A ChannelExchange gives HTTP-in → in-process
+request/reply → HTTP-out with no new correlation code. Adds a ServeMux
+Register helper.
 
 Spec: 011
 Plan: 020
@@ -169,13 +178,13 @@ ADR: 0023
 
 **Files:** Extend `inbound_test.go` in both packages (Examples); confirm `doc.go`s; no production code beyond doc/example fixes.
 
-- [ ] **Step 1: Write `Example` tests** (double as godoc, deterministic output — no ids/timestamps printed):
+- [x] **Step 1: Write `Example` tests** (double as godoc, deterministic output — no ids/timestamps printed):
   - `stdlib_test.ExampleNewInbound` — mount on a `httptest.Server`, `POST`, print the status (`202`).
   - `stdlib_test.ExampleNewInboundGateway` — wire a `ChannelExchange` over a doubling/echo flow that **ends with `To(reply)` preserving `HeaderCorrelationID`** (use `WithPayload`, not `New`, in any activator so the reply stays correlated — the Plan 019 G6 lesson), `POST`, print the response body.
-- [ ] **Step 2: Run examples.** `GOTOOLCHAIN=go1.25.12 go test ./adapter/http/... -run '^Example' -v`.
-- [ ] **Step 3: Full suite, race + leak.** `GOTOOLCHAIN=go1.25.12 go test ./... -race` (goleak clean in both new packages).
-- [ ] **Step 4: Coverage.** `GOTOOLCHAIN=go1.25.12 go test ./adapter/http/... -coverprofile=/tmp/http.cov && go tool cover -func=/tmp/http.cov | tail -1` → ≥ 85% each; inspect `encode.go`/`inbound.go` for any uncovered branch and add a case.
-- [ ] **Step 5: Lint / fmt / vet / vuln / cgo / module hygiene.**
+- [x] **Step 2: Run examples.** `GOTOOLCHAIN=go1.25.12 go test ./adapter/http/... -run '^Example' -v`.
+- [x] **Step 3: Full suite, race + leak.** `GOTOOLCHAIN=go1.25.12 go test ./... -race` (goleak clean in both new packages).
+- [x] **Step 4: Coverage.** `GOTOOLCHAIN=go1.25.12 go test ./adapter/http/... -coverprofile=/tmp/http.cov && go tool cover -func=/tmp/http.cov | tail -1` → ≥ 85% each; inspect `encode.go`/`inbound.go` for any uncovered branch and add a case.
+- [x] **Step 5: Lint / fmt / vet / vuln / cgo / module hygiene.**
 
 ```bash
 GOTOOLCHAIN=go1.25.12 go vet ./...
@@ -187,8 +196,8 @@ GOTOOLCHAIN=go1.25.12 go mod tidy && git diff --exit-code go.mod go.sum   # no n
 GOTOOLCHAIN=go1.25.12 go mod verify
 ```
 
-- [ ] **Step 6: Whole-branch review + security gate** (CLAUDE.md §5, over `main..HEAD`). Run `/code-review` **and** `/security-review` on the branch diff — this is the untrusted-input boundary (Spec 011 §4), so security is a first-class gate, not advisory. Resolve or triage every finding (re-run the affected review + `-race` after fixes). Confirm additions-only API → minor SemVer.
-- [ ] **Step 7: Commit** any gate fixes / examples.
+- [x] **Step 6: Whole-branch review + security gate** (CLAUDE.md §5, over `main..HEAD`). Run `/code-review` **and** `/security-review` on the branch diff — this is the untrusted-input boundary (Spec 011 §4), so security is a first-class gate, not advisory. Resolve or triage every finding (re-run the affected review + `-race` after fixes). Confirm additions-only API → minor SemVer.
+- [x] **Step 7: Commit** any gate fixes / examples.
 
 ```
 test(http): inbound Example tests + whole-branch delivery/security gate
@@ -212,3 +221,82 @@ ADR: 0023
 - **No goroutines started:** handlers run on the caller's server goroutines; there is nothing to leak (Phase 3's SSE server is the first mode that owns goroutines). `goleak` still guards against accidental leaks in helpers.
 - **Return Address:** not exercised in Phase 1 (inbound gateway's correlator is process-local and request-scoped — ADR 0023 §4); it becomes material in Phase 2's O2. Noted so the auditor checks the boundary is not silently assumed.
 - **Adversarial audit round 1 folded** (Opus, **SOUND-WITH-NITS** — architecture verified SOUND against the code: SPI reuse, Return-Address-by-construction, and every load-bearing API confirmed). Must-fix items folded: **H1** the request→message path uses `msgin.New` not `NewMessage` (a spec-only slip that would have 400'd every I2 request — corrected in Spec §3.2/ADR §2); **M1** I2 success = `200`, `WithSuccessStatus` scoped to I1 (Task 1/2/3); **M2** the `cfg.errorStatus != nil` custom-mapper branch factored into `statusFor` and given covering tests on I1 and I2 (Task 2/3); **M3** an `errReader` fixture covers the non-oversize read-error→400 branch (Task 1). Folded nits: **M4** inbound-`[]byte`/no-codec-seam documented symmetrically (spec/ADR); **L1** I1 `DirectChannel`-synchronous/`reqCtx` caveat + `QueueChannel` steer (spec §3.3); **L2** honest error→status (`ErrNoCorrelation`→500, `ErrDuplicateCorrelation`→409; Task 1/3); **L3** `ErrNilTarget` justified vs `msgin.ErrNilChannel`; **L4** `EncodeResponse` extracts bytes before writing anything (Task 1); **L5** reserved-strip test uses `delivery-count` (Task 1); **L6** method-not-restricted godoc note (Task 2). **P1** (1 MiB default) confirmed defensible — fail-safe, overridable, godoc rationale mandated. No re-audit warranted (the status-model change did not ripple into new option surface).
+
+---
+
+## Delivered — outcome and deviations
+
+**Outcome:** all four tasks shipped on `feat/http-adapter-inbound` (base `main` @ `7f9b544`), six commits:
+
+| Commit | Content |
+|--------|---------|
+| `6db0c12` | Task 1 — `msghttp` core: `Config`/options, sentinels, `DecodeRequest`/`EncodeResponse` |
+| `99e3cb1` | Task 2 — I1 `ServeAsync` + `stdlib.NewInbound` |
+| `8ce81d0` | Task 3 — I2 `ServeGateway` + `stdlib.NewInboundGateway` + `Register` |
+| `f6bff4c` | Task 4 — `Example` tests + the whole-branch delivery/security gate |
+| `e6f9a77` | **Review-fix wave** — the `/code-review` + `/security-review` findings (below) |
+| `1a9fe20` | Polish — accurate panic-residual godoc, `http.ErrAbortHandler` passthrough, advisory-id rename |
+
+**Gate:** `go test ./... -race` green; **100% statement coverage** on both new packages (plan target was ≥85%);
+`goleak` clean; vet/gofmt/gofumpt/golangci-lint/`govulncheck`/`CGO_ENABLED=0 go build` clean; `go mod tidy` produced
+**no new dependency** (Global Constraint held); API purely additive → minor SemVer.
+
+### Deviations from the audited plan
+
+The plan's Task 4 ran `/code-review` and `/security-review` over `main..HEAD` as designed — and they forced six design
+changes the two-round Opus design audit had not anticipated. Each is recorded, with the proven attack or defect that
+drove it, in **[ADR 0023 Addendum A](../adrs/0023-http-channel-adapter.md#addendum-a--review-driven-design-changes-phase-1-delivery)**
+and in specification form in [Spec 011](../specs/011-http-adapter.md) §3.2/§3.3/§3.6/§4/§5/§7. Summarized against the
+plan text above:
+
+1. **`WithCorrelationID` does not exist** (Addendum **A2**, an architectural **reversal**). Task 1's option list,
+   `Config` defaults and `TestDecodeRequest` cases name a single resolver that *decides* the exchange correlation key.
+   Shipped instead: the key is **always** the server-minted `msg.ID()`, with `WithAdvisoryCorrelationID` (advisory
+   only, populates the non-reserved `http.correlation-id`) and `WithTrustedCorrelationID` (the sole, warning-carrying
+   opt-in to a client-keyed exchange) as **orthogonal** options. Driver: a proven cross-user reply hijack, plus a `409`
+   targeted-denial variant, when a client value keys the correlator.
+2. **The client's `Content-Type` no longer becomes `msgin.HeaderContentType`** (Addendum **A1**). Task 1's decode step
+   maps it onto the reserved header; shipped, it lands on the non-reserved `http.content-type`, and `EncodeResponse`
+   always sets `X-Content-Type-Options: nosniff` with an `application/octet-stream` default. Driver: a proven
+   reflected-XSS path — the client chose the media type its own echoed bytes were served under.
+3. **`statusFor(cfg, err)` does not exist** (Addendum **A3**). Task 2's design factored the custom-mapper branch into
+   one helper reading `cfg.errorStatus` directly, on the premise that a `Config` can only come from `NewConfig`. That
+   premise was false — `&msghttp.Config{}` and a `nil *Config` are externally constructible — and the direct reads
+   were a nil-pointer panic on caller input. Shipped: **nil-safe per-field `Config` accessors**, each back-filling its
+   documented default; audit M2's requirement (the custom-mapper branch is exercised and tested) still holds, via
+   `errStatus()`.
+4. **Three symbols are exported that the plan kept private** (Addendum **A4**): `DefaultErrorStatus` (Task 1's
+   `defaultErrorStatus`), the sentinel `ErrDecodeRequest` (replacing an unexported `decodeError` struct), and
+   `ErrWriteResponse`. Driver: a `WithErrorStatus` mapper could not reach the 413-vs-400 discrimination from outside
+   the package, so every custom mapper had to reimplement and drift from the default.
+5. **Panic recovery at both handler cores** (Addendum **A5**) — absent from the plan entirely, though the flow runs on
+   the request goroutine. Shipped: a deferred `recover()` over a commit-tracking `responseTracker` (clean 500, never a
+   second `WriteHeader`), re-panicking `http.ErrAbortHandler` per `net/http`'s contract.
+6. **Post-commit write failures are logged, not restated as a status** (Addendum **A6**). Task 3's design mapped *any*
+   `EncodeResponse` error to a status write; that is a protocol error once the `200` is out. Shipped: `ErrWriteResponse`
+   marks the committed arm and `ServeGateway` only logs it.
+
+**Residual, not fixed here.** A panicking flow handler still leaks a `msgin.ChannelExchange` correlator slot:
+`Exchange` registers the waiter *before* it sends and its `giveUp` cleanup is **not `defer`red**, so the adapter-side
+recover contains the panic but cannot reclaim the slot. Impact on the default path is **memory-only** (fresh
+server-minted key per request ⇒ no slot is ever re-keyed); the `409`-poisoning variant additionally needs the opt-in
+`WithTrustedCorrelationID` with a reused client value; either way it takes a panicking handler, i.e. a bug in the
+consumer's own code. The fix is **core-side** (`exchange.go`), was deliberately scoped out of this branch by the user,
+and is tracked as [Spec 012 — panic-safe `ChannelExchange` cleanup](../specs/012-exchange-panic-safe-cleanup.md).
+
+### Two latent plan defects, corrected above
+
+- **Task 3, Step 1** wrote `request.Subscribe(To(reply))` — this **does not compile**: `Subscribe` takes a
+  `msgin.MessageHandler` while `To` returns a `msgin.Step`. Corrected in place to
+  `request.Subscribe(msgin.Chain(msgin.To(reply)))`, the form the shipped tests use.
+- **Task 3's commit-message template** said `no/dup-correlation→400`, contradicting both the binding design (Task 1's
+  §L2 mapping) and the shipped code, where `msgin.ErrNoCorrelation`→**500** and `msgin.ErrDuplicateCorrelation`→**409**.
+  Corrected in place. The **actual** commit `8ce81d0` already carried the correct mapping, so nothing shipped wrong —
+  the defect was confined to this document.
+
+### Traceability
+
+Every commit carries `Spec: 011` / `Plan: 020` / `ADR: 0023` trailers. Governing artifacts:
+[Spec 011](../specs/011-http-adapter.md) (Phase 1 sections reconciled with the shipped code),
+[ADR 0023 + Addendum A](../adrs/0023-http-channel-adapter.md), spawning
+[Spec 012](../specs/012-exchange-panic-safe-cleanup.md).

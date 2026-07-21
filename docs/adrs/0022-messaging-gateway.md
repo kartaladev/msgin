@@ -197,3 +197,12 @@ the request, so the reply returns to the originating instance; correlation id ma
 precisely so the adapter encapsulates return-address + reply-demux. This constraint is recorded now so the
 external-adapter increment designs it in from the start (see CLAUDE.md → *Production robustness → Multi-instance /
 distributed-deployment awareness*).
+
+**Known defect against this decision (filed 2026-07-21, not yet fixed).** `ChannelExchange.Exchange` registers its
+reply waiter **before** it sends the request and calls its `giveUp` cleanup **non-`defer`red**, so a **panicking**
+request-channel subscriber (a `DirectChannel` runs it synchronously on the caller's goroutine) unwinds past every
+cleanup arm and leaks the correlator entry + slot channel until `Close()`. Surfaced — and contained, not fixed — by
+Spec 011's HTTP inbound adapter ([ADR 0023 Addendum A5](0023-http-channel-adapter.md#a5--panic-recovery-at-both-handler-cores-fault-isolation-and-the-residual-it-cannot-fix)).
+Impact, limits, and the design obligations for the fix are captured in
+[Spec 012 — Panic-safe `ChannelExchange` cleanup](../specs/012-exchange-panic-safe-cleanup.md); it is a **core** change
+requiring its own design cycle, and this ADR will be amended or superseded by that increment.

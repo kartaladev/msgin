@@ -1,6 +1,12 @@
 # ADR 0023 — HTTP channel adapter architecture (framework-agnostic core; stdlib & gin bindings; Return Address by construction)
 
-- **Status:** Proposed (2026-07-21) — records the architectural decisions of
+- **Status:** **Accepted** (2026-07-21) for Phase 1 (inbound server), which shipped per
+  [Plan 020](../plans/020-http-adapter-inbound.md); Phases 2–5 remain **Proposed**. The architecture below held
+  unchanged through implementation, but the whole-branch `/code-review` + `/security-review` gate forced six
+  decisions the audited design did not anticipate — recorded in **[Addendum A](#addendum-a--review-driven-design-changes-phase-1-delivery)**
+  rather than by silently editing the Decision section (Nygard convention: supersede/append, never rewrite). One of
+  the six (**A2**, correlation-id trust) is an **architectural reversal**, not a refinement, and is labelled as such.
+  Originally recorded as: Proposed (2026-07-21) — records the architectural decisions of
   [Spec 011](../specs/011-http-adapter.md), settled with the user in brainstorming (one spec / five phased plans; both
   SSE directions; framework-agnostic core + separate gin module placed at `adapter/http/stdlib` and `adapter/http/gin`;
   Return Address satisfied by construction for synchronous HTTP request-reply). **Phase-1 adversarial design audit
@@ -66,9 +72,13 @@ built to receive. Building it raises four architectural questions the one-way st
 
 - **Request → `Message[any]`**: the request is *external input entering the system*, so it is built with **`msgin.New`**
   (fresh `HeaderID` + timestamp), **not** `NewMessage` (which is for reconstructing a stored msgin envelope verbatim).
-  Payload = request body as **`[]byte`**; `HeaderContentType` ← `Content-Type`; method/path/query recorded under
-  non-reserved `http.*` header keys; only **allow-listed** client headers are copied.
-- **Correlation id**: resolved by `WithCorrelationID(func(*http.Request) string)`; **default = the message's own fresh
+  Payload = request body as **`[]byte`**; ~~`HeaderContentType` ← `Content-Type`~~ (⚠️ **superseded by
+  [Addendum A1](#a1--the-client-never-chooses-the-response-media-type-security)**: the client's `Content-Type` lands on
+  the non-reserved `http.content-type`); method/path/query recorded under non-reserved `http.*` header keys; only
+  **allow-listed** client headers are copied.
+- **Correlation id** — ⚠️ **SUPERSEDED BY [ADDENDUM A2](#a2--correlation-id-always-server-minted-advisory-and-trusted-split-security-reversal)**;
+  `WithCorrelationID` does not exist in the shipped API. As originally decided: resolved by
+  `WithCorrelationID(func(*http.Request) string)`; **default = the message's own fresh
   `ID()`** (reusing `New`'s generation — the adapter never needs msgin's unexported id generator, and every inbound
   request gets a unique, non-client-controlled correlation key). Client-supplied ids are trusted **only** when the
   caller opts in via the resolver.
@@ -148,6 +158,17 @@ correlation-id distrust by default, CRLF-sanitized response headers, SSRF invari
 payload), caller-owned server hardening (documented), `WithMaxConnections` on the SSE server, no secret logging. A
 dedicated `/security-review` runs on Phase 1 (inbound) and Phase 3 (SSE server). (Spec 011 §4.)
 
+Phase 1's security review **strengthened** this posture beyond what was decided here — see
+[Addendum A1](#a1--the-client-never-chooses-the-response-media-type-security) (nosniff + `application/octet-stream`
+default; the client's `Content-Type` demoted to inert `http.content-type` metadata),
+[A2](#a2--correlation-id-always-server-minted-advisory-and-trusted-split-security-reversal) (correlation key always
+server-minted; advisory/trusted split), [A3](#a3--nil-safe-config-accessors-replace-the-planned-statusfor-helper) (no
+panic on a hand-built `Config`) and [A5](#a5--panic-recovery-at-both-handler-cores-fault-isolation-and-the-residual-it-cannot-fix)
+(panic containment, plus the residual correlator-slot leak it cannot fix). "Caller-owned server hardening
+(documented)" is now discharged concretely: the `adapter/http/stdlib` **package godoc** carries a "Deploying these
+handlers safely" section with the required `http.Server` timeouts and the explicit no-authn/authz/CSRF/CORS/method
+statement, and both constructors' godoc point at it.
+
 ## Consequences
 
 **Positive**
@@ -173,3 +194,140 @@ dedicated `/security-review` runs on Phase 1 (inbound) and Phase 3 (SSE server).
 - ADR 0024 admits `github.com/gin-gonic/gin` to the `adapter/http/gin` module (Plan 024).
 - The async-callback request-reply variant (cross-instance Return Address) is a named future increment.
 - Plan 021 resolves the outbound-retry open point (§5).
+- [Spec 012 — panic-safe `ChannelExchange` cleanup](../specs/012-exchange-panic-safe-cleanup.md): the core-side
+  correlator-slot leak that Phase 1's panic recovery **contains but cannot fix** (Addendum A5).
+
+---
+
+## Addendum A — review-driven design changes (Phase 1 delivery)
+
+- **Status:** Accepted (2026-07-21), appended after Plan 020's Phase-1 implementation.
+- **Prompted by:** the mandatory whole-branch `/code-review` + `/security-review` gate over `main..HEAD`
+  (CLAUDE.md Development workflow §5), run on branch `feat/http-adapter-inbound`. Each item below is a decision the
+  **audited** design (spec + this ADR + Plan 020, two-stage Opus audit) did not anticipate, recorded with the proven
+  attack or defect that forced it.
+- **Scope:** Phase 1 only (`adapter/http`, `adapter/http/stdlib`). The architecture in the Decision section above —
+  framework-agnostic core + thin bindings (§1), per-mode SPI mapping (§3), Return Address by construction (§4),
+  runtime-owned outbound reliability (§5) — is **unchanged**; nothing here is a core change. Spec 011 §3.2/§3.3/§3.6/
+  §4/§5/§7 carry the same content in specification form.
+- **Reversal vs refinement:** **A2 is a genuine architectural reversal** of §2's correlation-id decision — the shipped
+  API removes the ability the ADR granted (a resolver that *decides* the exchange key) and replaces it with two
+  differently-named options of different trust. A1 and A3–A6 are refinements/hardening within the existing decision.
+
+### A1 — the client never chooses the response media type (security)
+
+**Decision.** The client's request `Content-Type` is recorded on the **non-reserved `http.content-type`** header, never
+on the reserved `msgin.HeaderContentType`. `EncodeResponse` takes the response `Content-Type` from the **flow's**
+`msgin.HeaderContentType`, defaulting to **`application/octet-stream`** when absent/empty, and **always** sets
+`X-Content-Type-Options: nosniff` — after the response allow-list, so an allow-listed message header cannot weaken it.
+
+**Why.** The security review proved a **reflected-XSS** path on the (canonical, documented) echo-shaped gateway flow:
+the client `POST`ed `Content-Type: text/html` with a `<script>` body; decode copied that value into
+`msgin.content-type`; the echo reply carried it back; `EncodeResponse` trusted it and served the client's own script
+as executable HTML from the endpoint's origin. Leaving `Content-Type` unset was not an option either — `net/http`'s
+`DetectContentType` would then sniff `text/html` out of the same body.
+
+**Consequences.** The response media type is now a **flow** decision, never a client one; a flow that wants a specific
+type sets `msgin.HeaderContentType` on the reply. A flow that sets nothing gets a non-renderable
+`application/octet-stream` — a deliberately conservative default per CLAUDE.md's safe-default gate. Client
+`Content-Type` remains available to the flow (as inert metadata) for routing/logging.
+
+### A2 — correlation id: always server-minted; advisory and trusted split (security **reversal**)
+
+**Decision.** `msgin.HeaderCorrelationID` — the key the exchange correlates the reply on — is **always** the message's
+own server-minted `msg.ID()`. The planned `WithCorrelationID` is **removed** and replaced by two orthogonal options:
+
+- `WithAdvisoryCorrelationID(f)` — **advisory only**: populates the non-reserved `http.correlation-id` header for the
+  flow to read/log/echo. No authority over the exchange key.
+- `WithTrustedCorrelationID(f)` — the **sole** path to a client-keyed exchange, carrying a `SECURITY WARNING` godoc
+  naming the attacks and the preconditions (values unguessable, single-use per client, endpoint authenticated).
+
+They are disjoint in header, disjoint in trust, may both be set, and neither overrides the other. An empty trusted
+value falls back to the server-minted id — never to the advisory value. A `nil` resolver is a no-op on both.
+
+**Why.** The security review proved two attacks against the original single-option design, in which the resolver's
+return value *became* the exchange key. **(1) Reply hijack:** a peer that can guess or replay another client's
+correlation value registers the waiter the victim's reply is delivered to, and reads the victim's response body — the
+correlator has no notion of *which* connection owns a key. **(2) Targeted denial:** a peer that pre-registers a
+victim's value makes every victim request fail `msgin.ErrDuplicateCorrelation` → `409`. The original design's
+"client-supplied ids are trusted only when the caller opts in" was true but insufficient: one option served both the
+harmless use case (*surface the client's id to the flow*) and the dangerous one (*let the client key the correlator*),
+so a caller reaching for the former silently got the latter.
+
+**Consequences.** The common need — the client's id visible to the flow — is now served by an option that **cannot**
+be a security bug. The dangerous capability survives, deliberately, behind a longer name and an explicit warning
+(msgin does not remove capabilities its users may legitimately need). This is a **breaking change against the audited
+design only**, not against any released API: the option had not shipped. `409`/`ErrDuplicateCorrelation` becomes
+unreachable on the default path, which the delivered godoc states.
+
+### A3 — nil-safe `Config` accessors replace the planned `statusFor` helper
+
+**Decision.** The planned single `statusFor(cfg, err)` helper is dropped in favor of **per-field, nil-safe accessors**
+on `*Config` (`maxBody`, `successStatusOrDefault`, `log`, `errStatus`, `advisoryCorrelationID`,
+`trustedCorrelationID`, `allowedRequestHeaders`, `allowedResponseHeaders`), each back-filling the documented default
+for a `nil` receiver or a zero/nonsensical field. `NewConfig` remains the only validating constructor.
+
+**Why.** `Config` is exported with unexported fields, so `&msghttp.Config{}` and a `nil *Config` are constructible
+from **any** package and reach every exported consumer (`DecodeRequest`, `EncodeResponse`, `ServeAsync`,
+`ServeGateway`). The plan's design read `cfg.errorStatus`/`cfg.successStatus` directly, on the premise that a `Config`
+could only come from `NewConfig` — a false premise, and a **nil-pointer panic** on caller input, which CLAUDE.md's
+debuggability rule forbids outright. (A zero `successStatus` would additionally have panicked inside `net/http`.)
+
+**Consequences.** More small methods than the plan's one helper, but every read site is panic-proof and the default is
+stated exactly once per setting. A hand-built `Config` is **tolerated, not supported** — no validation runs — and the
+godoc says so.
+
+### A4 — new exported symbols: `DefaultErrorStatus`, `ErrDecodeRequest`, `ErrWriteResponse`
+
+**Decision.** The planned unexported `defaultErrorStatus` is exported as **`DefaultErrorStatus(error) int`**; the
+planned unexported `decodeError` struct is replaced by the sentinel **`ErrDecodeRequest`**; a new sentinel
+**`ErrWriteResponse`** marks a post-commit body-write failure (see A6).
+
+**Why.** `WithErrorStatus` hands the caller total responsibility for the mapping, but the discriminations that matter —
+413-vs-400 (an oversize `*http.MaxBytesError` vs any other decode fault) and the gateway sentinel arms — were
+**unreachable from outside the package**: the decode error type was unexported, and the default mapping was too. A
+caller adding a single `myapp.ErrForbidden → 403` rule had to reimplement (and drift from) everything else. This is
+also CLAUDE.md's "export what a test must assert" rule: these sentinels are the debuggability surface.
+
+**Consequences.** Three more exported symbols on a still-small surface; `WithErrorStatus`'s godoc now shows the
+delegate-to-`DefaultErrorStatus` pattern as the recommended form. Purely additive → minor SemVer.
+
+### A5 — panic recovery at both handler cores (fault isolation), and the residual it cannot fix
+
+**Decision.** `ServeAsync` and `ServeGateway` each install a deferred `recover()` boundary over a `responseTracker`
+wrapper: a panic is logged with its stack through the injected logger and answered with a plain `500` **when the
+response has not been committed**; the tracker also drops a second `WriteHeader`. **`http.ErrAbortHandler` is
+re-panicked**, honoring `net/http`'s documented silent-abort contract.
+
+**Why.** CLAUDE.md's fault-isolation constraint ("a panicking handler must not take down the flow; recover at endpoint
+boundaries") applies here because the flow runs **on the request goroutine** — I1's `target.Send` runs a
+`DirectChannel` subscriber inline, and I2's `Exchange` sends on the request channel inline. Neither the spec nor the
+plan named a recovery boundary. Code review also found that a naive recover would produce a superfluous second
+`WriteHeader` when the reply's `200` was already out — hence the commit tracking.
+
+**Consequences.** A consumer's panicking handler now costs one failed request instead of the process. **Residual,
+recorded honestly:** the recover **cannot reclaim the exchange's reply-waiter slot**. `msgin.ChannelExchange.Exchange`
+registers the waiter *before* it sends, and its `giveUp` cleanup is **not `defer`red**, so a panic unwinding through
+the send leaves the correlator map entry and its channel behind — with or without this recover. Impact and limits: on
+the default path it is **memory-only** (A2 guarantees a fresh key per request, so no slot is ever re-keyed and no
+later request can collide); the `409`-poisoning variant additionally requires the opt-in `WithTrustedCorrelationID`
+with a reused client value. Either way it takes a panicking handler — a bug in the consumer's own code. The fix is
+**core-side** (`exchange.go`), was deliberately scoped out of this branch by the user, and is tracked as
+[Spec 012](../specs/012-exchange-panic-safe-cleanup.md). Until it lands, **the recover must not be removed** — the
+adapter godoc says so at the recovery site.
+
+### A6 — post-commit write failure is `ErrWriteResponse`, and is logged only
+
+**Decision.** In `EncodeResponse`, a body-write failure occurring **after** the `200` status line is committed is
+wrapped as `ErrWriteResponse` and returned; `ServeGateway` recognizes it via `errors.Is` and **logs only**, never
+writing a second status. Every other `EncodeResponse` error (e.g. `ErrUnsupportedPayload`) is returned **before**
+anything is written, leaving the `ResponseWriter` untouched so a clean status can still be sent.
+
+**Why.** The plan's `ServeGateway` mapped *any* `EncodeResponse` error to a status write. Audit item L4 had already
+established that the pre-write errors leave `w` clean — but the post-write case (typically a client that hung up
+mid-body) has no clean status to write: doing so is a protocol error and produces `net/http`'s "superfluous
+response.WriteHeader call". The error's *identity* is the structural signal of which arm the caller is in.
+
+**Consequences.** A caller writing its own binding gets an unambiguous, `errors.Is`-testable "the response is already
+committed" marker. `ErrWriteResponse` maps to `500` in `DefaultErrorStatus` for completeness, but on the delivered
+path that status is never actually written.
