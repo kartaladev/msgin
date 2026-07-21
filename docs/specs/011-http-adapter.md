@@ -19,7 +19,7 @@
   [Spec 012](012-exchange-panic-safe-cleanup.md).
 - **Design status (pre-implementation):** Draft (2026-07-21) — brainstormed with the user; scope, phasing, and the dominant design forks settled
   interactively (see "Decisions settled with the user"). ADR 0023 (HTTP adapter architecture) authored; ADR 0024 (gin
-  dependency) deferred to Phase 5; Plan 020 (Phase 1) authored, Plans 021–024 to follow per phase. **Phase-1
+  dependency) deferred to Phase 5; Plan 020 (Phase 1) authored, Plans 022–025 to follow per phase (021 was taken by Spec 012). **Phase-1
   adversarial design audit round 1 folded** (Opus, SOUND-WITH-NITS): **H1** the request→message path uses `msgin.New`
   (not `NewMessage`) — a spec-only error that would have failed every I2 request with 400, corrected in §3.2; **M1**
   I2 success status pinned to `200`, `WithSuccessStatus` scoped to I1 only (§3.3); **M4** the inbound-payload-is-`[]byte`
@@ -75,7 +75,7 @@
     boundary, the outbound response→error classification (`4xx = Permanent`), and the per-mode delivery guarantees.
   - **ADR 0024 — `gin` dependency (isolated module):** justifies adding `github.com/gin-gonic/gin` as a direct
     dependency of the **`adapter/http/gin` module only**, following the Dependency-policy rule that every dependency is
-    ADR-justified and the heavy-client-adapter-as-separate-module precedent (ADR 0003). Authored with Plan 024 (Phase 5).
+    ADR-justified and the heavy-client-adapter-as-separate-module precedent (ADR 0003). Authored with Plan 025 (Phase 5).
 
 ## 1. Motivation
 
@@ -260,7 +260,7 @@ URL is **caller-configured and never derived from message payload/headers** (SSR
   - `4xx` **except `408`/`429`** → `msgin.Permanent(err)` — a request the runtime must **not** retry (dead-letter /
     invalid-message path); it is the caller's payload/target that is wrong.
   - `5xx`, `408`, `429`, network error, timeout → plain (transient) error — the runtime **retries** per `RetryPolicy`.
-  - **Open point (resolve in Plan 021):** confirm the outbound/`Producer` retry path applies a `RetryPolicy` to
+  - **Open point (resolve in Plan 022):** confirm the outbound/`Producer` retry path applies a `RetryPolicy` to
     `OutboundAdapter.Send`. If it does, this phase adds no adapter-side backoff (keep reliability runtime-owned). If it
     does **not**, Phase 2 adds a thin producer-side retry rather than baking `cenkalti/backoff` into the adapter — the
     decision is recorded in ADR 0023, not left implicit.
@@ -392,10 +392,10 @@ the *client* retries on `5xx`. A body-write failure after the committed `200` is
 | Phase | Plan | Content | Depends on |
 |-------|------|---------|------------|
 | **1** ✅ **DELIVERED** | [020](../plans/020-http-adapter-inbound.md) | `adapter/http` shared encode core + `adapter/http/stdlib` inbound (I1, I2) → `http.Handler`; ADR 0023 (+ Addendum A) | ADR 0022 |
-| **2** | 021 | `adapter/http/stdlib` outbound (O1 webhook, O2 `RequestReplyExchange`); resolve the outbound-retry open point | Phase 1 |
-| **3** | 022 | `adapter/http/stdlib` SSE server (S-out) | Phase 1 |
-| **4** | 023 | `adapter/http/stdlib` SSE client (S-in, `StreamingSource`) | (encode core) Phase 1 |
-| **5** | 024 | `adapter/http/gin` module — gin bindings for I1/I2/S-out + `RegisterRoutes`; ADR 0024 (gin dependency) | Phases 1, 3 |
+| **2** | 022 | `adapter/http/stdlib` outbound (O1 webhook, O2 `RequestReplyExchange`); resolve the outbound-retry open point | Phase 1 |
+| **3** | 023 | `adapter/http/stdlib` SSE server (S-out) | Phase 1 |
+| **4** | 024 | `adapter/http/stdlib` SSE client (S-in, `StreamingSource`) | (encode core) Phase 1 |
+| **5** | 025 | `adapter/http/gin` module — gin bindings for I1/I2/S-out + `RegisterRoutes`; ADR 0024 (gin dependency) | Phases 1, 3 |
 
 Each phase: its plan is authored with the driving ADR content, the **spec + ADR + plan are adversarially audited by a
 fresh Opus subagent before any code** (two rounds if fixes destabilize the design), then implemented via
@@ -434,8 +434,9 @@ the nil-safe accessors.
   [ADR 0003](../adrs/0003-multi-module-repository-layout.md), [ADR 0006](../adrs/0006-resilience-flow-control.md),
   [ADR 0022](../adrs/0022-messaging-gateway.md) / [Spec 010](010-messaging-gateway.md).
 - **New ADRs:** [ADR 0023](../adrs/0023-http-channel-adapter.md) (HTTP adapter architecture — with Plan 020; **Addendum
-  A** records the Phase-1 review-driven design changes), ADR 0024 (gin dependency — with Plan 024).
-- **Plans:** [020](../plans/020-http-adapter-inbound.md) (Phase 1 — **delivered**), 021 (Phase 2), 022 (Phase 3),
-  023 (Phase 4), 024 (Phase 5).
+  A** records the Phase-1 review-driven design changes), ADR 0024 (gin dependency — with Plan 025).
+- **Plans:** [020](../plans/020-http-adapter-inbound.md) (Phase 1 — **delivered**), 022 (Phase 2), 023 (Phase 3),
+  024 (Phase 4), 025 (Phase 5). Plan 021 is [Spec 012](012-exchange-panic-safe-cleanup.md) — the core `ChannelExchange`
+  panic-safe-cleanup fix, which lands first and tightens the `RequestReplyExchange` contract Phase 2's O2 implements.
 - **Spawned follow-up:** [Spec 012 — panic-safe `ChannelExchange` cleanup](012-exchange-panic-safe-cleanup.md) — the
   core-side correlator-slot leak surfaced (and contained, not fixed) by Phase 1's panic recovery.

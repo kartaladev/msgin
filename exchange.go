@@ -51,12 +51,13 @@ func newReplyCorrelator() *replyCorrelator {
 // mint fresh 128-bit ids so they never hit this; direct ChannelExchange callers
 // must use unique ids.
 //
-// deregister is the give-up reconciler (called on ctx/timeout). It returns true
-// if it removed the slot (the waiter still owned it → no delivery is in flight),
-// or false if the slot was ALREADY gone — claimed by a concurrent deliver
-// (a reply is committed to the slot) or closeAll (the slot is closed). On false
-// the caller must drain the slot so a delivered-but-abandoned reply is not lost
-// (audit G4).
+// deregister returns true only if it removed OUR slot (the waiter still owned
+// it, so no delivery is in flight). It returns false if our slot was already
+// gone — claimed by a concurrent deliver (a reply is committed to it) or closed
+// by closeAll — INCLUDING the case where a different caller has since
+// registered the same id. That identity check is what makes false imply
+// deliver-or-closeAll, and therefore what makes giveUp's drain bounded
+// (audit G4/H-1). On false the caller must drain the slot.
 func (c *replyCorrelator) register(id string) (slot chan Message[any], deregister func() bool, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -71,7 +72,12 @@ func (c *replyCorrelator) register(id string) (slot chan Message[any], deregiste
 	deregister = func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		if _, ok := c.waiters[id]; ok {
+		// Identity, not just key: a reused id can have OUR entry already
+		// removed by deliver and a DIFFERENT caller's slot registered under the
+		// same key. Deleting that one would drop our committed reply silently
+		// and orphan theirs — leaving its owner blocked forever in giveUp, on a
+		// slot no deliver can find and closeAll cannot close (ADR 0022 A2).
+		if s, ok := c.waiters[id]; ok && s == slot {
 			delete(c.waiters, id)
 			return true
 		}

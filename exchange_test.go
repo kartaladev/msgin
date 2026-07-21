@@ -12,9 +12,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -557,4 +559,287 @@ func TestChannelExchange_closeRacesGiveUp(t *testing.T) {
 		t.Fatal("no reply should reach the sink: the slot was closed, never delivered")
 	default:
 	}
+}
+
+// Spec 012 §5.1 / §6 case 6 (audit H-1): with two callers reusing one
+// correlation id and replies delivered from another goroutine, a delete-by-id
+// deregister can (a) delete the OTHER caller's slot and return true, dropping
+// its own committed reply silently, and (b) orphan a slot so its owner's giveUp
+// blocks on <-slot forever — unreachable by deliver (not in the map) and by
+// closeAll (which iterates the map). Identity-checked deregister closes both.
+//
+// The window is a preemption between deliver's delete and its send, so this
+// stresses rather than forces it. Two detectors, because the hang half is only
+// probabilistically reachable: reply ACCOUNTING catches the silent drop
+// deterministically whenever the window is hit, and the outer budget catches
+// the hang. Bounded throughout: a regression must fail here, never wedge CI.
+func TestChannelExchange_reusedIDConcurrentAbandon_neverHangs(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	const (
+		iterations = 200
+		id         = "corr-reused-concurrent"
+		budget     = 30 * time.Second
+	)
+
+	// Nothing inside the loop may call require/t.Fatal: t.FailNow outside the
+	// test goroutine Goexits the worker, abandoning in-flight state and turning
+	// the real failure into a goleak storm. Record and return instead.
+	failures := make(chan string, 1)
+	fail := func(format string, args ...any) {
+		select {
+		case failures <- fmt.Sprintf(format, args...):
+		default:
+		}
+	}
+
+	var totalSent atomic.Int64
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < iterations; i++ {
+			var sunk atomic.Int64
+			sink := msgin.NewDirectChannel()
+			if err := sink.Subscribe(msgin.HandlerFunc(func(_ context.Context, _ msgin.Message[any]) error {
+				sunk.Add(1)
+				return nil
+			})); err != nil {
+				fail("iteration %d: sink subscribe: %v", i, err)
+				return
+			}
+
+			request := msgin.NewDirectChannel()
+			reply := msgin.NewDirectChannel()
+			ex, err := msgin.NewChannelExchange(request, reply, msgin.WithUnmatchedReplySink(sink))
+			if err != nil {
+				fail("iteration %d: new exchange: %v", i, err)
+				return
+			}
+
+			// The flow hands the reply to a worker goroutine, so deliver races
+			// the waiter's abandonment rather than running inline.
+			var (
+				workers sync.WaitGroup
+				sent    atomic.Int64
+			)
+			if err := request.Subscribe(msgin.Chain(msgin.Consume(func(_ context.Context, m msgin.Message[any]) error {
+				workers.Add(1)
+				go func() {
+					defer workers.Done()
+					sent.Add(1)
+					totalSent.Add(1)
+					_ = reply.Send(context.WithoutCancel(t.Context()), m)
+				}()
+				return nil
+			}))); err != nil {
+				fail("iteration %d: request subscribe: %v", i, err)
+				return
+			}
+
+			// Two callers, SAME id, both abandoning via ctx cancel. Whichever
+			// registers second only gets in once the first's slot has left the
+			// map — precisely the reuse window.
+			var (
+				callers  sync.WaitGroup
+				returned atomic.Int64
+			)
+			for c := 0; c < 2; c++ {
+				callers.Add(1)
+				go func() {
+					defer callers.Done()
+					ctx, cancel := context.WithCancel(t.Context())
+					defer cancel()
+
+					// Race the cancel against the exchange, but JOIN it so the
+					// final iteration cannot leave a straggler for goleak.
+					var canceller sync.WaitGroup
+					canceller.Add(1)
+					go func() {
+						defer canceller.Done()
+						cancel()
+					}()
+
+					req := msgin.New[any]("payload", msgin.WithHeaders(map[string]any{msgin.HeaderCorrelationID: id}))
+					// Every error here is legitimate (ctx.Err,
+					// ErrDuplicateCorrelation). What must hold is that this
+					// RETURNS AT ALL — a hang is the H-1 regression — and that
+					// a delivered reply is accounted for below.
+					if _, err := ex.Exchange(ctx, req); err == nil {
+						returned.Add(1)
+					}
+					canceller.Wait()
+				}()
+			}
+			callers.Wait()
+			workers.Wait()
+
+			// H-1's SILENT-DROP half: every reply the flow produced was either
+			// returned to its caller or routed to the unmatched sink. A
+			// delete-by-id deregister drops one on the floor here — a direct
+			// violation of ADR 0022 §2's G4 guarantee.
+			if got, want := returned.Load()+sunk.Load(), sent.Load(); got != want {
+				fail("iteration %d: %d replies accounted for but %d were sent — a committed reply was dropped (Spec 012 §5.1)", i, got, want)
+				return
+			}
+			if err := ex.Close(); err != nil {
+				fail("iteration %d: close: %v", i, err)
+				return
+			}
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(budget):
+		t.Fatal("a caller blocked forever in giveUp: deregister deleted another caller's slot and orphaned it (Spec 012 §5.1)")
+	}
+	select {
+	case msg := <-failures:
+		t.Fatal(msg)
+	default:
+	}
+	require.Positive(t, totalSent.Load(), "no iteration produced a reply — the accounting assertion was vacuous")
+}
+
+// scriptedChannel is a MessageChannel whose Send is supplied by the test, so a
+// test can drive the exact ordering of register/deliver/give-up that a real
+// DirectChannel leaves to the scheduler. Subscribe is a no-op: NewChannelExchange
+// only subscribes onto the REPLY channel, never the request channel.
+type scriptedChannel struct {
+	send func(ctx context.Context, msg msgin.Message[any]) error
+}
+
+func (c *scriptedChannel) Send(ctx context.Context, msg msgin.Message[any]) error {
+	return c.send(ctx, msg)
+}
+
+func (c *scriptedChannel) Subscribe(_ msgin.MessageHandler) error { return nil }
+
+// Spec 012 §5.1 / ADR 0022 Addendum A2, deterministic counterpart to
+// TestChannelExchange_reusedIDConcurrentAbandon_neverHangs: it forces
+// deregister's `ok && s != slot` arm through the exported API alone, with no
+// reliance on a scheduler preemption.
+//
+// The reuse window does NOT require a preemption inside deliver — only that
+// deliver COMPLETE, a second register land under the same id, and the first
+// caller then reach giveUp. Exchange's send-error arm reaches giveUp with no
+// select race at all, so scripting the request channel makes the whole ordering
+// deterministic:
+//
+//  1. A registers, then A's Send delivers the reply inline — deliver removes A's
+//     map entry and commits the reply to A's cap-1 slot.
+//  2. B registers the now-free id (getting a DIFFERENT slot) and parks inside its
+//     own Send, so B's slot is still in the map.
+//  3. A's Send returns an error, so A gives up: deregister finds B's slot under
+//     A's id. Identity-checked, it returns false and A drains its own committed
+//     reply to the unmatched sink. Delete-by-id would instead delete B's slot,
+//     return true, drop A's reply silently, and orphan B's slot forever.
+func TestChannelExchange_reusedIDAbandon_drainsOwnReply(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	const (
+		id       = "corr-reused-scripted"
+		joinWait = 10 * time.Second
+	)
+
+	testCtx := t.Context()
+
+	var sunk atomic.Int64
+	sink := msgin.NewDirectChannel()
+	require.NoError(t, sink.Subscribe(msgin.HandlerFunc(func(_ context.Context, _ msgin.Message[any]) error {
+		sunk.Add(1)
+		return nil
+	})))
+
+	reply := msgin.NewDirectChannel()
+	request := &scriptedChannel{}
+
+	ex, err := msgin.NewChannelExchange(request, reply, msgin.WithUnmatchedReplySink(sink))
+	require.NoError(t, err)
+
+	errSend := errors.New("scripted request-channel failure")
+
+	var (
+		calls        atomic.Int32
+		replySendErr atomic.Value // error from step 1's inline reply delivery
+		timedOut     atomic.Bool  // a bounded wait expired; asserted on the test goroutine
+		bJoined      atomic.Bool  // B's result was already consumed by the main path
+		bRegistered  = make(chan struct{})
+		releaseB     = make(chan struct{})
+		bDone        = make(chan error, 1) // buffered: B never blocks on the handoff
+	)
+	releaseOnce := sync.OnceFunc(func() { close(releaseB) })
+
+	// Unpark and join B on every exit path (including a failed assertion), before
+	// goleak runs: deferred funcs are LIFO, and goleak.VerifyNone was deferred first.
+	defer func() {
+		releaseOnce()
+		if bJoined.Load() {
+			return
+		}
+		select {
+		case <-bDone:
+		case <-time.After(joinWait):
+			timedOut.Store(true)
+		}
+	}()
+
+	request.send = func(ctx context.Context, msg msgin.Message[any]) error {
+		if calls.Add(1) != 1 { // caller B: park with its slot still registered
+			close(bRegistered)
+			select {
+			case <-releaseB:
+			case <-time.After(joinWait):
+				timedOut.Store(true)
+			}
+			return errSend
+		}
+
+		// Caller A, step 1: deliver the reply inline. deliver removes A's map
+		// entry and commits the reply into A's slot. WithoutCancel so the
+		// delivery does not depend on the caller ctx.
+		if err := reply.Send(context.WithoutCancel(ctx), msg); err != nil {
+			replySendErr.Store(err)
+			return errSend
+		}
+
+		// Step 2: B registers the (now free) id and parks inside its own Send.
+		go func() {
+			_, err := ex.Exchange(testCtx, msg)
+			bDone <- err
+		}()
+		select {
+		case <-bRegistered:
+		case <-time.After(joinWait):
+			timedOut.Store(true)
+		}
+
+		// Step 3: A abandons via the send-error arm -> giveUp -> deregister sees
+		// B's slot under A's id.
+		return errSend
+	}
+
+	req := msgin.New[any]("payload", msgin.WithHeaders(map[string]any{msgin.HeaderCorrelationID: id}))
+	_, aErr := ex.Exchange(testCtx, req)
+
+	require.Nil(t, replySendErr.Load(), "step 1's inline reply delivery must succeed")
+	require.False(t, timedOut.Load(), "a bounded wait expired: the scripted ordering did not complete")
+	require.ErrorIs(t, aErr, errSend)
+
+	// THE load-bearing assertion. Identity-checked deregister returns false, so A
+	// drains its own committed reply to the unmatched sink. Delete-by-id returns
+	// true and drops it (and orphans B's slot).
+	require.Equal(t, int64(1), sunk.Load(), "A's committed reply must reach the unmatched sink")
+
+	// B's slot was never orphaned: releasing it lets B settle normally.
+	releaseOnce()
+	select {
+	case bErr := <-bDone:
+		bJoined.Store(true)
+		require.ErrorIs(t, bErr, errSend)
+	case <-time.After(joinWait):
+		t.Fatal("caller B never returned: its slot was orphaned by A's deregister (Spec 012 §5.1)")
+	}
+	require.NoError(t, ex.Close())
 }
