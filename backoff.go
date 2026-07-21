@@ -36,7 +36,15 @@ func (b ExponentialBackoff) Delay(attempt int) time.Duration {
 		mult = 1
 	}
 	d := float64(b.Initial) * math.Pow(mult, float64(attempt))
-	if math.IsInf(d, 1) || math.IsNaN(d) {
+	// Widen the overflow guard from +Inf to "anything time.Duration cannot hold".
+	// math.Pow reaches +Inf only past ~1.8e308, but time.Duration overflows at
+	// 9.2e18 — every value in between is FINITE, so the old IsInf-only test let
+	// it through, and Go leaves an out-of-range float->int conversion
+	// implementation-defined (MinInt64 on amd64, a saturated MaxInt64 on arm64).
+	// The resulting negative duration then slipped past the "out > b.Max" cap
+	// below, because a negative value is not greater than Max. Both outcomes
+	// below are unchanged: Max when capped, Initial otherwise.
+	if math.IsNaN(d) || d >= float64(math.MaxInt64) {
 		if b.Max > 0 {
 			return b.Max
 		}
@@ -65,6 +73,12 @@ func jitter(d time.Duration, f float64) time.Duration {
 	j := lo + rand.Float64()*(2*delta)
 	if j < 0 {
 		j = 0
+	}
+	// Same out-of-range conversion hazard as Delay: jitter can push a large
+	// uncapped backoff above MaxInt64, and the caller's Max re-clamp cannot
+	// catch the resulting negative.
+	if j >= float64(math.MaxInt64) {
+		return time.Duration(math.MaxInt64)
 	}
 	return time.Duration(j)
 }

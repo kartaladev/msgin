@@ -57,6 +57,34 @@ func TestExponentialBackoff_Delay(t *testing.T) {
 				// +Inf with no cap -> IsInf guard, Max<=0 -> Initial.
 				assert.Equal(t, time.Second, d)
 			}},
+		{"astronomic-but-finite growth is capped at Max", base, 100, func(t *testing.T, d time.Duration) {
+			// 100ms*2^100 ~ 1.27e38ns: finite, far above MaxInt64, so the old
+			// IsInf-only guard let it convert out of range (MinInt64 on amd64,
+			// saturated MaxInt64 on arm64) and, when negative, slip past the cap.
+			assert.Equal(t, time.Second, d)
+		}},
+		{"astronomic-but-finite growth uncapped falls back to Initial",
+			msgin.ExponentialBackoff{Initial: time.Second, Max: 0, Mult: 2}, 100,
+			func(t *testing.T, d time.Duration) {
+				assert.Positive(t, d, "an out-of-range float->int conversion must not yield a negative delay")
+				assert.Equal(t, time.Second, d)
+			}},
+		{"jitter cannot push an uncapped backoff negative",
+			msgin.ExponentialBackoff{Initial: time.Second, Max: 0, Mult: 2, RandomizationFactor: 0.5}, 33,
+			func(t *testing.T, _ time.Duration) {
+				// jitter samples uniformly in [d/2, 3d/2]; at attempt 33 the
+				// centre is ~8.6e18ns, so only the upper ~28% of the range
+				// exceeds MaxInt64 and reaches the new guard. ONE draw would hit
+				// it ~28% of the time, so coverage on this arm would flap
+				// run-to-run. 200 draws make a total miss ~(0.72)^200 ~ 1e-28,
+				// and every draw independently pins the property that matters.
+				b := msgin.ExponentialBackoff{Initial: time.Second, Max: 0, Mult: 2, RandomizationFactor: 0.5}
+				for i := range 200 {
+					d := b.Delay(33)
+					assert.Positive(t, d,
+						"draw %d: jitter must never produce a negative delay", i)
+				}
+			}},
 		{"jitter never exceeds Max after cap", msgin.ExponentialBackoff{Initial: 100 * time.Millisecond, Max: time.Second, Mult: 2, RandomizationFactor: 0.5}, 10,
 			func(t *testing.T, d time.Duration) {
 				// pre-jitter value is already capped to Max (100ms*2^10 = 102.4s -> 1s);
