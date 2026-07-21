@@ -11,13 +11,19 @@ import (
 )
 
 // Non-reserved metadata keys DecodeRequest adds to every decoded message, for
-// observability (e.g. a router keying off the original HTTP method/path).
+// observability (e.g. a router keying off the original HTTP method/path) and
+// for the two values that must NEVER be trusted as core metadata: the client's
+// Content-Type and its advertised correlation id.
 // They deliberately do NOT carry the reserved "msgin." prefix, so the
-// defensive reserved-header strip (below) never touches them.
+// defensive reserved-header strip (below) never touches them AND they can
+// never become the source of a response Content-Type or of the exchange
+// correlation key.
 const (
-	headerHTTPMethod = "http.method"
-	headerHTTPPath   = "http.path"
-	headerHTTPQuery  = "http.query"
+	headerHTTPMethod        = "http.method"
+	headerHTTPPath          = "http.path"
+	headerHTTPQuery         = "http.query"
+	headerHTTPContentType   = "http.content-type"
+	headerHTTPCorrelationID = "http.correlation-id"
 )
 
 // reservedHeaderPrefix is msgin's reserved header namespace: every core
@@ -25,87 +31,115 @@ const (
 // msgin.HeaderContentType, msgin.HeaderCorrelationID,
 // msgin.HeaderDeliveryCount, msgin.HeaderSequenceNumber/Size, and any future
 // one) starts with it. DecodeRequest strips any allow-listed request header
-// whose name carries this prefix so a client can never forge a core header.
+// whose name carries this prefix — compared case-INSENSITIVELY — so a client
+// can never forge a core header.
 const reservedHeaderPrefix = "msgin."
 
-// decodeError wraps a request-body read/decode failure returned by
-// DecodeRequest. It exists so defaultErrorStatus can distinguish a
-// non-oversize read/decode fault (400) from an unclassified downstream error
-// (500) without over-claiming meaning for an arbitrary error it did not
-// originate — the wrap preserves the underlying cause (a plain read error, or
-// *http.MaxBytesError on overflow) via Unwrap, so errors.As/errors.Is still
-// see through it.
-type decodeError struct {
-	err error
-}
-
-func (e *decodeError) Error() string {
-	return fmt.Sprintf("msghttp: decode request: %v", e.err)
-}
-
-func (e *decodeError) Unwrap() error { return e.err }
+// defaultResponseContentType is the response Content-Type EncodeResponse
+// writes when the reply message carries no msgin.HeaderContentType. It is set
+// unconditionally (never left empty) so net/http's DetectContentType never
+// sniffs a media type out of a flow-controlled response body — a body that
+// happens to start with "<html" or "<script" would otherwise be served as
+// text/html and execute in a browser. A flow that genuinely wants a different
+// media type sets msgin.HeaderContentType on the reply itself.
+const defaultResponseContentType = "application/octet-stream"
 
 // DecodeRequest reads and caps r's body (cfg's WithMaxBodyBytes, default 1
 // MiB) and converts the request into a msgin.Message[any]: the body becomes
-// the payload ([]byte); allow-listed request headers (cfg's
-// WithRequestHeaders) and the Content-Type are copied onto the message's
-// headers (Content-Type under msgin.HeaderContentType); http.method/
-// http.path/http.query are added for observability. Any copied key carrying
-// the reserved "msgin." prefix is defensively stripped BEFORE the message is
-// built, so a client can never forge a core header (e.g.
-// msgin.delivery-count) even via a misconfigured allow-list entry.
+// the payload ([]byte) and allow-listed request headers (cfg's
+// WithRequestHeaders) are copied onto the message's headers. Any copied key
+// carrying the reserved "msgin." prefix (case-insensitively) is defensively
+// stripped BEFORE the message is built, so a client can never forge a core
+// header (e.g. msgin.delivery-count) even via a misconfigured allow-list
+// entry. Only the FIRST value of a multi-valued request header is copied
+// (http.Header.Get semantics); the allow-list itself is matched
+// case-INSENSITIVELY, again per http.Header.Get.
+//
+// Four non-reserved metadata headers are added for observability and for
+// values that must not be trusted as core metadata:
+//
+//   - http.method, http.path, http.query — the request line. NOTE these are
+//     NOT bounded by WithMaxBodyBytes: their ceiling is the server's
+//     http.Server.MaxHeaderBytes (1 MiB by default), and on the async path
+//     (ServeAsync) that memory is retained for the queued message's lifetime.
+//     Lower MaxHeaderBytes if that matters.
+//   - http.content-type — the client's Content-Type verbatim. It is
+//     deliberately NOT written to msgin.HeaderContentType: that reserved
+//     header is what EncodeResponse trusts as the response media type, and a
+//     client must never be able to choose the media type its own bytes are
+//     served back under (reflected-XSS vector).
+//   - http.correlation-id — the client's advertised correlation id, when
+//     cfg's WithCorrelationID resolves a non-empty one. Advisory only: it
+//     never becomes the exchange correlation key.
 //
 // The message is built with msgin.New — never msgin.NewMessage — because a
 // decoded HTTP request is freshly-produced input entering the system, not a
 // message reconstructed from a persisted/previously-framed one; New always
 // stamps a fresh msgin.id and msgin.timestamp.
 //
-// The correlation id (msgin.HeaderCorrelationID) defaults to the message's
-// own server-minted ID() unless cfg's WithCorrelationID resolves a
-// non-empty override from r — DecodeRequest never trusts a client-supplied
-// correlation value by default (CLAUDE.md untrusted-input boundary).
+// The exchange correlation key (msgin.HeaderCorrelationID) is ALWAYS the
+// message's own server-minted ID() unless the caller explicitly opts into
+// client-keyed correlation via WithTrustedCorrelationID — see that option's
+// warning before using it.
 //
-// A body read/decode failure (including an oversize body) returns a non-nil
-// error and a zero-value Message; the caller maps it to an HTTP status via
-// defaultErrorStatus or a custom cfg.WithErrorStatus mapper — an oversize
-// body (*http.MaxBytesError) maps to 413, any other read/decode error to 400.
+// A body read/decode failure (including an oversize body) returns an error
+// wrapping ErrDecodeRequest and a zero-value Message; the caller maps it to an
+// HTTP status via DefaultErrorStatus or a custom cfg.WithErrorStatus mapper —
+// an oversize body (*http.MaxBytesError) maps to 413, any other read/decode
+// error to 400.
+//
+// A nil cfg, or one built by hand rather than by NewConfig, is tolerated:
+// every setting falls back to its documented default (see Config).
 func DecodeRequest(r *http.Request, cfg *Config) (msgin.Message[any], error) {
-	body, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, cfg.maxBodyBytes))
-	if err != nil {
-		return msgin.Message[any]{}, &decodeError{err: err}
+	// r.Body is never nil for a request delivered by a net/http server, but
+	// DecodeRequest is exported and a caller (or a non-stdlib binding) may
+	// hand over a hand-built *http.Request, where a nil Body is legal.
+	body := r.Body
+	if body == nil {
+		body = http.NoBody
 	}
 
-	headers := make(map[string]any, len(cfg.requestHeaders)+4)
-	for _, name := range cfg.requestHeaders {
+	raw, err := io.ReadAll(http.MaxBytesReader(nil, body, cfg.maxBody()))
+	if err != nil {
+		return msgin.Message[any]{}, fmt.Errorf("%w: %w", ErrDecodeRequest, err)
+	}
+
+	allowed := cfg.allowedRequestHeaders()
+	headers := make(map[string]any, len(allowed)+5)
+	for _, name := range allowed {
 		if v := r.Header.Get(name); v != "" {
 			headers[name] = v
 		}
 	}
 	for k := range headers {
-		if strings.HasPrefix(k, reservedHeaderPrefix) {
+		if strings.HasPrefix(strings.ToLower(k), reservedHeaderPrefix) {
 			delete(headers, k)
 		}
 	}
 
 	if ct := r.Header.Get("Content-Type"); ct != "" {
-		headers[msgin.HeaderContentType] = ct
+		headers[headerHTTPContentType] = ct
 	}
 	headers[headerHTTPMethod] = r.Method
 	headers[headerHTTPPath] = r.URL.Path
 	headers[headerHTTPQuery] = r.URL.RawQuery
 
-	msg := msgin.New[any](body, msgin.WithHeaders(headers))
-
-	cid := ""
-	if cfg.correlationID != nil {
-		cid = cfg.correlationID(r)
+	if resolve := cfg.advisoryCorrelationID(); resolve != nil {
+		if v := resolve(r); v != "" {
+			headers[headerHTTPCorrelationID] = v
+		}
 	}
-	if cid == "" {
-		cid = msg.ID()
-	}
-	msg = msg.WithHeader(msgin.HeaderCorrelationID, cid)
 
-	return msg, nil
+	msg := msgin.New[any](raw, msgin.WithHeaders(headers))
+
+	cid := msg.ID()
+	if resolve := cfg.trustedCorrelationID(); resolve != nil {
+		if v := resolve(r); v != "" {
+			cid = v
+		}
+	}
+
+	return msg.WithHeader(msgin.HeaderCorrelationID, cid), nil
 }
 
 // EncodeResponse writes msg as the HTTP response on w. The payload is
@@ -117,16 +151,28 @@ func DecodeRequest(r *http.Request, cfg *Config) (msgin.Message[any], error) {
 // ResponseWriter, never a half-written response carrying the flow's headers
 // under the caller's own error status.
 //
-// On successful extraction: allow-listed response headers (cfg's
-// WithResponseHeaders) are emitted with their values CRLF-sanitized (\r and
-// \n stripped, defending against HTTP response splitting from a header value
-// sourced from message metadata) — an allow-listed name whose header value is
-// not a string is silently skipped (a header value formatting policy is the
-// caller's concern, not this package's to guess); Content-Type is set from
-// msgin.HeaderContentType when present; the status is ALWAYS http.StatusOK
-// (200) — a request-reply response body is a synchronous reply, never the
-// async inbound handler's 202. cfg's WithSuccessStatus does NOT apply here;
-// see its godoc.
+// On successful extraction:
+//
+//   - Allow-listed response headers (cfg's WithResponseHeaders) are emitted
+//     with their values CRLF-sanitized (\r and \n stripped, defending against
+//     HTTP response splitting from a header value sourced from message
+//     metadata). An allow-listed name whose header value is not a string is
+//     silently skipped (a header value formatting policy is the caller's
+//     concern, not this package's to guess).
+//   - Content-Type is set from msgin.HeaderContentType when it is present and
+//     non-empty, otherwise to application/octet-stream — never left unset, so
+//     net/http never sniffs a media type out of the body.
+//   - X-Content-Type-Options: nosniff is ALWAYS set, after the allow-list, so
+//     an allow-listed message header can never weaken it.
+//   - The status is ALWAYS http.StatusOK (200) — a request-reply response body
+//     is a synchronous reply, never the async inbound handler's 202. cfg's
+//     WithSuccessStatus does NOT apply here; see its godoc.
+//
+// A failure of the body write (the only failure possible once the 200 has gone
+// out) is returned wrapping ErrWriteResponse: the response is already
+// committed, so the caller must log it and must NOT write a second status.
+//
+// A nil cfg, or one built by hand rather than by NewConfig, is tolerated.
 func EncodeResponse(w http.ResponseWriter, msg msgin.Message[any], cfg *Config) error {
 	var body []byte
 	switch payload := msg.Payload().(type) {
@@ -138,18 +184,24 @@ func EncodeResponse(w http.ResponseWriter, msg msgin.Message[any], cfg *Config) 
 		return ErrUnsupportedPayload
 	}
 
-	for _, name := range cfg.responseHeaders {
+	for _, name := range cfg.allowedResponseHeaders() {
 		if v, ok := msg.Headers().String(name); ok {
 			w.Header().Set(name, sanitizeHeaderValue(v))
 		}
 	}
-	if ct, ok := msg.Headers().String(msgin.HeaderContentType); ok {
-		w.Header().Set("Content-Type", sanitizeHeaderValue(ct))
+
+	ct, _ := msg.Headers().String(msgin.HeaderContentType)
+	if ct = sanitizeHeaderValue(ct); ct == "" {
+		ct = defaultResponseContentType
 	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 
 	w.WriteHeader(http.StatusOK)
-	_, err := w.Write(body)
-	return err
+	if _, err := w.Write(body); err != nil {
+		return fmt.Errorf("%w: %w", ErrWriteResponse, err)
+	}
+	return nil
 }
 
 // sanitizeHeaderValue strips \r and \n from v before it is written as an HTTP
@@ -161,28 +213,31 @@ func sanitizeHeaderValue(v string) string {
 	return strings.ReplaceAll(v, "\n", "")
 }
 
-// defaultErrorStatus is the default error->HTTP-status mapping used by the
+// DefaultErrorStatus is the default error->HTTP-status mapping used by the
 // inbound handler cores (ServeAsync/ServeGateway) when WithErrorStatus is
-// unset. It gives an HONEST status per failure cause (audit L2) rather than a
-// blanket 500:
+// unset. It is exported so a custom WithErrorStatus mapper can classify the
+// cases it cares about and DELEGATE the rest here, instead of losing the
+// 413-vs-400-vs-5xx discrimination it cannot reimplement from outside the
+// package. It gives an HONEST status per failure cause (audit L2) rather than
+// a blanket 500:
 //
 //   - msgin.ErrReplyTimeout -> 504 Gateway Timeout (no reply arrived in time).
 //   - msgin.ErrGatewayClosed -> 503 Service Unavailable (shutting down).
 //   - msgin.ErrDuplicateCorrelation -> 409 Conflict (only reachable when a
 //     caller opts into trusting client correlation ids via
-//     WithCorrelationID, and a client reuses one concurrently).
-//   - msgin.ErrNoCorrelation, ErrUnsupportedPayload -> 500 Internal Server
-//     Error: both are SERVER/WIRING faults, never the client's fault — this
-//     adapter always mints a non-empty msg.ID() as the correlation id, so a
-//     missing correlation key can only be a bug in this package or its
-//     caller's wiring, not a malformed request.
+//     WithTrustedCorrelationID, and a client reuses one).
+//   - msgin.ErrNoCorrelation, ErrUnsupportedPayload, ErrWriteResponse -> 500
+//     Internal Server Error: all three are SERVER/WIRING or transport faults,
+//     never the client's fault — this adapter always stamps a non-empty
+//     correlation id, so a missing correlation key can only be a bug in this
+//     package or its caller's wiring, not a malformed request.
 //   - an oversize body (*http.MaxBytesError, via errors.As) -> 413 Request
-//     Entity Too Large.
-//   - any other DecodeRequest read/decode failure (via errors.As against the
-//     local decodeError wrapper) -> 400 Bad Request.
-//   - anything else (an unclassified downstream error) -> 500, the safe
-//     default for a cause this package does not recognize.
-func defaultErrorStatus(err error) int {
+//     Entity Too Large. Checked BEFORE ErrDecodeRequest, which also wraps it.
+//   - any other DecodeRequest read/decode failure (ErrDecodeRequest) -> 400
+//     Bad Request.
+//   - anything else, including a nil error -> 500, the safe default for a
+//     cause this package does not recognize.
+func DefaultErrorStatus(err error) int {
 	switch {
 	case errors.Is(err, msgin.ErrReplyTimeout):
 		return http.StatusGatewayTimeout
@@ -190,7 +245,9 @@ func defaultErrorStatus(err error) int {
 		return http.StatusServiceUnavailable
 	case errors.Is(err, msgin.ErrDuplicateCorrelation):
 		return http.StatusConflict
-	case errors.Is(err, msgin.ErrNoCorrelation), errors.Is(err, ErrUnsupportedPayload):
+	case errors.Is(err, msgin.ErrNoCorrelation),
+		errors.Is(err, ErrUnsupportedPayload),
+		errors.Is(err, ErrWriteResponse):
 		return http.StatusInternalServerError
 	}
 
@@ -199,8 +256,7 @@ func defaultErrorStatus(err error) int {
 		return http.StatusRequestEntityTooLarge
 	}
 
-	var de *decodeError
-	if errors.As(err, &de) {
+	if errors.Is(err, ErrDecodeRequest) {
 		return http.StatusBadRequest
 	}
 

@@ -185,6 +185,74 @@ func TestRegister(t *testing.T) {
 	assert.Equal(t, "hello", string(body))
 }
 
+// TestNewInboundGateway_clientCannotChooseTheResponseContentType is the
+// end-to-end regression test for the whole-branch security review's reflected
+// XSS finding: the client's request Content-Type used to be copied into the
+// reserved msgin.content-type header and echoed back unconditionally, so an
+// echo flow served attacker bytes as text/html; with no request Content-Type
+// at all, Go's sniffer inferred text/html from the body anyway.
+func TestNewInboundGateway_clientCannotChooseTheResponseContentType(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name        string
+		contentType string
+		assert      func(t *testing.T, resp *http.Response, body string)
+	}
+
+	const payload = "<script>alert(document.domain)</script>"
+
+	cases := []testCase{
+		{
+			name:        "an explicit text/html request Content-Type is not reflected",
+			contentType: "text/html",
+			assert: func(t *testing.T, resp *http.Response, body string) {
+				assert.Equal(t, http.StatusOK, resp.StatusCode)
+				assert.Equal(t, payload, body, "the flow still echoes the bytes verbatim")
+				assert.Equal(t, "application/octet-stream", resp.Header.Get("Content-Type"))
+				assert.Equal(t, "nosniff", resp.Header.Get("X-Content-Type-Options"))
+			},
+		},
+		{
+			name:        "no request Content-Type still cannot be sniffed into text/html",
+			contentType: "",
+			assert: func(t *testing.T, resp *http.Response, body string) {
+				assert.Equal(t, http.StatusOK, resp.StatusCode)
+				assert.Equal(t, payload, body)
+				assert.NotContains(t, resp.Header.Get("Content-Type"), "text/html")
+				assert.Equal(t, "nosniff", resp.Header.Get("X-Content-Type-Options"))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h, err := stdlib.NewInboundGateway(echoExchange(t))
+			require.NoError(t, err)
+
+			srv := httptest.NewServer(h)
+			defer srv.Close()
+
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL, strings.NewReader(payload))
+			require.NoError(t, err)
+			if tc.contentType != "" {
+				req.Header.Set("Content-Type", tc.contentType)
+			}
+
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+
+			tc.assert(t, resp, string(body))
+		})
+	}
+}
+
 // ExampleNewInbound mounts the I1 async inbound handler on an httptest.Server
 // and POSTs a request to it, printing only the response status — the
 // fire-and-forget handoff has no reply body to show, so a deterministic 202

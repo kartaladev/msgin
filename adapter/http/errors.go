@@ -23,6 +23,27 @@ var (
 	// unset takes the 202 default instead of hitting this error.
 	ErrInvalidStatusCode = errors.New("msghttp: status code must be in [100,599]")
 
+	// ErrDecodeRequest wraps every request-body read/decode failure returned
+	// by DecodeRequest. It exists so a status mapper — DefaultErrorStatus, or
+	// a caller's own WithErrorStatus override — can tell a non-oversize
+	// read/decode fault (400) from an unclassified downstream error (500)
+	// without over-claiming meaning for an arbitrary error it did not
+	// originate. The wrap preserves the underlying cause (a plain read error,
+	// or *http.MaxBytesError on overflow), so errors.Is/errors.As still see
+	// through it: check *http.MaxBytesError FIRST, since an oversize body
+	// satisfies both.
+	ErrDecodeRequest = errors.New("msghttp: decode request failed")
+
+	// ErrWriteResponse wraps a failure of the response-body write in
+	// EncodeResponse (typically a client that hung up mid-response). It is the
+	// structural signal that the response has ALREADY been committed — the 200
+	// status line went out before the body write failed — so a caller must
+	// only log it and must NEVER follow it with a second WriteHeader (which
+	// net/http reports as a "superfluous response.WriteHeader call"). Every
+	// other EncodeResponse error (e.g. ErrUnsupportedPayload) is returned
+	// before anything is written, leaving the ResponseWriter untouched.
+	ErrWriteResponse = errors.New("msghttp: write response body failed")
+
 	// ErrUnsupportedPayload is returned by EncodeResponse when a reply
 	// message's payload is neither []byte nor string. The adapter is
 	// type-agnostic (ADR 0001): it never encodes/decodes a domain type T,

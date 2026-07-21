@@ -9,16 +9,35 @@
 // # Untrusted boundary
 //
 // An inbound HTTP request is UNTRUSTED input (CLAUDE.md "Production
-// robustness"): DecodeRequest caps the body (WithMaxBodyBytes, default 1
-// MiB), copies request headers onto the decoded message only from an
-// explicit allow-list (WithRequestHeaders — empty by default, so nothing is
-// copied unless opted in), and defensively strips any copied header whose
-// name carries the reserved "msgin." prefix so a client can never forge a
-// core header (e.g. msgin.delivery-count) even if an operator's allow-list
-// names one by mistake. The correlation id defaults to the message's own
-// server-minted ID() — a client-supplied value is used only if the caller
-// opts in via WithCorrelationID, and even then an empty resolved value falls
-// back to the server-minted id rather than an empty correlation key.
+// robustness"):
+//
+//   - DecodeRequest caps the body (WithMaxBodyBytes, default 1 MiB) and copies
+//     request headers onto the decoded message only from an explicit
+//     allow-list (WithRequestHeaders — empty by default, so nothing is copied
+//     unless opted in).
+//   - Any copied header whose name carries the reserved "msgin." prefix is
+//     defensively stripped (case-insensitively), so a client can never forge a
+//     core header (e.g. msgin.delivery-count) even if an operator's allow-list
+//     names one by mistake. Client-sourced values that DO travel — the request
+//     Content-Type and any advisory correlation id — land on NON-reserved
+//     "http.*" headers precisely so they can never be mistaken for core
+//     metadata.
+//   - The exchange correlation key is the message's own server-minted ID(). A
+//     client value keys the exchange only through the explicit, separately
+//     named WithTrustedCorrelationID opt-in; WithCorrelationID merely records
+//     the client's id for the flow to read.
+//   - EncodeResponse never lets the client choose the response media type: it
+//     always sends X-Content-Type-Options: nosniff and a Content-Type taken
+//     from the FLOW's msgin.HeaderContentType, defaulting to
+//     application/octet-stream so net/http never sniffs one out of the body.
+//     Response header values are CRLF-sanitized.
+//   - The handler cores recover a panicking flow handler and answer 500 rather
+//     than letting it escape into the server.
+//
+// What this package does NOT do: authentication, authorization, CSRF, CORS,
+// rate limiting or method filtering. See the adapter/http/stdlib package
+// godoc for the deployment checklist (including the http.Server timeouts the
+// caller must set).
 //
 // # Phase
 //

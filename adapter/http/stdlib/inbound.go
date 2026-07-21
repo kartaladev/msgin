@@ -25,7 +25,11 @@ import (
 // method filtering the caller's mux/router applies (e.g.
 // http.ServeMux.HandleFunc("POST /path", ...) on Go 1.22+, or Register plus
 // a method check in the caller's own middleware); NewInbound itself has no
-// opinion on method.
+// opinion on method, and applies no authentication, authorization, CSRF or
+// CORS defense. Read the package godoc's "Deploying these handlers safely"
+// section — in particular the http.Server timeouts (ReadHeaderTimeout,
+// ReadTimeout, IdleTimeout) the caller MUST set — before exposing this
+// handler.
 func NewInbound(target msgin.MessageChannel, opts ...msghttp.Option) (http.Handler, error) {
 	cfg, err := msghttp.NewConfig(opts...)
 	if err != nil {
@@ -51,10 +55,13 @@ func NewInbound(target msgin.MessageChannel, opts ...msghttp.Option) (http.Handl
 //
 // On failure the response status is: 413 (oversize body) / 400 (any other
 // decode fault) from a DecodeRequest failure; 504 (msgin.ErrReplyTimeout) /
-// 503 (msgin.ErrGatewayClosed) / 409 (msgin.ErrDuplicateCorrelation) / 500
-// (msgin.ErrNoCorrelation, msghttp.ErrUnsupportedPayload, or any other
-// error) from an exchange.Exchange or encode failure — cfg's
-// msghttp.WithErrorStatus overrides this mapping.
+// 503 (msgin.ErrGatewayClosed) / 409 (msgin.ErrDuplicateCorrelation, only
+// reachable under msghttp.WithTrustedCorrelationID) / 500
+// (msgin.ErrNoCorrelation, msghttp.ErrUnsupportedPayload, a recovered flow
+// panic, or any other error) from an exchange.Exchange or encode failure —
+// cfg's msghttp.WithErrorStatus overrides this mapping. A body-write failure
+// after the 200 has been sent is logged only, never restated as a second
+// status.
 //
 // exchange MUST be non-nil: a nil exchange returns msgin.ErrNilExchange
 // rather than deferring the failure to the first request. An invalid opt
@@ -66,7 +73,11 @@ func NewInbound(target msgin.MessageChannel, opts ...msghttp.Option) (http.Handl
 // whatever method filtering the caller's mux/router applies (e.g.
 // http.ServeMux.HandleFunc("POST /path", ...) on Go 1.22+, or Register plus
 // a method check in the caller's own middleware); NewInboundGateway itself
-// has no opinion on method.
+// has no opinion on method, and applies no authentication, authorization,
+// CSRF or CORS defense. Read the package godoc's "Deploying these handlers
+// safely" section — in particular the http.Server timeouts
+// (ReadHeaderTimeout, ReadTimeout, IdleTimeout) the caller MUST set — before
+// exposing this handler.
 func NewInboundGateway(exchange msgin.RequestReplyExchange, opts ...msghttp.Option) (http.Handler, error) {
 	cfg, err := msghttp.NewConfig(opts...)
 	if err != nil {
