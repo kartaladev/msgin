@@ -20,7 +20,8 @@
 (`database/sql`, generic; v1 dialects Postgres + MySQL), **pgx** (PostgreSQL-native, incl.
 `LISTEN`/`NOTIFY`), **Redis**, **NATS**, and **HTTP** (request-reply / async / outbound webhook) — and
 stays open for community adapters (Kafka, RabbitMQ, …) through a stable SPI. Retry uses closed-form
-backoff (+ `cenkalti/backoff` for the outbound-HTTP loop); time uses `clockwork`. It is a library, not
+backoff throughout, on both the inbound settlement and outbound producer paths; time uses
+`clockwork`. It is a library, not
 a broker, ESB, or workflow engine.
 
 ---
@@ -138,7 +139,12 @@ stateDiagram-v2
 Key rules the audits pinned down:
 
 - **`MaxAttempts == 0` means retry forever** — it must *not* dead-letter. The dead-letter branch is
-  guarded `MaxAttempts > 0 && attempts >= MaxAttempts && !NativeDeadLetter()`.
+  guarded `MaxAttempts > 0 && attempts >= MaxAttempts && !NativeDeadLetter()`. **This is the *inbound*
+  settlement path.** On the **outbound** path (`WithProducerRetry`, ADR 0025) the same policy reads
+  differently, because a retry there is a live re-send on the caller's goroutine rather than a
+  broker redelivery: an always-on 2-minute budget makes `MaxAttempts == 0` finite (`ErrRetryBudgetExhausted`
+  marks a budget stop), every wait is floored to 100 ms, and the `RetryPolicy` **zero value** is rejected
+  outright with `ErrUnboundedRetry`. See `retry.go`'s godoc.
 - **Permanent errors never retry** — a payload that can't decode into `T`, or a
   `backoff.Permanent(err)`, goes straight to the **invalid-message channel** (it will never succeed;
   retrying it forever is the classic poison loop).
@@ -247,7 +253,9 @@ mandate holds.
   `Term`; `Nack` delay → `NakWithDelay`; no native DLQ → runtime DLQ policy).
 - **http** — inbound `http.Handler`/server: **sync request-reply** (handler blocks until settle;
   `Ack`→2xx, transient `Nack`→5xx, permanent→4xx; request-ctx cancels on client disconnect) or **async**
-  (202); outbound webhook `POST` with `cenkalti/backoff` retry honoring `Retry-After`.
+  (202); outbound webhook `POST` retried by the **core producer** (`WithProducerRetry`) honoring
+  `Retry-After` as a **minimum** wait. *Amended per ADR 0025:* the retry lives in core, not in the
+  adapter, and `cenkalti/backoff` is **not** adopted — see Part 7.
 
 **Consumer groups** (cross-instance competing consumers) are delivered by the backends — Redis Streams
 groups, NATS JetStream durables, SQL `SKIP LOCKED` — needing **no SPI change**; only multi-subscriber
@@ -261,11 +269,15 @@ publish-subscribe is deferred.
 | [0002](docs/adrs/0002-adapter-spi.md) | Adapter SPI | Non-generic SPI over `Message[any]`; runtime type-switches on `PollingSource`/`StreamingSource`; `Delivery` w/ `Ack`/`Nack(delay)`; runtime-owned retry + invalid-message + DLQ; `NativeReliability` (redelivery vs dead-letter, independent). |
 | [0003](docs/adrs/0003-multi-module-repository-layout.md) | Layout | Multi-module monorepo; core (+ memory + http + sql) + separate modules for pgx/redis/nats; module-path-prefixed release tags. |
 | [0004](docs/adrs/0004-clockwork-dependency.md) | Time | `jonboulle/clockwork` directly (deterministic tests). |
-| [0005](docs/adrs/0005-cenkalti-backoff-dependency.md) | Backoff | Closed-form exponential for all redelivery (attempt-indexed); `cenkalti/backoff/v4` for the outbound-HTTP tight loop. |
+| [0005](docs/adrs/0005-cenkalti-backoff-dependency.md) | Backoff | Closed-form exponential for all redelivery (attempt-indexed). ~~`cenkalti/backoff/v4` for the outbound-HTTP tight loop~~ — **that clause is superseded by [0025](docs/adrs/0025-producer-outbound-retry.md)**; the closed-form decision stands. |
 | [0006](docs/adrs/0006-resilience-flow-control.md) | Resilience | Credit-based backpressure (mandatory) + rate-limit/breaker/handler-timeout/overflow, as clockwork-driven interfaces with dep-free defaults. |
+| [0025](docs/adrs/0025-producer-outbound-retry.md) | Producer retry | `WithProducerRetry` applies `RetryPolicy` to `Producer.Send` in **core**, so every outbound adapter benefits; `RetryAfter(err, d)` marker as a **minimum** wait; four bounds (`ErrUnboundedRetry`, 100 ms floor, always-on budget, timed+detached divert); divert on cancel; at-least-once with caller-visible duplicates. |
 
-Two accepted core dependencies only: **`clockwork`** and **`cenkalti/backoff/v4`** (both small, pure
-Go); everything else is stdlib or an adapter-module's own client.
+**Core third-party dependencies (corrected per ADR 0025 §4):** `clockwork`, `robfig/cron`,
+`expr-lang/expr`. **`cenkalti/backoff/v4` is NOT among them** — ADR 0005 ratified it for an
+outbound-HTTP loop that never shipped, and the producer-side design reuses the existing
+`RetryPolicy`/`ExponentialBackoff` machinery instead, so it stays out of `go.mod`. Everything else is
+stdlib or an adapter-module's own client.
 
 ## Part 8 — Design audits (what was caught and fixed)
 
@@ -300,5 +312,6 @@ Enterprise Integration Patterns (enterpriseintegrationpatterns.com): Message · 
 Point-to-Point · Publish-Subscribe · Datatype Channel · Invalid Message Channel · Dead Letter Channel ·
 Guaranteed Delivery · Channel Adapter · Message Endpoint · Messaging Gateway · Polling Consumer ·
 Event-Driven Consumer · Transactional Client · Competing Consumers · Idempotent Receiver · Canonical
-Data Model. Libraries: `github.com/jonboulle/clockwork`, `github.com/cenkalti/backoff/v4`,
-`github.com/jackc/pgx/v5`, `github.com/redis/go-redis`, `github.com/nats-io/nats.go`.
+Data Model. Libraries: `github.com/jonboulle/clockwork`, `github.com/robfig/cron/v3`,
+`github.com/expr-lang/expr`, `github.com/jackc/pgx/v5`, `github.com/redis/go-redis`,
+`github.com/nats-io/nats.go`.

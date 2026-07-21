@@ -49,9 +49,9 @@ markers. Independent of, and un-coupled to, [Plan 022](022-header-message-id-ren
   `ExampleWithProducerRetry` (Task 5), which cannot inject a clock through an `// Output:` block.
 - **`BlockUntilContext`, never `BlockUntil`.** `BlockUntil` is `// Deprecated:` in clockwork v0.5.0 in favour of
   `BlockUntilContext`, "which offers context cancellation to prevent deadlock". The repo already uses the context form
-  in ~10 sites in `aggregator_test.go`. **Verified:** `clockwork.Advance` never appends waiters
-  (`fc.waiters = fc.waiters[1:]`), so a driver looping on `BlockUntil` and expecting a later `Advance` to release it
-  deadlocks deterministically.
+  in ~10 sites in `aggregator_test.go`. Use the context form everywhere here too: a driver that blocks on the
+  deprecated `BlockUntil` and never reaches the expected waiter count hangs with no way out, whereas
+  `BlockUntilContext` surfaces it as a test failure bounded by `t.Context()`.
 - **Never call `require`/`t.Fatal`/`t.FailNow` from a spawned goroutine.** `t.FailNow` off the test goroutine calls
   `runtime.Goexit`, producing a `goleak` straggler storm that masks the real failure. Buffer the value and assert on the
   test goroutine.
@@ -96,7 +96,7 @@ design.**
 | # | Audit finding | Resolution | Task |
 |---|---|---|---|
 | D1 | **Dead-letter runs on the cancelled `ctx`** — a `ctx` cancelled mid-retry (or a `ctx` whose deadline expired, which is *why* the loop is ending) makes the DLQ send fail too, so the message reaches neither target nor DLQ. | Divert on `context.WithoutCancel(ctx)`, the repo's existing precedent at `exchange.go:347`. Add a covering branch. | 4 |
-| D2 | **Unbounded retry / hot spin.** `RetryPolicy{}` is a *valid* zero value meaning "retry forever, immediately". On the producer that is a zero-delay infinite loop **on the caller's goroutine**. | Three independent bounds: construction rejects `MaxAttempts == 0 && Backoff == nil` (`ErrUnboundedRetry`); every computed wait is floored to `minRetryDelay` (1ms); a cumulative `WithProducerRetryBudget` bounds total wall-clock with a finite default. | 1, 4 |
+| D2 | **Unbounded retry / hot spin.** `RetryPolicy{}` is a *valid* zero value meaning "retry forever, immediately". On the producer that is a zero-delay infinite loop **on the caller's goroutine**. | Three independent bounds: construction rejects `MaxAttempts == 0 && Backoff == nil` (`ErrUnboundedRetry`); every computed wait is floored to `minRetryDelay` (100ms); a cumulative, **always-on** `WithProducerRetryBudget` (2m default) bounds total wall-clock, marking a budget stop with `ErrRetryBudgetExhausted`. | 1, 4 |
 | D3 | **`Retry-After` is a MINIMUM, not an override** (RFC 9110 §10.2.3). The drafted design let a server *shorten* the client's backoff — to zero — which is a remote-triggerable hot spin. | Effective wait = `max(computed, min(serverDelay, cap))`. | 4 |
 | D4 | **`ExponentialBackoff` can return a NEGATIVE delay.** `Delay` guards only `IsInf`/`IsNaN`; a large-but-finite `d` (e.g. `Initial=1s, Mult=2, attempt=100` ≈ 1.27e39) exceeds `MaxInt64`, and the out-of-range float→int conversion yields `MinInt64` on amd64. The result is negative, so it also slips past the `out > b.Max` cap. **Pre-existing; affects the Consumer's Nack delay today.** | Fix in `backoff.go` at the correct layer — clamp before conversion — with its own task and test. The producer's floor (D2) is defence in depth, not the fix. | 2 |
 | D5 | **A dead-letter divert is invisible.** The caller cannot distinguish "dead-lettered" from "failed outright", and the producer fires no hooks and has no logger — against CLAUDE.md's mandatory observability constraint. | `ErrDeadLettered` sentinel joined onto the cause via `fmt.Errorf("%w: %w", …)`, plus `WithProducerHooks` reusing the existing `Hooks` type (`OnRetry`/`OnDeadLetter` already exist at `retry.go:52`). | 1, 4 |
@@ -122,14 +122,15 @@ DB. The godoc on `WithProducerRetry` must say this. No core change is required t
 
 **Files:**
 - Modify: `reliability.go` — add the marker + `retryAfterOf`; correct the stale cenkalti paragraph in `Permanent`'s godoc
-- Modify: `errors.go` — add three sentinels, so Tasks 2–4 need no further `errors.go` edit
+- Modify: `errors.go` — add six sentinels, so Tasks 2–4 need no further `errors.go` edit
 - Modify: `CLAUDE.md` — Dependency policy: four → three accepted exceptions
 - Test: `reliability_test.go` (append)
 
 **Interfaces:**
 - **Produces** (Task 4 consumes): `func RetryAfter(err error, d time.Duration) error`;
   unexported `func retryAfterOf(err error) (time.Duration, bool)`;
-  `ErrInvalidRetryAfterCap`, `ErrInvalidRetryBudget`, `ErrUnboundedRetry`, `ErrDeadLettered`.
+  the **six** sentinels `ErrInvalidRetryAfterCap`, `ErrInvalidRetryBudget`, `ErrUnboundedRetry`,
+  `ErrRetryBudgetExhausted`, `ErrInvalidDeadLetterTimeout`, `ErrDeadLettered`.
 - **Consumes:** the existing `isPermanent(err) bool` and `permanentError` in the same file.
 
 **Hot-path branches this task introduces:**
@@ -139,13 +140,18 @@ DB. The godoc on `WithProducerRetry` must say this. No core change is required t
 | 1 | `RetryAfter(nil, d)` → `nil` | `nil error stays nil` |
 | 2 | `RetryAfter(err, d)`, `d > 0` → wraps, `Unwrap`-transparent | `wraps transparently for errors.Is` |
 | 3 | `d < 0` normalized to `0` | `negative delay is normalized` |
-| 4 | `retryAfterOf(nil)` → `(0,false)` | **Task 4** — not observable here |
+| 4 | `retryAfterOf(marker)` → `(d,true)` | **Task 4** — not observable here |
 | 5 | `retryAfterOf(non-marker)` → `(0,false)` | **Task 4** — not observable here |
 
 > **Branches 4/5 are deliberately NOT in this task's coverage gate.** `retryAfterOf` is unexported and this plan is
 > blackbox-only; both arms are exercised through `Producer.Send` in Task 4. Do **not** add a whitebox test to reach
 > them, and do **not** fail Task 1 on `reliability.go` being below 100% — it reaches 100% at Task 4's gate. (Round-2
 > plan-craft lesson: do not put a branch in Task N's coverage table if it is only observable in Task N+2.)
+>
+> **There is deliberately no `retryAfterOf(nil)` branch.** The drafted code had an `if err == nil` guard; it is
+> redundant (`errors.As(nil, &re)` already returns false) and unreachable through the public API (`nextDelay` only
+> calls it with a non-nil `err`), so it is **not written in the first place** — see Task 4 Step 8's
+> "delete, don't `nolint`, don't whitebox" note, which this pre-empts.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -292,10 +298,11 @@ func RetryAfter(err error, d time.Duration) error {
 
 // retryAfterOf reports the server-instructed minimum delay carried by err, if
 // any, matching isPermanent's structure (errors.As over the wrap chain).
+//
+// Deliberately NO `if err == nil` guard: errors.As(nil, &re) already returns
+// false, and the only caller (nextDelay) never passes nil, so the guard would be
+// both redundant and blackbox-unreachable.
 func retryAfterOf(err error) (time.Duration, bool) {
-	if err == nil {
-		return 0, false
-	}
 	var re *retryAfterError
 	if errors.As(err, &re) {
 		return re.d, true
@@ -312,9 +319,10 @@ GOTOOLCHAIN=go1.25.12 go test -run 'TestRetryAfter' -race .
 
 Expected: `ok github.com/kartaladev/msgin`.
 
-> `retryAfterOf` is unused until Task 4. `go vet` does not flag unused package-level funcs; `golangci-lint`'s `unused`
-> linter **does**. That warning is expected between Task 1 and Task 4 — do **not** silence it with a `nolint`. The full
-> `golangci-lint run ./...` gate therefore runs at **Task 4 Step 9**, not here.
+> `retryAfterOf` is unused until Task 4. `go vet` does not flag unused package-level funcs, and this repo's
+> `.golangci.yml` sets `linters.default: none` and does **not** enable `unused`, so nothing here will complain —
+> **verified**. Either way, do **not** silence anything with a `nolint`. The full `golangci-lint run ./...` gate runs
+> once, at **Task 4 Step 9**, not here.
 
 - [ ] **Step 5: Correct the stale cenkalti paragraph in `reliability.go`**
 
@@ -337,7 +345,11 @@ with:
 // dependency of this module.
 ```
 
-- [ ] **Step 6: Add the four sentinels to `errors.go`**
+- [ ] **Step 6: Add the six sentinels to `errors.go`**
+
+The six are `ErrInvalidRetryAfterCap`, `ErrInvalidRetryBudget`, `ErrUnboundedRetry`, `ErrRetryBudgetExhausted`,
+`ErrInvalidDeadLetterTimeout` and `ErrDeadLettered` — all of them, in this one step, so Tasks 2–4 need no further
+`errors.go` edit.
 
 Insert immediately after the `ErrInvalidMaxAttempts` declaration (`errors.go:30`), matching the file's existing
 one-doc-comment-per-sentinel style:
@@ -365,6 +377,16 @@ one-doc-comment-per-sentinel style:
 	// not a spin. Set a MaxAttempts (with a DeadLetter) or a Backoff, or both.
 	ErrUnboundedRetry = errors.New("msgin: producer retry policy must bound attempts or delay")
 
+	// ErrRetryBudgetExhausted is joined onto the error returned by Producer.Send
+	// when the retry loop stopped because the next wait would have overrun
+	// WithProducerRetryBudget, rather than because MaxAttempts was spent. The
+	// budget always applies — including to a finite MaxAttempts — so this
+	// sentinel is what stops it silently truncating an explicit attempt count:
+	// errors.Is(err, ErrRetryBudgetExhausted) says "the policy wanted more time
+	// than the caller allowed", which is a different operational signal from
+	// "we tried N times and gave up".
+	ErrRetryBudgetExhausted = errors.New("msgin: retry budget exhausted before attempts were spent")
+
 	// ErrInvalidDeadLetterTimeout is returned by NewProducer when an explicit
 	// WithProducerDeadLetterTimeout is <= 0. The unset case takes the documented
 	// 30-second default; there is deliberately no "no timeout" value, because the
@@ -373,10 +395,18 @@ one-doc-comment-per-sentinel style:
 	ErrInvalidDeadLetterTimeout = errors.New("msgin: dead-letter timeout must be > 0")
 
 	// ErrDeadLettered is joined onto the error returned by Producer.Send when the
-	// retry policy exhausted its attempts and the message was diverted to the
-	// policy's DeadLetter sink. It lets a caller tell "the message is safely in
-	// the DLQ" from "the send failed outright" — errors.Is(err, ErrDeadLettered)
-	// — while the causing error stays matchable through the same wrap chain.
+	// retry loop ended — because attempts were spent, because the retry budget
+	// was exhausted, or because ctx was cancelled during a backoff wait — AND the
+	// message was successfully diverted to the policy's DeadLetter sink. It lets
+	// a caller tell "the message is safely in the DLQ" from "the send failed
+	// outright" — errors.Is(err, ErrDeadLettered) — while the causing error stays
+	// matchable through the same wrap chain.
+	//
+	// The guarantee is scoped to errors PRODUCED BY THIS PRODUCER. Being an
+	// exported sentinel, nothing stops a third-party OutboundAdapter from wrapping
+	// it into an error of its own, so errors.Is(err, ErrDeadLettered) on an error
+	// that did not come out of Producer.Send proves nothing. Do not use it as an
+	// authorization or audit primitive.
 	ErrDeadLettered = errors.New("msgin: message diverted to the dead-letter sink")
 ```
 
@@ -397,16 +427,37 @@ Three edits in `CLAUDE.md`:
 - [ ] **Step 8: Verify**
 
 ```bash
-GOTOOLCHAIN=go1.25.12 gofmt -l . && \
+test -z "$(GOTOOLCHAIN=go1.25.12 gofmt -l .)" && \
 GOTOOLCHAIN=go1.25.12 go vet ./... && \
 GOTOOLCHAIN=go1.25.12 go test ./... -race && \
 GOTOOLCHAIN=go1.25.12 go mod tidy && git diff --exit-code go.mod go.sum && \
-! grep -rn 'cenkalti' --include='*.go' --include='go.mod' --include='go.sum' . && echo "CENKALTI GONE FROM CODE"
+! grep -rn '"github.com/cenkalti' --include='*.go' . && \
+! grep -q cenkalti go.mod go.sum && echo "CENKALTI: not imported, not in the root module"
 ```
 
-Expected: no `gofmt` output; `go vet` silent; all packages `ok`; `go.mod`/`go.sum` unchanged; the final grep finds
-nothing in code or module files (matches remain in `docs/` and are correct there — ADR 0005 and ADR 0025 both discuss
-it by name).
+(`gofmt -l` exits **0 while listing files**, so a bare `gofmt -l . && …` silently passes on unformatted code — the
+`test -z` wrapper is what makes it a real gate.)
+
+> **This gate was rewritten — the original form was self-contradictory and could never have passed.** It ran
+> `! grep -rn 'cenkalti' --include='*.go' --include='go.mod' --include='go.sum' .`, a **bare-substring, whole-tree**
+> search, and two things in this repo match it unavoidably:
+>
+> 1. **Step 5 of this very task writes a godoc containing the word "cenkalti"** — deliberately, to record that the
+>    dependency was *not* adopted. The gate would have failed on the text the same task was told to write.
+> 2. The **test-only** `adapter/cron/crontest` and `adapter/database/sql/dbtest` modules carry
+>    `github.com/cenkalti/backoff/v4 v4.3.0 // indirect` — a **pre-existing** transitive dependency of
+>    `testcontainers-go`, in `go.mod`/`go.sum` files this increment neither introduces nor can remove. Six lines,
+>    matched before Task 1 started.
+>
+> What the gate actually needs to assert is the ADR 0025 §4 claim: **no Go file imports it, and it is not in the root
+> module's dependency set.** Hence the import-scoped pattern (`"github.com/cenkalti`, with the opening quote, matching
+> an import path rather than prose) and the explicit two-file `go.mod`/`go.sum` check. For a human read,
+> `grep -c cenkalti go.mod go.sum` prints `go.mod:0` and `go.sum:0`; note it **exits 1** when every count is zero, so
+> it cannot be chained with `&&` — use the `! grep -q` form above in the gate.
+
+Expected: no `gofmt` output; `go vet` silent; all packages `ok`; `go.mod`/`go.sum` unchanged; no Go file imports
+cenkalti and the root module does not require it, printing the `CENKALTI:` line. Remaining matches in `docs/`, in
+`reliability.go`'s godoc, and in the two test-only modules' `go.mod`/`go.sum` are correct and expected.
 
 - [ ] **Step 9: Commit**
 
@@ -418,11 +469,13 @@ feat(core): add the RetryAfter marker and retire the phantom cenkalti dependency
 RetryAfter(err, d) mirrors Permanent(err) to carry a server-instructed MINIMUM
 delay that a stateless BackoffStrategy cannot express; per RFC 9110 the delay is
 a floor, so a server can lengthen the client's backoff but never shorten it.
-Adds the four sentinels the producer option validates against in a later task,
-including ErrUnboundedRetry, which rejects the RetryPolicy zero value on the
-producer path because "retry forever, immediately" is a spin on the caller's
-goroutine there, and ErrDeadLettered, which makes a terminal divert visible to
-the caller instead of silent.
+Adds the six sentinels the producer option validates against, or reports through,
+in a later task: ErrInvalidRetryAfterCap, ErrInvalidRetryBudget,
+ErrInvalidDeadLetterTimeout, ErrUnboundedRetry (which rejects the RetryPolicy
+zero value on the producer path, because "retry forever, immediately" is a spin
+on the caller's goroutine there), ErrRetryBudgetExhausted (which distinguishes a
+budget stop from genuine attempt exhaustion) and ErrDeadLettered (which makes a
+terminal divert visible to the caller instead of silent).
 
 Corrects CLAUDE.md's dependency policy and reliability.go's godoc: cenkalti
 /backoff/v4 was ratified by ADR 0005 for an adapter-side retry loop that never
@@ -570,8 +623,29 @@ negative and does not run at all when `Max <= 0`. Add the guard inside `jitter`:
 	return time.Duration(j)
 ```
 
-Cover it with a case asserting `Delay` stays positive for
-`ExponentialBackoff{Initial: time.Second, Max: 0, Mult: 2, RandomizationFactor: 0.5}` at `attempt: 33`.
+Cover it with a case that **repeats the draw**, because a single draw does not reliably reach the new arm:
+
+```go
+		{"jitter cannot push an uncapped backoff negative",
+			msgin.ExponentialBackoff{Initial: time.Second, Max: 0, Mult: 2, RandomizationFactor: 0.5}, 33,
+			func(t *testing.T, _ time.Duration) {
+				// jitter samples uniformly in [d/2, 3d/2]; at attempt 33 the
+				// centre is ~8.6e18ns, so only the upper ~28% of the range
+				// exceeds MaxInt64 and reaches the new guard. ONE draw would hit
+				// it ~28% of the time, so coverage on this arm would flap
+				// run-to-run. 200 draws make a total miss ~(0.72)^200 ~ 1e-28,
+				// and every draw independently pins the property that matters.
+				b := msgin.ExponentialBackoff{Initial: time.Second, Max: 0, Mult: 2, RandomizationFactor: 0.5}
+				for i := range 200 {
+					d := b.Delay(33)
+					assert.Positive(t, d,
+						"draw %d: jitter must never produce a negative delay", i)
+				}
+			}},
+```
+
+The case's own `d` parameter is ignored — the table calls `Delay` once, and this closure re-draws inside itself,
+which is what makes the arm reliably reachable. Keep the positional style of the surrounding cases.
 
 > **PLATFORM DEPENDENCE — this determines whether the TDD red step actually goes red. Measured, not assumed.**
 > An out-of-range float→int conversion is implementation-defined in Go. On **amd64** (`CVTTSD2SI`) it yields
@@ -601,6 +675,19 @@ GOTOOLCHAIN=go1.25.12 go tool cover -func=/tmp/cov23.out | grep -E 'backoff.go|t
 Expected: `ok`; every `backoff.go` function at **100.0%**. The consumer's existing backoff tests must still pass
 untouched — this is a fix to an unreachable-by-design arm, not a semantic change to any reachable one.
 
+> **`jitter`'s `j >= MaxInt64` arm is covered PROBABILISTICALLY, by repetition — this is deliberate, and is the one
+> place in this increment where a branch is not reached by construction.** `jitter` samples uniformly in
+> `[d/2, 3d/2]`; at `attempt: 33` only the top slice of that range clears `MaxInt64`, so a **single** draw reaches the
+> guard roughly a quarter of the time. That is why the case loops 200 draws: with a per-draw miss probability of
+> ~0.72, a run that never reaches the arm has probability ~`0.72^200` ≈ **1e-28**, i.e. it will not happen. Every draw
+> also independently asserts the property that actually matters (`Delay` is never negative), so the loop is not just
+> coverage padding.
+>
+> **If this arm ever shows as uncovered, or a draw ever fails, that is a REAL finding — investigate it.** An
+> implementer must **not** "fix" a red gate here by weakening the assertion, dropping the loop, shrinking the
+> iteration count, or `nolint`-ing the arm. The only legitimate responses are: fix `jitter`, or — if the sampling
+> range genuinely changed — re-derive the attempt index and the iteration count and record the new arithmetic here.
+
 - [ ] **Step 5: Commit**
 
 ```bash
@@ -615,7 +702,14 @@ past the "out > b.Max" cap, because a negative value is not greater than Max, so
 the documented min(Max, Initial x Mult^attempt) contract did not hold.
 
 Reachable today through the Consumer's Nack redelivery delay. Clamping before
-the conversion saturates to Max, or to MaxInt64 when uncapped, instead.
+the conversion returns Max when capped, or falls back to Initial when uncapped,
+leaving both existing return arms intact; jitter, which had the identical
+unguarded conversion, saturates to MaxInt64.
+
+The sign is platform-dependent: amd64 yields MinInt64, arm64 saturates positive.
+So the bug is a NEGATIVE duration on amd64 (CI, and every Linux server) and an
+absurdly LARGE one on arm64 dev machines. Both break the documented
+min(Max, Initial x Mult^attempt) contract.
 
 Plan: 023
 EOF
@@ -749,6 +843,19 @@ In `codec.go`:
 // Both methods COPY, so neither the caller's slice nor the returned one can be
 // mutated through the other. Messages are immutable by contract, and a message
 // may be shared across a pub-sub channel; aliasing would break that.
+//
+// TWO RESIDUALS, both consequences of the pass-through being exact:
+//
+//   - It removes an ACCIDENTAL escaping layer. JSONPayloadCodec's quoting and
+//     escaping neutralised some hostile bytes as a side effect — never as a
+//     security control, but in practice. This codec emits the caller's bytes
+//     verbatim, so sanitising or validating the payload for whatever the sink
+//     interprets it as (SQL, a shell, HTML, a log) is wholly the caller's and the
+//     adapter's responsibility.
+//   - Encode(nil) returns nil, where JSONPayloadCodec returned the four bytes
+//     null. A store with a NOT NULL payload column that accepted a nil payload
+//     before will now reject it. Encode an explicit empty or sentinel payload if
+//     the sink cannot take a NULL.
 type BytesPayloadCodec struct{}
 
 // Encode returns a copy of v.
@@ -805,15 +912,16 @@ EOF
 The substantive task. **Read the "Design deltas" section above before starting** — D1–D6 all land here.
 
 **Files:**
-- Modify: `producer.go` (config fields, four options, `NewProducer` validation, the `Send` retry path + helpers)
+- Modify: `producer.go` (config fields, **six** options, `NewProducer` validation, the `Send` retry path + helpers)
 - Test: `producer_retry_test.go` (create)
 
 **Interfaces:**
-- **Consumes:** Task 1's `RetryAfter`/`retryAfterOf`/the four sentinels; the pre-existing `isPermanent`, `RetryPolicy`
+- **Consumes:** Task 1's `RetryAfter`/`retryAfterOf`/the six sentinels; the pre-existing `isPermanent`, `RetryPolicy`
   (`MaxAttempts`, `Backoff`, `DeadLetter`, `Validate()`, `delayFor(attempt int)`), `Hooks`, and
   `producerConfig[T].clock`.
 - **Produces:** `WithProducerRetry[T]`, `WithProducerRetryAfterCap[T]`, `WithProducerRetryBudget[T]`,
-  `WithProducerHooks[T]`, and the classification contract Plan 024's adapter must satisfy.
+  `WithProducerDeadLetterTimeout[T]`, `WithProducerHooks[T]`, `WithProducerLogger[T]`, and the classification
+  contract Plan 024's adapter must satisfy.
 
 **Hot-path branches this task introduces (every one needs a case):**
 
@@ -850,6 +958,17 @@ The substantive task. **Read the "Design deltas" section above before starting**
 | 29 | `NewProducer`: explicit budget `<= 0` → `ErrInvalidRetryBudget` | construction table |
 | 30 | unset cap/budget take their defaults and construct | construction table |
 | 31 | `SendAfter`/`SendAt` bypass retry entirely | `scheduled send is not retried` |
+| 32 | `NewProducer`: explicit dead-letter timeout `== 0` → `ErrInvalidDeadLetterTimeout` | construction table |
+| 33 | `NewProducer`: explicit dead-letter timeout `< 0` → `ErrInvalidDeadLetterTimeout` | construction table |
+| 34 | `NewProducer`: explicit positive dead-letter timeout constructs | construction table |
+| 35 | `WithProducerLogger(nil)` keeps the default logger and constructs | construction table |
+| 36 | `WithProducerLogger(l)` with a non-nil `l` installs it and constructs | construction table |
+| 37 | the dead-letter timeout actually bounds the divert — an expired `dlCtx` surfaces as a joined error | `dead-letter timeout expiry is joined` |
+
+> **Branches 32–36 exist because the round-2 audit found `WithProducerDeadLetterTimeout` and `WithProducerLogger` — the
+> two options the round-1 fixes ADDED — exercised by nothing at all.** Every other option had a validation case; these
+> two were introduced in prose and never reached a table. Both their reject arms, both their default/accept arms, and
+> the non-nil logger arm are therefore explicit rows, not assumed.
 
 - [ ] **Step 1: Write the failing test — harness + branches 1–3**
 
@@ -863,8 +982,11 @@ func-adapter for `OutboundAdapter` in `msgin_test` (verified), so `outboundFunc`
 package msgin_test
 
 import (
+	"bytes" // the panicking-hook test asserts on the logger's output
 	"context"
 	"errors"
+	"io"       // the WithProducerLogger construction cases
+	"log/slog" // ditto, and the hook-panic logger in TestProducerHooks
 	"sync"
 	"testing"
 	"time"
@@ -1101,7 +1223,7 @@ func TestProducerRetry(t *testing.T) {
 		{
 			name:   "a zero computed backoff is floored, not spun",
 			script: []error{transient, nil},
-			waits:  []time.Duration{time.Millisecond}, // minRetryDelay
+			waits:  []time.Duration{100 * time.Millisecond}, // minRetryDelay
 			policy: func(dlq msgin.OutboundAdapter) msgin.RetryPolicy {
 				// Backoff present but always zero: Initial <= 0 makes Delay return 0.
 				return msgin.RetryPolicy{
@@ -1176,18 +1298,24 @@ const (
 	defaultRetryAfterCap = 60 * time.Second
 
 	// defaultRetryBudget bounds the CUMULATIVE wall-clock a Send may spend
-	// retrying, when WithProducerRetryBudget is unset AND the policy is
-	// attempt-unbounded (MaxAttempts == 0). Two minutes sits above
+	// retrying when WithProducerRetryBudget is unset. Two minutes sits above
 	// defaultRetryAfterCap — a budget below the cap would silently defeat the
 	// Retry-After compliance the cap exists to allow — while keeping "retry
 	// forever" finite by default.
 	//
-	// It is ALSO chosen to stay well below the shortest plausible upstream lease:
+	// It is ALSO chosen to sit well below the shortest plausible upstream lease:
 	// adapter/database/sql defaults leaseTTL to 5 minutes (options.go:17). A Send
 	// blocking longer than the lease that covers the message being handled lets
 	// the source reclaim and redeliver it while the first attempt is still
 	// running, turning one logical message into duplicate outbound calls that fan
-	// out across instances. See the invariant documented on WithProducerRetry.
+	// out across instances.
+	//
+	// That budget < lease relation holds for the DEFAULTS as shipped; it is not a
+	// guarantee. The budget bounds retry waits only, so a single blocking adapter
+	// call can push a Send past any lease regardless (see
+	// WithProducerRetryBudget), and a caller may raise the budget or shorten the
+	// lease. Where the relation matters, bound the adapter's I/O and size the two
+	// against each other explicitly.
 	defaultRetryBudget = 2 * time.Minute
 
 	// defaultDeadLetterTimeout bounds the divert. The DeadLetter send runs on a
@@ -1241,7 +1369,8 @@ and default `logger` in `NewProducer`'s config literal exactly as `NewConsumer` 
 `producer[T]` gains `retry`, `retrySet`, `retryAfterCap`, `retryBudget`, `deadLetterTimeout`, `hooks`, `logger`.
 Add `"errors"`, `"io"` and `"log/slog"` to `producer.go`'s imports.
 
-**(c)** The four options, after `WithProducerClock`:
+**(c)** The options, after `WithProducerClock` (five here; `WithProducerLogger` is the sixth, in the blockquote
+following **(e)**):
 
 ```go
 // WithProducerRetry applies p to Producer.Send: a failing OutboundAdapter.Send is
@@ -1259,15 +1388,35 @@ Add `"errors"`, `"io"` and `"log/slog"` to `producer.go`'s imports.
 //   - RetryAfter(err, d) — waits at least d, clamped by
 //     WithProducerRetryAfterCap. d is a FLOOR on the computed backoff, never a
 //     replacement for it, so a server cannot shorten the client's own backoff.
-//   - anything else — waits p.Backoff.Delay(attempt-1), floored to 1ms.
+//   - anything else — waits p.Backoff.Delay(attempt-1), floored to 100ms.
 //
-// On exhaustion the message is routed to p.DeadLetter and the returned error
-// carries BOTH the causing error and ErrDeadLettered, so
+// On attempt exhaustion, budget exhaustion, OR cancellation during a backoff
+// wait, the message is routed to p.DeadLetter and the returned error carries
+// BOTH the causing error and ErrDeadLettered, so
 // errors.Is(err, ErrDeadLettered) distinguishes "safely in the DLQ" from "failed
 // outright". The divert runs on a ctx detached from the caller's
 // (context.WithoutCancel), because the usual reason the loop is ending is that
 // ctx was cancelled — diverting on it would mean the message reached neither its
 // target nor the DLQ.
+//
+// TRADE — diverting on cancellation is not free. Because a cancel during backoff
+// is terminal for the message, cancelling a Send does NOT return promptly: it
+// returns only once the detached divert finishes, so a caller waits up to
+// WithProducerDeadLetterTimeout (30s default) per in-flight Send, and a mass
+// shutdown dumps EVERY in-flight message into the DLQ rather than dropping it.
+// That is the deliberate choice — a message in the DLQ is recoverable, a lost one
+// is not — but size WithProducerDeadLetterTimeout against your shutdown deadline,
+// and expect DLQ volume proportional to in-flight sends at shutdown.
+//
+// DELIVERY GUARANTEE — retrying CHANGES it. A retry after a timeout or a
+// connection reset re-sends a request the peer may already have received and
+// committed; the producer cannot tell "never arrived" from "arrived, reply lost".
+// So WithProducerRetry converts Producer.Send from the underlying adapter's
+// guarantee to AT-LEAST-ONCE, with duplicates visible to the receiver. The
+// receiver must be idempotent: carry a stable idempotency key in a header (the
+// message ID is one) and deduplicate on it, or make the operation naturally
+// idempotent. Without WithProducerRetry, Send makes exactly one attempt and the
+// adapter's own guarantee is unchanged.
 //
 // p is validated here by RetryPolicy.Validate, so a finite MaxAttempts without a
 // DeadLetter fails at construction with ErrNoDeadLetter and a negative
@@ -1304,7 +1453,7 @@ func WithProducerRetry[T any](p RetryPolicy) ProducerOption[T] {
 
 // WithProducerRetryAfterCap clamps the delay honoured from a RetryAfter marker:
 // the effective wait is max(computedBackoff, min(serverDelay, d)), always
-// additionally bounded by ctx and by WithProducerRetryBudget. Default: 5 minutes
+// additionally bounded by ctx and by WithProducerRetryBudget. Default: 60 seconds
 // — see defaultRetryAfterCap for why an unclamped server-supplied delay is a
 // denial-of-service lever against the caller's own goroutine.
 //
@@ -1328,9 +1477,22 @@ func WithProducerRetryAfterCap[T any](d time.Duration) ProducerOption[T] {
 // It exists because MaxAttempts == 0 means "retry forever", bounded otherwise
 // only by ctx — and Producer.Send is routinely called with context.Background().
 // The budget makes the safety property ADR 0025 claims actually true. Default:
-// 15 minutes. A wait that would overrun the remaining budget ends the loop
+// 2 minutes. A wait that would overrun the remaining budget ends the loop
 // rather than being truncated, so the producer never makes an attempt it has no
-// budget to back.
+// budget to back. The budget ALWAYS applies, including to a finite MaxAttempts;
+// a stop caused by the budget rather than by spent attempts is marked with
+// ErrRetryBudgetExhausted so the two are distinguishable.
+//
+// WHAT IT DOES NOT BOUND — the budget bounds the cumulative RETRY WAITS and the
+// elapsed time BETWEEN attempts. It does NOT bound the duration of any single
+// OutboundAdapter.Send: the loop checks the budget before parking, never during
+// an adapter call, so one adapter call that blocks forever blocks Send forever.
+// Worst-case wall clock for a Send is therefore
+//
+//	retryBudget + one unbounded adapter call + deadLetterTimeout
+//
+// Bound the adapter's own I/O yourself — pass a ctx with a deadline, or configure
+// the client's timeouts — if you need a hard upper bound on Send.
 //
 // d MUST be > 0: NewProducer returns ErrInvalidRetryBudget for an explicit
 // d <= 0. There is deliberately no "unlimited" value — an unbounded retry on a
@@ -1346,6 +1508,13 @@ func WithProducerRetryBudget[T any](d time.Duration) ProducerOption[T] {
 // (blackholed TCP, wedged DB) and a caller goroutine blocked forever, immune to
 // its own cancel. Default: 30 seconds. d MUST be > 0
 // (ErrInvalidDeadLetterTimeout); there is deliberately no "unlimited" value.
+//
+// It is also what a CANCELLING caller waits for. A cancel during backoff diverts
+// (see WithProducerRetry), and the divert is detached, so Send returns only after
+// the sink answers or this timeout expires: a cancelled Send can take up to d to
+// return, and a mass shutdown pays that per in-flight Send while dumping each
+// in-flight message into the DLQ. Size d against your shutdown deadline, not just
+// against the sink's latency.
 func WithProducerDeadLetterTimeout[T any](d time.Duration) ProducerOption[T] {
 	return func(o *producerConfig[T]) { o.deadLetterTimeout = d; o.deadLetterTimeoutSet = true }
 }
@@ -1364,21 +1533,43 @@ func WithProducerHooks[T any](h Hooks) ProducerOption[T] {
 }
 ```
 
-**(d)** Extend `producer[T]` with `retry RetryPolicy`, `retrySet bool`, `retryAfterCap`, `retryBudget time.Duration`,
-`hooks Hooks`; and validate in `NewProducer` **after** the `resolveCodec` block, **before** the return:
+**(d)** Extend `producer[T]` with **all seven** new fields — `retry RetryPolicy`, `retrySet bool`,
+`retryAfterCap time.Duration`, `retryBudget time.Duration`, **`deadLetterTimeout time.Duration`**, `hooks Hooks`,
+**`logger *slog.Logger`** — and validate in `NewProducer` **after** the `resolveCodec` block, **before** the return:
+
+> **This list was short by two, and that is exactly the round-2 critical repeating itself.** An earlier revision of
+> this paragraph named only five fields, omitting `deadLetterTimeout` and `logger` — the same two the round-2 audit
+> caught missing from the construction literal further down. Both are load-bearing, and both fail **silently**:
+> with `deadLetterTimeout` unset, `context.WithTimeout(detached, 0)` is **expired on creation**, so **every divert
+> fails instantly**, converting the message-loss fix into total message loss; with `logger` nil, `fireHook`'s recover
+> arm nil-derefs, so a panicking hook crashes the caller's goroutine — precisely what `fireHook` exists to prevent.
+> **Cross-check this list, the `producerConfig` listing, and the construction literal against each other** before
+> moving on; a field is a fact repeated at three sites.
 
 ```go
 	if cfg.retrySet {
 		if err := cfg.retry.Validate(); err != nil {
 			return nil, err
 		}
-		// Reject a policy unbounded in BOTH dimensions. The predicate evaluates
-		// the EFFECTIVE first delay rather than testing Backoff for nil:
-		// BackoffStrategy.Delay is pure, stateless and clock-free (backoff.go),
-		// so it is safe to call at construction, and a nil check alone misses
-		// ExponentialBackoff{} — a non-nil interface whose Delay returns 0 for
-		// every attempt, one keystroke from the zero value and just as likely.
-		if cfg.retry.MaxAttempts == 0 && cfg.retry.delayFor(1) <= 0 {
+		// Reject the structurally unbounded policy: MaxAttempts == 0 (forever)
+		// with a nil Backoff (no delay) — the RetryPolicy zero value.
+		//
+		// This is deliberately a STRUCTURAL check and NOT a probe of the
+		// strategy's actual output. Evaluating cfg.retry.delayFor(1) here would
+		// invoke CALLER CODE inside a constructor: BackoffStrategy is an exported
+		// public interface, so an implementation may panic (CLAUDE.md: never
+		// panic on caller input) or block; it is NON-DETERMINISTIC whenever
+		// RandomizationFactor > 0, since jitter can truncate the sampled delay to
+		// 0 and intermittently reject a valid config; and sampling one index
+		// false-rejects the legitimate "first retry immediate, then back off"
+		// shape (Delay(0) == 0, Delay(n>0) == 5s).
+		//
+		// The output-based hazard it was reaching for — ExponentialBackoff{},
+		// whose Delay is always 0 — is fully handled at runtime instead, by the
+		// minRetryDelay floor and the always-on budget below: 100ms x 2m caps it
+		// at ~1200 attempts, not the ~900,000 the unfloored, unbudgeted loop
+		// allowed.
+		if cfg.retry.MaxAttempts == 0 && cfg.retry.Backoff == nil {
 			return nil, ErrUnboundedRetry
 		}
 	}
@@ -1387,21 +1578,21 @@ func WithProducerHooks[T any](h Hooks) ProducerOption[T] {
 	} else if cfg.retryAfterCap <= 0 {
 		return nil, ErrInvalidRetryAfterCap
 	}
-	switch {
-	case cfg.retryBudgetSet && cfg.retryBudget <= 0:
-		return nil, ErrInvalidRetryBudget
-	case cfg.retryBudgetSet:
-		// An explicit budget always applies, whatever MaxAttempts says.
-	case cfg.retry.MaxAttempts == 0:
-		// The DEFAULT budget applies only where it is the sole bound. Applying it
-		// to a finite MaxAttempts would silently truncate an explicit attempt
-		// count — e.g. MaxAttempts 8 with Initial 5s, Mult 2 spends 635s on waits
-		// and would stop at attempt 7 — and dead-letter with the same error and
-		// the same ErrDeadLettered as genuine exhaustion, so the caller could not
-		// tell. A caller who wants both bounds sets WithProducerRetryBudget.
+	// The budget ALWAYS applies. An earlier revision defaulted it only when
+	// MaxAttempts == 0, to stop it silently truncating an explicit attempt count
+	// — but that left MaxAttempts > 0 completely unbudgeted, so
+	// RetryPolicy{MaxAttempts: 1_000_000, Backoff: ExponentialBackoff{}} runs
+	// 10^6 x the 100ms floor = ~27.7 HOURS on the caller's goroutine. That is the
+	// same flood the attempt-unbounded case was rejected for, respelled with a
+	// large MaxAttempts instead of 0.
+	//
+	// The truncation objection is answered by making the two stops
+	// DISTINGUISHABLE (ErrRetryBudgetExhausted) rather than by removing the
+	// bound.
+	if !cfg.retryBudgetSet {
 		cfg.retryBudget = defaultRetryBudget
-	default:
-		cfg.retryBudget = 0 // 0 == no budget bound; MaxAttempts is the bound
+	} else if cfg.retryBudget <= 0 {
+		return nil, ErrInvalidRetryBudget
 	}
 	if !cfg.deadLetterTimeoutSet {
 		cfg.deadLetterTimeout = defaultDeadLetterTimeout
@@ -1409,17 +1600,26 @@ func WithProducerHooks[T any](h Hooks) ProducerOption[T] {
 		return nil, ErrInvalidDeadLetterTimeout
 	}
 	return &producer[T]{
-		out:           out,
-		codec:         codec,
-		liveValue:     live,
-		clock:         cfg.clock,
-		retry:         cfg.retry,
-		retrySet:      cfg.retrySet,
-		retryAfterCap: cfg.retryAfterCap,
-		retryBudget:   cfg.retryBudget,
-		hooks:         cfg.hooks,
+		out:               out,
+		codec:             codec,
+		liveValue:         live,
+		clock:             cfg.clock,
+		retry:             cfg.retry,
+		retrySet:          cfg.retrySet,
+		retryAfterCap:     cfg.retryAfterCap,
+		retryBudget:       cfg.retryBudget,
+		deadLetterTimeout: cfg.deadLetterTimeout,
+		hooks:             cfg.hooks,
+		logger:            cfg.logger,
 	}, nil
 ```
+
+> **`deadLetterTimeout` and `logger` are load-bearing in this literal, and the round-1 revision omitted both.**
+> Round 2 caught it: with `deadLetterTimeout` unset, `context.WithTimeout(detached, 0)` is **expired on creation**, so
+> **every divert fails instantly** — silently converting the message-loss fix into total message loss. With `logger`
+> nil, `fireHook`'s recover arm nil-derefs, so a panicking hook crashes the caller's goroutine: exactly what
+> `fireHook` exists to prevent. Both fields were added by round-1 fixes and mentioned only in surrounding prose, never
+> in the authoritative code block.
 
 **(e)** Replace `Send` and add the helpers:
 
@@ -1441,10 +1641,8 @@ func (p *producer[T]) Send(ctx context.Context, msg Message[T]) error {
 // attempt is 1-based, matching RetryPolicy.delayFor's contract. deadline bounds
 // the cumulative wall-clock spent retrying (WithProducerRetryBudget).
 func (p *producer[T]) sendRetrying(ctx context.Context, boxed Message[any]) error {
-	// retryBudget == 0 means "no budget bound" — the policy's finite MaxAttempts
-	// is the bound. Computing a deadline of Now()+0 would make EVERY wait overrun
-	// it and dead-letter after a single attempt, so the flag is load-bearing.
-	budgeted := p.retryBudget > 0
+	// The budget always applies (NewProducer defaults it and rejects a
+	// non-positive explicit value), so there is no unbudgeted mode and no flag.
 	deadline := p.clock.Now().Add(p.retryBudget)
 	for attempt := 1; ; attempt++ {
 		err := p.out.Send(ctx, boxed)
@@ -1460,10 +1658,14 @@ func (p *producer[T]) sendRetrying(ctx context.Context, boxed Message[any]) erro
 			return p.deadLetter(ctx, boxed, err)
 		}
 		wait := p.nextDelay(attempt, err)
-		if budgeted && p.clock.Now().Add(wait).After(deadline) {
+		if p.clock.Now().Add(wait).After(deadline) {
 			// The next wait would overrun the budget. Stop now rather than make
-			// an attempt the budget cannot back.
-			return p.deadLetter(ctx, boxed, err)
+			// an attempt the budget cannot back. ErrRetryBudgetExhausted marks
+			// this stop so the caller can tell it from genuine attempt
+			// exhaustion — the budget is a safety bound, and hitting it usually
+			// means the policy wanted more time than the caller allowed, which
+			// is a different operational signal from "we tried N times".
+			return p.deadLetter(ctx, boxed, fmt.Errorf("%w: %w", ErrRetryBudgetExhausted, err))
 		}
 		p.fireHook(p.hooks.OnRetry, ctx, boxed, err)
 		if waitErr := p.wait(ctx, wait); waitErr != nil {
@@ -1502,7 +1704,8 @@ func (p *producer[T]) wait(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// deadLetter routes an attempt- or budget-exhausted message to the policy's
+// deadLetter routes a terminal message — attempt-exhausted, budget-exhausted, or
+// cancelled during a backoff wait — to the policy's
 // DeadLetter sink and returns cause joined with ErrDeadLettered — the caller
 // must learn the send never reached its target, so a successful divert does NOT
 // become a nil error, and must be able to tell it from an outright failure.
@@ -1525,15 +1728,29 @@ func (p *producer[T]) deadLetter(ctx context.Context, boxed Message[any], cause 
 	dlCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), p.deadLetterTimeout)
 	defer cancel()
 
-	dlErr := p.safeDeadLetter(dlCtx, boxed)
-	// Fire on BOTH arms. "The DLQ is down and the message is lost" is the single
-	// most operationally important event this loop can produce; emitting no
-	// telemetry for it would invert the reason the hooks were added.
-	p.fireHook(p.hooks.OnDeadLetter, dlCtx, boxed, errors.Join(cause, dlErr))
-	if dlErr != nil {
-		return errors.Join(cause, dlErr)
+	// Fire on BOTH arms — "the DLQ is down and the message is lost" is the single
+	// most operationally important event this loop can produce — and hand the
+	// hook EXACTLY the error Send is about to return, so the hook can tell the
+	// two apart the same way the caller does.
+	//
+	// Do NOT pass errors.Join(cause, dlErr): with dlErr == nil that is a non-nil
+	// *joinError wrapping only cause, carrying no ErrDeadLettered, so the hook
+	// would receive the same shape on success and on failure — unable to
+	// distinguish "safely in the DLQ" from "lost", which is the whole reason
+	// this hook fires.
+	//
+	// The hook receives dlCtx, which MAY ALREADY BE EXPIRED: the sink can consume
+	// the whole deadLetterTimeout before returning. It is passed for
+	// trace/value propagation, not as a work budget — a hook that performs I/O
+	// must not rely on it and should derive its own bounded ctx.
+	var out error
+	if dlErr := p.safeDeadLetter(dlCtx, boxed); dlErr != nil {
+		out = errors.Join(cause, dlErr)
+	} else {
+		out = fmt.Errorf("%w: %w", ErrDeadLettered, cause)
 	}
-	return fmt.Errorf("%w: %w", ErrDeadLettered, cause)
+	p.fireHook(p.hooks.OnDeadLetter, dlCtx, boxed, out)
+	return out
 }
 
 // safeDeadLetter invokes the DeadLetter sink, recovering a panic so a faulty
@@ -1567,6 +1784,16 @@ func (p *producer[T]) fireHook(h func(context.Context, Message[any], error), ctx
 }
 ```
 
+> **The dead-letter timeout is NOT clockwork-driven — a deliberate, documented deviation.** Every other wait in this
+> increment runs on the injected `clockwork.Clock`, per CLAUDE.md's injectable-time rule. `deadLetter`'s bound cannot:
+> it must be a **`context` deadline**, because that is the only form the `OutboundAdapter.Send` contract can carry into
+> a third-party sink, and `context.WithTimeout` reads the real monotonic clock. There is no fake-clock seam for it, and
+> inventing one (a `clockwork`-driven watchdog goroutine that cancels a `context.WithCancel`) would add a goroutine per
+> divert to the caller's hot path for a test-only benefit. **Consequence for the tests:** the expiry arm cannot be
+> reached by advancing the fake clock — Task 4 Step 5 reaches it deterministically with a
+> `WithProducerDeadLetterTimeout(time.Nanosecond)` instead. Record the deviation in Spec 013 §4 at Task 5 rather than
+> leaving it implied.
+
 > **The producer needs a logger, and did not have one.** `consumer.safeFire` (**verified**, `consumer.go:807-817`)
 > recovers and **logs** via `c.logger.Warn("msgin: hook panicked", "id", …, "panic", r)`; the drafted `fireHook`
 > silently discarded the panic with a bare `_ = recover()`. Swallowing an observability failure *silently* is exactly
@@ -1589,8 +1816,9 @@ func (p *producer[T]) fireHook(h func(context.Context, Message[any], error), ctx
 >
 > Default it in `NewProducer`'s config literal exactly as `NewConsumer` does (**verified**, `consumer.go:147`):
 > `logger: slog.New(slog.NewTextHandler(io.Discard, nil))`. Add `"io"` and `"log/slog"` to `producer.go`'s imports,
-> carry `logger` onto the `producer[T]` struct, and add the nil-logger case to the construction table (branch 32:
-> `WithProducerLogger(nil)` keeps the default and constructs). Cover the panic-logging branch with the existing
+> carry `logger` onto the `producer[T]` struct, and add the logger cases to the construction table (branches 35/36:
+> `WithProducerLogger(nil)` keeps the default and constructs; a non-nil logger is installed and constructs). Cover the
+> panic-logging branch with the existing
 > `"a panicking hook is contained"` test by injecting a logger writing to a `bytes.Buffer` and asserting the warning
 > was emitted.
 
@@ -1604,7 +1832,7 @@ func (p *producer[T]) fireHook(h func(context.Context, Message[any], error), ctx
 GOTOOLCHAIN=go1.25.12 go test -run 'TestProducerRetry$' -race .
 ```
 
-- [ ] **Step 5: Branches 6, 8–12, 23 — the standalone tests**
+- [ ] **Step 5: Branches 6, 8–12, 21–23 and 37 — the standalone tests**
 
 Each needs a shape the main table cannot express. Append to `producer_retry_test.go`:
 
@@ -1619,12 +1847,34 @@ func TestProducerPermanentBeatsRetryAfter(t *testing.T) {
 
 	cause := errors.New("boom")
 
+	// Both nesting orders must produce the identical observable outcome, so the
+	// assert closure body is the same text twice — deliberately, per the
+	// table-test rule: the expectation belongs in the case, not in the loop, so a
+	// future case that legitimately differs cannot silently inherit these
+	// assertions.
+	assertPermanentWon := func(t *testing.T, out, dlq *scriptedOutbound, elapsed time.Duration, err error) {
+		t.Helper()
+		assert.ErrorIs(t, err, cause)
+		assert.Equal(t, 1, out.attempts(), "Permanent must stop after one attempt despite the RetryAfter marker")
+		assert.Equal(t, 0, dlq.attempts(), "Permanent must never dead-letter")
+		assert.Equal(t, time.Duration(0), elapsed, "Permanent must not park for the RetryAfter delay")
+	}
+
 	tests := []struct {
-		name string
-		err  error
+		name   string
+		err    error
+		assert func(t *testing.T, out, dlq *scriptedOutbound, elapsed time.Duration, err error)
 	}{
-		{name: "permanent outside retry-after", err: msgin.Permanent(msgin.RetryAfter(cause, time.Minute))},
-		{name: "retry-after outside permanent", err: msgin.RetryAfter(msgin.Permanent(cause), time.Minute)},
+		{
+			name:   "permanent outside retry-after",
+			err:    msgin.Permanent(msgin.RetryAfter(cause, time.Minute)),
+			assert: assertPermanentWon,
+		},
+		{
+			name:   "retry-after outside permanent",
+			err:    msgin.RetryAfter(msgin.Permanent(cause), time.Minute),
+			assert: assertPermanentWon,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1642,10 +1892,7 @@ func TestProducerPermanentBeatsRetryAfter(t *testing.T) {
 
 			sendErr := p.Send(t.Context(), msgin.New[[]byte]([]byte("payload")))
 
-			assert.ErrorIs(t, sendErr, cause)
-			assert.Equal(t, 1, out.attempts(), "Permanent must stop after one attempt despite the RetryAfter marker")
-			assert.Equal(t, 0, dlq.attempts(), "Permanent must never dead-letter")
-			assert.Equal(t, time.Duration(0), clock.Now().Sub(start), "Permanent must not park for the RetryAfter delay")
+			tt.assert(t, out, dlq, clock.Now().Sub(start), sendErr)
 		})
 	}
 }
@@ -1731,125 +1978,216 @@ func TestProducerDeadLetterDetachedContext(t *testing.T) {
 	assert.NoError(t, dlq.lastCtxErr(), "the DeadLetter sink must NOT observe the caller's cancellation")
 }
 
-// TestProducerRetryContextCancel covers the two cancellation arms.
+// TestProducerDeadLetterTimeout is branch 37: the divert's ctx must actually
+// CARRY the configured timeout, so a hung sink cannot hold the caller's
+// goroutine forever. It is the only bound on a detached ctx.
+//
+// The timeout is a context deadline, NOT a clockwork wait (see the note on
+// deadLetter), so the fake clock cannot drive it. A 1ns timeout reaches the
+// expiry arm deterministically instead — the deadline has passed before the sink
+// is ever entered — with no real sleep and no flakiness on a fast machine.
+func TestProducerDeadLetterTimeout(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	transient := errors.New("transient")
+	clock := clockwork.NewFakeClock()
+	out := newScriptedOutbound(transient)
+
+	// A realistic sink: it does not ignore its ctx, it reports it.
+	dlq := outboundFunc(func(ctx context.Context, _ msgin.Message[any]) error {
+		return ctx.Err()
+	})
+
+	p, err := msgin.NewProducer[[]byte](out,
+		msgin.WithProducerClock[[]byte](clock),
+		msgin.WithProducerDeadLetterTimeout[[]byte](time.Nanosecond),
+		msgin.WithProducerRetry[[]byte](msgin.RetryPolicy{MaxAttempts: 1, DeadLetter: dlq}),
+	)
+	require.NoError(t, err)
+
+	sendErr := p.Send(t.Context(), msgin.New[[]byte]([]byte("payload")))
+
+	assert.ErrorIs(t, sendErr, transient, "the cause must survive a failed divert")
+	assert.ErrorIs(t, sendErr, context.DeadlineExceeded,
+		"the divert must run under the configured deadLetterTimeout, and its expiry must surface")
+	assert.NotErrorIs(t, sendErr, msgin.ErrDeadLettered, "nothing was successfully dead-lettered")
+}
+
+// TestProducerRetryContextCancel covers the two cancellation arms. Both drive
+// the SAME call (Producer.Send under a cancellable ctx) with different timing, so
+// the mandatory table-test rule applies: drive-inputs are fields, every outcome
+// assertion lives in a per-case assert closure.
 func TestProducerRetryContextCancel(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
 	transient := errors.New("transient")
 
-	t.Run("cancel during backoff", func(t *testing.T) {
-		clock := clockwork.NewFakeClock()
-		out := newScriptedOutbound(transient)
-		p, err := msgin.NewProducer[[]byte](out,
-			msgin.WithProducerClock[[]byte](clock),
-			msgin.WithProducerRetry[[]byte](msgin.RetryPolicy{
-				Backoff: msgin.ExponentialBackoff{Initial: time.Minute},
-			}), // MaxAttempts 0 = bounded only by the budget and ctx
-		)
-		require.NoError(t, err)
+	tests := []struct {
+		name string
+		// preCancel cancels before Send is ever entered; otherwise the driver
+		// waits for the producer to park on the backoff timer and cancels there.
+		preCancel bool
+		assert    func(t *testing.T, out *scriptedOutbound, err error)
+	}{
+		{
+			name:      "cancel during backoff",
+			preCancel: false,
+			assert: func(t *testing.T, out *scriptedOutbound, err error) {
+				t.Helper()
+				assert.ErrorIs(t, err, context.Canceled)
+				assert.ErrorIs(t, err, transient, "the last attempt's error must stay visible")
+				assert.Equal(t, 1, out.attempts())
+			},
+		},
+		{
+			name:      "a pre-cancelled ctx stops after one attempt",
+			preCancel: true,
+			assert: func(t *testing.T, out *scriptedOutbound, err error) {
+				t.Helper()
+				assert.ErrorIs(t, err, context.Canceled)
+				assert.Equal(t, 1, out.attempts(), "an already-cancelled ctx must stop after one attempt")
+			},
+		},
+	}
 
-		ctx, cancel := context.WithCancel(t.Context())
-		h := runSend(t, p, clock, ctx)
-		require.NoError(t, clock.BlockUntilContext(t.Context(), 1), "producer never parked on the backoff timer")
-		cancel()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clock := clockwork.NewFakeClock()
+			out := newScriptedOutbound(transient)
+			p, err := msgin.NewProducer[[]byte](out,
+				msgin.WithProducerClock[[]byte](clock),
+				msgin.WithProducerRetry[[]byte](msgin.RetryPolicy{
+					Backoff: msgin.ExponentialBackoff{Initial: time.Minute},
+				}), // MaxAttempts 0 = bounded only by the budget and ctx
+			)
+			require.NoError(t, err)
 
-		sendErr := h.wait(t)
-		assert.ErrorIs(t, sendErr, context.Canceled)
-		assert.ErrorIs(t, sendErr, transient, "the last attempt's error must stay visible")
-		assert.Equal(t, 1, out.attempts())
-	})
+			ctx, cancel := context.WithCancel(t.Context())
+			if tt.preCancel {
+				cancel()
+				tt.assert(t, out, p.Send(ctx, msgin.New[[]byte]([]byte("payload"))))
+				return
+			}
 
-	t.Run("a pre-cancelled ctx stops after one attempt", func(t *testing.T) {
-		clock := clockwork.NewFakeClock()
-		out := newScriptedOutbound(transient)
-		p, err := msgin.NewProducer[[]byte](out,
-			msgin.WithProducerClock[[]byte](clock),
-			msgin.WithProducerRetry[[]byte](msgin.RetryPolicy{
-				Backoff: msgin.ExponentialBackoff{Initial: time.Minute},
-			}),
-		)
-		require.NoError(t, err)
-
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-
-		sendErr := p.Send(ctx, msgin.New[[]byte]([]byte("payload")))
-		assert.ErrorIs(t, sendErr, context.Canceled)
-		assert.Equal(t, 1, out.attempts(), "an already-cancelled ctx must stop after one attempt")
-	})
+			h := runSend(t, p, clock, ctx)
+			require.NoError(t, clock.BlockUntilContext(t.Context(), 1),
+				"producer never parked on the backoff timer")
+			cancel()
+			tt.assert(t, out, h.wait(t))
+		})
+	}
 }
 
 // TestProducerHooks is branches 21–23: the loop's observability surface must
 // fire for every retry and once for the divert, and a panicking hook must not
-// break the send.
+// break the send. Both cases drive the same call, so they are one table with
+// per-case assert closures (table-test rule).
 func TestProducerHooks(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
 	transient := errors.New("transient")
 
-	t.Run("hooks observe retries and the divert", func(t *testing.T) {
-		var mu sync.Mutex
-		var retries, dlqs int
+	// counters is the only shared mutable state; each case gets its own.
+	type counters struct {
+		mu            sync.Mutex
+		retries, dlqs int
+	}
 
-		clock := clockwork.NewFakeClock()
-		out := newScriptedOutbound(transient)
-		dlq := newScriptedOutbound(nil)
+	tests := []struct {
+		name   string
+		script []error
+		policy func(dlq msgin.OutboundAdapter) msgin.RetryPolicy
+		hooks  func(c *counters) msgin.Hooks
+		// waits are the delays the producer is expected to park for, in order.
+		waits  []time.Duration
+		assert func(t *testing.T, c *counters, out *scriptedOutbound, logs *bytes.Buffer, err error)
+	}{
+		{
+			name:   "hooks observe retries and the divert",
+			script: []error{transient},
+			waits:  []time.Duration{time.Second, 2 * time.Second},
+			policy: func(dlq msgin.OutboundAdapter) msgin.RetryPolicy {
+				return msgin.RetryPolicy{
+					MaxAttempts: 3,
+					Backoff:     msgin.ExponentialBackoff{Initial: time.Second, Mult: 2},
+					DeadLetter:  dlq,
+				}
+			},
+			hooks: func(c *counters) msgin.Hooks {
+				return msgin.Hooks{
+					OnRetry: func(context.Context, msgin.Message[any], error) {
+						c.mu.Lock()
+						c.retries++
+						c.mu.Unlock()
+					},
+					OnDeadLetter: func(context.Context, msgin.Message[any], error) {
+						c.mu.Lock()
+						c.dlqs++
+						c.mu.Unlock()
+					},
+				}
+			},
+			assert: func(t *testing.T, c *counters, out *scriptedOutbound, logs *bytes.Buffer, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, msgin.ErrDeadLettered)
+				c.mu.Lock()
+				defer c.mu.Unlock()
+				assert.Equal(t, 2, c.retries, "one OnRetry per wait, not per attempt")
+				assert.Equal(t, 1, c.dlqs)
+			},
+		},
+		{
+			name:   "a panicking hook is contained and logged",
+			script: []error{transient, nil},
+			waits:  []time.Duration{time.Second},
+			policy: func(msgin.OutboundAdapter) msgin.RetryPolicy {
+				return msgin.RetryPolicy{Backoff: msgin.ExponentialBackoff{Initial: time.Second}}
+			},
+			hooks: func(*counters) msgin.Hooks {
+				return msgin.Hooks{
+					OnRetry: func(context.Context, msgin.Message[any], error) { panic("hook exploded") },
+				}
+			},
+			assert: func(t *testing.T, _ *counters, out *scriptedOutbound, logs *bytes.Buffer, err error) {
+				t.Helper()
+				assert.NoError(t, err, "a panicking observability hook must not break the send")
+				assert.Equal(t, 2, out.attempts())
+				assert.Contains(t, logs.String(), "hook panicked",
+					"the recovered panic must be logged, not silently discarded")
+				assert.Contains(t, logs.String(), "hook exploded")
+			},
+		},
+	}
 
-		p, err := msgin.NewProducer[[]byte](out,
-			msgin.WithProducerClock[[]byte](clock),
-			msgin.WithProducerRetry[[]byte](msgin.RetryPolicy{
-				MaxAttempts: 3,
-				Backoff:     msgin.ExponentialBackoff{Initial: time.Second, Mult: 2},
-				DeadLetter:  dlq,
-			}),
-			msgin.WithProducerHooks[[]byte](msgin.Hooks{
-				OnRetry: func(context.Context, msgin.Message[any], error) {
-					mu.Lock()
-					retries++
-					mu.Unlock()
-				},
-				OnDeadLetter: func(context.Context, msgin.Message[any], error) {
-					mu.Lock()
-					dlqs++
-					mu.Unlock()
-				},
-			}),
-		)
-		require.NoError(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var c counters
+			var logs bytes.Buffer
 
-		h := runSend(t, p, clock, t.Context())
-		h.stepTo(t, time.Second)
-		h.stepTo(t, 2*time.Second)
-		require.ErrorIs(t, h.wait(t), msgin.ErrDeadLettered)
+			clock := clockwork.NewFakeClock()
+			out := newScriptedOutbound(tt.script...)
+			dlq := newScriptedOutbound(nil)
 
-		mu.Lock()
-		defer mu.Unlock()
-		assert.Equal(t, 2, retries, "one OnRetry per wait, not per attempt")
-		assert.Equal(t, 1, dlqs)
-	})
+			p, err := msgin.NewProducer[[]byte](out,
+				msgin.WithProducerClock[[]byte](clock),
+				msgin.WithProducerLogger[[]byte](slog.New(slog.NewTextHandler(&logs, nil))),
+				msgin.WithProducerRetry[[]byte](tt.policy(dlq)),
+				msgin.WithProducerHooks[[]byte](tt.hooks(&c)),
+			)
+			require.NoError(t, err)
 
-	t.Run("a panicking hook is contained", func(t *testing.T) {
-		clock := clockwork.NewFakeClock()
-		out := newScriptedOutbound(transient, nil)
-
-		p, err := msgin.NewProducer[[]byte](out,
-			msgin.WithProducerClock[[]byte](clock),
-			msgin.WithProducerRetry[[]byte](msgin.RetryPolicy{
-				Backoff: msgin.ExponentialBackoff{Initial: time.Second},
-			}),
-			msgin.WithProducerHooks[[]byte](msgin.Hooks{
-				OnRetry: func(context.Context, msgin.Message[any], error) { panic("hook exploded") },
-			}),
-		)
-		require.NoError(t, err)
-
-		h := runSend(t, p, clock, t.Context())
-		h.stepTo(t, time.Second)
-		assert.NoError(t, h.wait(t), "a panicking observability hook must not break the send")
-		assert.Equal(t, 2, out.attempts())
-	})
+			h := runSend(t, p, clock, t.Context())
+			for _, w := range tt.waits {
+				h.stepTo(t, w)
+			}
+			tt.assert(t, &c, out, &logs, h.wait(t))
+		})
+	}
 }
 ```
+
+> **`logs` is read on the test goroutine only after `h.wait` returns**, which happens-after the producer goroutine's
+> last write, so the `bytes.Buffer` needs no mutex and stays `-race` clean. Do **not** assert on it mid-flight.
 
 - [ ] **Step 6: Branches 13–17, 19, 20 — the timing and budget tests**
 
@@ -1861,42 +2199,68 @@ func TestProducerRetryAfter(t *testing.T) {
 
 	transient := errors.New("transient")
 
+	// wantWait is a DRIVE-INPUT only — it tells stepTo how far to advance the
+	// fake clock. Every outcome assertion lives in the case's assert closure
+	// (table-test rule); nothing is asserted in the loop body.
+	assertParked := func(want time.Duration) func(*testing.T, *scriptedOutbound, time.Duration, error) {
+		return func(t *testing.T, out *scriptedOutbound, elapsed time.Duration, err error) {
+			t.Helper()
+			require.NoError(t, err)
+			assert.Equal(t, 2, out.attempts())
+			assert.Equal(t, want, elapsed, "the producer must park for exactly the expected delay")
+		}
+	}
+
 	tests := []struct {
 		name     string
 		first    error
 		extra    []msgin.ProducerOption[[]byte]
-		wantWait time.Duration
+		wantWait time.Duration // drive-input for stepTo, not an expectation field
+		assert   func(t *testing.T, out *scriptedOutbound, elapsed time.Duration, err error)
 	}{
 		{
 			name:     "no marker takes the computed backoff",
 			first:    transient,
 			wantWait: time.Second,
+			assert:   assertParked(time.Second),
 		},
 		{
 			name:     "retry-after floors the wait above the computed backoff",
 			first:    msgin.RetryAfter(transient, 30*time.Second),
 			wantWait: 30 * time.Second,
+			assert:   assertParked(30 * time.Second),
 		},
 		{
 			name:     "retry-after cannot shorten the computed backoff",
 			first:    msgin.RetryAfter(transient, time.Millisecond),
 			wantWait: time.Second, // the computed backoff wins; the server may only lengthen
+			assert:   assertParked(time.Second),
 		},
 		{
 			name:     "a zero retry-after cannot shorten it either",
 			first:    msgin.RetryAfter(transient, 0),
 			wantWait: time.Second,
+			assert:   assertParked(time.Second),
 		},
 		{
-			name:     "retry-after is clamped by an explicit cap",
-			first:    msgin.RetryAfter(transient, 10*time.Minute),
-			extra:    []msgin.ProducerOption[[]byte]{msgin.WithProducerRetryAfterCap[[]byte](2 * time.Minute)},
+			// The 2m wait is exactly the 2m default budget, and survives only
+			// because the budget test is a strict .After. Pin it by DESIGN rather
+			// than by luck: raise the budget for this case so the wait is
+			// comfortably inside it and the case tests the cap, not the budget.
+			name:  "retry-after is clamped by an explicit cap",
+			first: msgin.RetryAfter(transient, 10*time.Minute),
+			extra: []msgin.ProducerOption[[]byte]{
+				msgin.WithProducerRetryAfterCap[[]byte](2 * time.Minute),
+				msgin.WithProducerRetryBudget[[]byte](10 * time.Minute),
+			},
 			wantWait: 2 * time.Minute,
+			assert:   assertParked(2 * time.Minute),
 		},
 		{
-			name:     "retry-after is clamped by the 5m default cap",
+			name:     "retry-after is clamped by the 60s default cap",
 			first:    msgin.RetryAfter(transient, 10*time.Minute),
-			wantWait: 5 * time.Minute,
+			wantWait: 60 * time.Second,
+			assert:   assertParked(60 * time.Second),
 		},
 	}
 
@@ -1919,10 +2283,7 @@ func TestProducerRetryAfter(t *testing.T) {
 			h := runSend(t, p, clock, t.Context())
 			h.stepTo(t, tt.wantWait)
 
-			require.NoError(t, h.wait(t))
-			assert.Equal(t, 2, out.attempts())
-			assert.Equal(t, tt.wantWait, clock.Now().Sub(start),
-				"the producer must park for exactly the expected delay")
+			tt.assert(t, out, clock.Now().Sub(start), h.wait(t))
 		})
 	}
 }
@@ -1935,33 +2296,41 @@ func TestProducerRetryBudget(t *testing.T) {
 
 	transient := errors.New("transient")
 
+	// waits is a DRIVE-INPUT (how far stepTo advances the fake clock); withDLQ is
+	// a drive-input too. Everything else — attempt count, DLQ count, error shape
+	// — is asserted inside the case's single assert closure, per the table-test
+	// rule. No wantSends/wantWaits expectation fields.
 	tests := []struct {
-		name       string
-		withDLQ    bool
-		wantWaits  []time.Duration
-		wantSends  int
-		assertErr  func(t *testing.T, err error)
+		name    string
+		withDLQ bool
+		waits   []time.Duration
+		assert  func(t *testing.T, out, dlq *scriptedOutbound, err error)
 	}{
 		{
-			name:      "budget exhaustion with no dead-letter returns the cause alone",
-			withDLQ:   false,
-			wantWaits: []time.Duration{time.Second, 2 * time.Second},
-			wantSends: 3,
-			assertErr: func(t *testing.T, err error) {
+			name:    "budget exhaustion with no dead-letter returns the cause alone",
+			withDLQ: false,
+			waits:   []time.Duration{time.Second, 2 * time.Second},
+			assert: func(t *testing.T, out, dlq *scriptedOutbound, err error) {
 				t.Helper()
 				assert.ErrorIs(t, err, transient)
+				assert.ErrorIs(t, err, msgin.ErrRetryBudgetExhausted,
+					"a budget stop must be distinguishable from spent attempts")
 				assert.NotErrorIs(t, err, msgin.ErrDeadLettered, "nothing was dead-lettered — there is no sink")
+				assert.Equal(t, 3, out.attempts())
+				assert.Equal(t, 0, dlq.attempts())
 			},
 		},
 		{
-			name:      "budget exhaustion with a dead-letter diverts",
-			withDLQ:   true,
-			wantWaits: []time.Duration{time.Second, 2 * time.Second},
-			wantSends: 3,
-			assertErr: func(t *testing.T, err error) {
+			name:    "budget exhaustion with a dead-letter diverts",
+			withDLQ: true,
+			waits:   []time.Duration{time.Second, 2 * time.Second},
+			assert: func(t *testing.T, out, dlq *scriptedOutbound, err error) {
 				t.Helper()
 				assert.ErrorIs(t, err, transient)
+				assert.ErrorIs(t, err, msgin.ErrRetryBudgetExhausted)
 				assert.ErrorIs(t, err, msgin.ErrDeadLettered)
+				assert.Equal(t, 3, out.attempts())
+				assert.Equal(t, 1, dlq.attempts())
 			},
 		},
 	}
@@ -1972,9 +2341,18 @@ func TestProducerRetryBudget(t *testing.T) {
 			out := newScriptedOutbound(transient)
 			dlq := newScriptedOutbound(nil)
 
-			// Budget 7s: waits of 1s and 2s fit (cumulative 3s); the third wait
-			// would be 4s, taking the total to 7s, which is NOT after the
-			// deadline — so make it 6s so the 4s wait overruns.
+			// Budget 6s, and the arithmetic that picks it. ExponentialBackoff
+			// {Initial: 1s, Mult: 2} yields 1s, 2s, 4s. The loop stops before a
+			// wait whose END would pass the deadline (strictly After), so:
+			//
+			//   attempt 1 fails -> wait 1s  -> t0+1s  <= t0+6s : proceeds
+			//   attempt 2 fails -> wait 2s  -> t0+3s  <= t0+6s : proceeds
+			//   attempt 3 fails -> wait 4s  -> t0+7s  >  t0+6s : STOPS
+			//
+			// which is why the case drives exactly two waits and asserts three
+			// attempts. 7s would NOT work: the third wait lands exactly ON the
+			// deadline, and t0+7s.After(t0+7s) is false, so the loop would run a
+			// fourth attempt and the case would hang waiting for a third step.
 			policy := msgin.RetryPolicy{Backoff: msgin.ExponentialBackoff{Initial: time.Second, Mult: 2}}
 			if tt.withDLQ {
 				policy.DeadLetter = dlq
@@ -1988,15 +2366,11 @@ func TestProducerRetryBudget(t *testing.T) {
 			require.NoError(t, err)
 
 			h := runSend(t, p, clock, t.Context())
-			for _, w := range tt.wantWaits {
+			for _, w := range tt.waits {
 				h.stepTo(t, w)
 			}
 
-			tt.assertErr(t, h.wait(t))
-			assert.Equal(t, tt.wantSends, out.attempts())
-			if tt.withDLQ {
-				assert.Equal(t, 1, dlq.attempts())
-			}
+			tt.assert(t, out, dlq, h.wait(t))
 		})
 	}
 }
@@ -2006,10 +2380,11 @@ func TestProducerRetryBudget(t *testing.T) {
 > 1s, 2s, 4s. Starting at `t0` with a 6s budget the deadline is `t0+6s`; after two waits the clock is at `t0+3s` and the
 > third wait would land at `t0+7s`, which `.After(deadline)` reports true → the loop stops after **3** sends and **2**
 > waits. If the implementation's comparison is `>=` rather than `After`, or the deadline is computed differently, this
-> arithmetic changes — **derive `wantWaits`/`wantSends` from the code you actually wrote**, and state the derivation in
-> the task report. Do not tune the numbers until the test passes without understanding why.
+> arithmetic changes — **derive the `waits` drive-input and the asserted attempt counts from the code you actually
+> wrote**, and state the derivation in the task report. Do not tune the numbers until the test passes without
+> understanding why.
 
-- [ ] **Step 7: Branches 24–31 — construction validation and scope**
+- [ ] **Step 7: Branches 24–36 — construction validation and scope**
 
 ```go
 func TestNewProducerRetryValidation(t *testing.T) {
@@ -2102,6 +2477,56 @@ func TestNewProducerRetryValidation(t *testing.T) {
 				t.Helper()
 				assert.Nil(t, p)
 				assert.ErrorIs(t, err, msgin.ErrInvalidRetryBudget)
+			},
+		},
+		{
+			name: "explicit zero dead-letter timeout is rejected",
+			opts: []msgin.ProducerOption[[]byte]{msgin.WithProducerDeadLetterTimeout[[]byte](0)},
+			assert: func(t *testing.T, p msgin.Producer[[]byte], err error) {
+				t.Helper()
+				assert.Nil(t, p)
+				assert.ErrorIs(t, err, msgin.ErrInvalidDeadLetterTimeout)
+			},
+		},
+		{
+			name: "explicit negative dead-letter timeout is rejected",
+			opts: []msgin.ProducerOption[[]byte]{msgin.WithProducerDeadLetterTimeout[[]byte](-time.Second)},
+			assert: func(t *testing.T, p msgin.Producer[[]byte], err error) {
+				t.Helper()
+				assert.Nil(t, p)
+				assert.ErrorIs(t, err, msgin.ErrInvalidDeadLetterTimeout)
+			},
+		},
+		{
+			name: "an explicit positive dead-letter timeout is accepted",
+			opts: []msgin.ProducerOption[[]byte]{msgin.WithProducerDeadLetterTimeout[[]byte](5 * time.Second)},
+			assert: func(t *testing.T, p msgin.Producer[[]byte], err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.NotNil(t, p)
+			},
+		},
+		{
+			// A nil logger must NOT install nil and must NOT be an error: the
+			// option keeps the discard default, so fireHook's recover arm always
+			// has a logger to write to.
+			name: "a nil logger keeps the default and constructs",
+			opts: []msgin.ProducerOption[[]byte]{msgin.WithProducerLogger[[]byte](nil)},
+			assert: func(t *testing.T, p msgin.Producer[[]byte], err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.NotNil(t, p)
+			},
+		},
+		{
+			name: "a non-nil logger is accepted",
+			opts: []msgin.ProducerOption[[]byte]{
+				msgin.WithProducerLogger[[]byte](slog.New(slog.NewTextHandler(io.Discard, nil))),
+			},
+			assert: func(t *testing.T, p msgin.Producer[[]byte], err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.NotNil(t, p)
 			},
 		},
 		{
@@ -2200,10 +2625,11 @@ not proceed and do not lower the bar.
 > on this file would have made the gate unsatisfiable and invited an implementer to add a whitebox test, which the
 > project forbids.
 >
-> **Do the same for the new code:** `retryAfterOf`'s `if err == nil { return 0, false }` guard is likewise unreachable
-> (`nextDelay` only calls it with a non-nil `err`) **and** redundant — `errors.As(nil, &re)` already returns false.
-> **Delete that guard** rather than carrying an uncoverable branch, and drop branch #4 from Task 1's table. This is the
-> "delete, don't `nolint`, don't whitebox" precedent that `retry.go`'s `sweepLoop` records for its `ttl<=0` case.
+> **The same reasoning is already applied to the new code, at Task 1.** A `retryAfterOf` nil guard would be likewise
+> unreachable (`nextDelay` only calls it with a non-nil `err`) **and** redundant — `errors.As(nil, &re)` already
+> returns false — so Task 1 Step 3 does **not write it**, and Task 1's branch table carries no such branch. This is
+> the "delete, don't `nolint`, don't whitebox" precedent that `retry.go`'s `sweepLoop` records for its `ttl<=0` case,
+> applied one step earlier: never write the uncoverable guard rather than write-then-delete it.
 
 > If a defensive guard turns out to be genuinely unreachable through the public API, do **not** add a whitebox test and
 > do **not** `nolint` it — **delete the guard**, exactly as `retry.go`'s `sweepLoop` records for its `ttl<=0` case.
@@ -2212,15 +2638,17 @@ not proceed and do not lower the bar.
 - [ ] **Step 9: Full lint, vet, format, module hygiene**
 
 ```bash
-GOTOOLCHAIN=go1.25.12 gofmt -l . && \
+test -z "$(GOTOOLCHAIN=go1.25.12 gofmt -l .)" && \
 GOTOOLCHAIN=go1.25.12 go vet ./... && \
 GOTOOLCHAIN=go1.25.12 golangci-lint run ./... && \
 CGO_ENABLED=0 GOTOOLCHAIN=go1.25.12 go build ./... && \
 GOTOOLCHAIN=go1.25.12 go mod tidy && git diff --exit-code go.mod go.sum && echo "HYGIENE CLEAN"
 ```
 
-Expected: no `gofmt` output; vet and lint clean (Task 1's `unused` warning on `retryAfterOf` is now gone); the cgo-free
-build succeeds; `go.mod`/`go.sum` unchanged.
+(As in Task 1 Step 8: `gofmt -l` exits 0 while listing, so the `test -z` wrapper — not a bare `gofmt -l . && …` —
+is what makes the format check actually fail the chain.)
+
+Expected: no `gofmt` output; vet and lint clean; the cgo-free build succeeds; `go.mod`/`go.sum` unchanged.
 
 - [ ] **Step 10: Commit**
 
@@ -2236,10 +2664,10 @@ never dead-lettered, and wins over RetryAfter in either nesting order.
 
 The design audit's bounds are what make the loop safe on a caller's goroutine:
 a RetryAfter delay is a MINIMUM per RFC 9110, so a server can lengthen the
-computed backoff (up to WithProducerRetryAfterCap, 5m default) but never shorten
+computed backoff (up to WithProducerRetryAfterCap, 60s default) but never shorten
 it; every wait is floored so a zero-yielding Backoff cannot spin; the
 RetryPolicy zero value is rejected outright with ErrUnboundedRetry; and
-WithProducerRetryBudget (15m default) bounds cumulative wall-clock so
+WithProducerRetryBudget (2m default) bounds cumulative wall-clock so
 MaxAttempts == 0 is finite even under context.Background().
 
 Exhaustion diverts to the policy's DeadLetter on a ctx detached with
@@ -2279,6 +2707,11 @@ EOF
 `outboundFn` or local sink helper). `recordingSink` **does** exist in the same test package at
 `settlement_doubles_test.go:33` with a `count()` method; reuse it and do **not** redeclare it. Confirm with `gopls`
 before writing.
+
+**Imports.** The example needs `context`, `errors`, `fmt` and `time` (plus `msgin` itself). `example_reliability_test.go`
+already imports `context`, `fmt`, `time` and `msgin` for `ExampleConsumer_deadLetter`; **`errors` is the one to add**
+(the flaky sink returns `errors.New("connection reset")`). Confirm the existing import block with `Read`/`gopls` before
+editing rather than trusting this list — and note the example takes no clock, so nothing from `clockwork` is needed.
 
 ```go
 // ExampleWithProducerRetry shows a Producer retrying a transient outbound
@@ -2336,8 +2769,9 @@ that realizes them).
 - §3.2 — `RetryAfter` is a **minimum**, effective wait `max(computed, min(server, cap))`. Add
   `WithProducerRetryBudget` and `WithProducerHooks` to the surface.
 - §4 — add the multi-instance paragraph (D7) and the `ErrUnboundedRetry` rationale.
-- §5 — replace the test-obligation list with the 31 branches of Task 4's table.
-- §8 — add `WithProducerRetryBudget`, `WithProducerHooks`, `BytesPayloadCodec`, and the four sentinels to the new
+- §5 — replace the test-obligation list with the 37 branches of Task 4's table.
+- §8 — add `WithProducerRetryBudget`, `WithProducerDeadLetterTimeout`, `WithProducerHooks`, `WithProducerLogger`,
+  `BytesPayloadCodec`, and the six sentinels to the new
   exported surface. Still additive → **minor** bump.
 
 **`docs/adrs/0025-producer-outbound-retry.md`:**
@@ -2346,9 +2780,12 @@ that realizes them).
   citing the audit.
 - §3 — correct "overriding the computed backoff" to the RFC 9110 minimum semantics.
 - Add §6 recording `BytesPayloadCodec` and why it is explicit rather than an automatic default.
-- Consequences → add the observability gain (`ErrDeadLettered` + hooks) and the accepted negative that the default
-  15-minute budget makes `MaxAttempts == 0` finite, a deliberate divergence from the Consumer's reading of the same
-  field.
+- Consequences → add the observability gain (`ErrDeadLettered` + hooks); the accepted negative that the always-on
+  2-minute default budget makes **every** producer policy finite — including an explicit `MaxAttempts` — a deliberate
+  divergence from the Consumer's reading of the same field, made non-silent by `ErrRetryBudgetExhausted`; the
+  at-least-once delivery contract retry creates; the cancel-path divert trade (a cancelled `Send` waits up to
+  `deadLetterTimeout`, and a mass shutdown fills the DLQ); and the documented deviation that the dead-letter timeout is
+  a **`context` deadline, not clockwork-driven**.
 
 - [ ] **Step 2b: Commit the example and the artifact reconciliation**
 
@@ -2414,7 +2851,7 @@ the gate output and the coverage table, then wait.
 
 **Spec 013 coverage.** §3.1 the loop → Task 4. §3.2 `RetryAfter` + cap → Tasks 1 and 4. §3.3 the Spec 011 delta →
 **Plan 024**, deliberately not here. §4 robustness → Task 4 (cancellation, budget, fault isolation) + Task 5 (docs).
-§5 test obligations → Task 4's 31-branch table, which supersedes the spec's shorter list. §6.1's CLAUDE.md correction →
+§5 test obligations → Task 4's 37-branch table, which supersedes the spec's shorter list. §6.1's CLAUDE.md correction →
 Task 1 Step 7.
 
 **ADR 0025 coverage.** §1 producer-side, core → Task 4. §2 scope → documented on the option, tested by branch 31.
@@ -2438,8 +2875,9 @@ branch. Two findings are explicitly deferred to Plan 024 (redirect SSRF, outboun
 - *Do not put a branch in Task N's table if it is only observable in Task N+2.* `retryAfterOf`'s two arms are
   explicitly excluded from Task 1's gate and listed in Task 4's.
 - *Commit discipline.* Spec 013 and ADR 0025 are already in history (`df7eacb`, `8459d07`) under the documented
-  docs-ahead-of-code exception, so the `Spec:`/`ADR:` trailers point at artifacts that exist. **This plan file** is not
-  yet committed and rides with Task 1's commit; the artifact *amendments* ride with Task 5.
+  docs-ahead-of-code exception, so the `Spec:`/`ADR:` trailers point at artifacts that exist. **This plan file is
+  already committed too** (`0c7b56c`, same exception); its post-audit **amendments** ride with Task 1's commit, and the
+  spec/ADR amendments ride with Task 5's.
 - *`BlockUntilContext`, never `BlockUntil`.* Enforced in Global Constraints and used in every driver here.
 
 ## Round-1 audit of THIS plan (two independent Opus auditors — correctness + security). Verdict: NOT READY ×2.
@@ -2454,8 +2892,8 @@ producer logger), which is corroboration rather than duplication.
 |---|---|---|
 | **Message LOST on cancel-during-backoff** (sec #5) — the *common* cancellation path returned without diverting, which is exactly the loss D1 claims to prevent. D1's fix only covered the narrow "already cancelled at exhaustion" case the test constructs. | `return errors.Join(err, waitErr)` | `return errors.Join(p.deadLetter(ctx, boxed, err), waitErr)` |
 | **Divert was uncancellable AND untimed** (sec #4) — a hung DLQ sink blocked the caller forever, immune to their cancel: strictly worse than the un-retried passthrough. | `context.WithoutCancel(ctx)` | `context.WithTimeout(context.WithoutCancel(ctx), p.deadLetterTimeout)`, + `WithProducerDeadLetterTimeout`, + `ErrInvalidDeadLetterTimeout`, 30s default |
-| **`ErrUnboundedRetry` let a ~900k-attempt flood through** (sec #1, corr #8) — it tested `Backoff == nil`, missing `ExponentialBackoff{}`, a non-nil interface whose `Delay` is always 0. | `MaxAttempts == 0 && Backoff == nil` | `MaxAttempts == 0 && delayFor(1) <= 0` (`Delay` is pure and clock-free, so construction-time evaluation is safe) |
-| **Default budget silently truncated an explicit `MaxAttempts`** (corr #4) and dead-lettered indistinguishably from genuine exhaustion. | budget always applied | default budget applies only when `MaxAttempts == 0`; an explicit budget always applies; `retryBudget == 0` means unbudgeted, which `sendRetrying` must branch on or every wait "overruns" |
+| **`ErrUnboundedRetry` let a ~900k-attempt flood through** (sec #1, corr #8) — it tested `Backoff == nil`, missing `ExponentialBackoff{}`, a non-nil interface whose `Delay` is always 0. | `MaxAttempts == 0 && Backoff == nil` | ~~`MaxAttempts == 0 && delayFor(1) <= 0`~~ — **REVERTED by round 2** (see below): `BackoffStrategy` is an exported interface, so `delayFor` in a constructor invokes caller code, and it is non-deterministic under jitter. Back to the structural `MaxAttempts == 0 && Backoff == nil`; the `ExponentialBackoff{}` flood is handled at runtime by the floor + the always-on budget instead |
+| **Default budget silently truncated an explicit `MaxAttempts`** (corr #4) and dead-lettered indistinguishably from genuine exhaustion. | budget always applied | ~~default budget applies only when `MaxAttempts == 0`; `retryBudget == 0` means unbudgeted~~ — **REVERTED by round 2** (see below): that left `MaxAttempts > 0` completely unbudgeted, reopening the same flood class. The budget **always** applies, with no flag and no unbudgeted mode; the truncation objection is answered by making the stop distinguishable with `ErrRetryBudgetExhausted` |
 | **Defaults optimised for obeying a remote instruction over bounding the caller** (sec #2, corr JC1) — the 5m cap was 2.5× the worst legitimate value its own godoc cited, and the 15m budget outlived `adapter/database/sql`'s 5m default lease, so the source would reclaim and redeliver mid-send (sec #3). | cap 5m, budget 15m, floor 1ms | **cap 60s, budget 2m, floor 100ms**, with the `budget < lease` invariant documented |
 | **`OnDeadLetter` never fired when the divert FAILED** (corr #7) — no telemetry for the most operationally important event this loop produces. | fired only on success | fires on both arms, carrying the joined error |
 | **`jitter` had the identical overflow** (sec #7) — measured at 1.29e19 for an uncapped policy with `RandomizationFactor: 0.5` at attempt 33, so Task 2 would have claimed to close a class it left half-open. | unguarded | clamped inside `jitter`, with a covering case |
@@ -2473,7 +2911,9 @@ it removes JSON's accidental escaping layer, and `Encode(nil)` yields `nil` wher
 which matters for a `NOT NULL` payload column. Baseline corrected to the **measured 99.1%** (corr #11 claimed 99.3%;
 re-measured — the plan was right). The `unused`-linter note deleted (corr #12 — `.golangci.yml` sets
 `default: none` and does not enable `unused`). `gofmt -l . && …` replaced with `test -z "$(gofmt -l .)"`, which
-actually fails (corr #20). `exchange.go:349`, not `:347` (corr #18). `retry.go` added to Task 5's files (corr #19).
+actually fails (corr #20). ~~`exchange.go:349`, not `:347` (corr #18)~~ — **corr #18 was WRONG and is rejected**;
+round 2 re-checked the file and `:347` is the correct `context.WithoutCancel` precedent. The plan says **347**
+everywhere; do not "correct" it. `retry.go` added to Task 5's files (corr #19).
 The claim "`clockwork.Advance` never appends waiters" was **wrong** and is removed — `Advance` re-appends tickers via
 `setExpirer` (corr #17); immaterial here since only timers are used, but it was stated as verified fact.
 
@@ -2522,3 +2962,66 @@ The claim "`clockwork.Advance` never appends waiters" was **wrong** and is remov
 5. **The 20 ms real sleep in `stepTo`** is the only way to assert a negative ("has not returned yet") against a fake
    clock. It cannot cause a false failure, only a slower suite. If the reviewer finds a fake-clock-only formulation,
    prefer it.
+
+## Round-2 audit of THIS plan (fresh Opus auditors over spec + ADR + the round-1-fixed plan). Verdict: NOT READY.
+
+**2 critical + 9 major.** All are folded in above; this section records *what* they were, because the shape of the
+round-2 findings is more instructive than any individual fix.
+
+**The flagship finding: the round-1 defaults fix was applied to the CONSTANTS BLOCK ONLY.** Round 1 changed the
+defaults from `cap 5m / budget 15m / floor 1ms` to `cap 60s / budget 2m / floor 100ms`. That change landed in the
+`const` block and **nowhere else** — the plan still carried **six stale sites** derived from the old numbers, including
+**two embedded tests that would HANG**: a table case still asserted a `1ms` floor while the implementation floors at
+`100ms`, so the two-phase `stepTo` would advance to `1ms-1ns`, the producer would still be parked at `100ms`, and the
+driver would block. A test that hangs is worse than one that fails: it burns the whole task's wall clock and reports
+nothing. **Lesson: a constant is a fact repeated across a document; changing it is a document-wide edit, not a
+one-line edit.** Every remaining default reference was re-derived from the constants block, not from memory.
+
+**The budget rework reopened the class it closed.** Round 1 answered "the default budget silently truncates an
+explicit `MaxAttempts`" by scoping the default budget to `MaxAttempts == 0` and introducing a `retryBudget == 0`
+unbudgeted mode. Round 2 showed that leaves `MaxAttempts > 0` **completely unbudgeted**:
+`RetryPolicy{MaxAttempts: 1_000_000, Backoff: ExponentialBackoff{}}` is `10^6 × 100ms` ≈ **27.7 hours** on the
+caller's goroutine — the *identical* flood `ErrUnboundedRetry` rejects, respelled with a large `MaxAttempts` instead
+of `0`. **Fix: the budget ALWAYS applies**, with no flag and no unbudgeted mode, and the original truncation objection
+is answered by making the two stops *distinguishable* — a new `ErrRetryBudgetExhausted` sentinel joined via
+`fmt.Errorf("%w: %w", …)` — rather than by removing the bound. Answer an "it hides information" objection with
+information, not by deleting the safety property.
+
+**The `delayFor(1)` probe was reverted.** Round 1 widened `ErrUnboundedRetry`'s predicate from the structural
+`MaxAttempts == 0 && Backoff == nil` to `MaxAttempts == 0 && delayFor(1) <= 0`, to catch `ExponentialBackoff{}`.
+Round 2 rejected it: `BackoffStrategy` is an **exported public interface**, so evaluating it inside `NewProducer`
+invokes **caller code in a constructor** — which may panic (CLAUDE.md forbids panicking on caller input) or block; it
+is **non-deterministic** whenever `RandomizationFactor > 0`, since jitter can truncate the sampled delay to 0 and
+intermittently reject a valid config; and sampling one index false-rejects the legitimate "first retry immediate, then
+back off" shape. The predicate is back to the structural form, and the `ExponentialBackoff{}` hazard is handled where
+it belongs — at runtime, by the `minRetryDelay` floor plus the now-always-on budget.
+
+**The `producer[T]` struct literal dropped two fields.** Round 1 added `deadLetterTimeout` and `logger` in prose and
+in the `producerConfig` listing, but never in the authoritative construction literal. With `deadLetterTimeout` unset,
+`context.WithTimeout(detached, 0)` is **expired on creation**, so **every divert fails instantly** — silently
+converting the message-loss fix into total message loss. With `logger` nil, `fireHook`'s recover arm nil-derefs, so a
+panicking hook crashes the caller's goroutine: precisely what `fireHook` exists to prevent. Both are now in the
+literal, with a blockquote saying why they are load-bearing.
+
+**The remaining majors, in brief:**
+
+| Finding | Fix |
+|---|---|
+| Sentinel count said "four" in three places while six were declared | heading, Interfaces list and commit message all say **six** and name them |
+| `retryAfterOf`'s nil guard was written in Task 1 and ordered deleted in Task 4 | never written at all; Task 1's branch table carries no such branch |
+| `WithProducerDeadLetterTimeout` and `WithProducerLogger` — the two options round 1 ADDED — were exercised by **nothing** | branches 32–36, five new construction-table cases |
+| The dead-letter timeout is a `context` deadline, so the fake clock cannot drive its expiry arm | documented as a deliberate deviation from the injectable-time rule; branch 37 reaches it with a 1 ns timeout |
+| `jitter`'s new overflow arm is hit only ~28% per draw, so coverage would flap run-to-run | the case loops 200 draws; the miss probability and the "do not weaken the assertion" rule are stated at Task 2 Step 4 |
+| Six round-1 findings recorded as "folded in" were **never actually applied** to the document | applied: the false `unused`-linter note deleted, `gofmt -l` wrapped in `test -z`, the false `clockwork.Advance` claim removed, the at-least-once contract added to `WithProducerRetry`, `ErrDeadLettered` scoped to "produced by this producer", `BytesPayloadCodec`'s two residuals added |
+| The assert-closure violations were **five**, not the three round 1 admitted | `TestProducerRetryAfter`, `TestProducerPermanentBeatsRetryAfter`, `TestProducerRetryBudget`, `TestProducerRetryContextCancel` and `TestProducerHooks` all rewritten to drive-inputs + per-case `assert` closures |
+| The cancel-path divert trade was undocumented | stated on `WithProducerRetry` and `WithProducerDeadLetterTimeout`, and pinned by branch 37's test |
+| The budget does not bound a single adapter call | `WithProducerRetryBudget` godoc states the real worst case (`budget + one unbounded adapter call + deadLetterTimeout`); the `defaultRetryBudget` comment's unconditional `budget < lease` claim softened to "holds for the defaults as shipped" |
+| `exchange.go:349` (round-1 corr #18) was itself wrong | re-verified: **`:347`** is correct; corr #18 rejected and annotated so nobody "fixes" it back |
+
+**Meta-lesson — this is the same failure mode twice.** Every one of the round-2 criticals is *fix-the-instance,
+not-the-class*: the defaults were fixed in one block and not the six sites that depend on them; the unbounded-retry
+predicate was fixed for `MaxAttempts == 0` and not for the equivalent `MaxAttempts = 10^6`; the divert was given a
+timeout field that was never wired. **Plan 022 took three audit rounds for exactly this reason.** When a round-N fix
+lands, the round-N+1 question is not "is the fix correct?" but "**where else does this fact appear, and what else is
+in this class?**" Ask it *before* declaring a finding folded in — and verify the fold-in landed in the document, since
+six of round 1's did not.
