@@ -149,6 +149,54 @@ func TestMessage_WithHeader_CopyOnWrite(t *testing.T) {
 	assert.Equal(t, "v", v)
 }
 
+func TestMessageWithoutHeader(t *testing.T) {
+	tests := []struct {
+		name   string
+		build  func() msgin.Message[int]
+		key    string
+		assert func(t *testing.T, orig, got msgin.Message[int])
+	}{
+		{
+			name:  "removes present key, leaves original",
+			build: func() msgin.Message[int] { return msgin.New(1, msgin.WithHeaders(map[string]any{"k": "v"})) },
+			key:   "k",
+			assert: func(t *testing.T, orig, got msgin.Message[int]) {
+				if _, ok := got.Header("k"); ok {
+					t.Fatal("want k removed from result")
+				}
+				if _, ok := orig.Header("k"); !ok {
+					t.Fatal("want k retained on original (copy-on-write)")
+				}
+			},
+		},
+		{
+			name:  "removing an absent key is a no-op equal-value copy",
+			build: func() msgin.Message[int] { return msgin.New(1, msgin.WithHeaders(map[string]any{"k": "v"})) },
+			key:   "absent",
+			assert: func(t *testing.T, orig, got msgin.Message[int]) {
+				assert.Equal(t, maps.Collect(orig.Headers().All()), maps.Collect(got.Headers().All()))
+			},
+		},
+		{
+			name:  "removing from an empty header set is safe",
+			build: func() msgin.Message[int] { return msgin.Message[int]{} },
+			key:   "k",
+			assert: func(t *testing.T, orig, got msgin.Message[int]) {
+				_, ok := got.Header("k")
+				assert.False(t, ok)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			orig := tt.build()
+			var got msgin.Message[int]
+			assert.NotPanics(t, func() { got = orig.WithoutHeader(tt.key) })
+			tt.assert(t, orig, got)
+		})
+	}
+}
+
 func TestNew_WithHeaders(t *testing.T) {
 	clk := clockwork.NewFakeClockAt(time.Unix(500, 0))
 	m := msgin.New("body", msgin.WithClock(clk), msgin.WithID("explicit-id"), msgin.WithHeaders(map[string]any{
