@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/msgin"
+	"github.com/kartaladev/msgin/adapter/memory"
 	"github.com/stretchr/testify/require"
 )
 
@@ -318,6 +319,32 @@ func TestTransformExpr(t *testing.T) {
 	}
 }
 
+// ExampleTransformExpr projects a payload field via a runtime expression
+// instead of a Go func Transform. Like FilterExpr, it returns (Step, error):
+// construct it, check the error, then compose the resulting Step like any
+// other — here via Chain into a terminal Consume that records the result.
+func ExampleTransformExpr() {
+	step, err := msgin.TransformExpr[exprOrder, int]("payload.Amount * 2")
+	if err != nil {
+		fmt.Println("invalid expression:", err)
+		return
+	}
+
+	var doubled []int
+	flow := msgin.Chain(
+		step,
+		msgin.Consume(func(_ context.Context, m msgin.Message[int]) error {
+			doubled = append(doubled, m.Payload())
+			return nil
+		}),
+	)
+
+	_ = flow.Handle(context.Background(), msgin.New[any](exprOrder{Amount: 21, Currency: "USD"}))
+
+	fmt.Println(doubled)
+	// Output: [42]
+}
+
 func TestSplitExpr(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -423,6 +450,34 @@ func TestSplitExpr(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) { tt.assert(t) })
 	}
+}
+
+// ExampleSplitExpr fans a batch into its items via a runtime expression
+// instead of a Go func Split, forwarding each item with its 1-based sequence
+// position out of the total — the headers a downstream Aggregator uses to
+// reassemble the group.
+func ExampleSplitExpr() {
+	step, err := msgin.SplitExpr[exprBatch, exprItem]("payload.Items")
+	if err != nil {
+		fmt.Println("invalid expression:", err)
+		return
+	}
+
+	emit := msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
+		num, _ := m.Header(msgin.HeaderSequenceNumber)
+		size, _ := m.Header(msgin.HeaderSequenceSize)
+		fmt.Printf("item %v/%v: %v\n", num, size, m.Payload())
+		return nil
+	})
+
+	// A SplitExpr is a Step: step(next) yields the handler wired to next.
+	h := step(emit)
+	batch := exprBatch{Items: []exprItem{{Name: "a"}, {Name: "b"}}}
+	_ = h.Handle(context.Background(), msgin.New[any](batch))
+
+	// Output:
+	// item 1/2: {a}
+	// item 2/2: {b}
 }
 
 func TestRouterExpr(t *testing.T) {
@@ -776,4 +831,51 @@ func TestWithReleaseExpr(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) { tc.assert(t) })
 	}
+}
+
+// ExampleWithReleaseExpr correlates messages by a runtime expression
+// (WithCorrelationExpr on payload.Region) and releases each group with a
+// runtime release expression (WithReleaseExpr). The release expression uses
+// the canonical size-GATED form — size > 0 && len(messages) >= size — never
+// the un-gated len(messages) >= size, which releases a singleton the moment
+// no HeaderSequenceSize header is present (a documented footgun; see
+// WithReleaseExpr's godoc).
+func ExampleWithReleaseExpr() {
+	store, err := memory.NewGroupStore()
+	if err != nil {
+		panic(err)
+	}
+
+	out := msgin.NewDirectChannel()
+	if err := out.Subscribe(msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
+		fmt.Printf("region total: %v\n", m.Payload())
+		return nil
+	})); err != nil {
+		panic(err)
+	}
+
+	agg, err := msgin.NewAggregator[exprGroupItem, int](store, sumAmountFn,
+		msgin.WithOutputChannel(out),
+		msgin.WithCorrelationExpr[exprGroupItem]("payload.Region"),
+		msgin.WithReleaseExpr[exprGroupItem]("size > 0 && len(messages) >= size"),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	items := []exprGroupItem{
+		{Amount: 10, Region: "EU"},
+		{Amount: 25, Region: "EU"},
+	}
+	for i, it := range items {
+		msg := msgin.New[any](it, msgin.WithID(fmt.Sprintf("item-%d", i)), msgin.WithHeaders(map[string]any{
+			msgin.HeaderSequenceSize: 2,
+		}))
+		if err := agg.Handle(context.Background(), msg); err != nil {
+			panic(err)
+		}
+	}
+
+	// Output:
+	// region total: 35
 }
