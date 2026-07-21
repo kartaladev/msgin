@@ -16,6 +16,14 @@ type aggregatorConfig struct {
 	timeout   time.Duration
 	expired   MessageChannel
 	clock     clockwork.Clock
+	// optErr holds the FIRST compile error reported by an expr-backed option
+	// (WithCorrelationExpr/WithReleaseExpr) applied during the options loop.
+	// An AggregatorOption cannot itself return an error, so these options
+	// compile eagerly and stash the failure here; NewAggregator surfaces it
+	// as ErrInvalidExpression, ahead of ErrNilOutput/ErrExpiryChannelRequired
+	// (L-5 — the expr fault is the more specific misconfiguration). A later
+	// expr option's error never clobbers an earlier one (first-error-wins).
+	optErr error
 }
 
 // AggregatorOption configures an Aggregator built by NewAggregator.
@@ -226,6 +234,9 @@ func NewAggregator[A, B any](
 	cfg := aggregatorConfig{correlate: defaultCorrelate, release: defaultRelease, clock: clockwork.NewRealClock()}
 	for _, opt := range opts {
 		opt(&cfg)
+	}
+	if cfg.optErr != nil {
+		return nil, cfg.optErr // e.g. ErrInvalidExpression from WithCorrelationExpr/WithReleaseExpr
 	}
 	if cfg.output == nil {
 		return nil, ErrNilOutput
