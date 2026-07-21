@@ -106,9 +106,40 @@ mechanically (Step 8) rather than trusting it.
   neither side's id across the upgrade, and a mixed-version deployment (old and new binaries against one table) would
   produce both keys concurrently. **No migration is shipped**, because there is no released version to migrate *from* —
   and that is the whole justification for taking the break now. Any consumer already running an unreleased build off
-  `main` with a populated table must either drain it before upgrading or run
-  `UPDATE <table> SET headers = headers - 'msgin.id' || jsonb_build_object('msgin.message-id', headers->'msgin.id') WHERE headers ? 'msgin.id';`
-  (PostgreSQL form; adapt per dialect) themselves. This is stated so the break is a recorded decision, not a discovered
+  `main` with a populated table must either drain it before upgrading or migrate it themselves.
+
+  **TWO tables are affected, and they store `headers` in DIFFERENT column types** — a distinction the first draft of
+  this ADR missed, and which the round-3 audit of Plan 022 caught. Migrating only the first leaves the group store on
+  the dead key, silently:
+
+  1. **Queue / outbox — `headers JSONB`** (`adapter/database/sql/postgres/ddl.go:43`). The jsonb operators apply
+     directly:
+
+     ```sql
+     UPDATE <table>
+        SET headers = headers - 'msgin.id'
+                    || jsonb_build_object('msgin.message-id', headers->'msgin.id')
+      WHERE headers ? 'msgin.id';
+     ```
+
+  2. **Aggregator group members — `headers BYTEA`** (`adapter/database/sql/postgres/groupddl.go:48`). The column holds
+     the raw serialized envelope, so `-`, `||` and `?` do **not** exist on it. It must be decoded, rewritten and
+     re-encoded:
+
+     ```sql
+     UPDATE <table>
+        SET headers = convert_to(
+              ((convert_from(headers, 'UTF8')::jsonb - 'msgin.id')
+                || jsonb_build_object('msgin.message-id', convert_from(headers, 'UTF8')::jsonb->'msgin.id')
+              )::text, 'UTF8')
+      WHERE convert_from(headers, 'UTF8')::jsonb ? 'msgin.id';
+     ```
+
+     This assumes the stored bytes are UTF-8 JSON, which is what the current framing writes — **verify against
+     `adapter/database/sql/framing.go` before running it on real data**, and prefer draining the group store, which is
+     transient by nature (in-flight aggregation groups), over migrating it.
+
+  Both forms are PostgreSQL; adapt per dialect. This is stated so the break is a recorded decision, not a discovered
   surprise.
 - **`gorelease` cannot verify any of this** — the repo has zero tags, so it reports "inferred base version: none"
   rather than a compatibility diff. Compatibility is established by inspection, as in every prior increment. This ADR is
@@ -122,10 +153,19 @@ mechanically (Step 8) rather than trusting it.
 ## Traceability
 
 - **Plan:** [022](../plans/022-header-message-id-rename.md).
-- **Affects:** `message.go` (declaration), `message_test.go`, `splitter.go`, `splitter_test.go`,
-  `adapter/http/encode.go`, `adapter/http/options.go`, `adapter/database/sql/**` **including the separate `harness`
-  module** (which `go build ./...` from the repo root does NOT reach — it must be built standalone with `GOWORK=off`,
-  as CI does), and the 13 markdown files listed in Plan 022 Step 5.
+- **Affects: 23 Go files and 15 markdown files.** The Go set is the union of `grep -rl '\bHeaderID\b' --include='*.go'`
+  and `grep -rl 'msgin\.id' --include='*.go'` (**22** files today) plus `adapter/http/encode_test.go`, which Plan 022
+  Step 4 adds a case to. It spans `message.go` (declaration), `message_test.go`, `splitter.go`, `splitter_test.go`,
+  `adapter/http/{encode,options}.go`, and 13 files under `adapter/database/sql` — **7 in the adapter, 6 in the separate
+  `harness` module**, which `go build ./...` from the repo root does NOT reach and which must be built standalone with
+  `GOWORK=off`, as CI does. The markdown set is the 13 files listed in Plan 022 Step 5, plus this ADR and Plan 022
+  itself; `docs/HANDOVER.md` matches the greps but is deliberately **excluded**, because its mentions describe this
+  rename decision and must keep the old name.
 - **Does not supersede any ADR.** It amends the header-key vocabulary introduced with the core envelope
-  ([Spec 001](../specs/001-messaging-core.md)); ADRs citing `HeaderID` by name are updated in place by Plan 022 Task 0
-  Step 5, since they describe the same header under its new name rather than recording a superseded decision.
+  ([Spec 001](../specs/001-messaging-core.md)); ADRs citing `HeaderID` by name are updated in place by
+  [Plan 022](../plans/022-header-message-id-rename.md) **Task 1 Step 5**, since they describe the same header under its
+  new name rather than recording a superseded decision.
+- **Sequencing:** Plan 022 executes on its own branch off `main`, cut **after** [Plan 023](../plans/023-producer-outbound-retry.md)
+  merges — at which point this ADR and Plan 022 are already on `main` (they landed together with ADR 0025 in `8459d07`),
+  so the rename branch needs no cherry-pick and carries a diff that is purely the rename. See Plan 022 Step 0a.
+  [Plan 024](../plans/024-http-outbound.md) is **planned but not yet written**; links to it are forward references.

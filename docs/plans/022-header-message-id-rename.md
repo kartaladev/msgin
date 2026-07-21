@@ -64,16 +64,34 @@ ADR's blast-radius claim must be corrected first.
 
 ## Task 1: The rename
 
-**Files:**
+**Files — 23 Go files and 15 markdown files. Round 3 found the previous listing mis-attributed which file is touched
+by which mechanism, and that error propagated into Step 8's allow-list, so the breakdown below is derived from the
+greps rather than from prose.**
+
 - Modify: `message.go` — the declaration and its value
-- Modify (via `gopls`, 28 code refs): `message_test.go`, `splitter.go`, `splitter_test.go`, `adapter/http/encode.go`,
-  and `adapter/database/sql/**` **including the separate `harness` module** (16 of the 36 refs live there — see Step 6)
-- Modify (by hand, 8 comment mentions of the NAME): listed in Step 3
-- Modify (by hand, 22 comment mentions of the VALUE): 10 files, listed in Step 3b — includes
+- Modify (via `gopls`, code refs — `gopls` resolves these semantically across every module in `go.work`):
+  `message.go`, `message_test.go`, `splitter.go`, `adapter/database/sql/{errors,groupdialect,groupstore}.go`,
+  `adapter/database/sql/{fakedialect_test,framing_test,outbound_unit_test,source_unit_test}.go`,
+  and the six files of the separate **`harness` module** (`dialect.go`, `groupstore.go`, `harness.go`, `outbound.go`,
+  `outbox.go`, `queuestore.go` — 16 of the 36 refs live there; see Step 6)
+- Modify (by hand, 8 comment mentions of the NAME — `gopls` does not touch prose): listed in Step 3. Note
+  `splitter_test.go` and `adapter/http/encode.go` have **comment-only** references and so appear *here*, not in the
+  `gopls` list above — the previous version of this plan had that backwards.
+- Modify (by hand, 22 comment mentions of the VALUE `msgin.id`): 10 files, listed in Step 3b — includes
   `adapter/database/sql/framing.go`'s on-wire stability contract and `adapter/http/options.go`'s security CAUTION
-- Modify: `adapter/http/encode_test.go` — one new case
+- Modify: `adapter/http/encode_test.go` — one new case (Step 4); the only Go file in the commit that is not a rename
 - Modify: 13 markdown files — listed in Step 5
-- Modify: `docs/adrs/0026-header-message-id-rename.md` — Status → Accepted
+- Modify: `docs/adrs/0026-header-message-id-rename.md` — Status → Accepted; plus this plan file
+
+> **The authoritative derivation**, which Step 8's allow-list must be rebuilt from and which every count above comes
+> from:
+>
+> ```bash
+> { grep -rl '\bHeaderID\b' --include='*.go' . ; grep -rl 'msgin\.id' --include='*.go' . ; } \
+>   | sed 's|^\./||' | sort -u
+> ```
+>
+> That union is **22** files today; `adapter/http/encode_test.go` is the 23rd, added by Step 4.
 
 **Interfaces:**
 - **Produces:** `const HeaderMessageID = "msgin.message-id"` in package `msgin`. **`HeaderID` ceases to exist** — no
@@ -83,31 +101,59 @@ ADR's blast-radius claim must be corrected first.
 **Hot-path branches introduced:** none. No new branch, no new error path. The coverage gate is satisfied by the
 existing cases continuing to pass at the baseline numbers.
 
-- [ ] **Step 0: PRECONDITION — the working tree must be clean of anything this plan will stage**
+- [ ] **Step 0a: PRECONDITION — the right branch (ADR 0026 §4)**
 
-The tree carries pre-existing, unrelated changes (the Plan 023/024 design artifacts, `.claude/settings.json`,
-`docs/HANDOVER.md`). **`docs/specs/011-http-adapter.md` is both already dirty with ~18 lines of Plan 023/024 design AND
-on this plan's edit list** — staging it would sweep unrelated architectural design into a commit that claims to be a
-pure mechanical rename, and would simultaneously strip Plan 023 of its governing spec edit.
+ADR 0026 §4 requires the rename to **ship alone**, so the whole-branch `/code-review` gate sees a diff that is only the
+rename. Round 3 found the plan had no step enforcing that, and that executing it where the plan was authored
+(`feat/producer-retry-http-outbound`, which carries the Plan 023 design and code) would defeat exactly the mitigation
+§4 was written to buy.
+
+**Sequencing decision (round 3).** This plan runs **after Plan 023 has merged to `main`**, not before. Plan 023's
+branch already carries ADR 0026 and this plan file in commit `8459d07`, so once it merges, both artifacts are on `main`
+and this branch needs **no cherry-pick and creates no duplicate-doc merge conflict**. The alternative — cutting this
+branch off `main` first and re-landing the two docs — was rejected because `8459d07` also contains ADR 0025, so it
+cannot be cherry-picked whole, and the resulting duplicate ADR 0026 would conflict on the later merge.
 
 ```bash
 cd /Users/zakyalvan/Documents/RND/msgin
-git diff --name-only        # tracked-but-modified
-git status --short
+git checkout main && git pull --ff-only 2>/dev/null || true
+test -f docs/adrs/0026-header-message-id-rename.md || { echo "ADR 0026 not on main — Plan 023 has not merged yet"; false; }
+git checkout -b refactor/header-message-id-rename
+git rev-parse --abbrev-ref HEAD    # must print refactor/header-message-id-rename
+git log --oneline main..HEAD       # must print NOTHING — the branch starts empty
 ```
 
-**If `docs/specs/011-http-adapter.md` (or any other file on Step 7's list) appears**, resolve it before going further —
-either land those changes as their own `spec:`/`docs:` commit with the user's approval, or:
+**Both assertions are hard stops.** A non-empty `main..HEAD` means this branch carries someone else's work and the
+gate's "pure rename diff" property is already lost.
+
+- [ ] **Step 0: PRECONDITION — the working tree must be completely clean**
+
+Step 7 uses `git add -u`, which stages **every** tracked modification. Its safety therefore rests entirely on the tree
+containing nothing else. Round 3 proved the previous form of this step did not deliver that: it asked only whether one
+named file (`docs/specs/011-http-adapter.md`) was dirty, which by then it no longer was, so the step read as
+"already satisfied" and was skippable — while `.claude/settings.json` **was** dirty and would have been swept into a
+commit claiming to be a pure mechanical rename.
+
+**This is the class fix.** Assert the tree state itself; do not enumerate files that might be dirty.
 
 ```bash
-git stash push -m "plan-023/024 design, not part of the rename" docs/specs/011-http-adapter.md
+test -z "$(git status --porcelain)" && echo "TREE CLEAN" || { git status --short; echo "TREE DIRTY — STOP"; false; }
 ```
 
-Re-run `git diff --name-only` and confirm **no file on Step 7's path list** is listed. Only then proceed.
+**`TREE CLEAN` is required to proceed. There is no allowed exception.** If anything is listed:
 
-> Round 1 caught `git add -A` sweeping the dirty tree; round 2 caught the replacement path list re-introducing the
-> identical defect through one specific file. The lesson is that the *tree state* is the precondition — a curated `add`
-> list cannot save you from a file that is legitimately on it and also already dirty.
+- **`.claude/settings.json`** — a pre-existing, intentional, unrelated local change that has been in the tree for
+  several sessions. It is *not* this plan's to commit. Stash it:
+  `git stash push -m "unrelated settings, not part of the rename" .claude/settings.json`
+  and restore it with `git stash pop` after Step 8.
+- **anything else** — land it as its own commit with the user's approval, or stash it. Do not proceed with a dirty
+  tree, and do not "just be careful with `git add`" — round 1 and round 2 both tried a curated path list and both
+  produced a list that was simultaneously incomplete and polluting.
+
+> Round 1 caught `git add -A` sweeping the dirty tree. Round 2 replaced it with a hand-written path list that was
+> itself incomplete (missing `message_test.go`) and polluting (staging an already-dirty spec). Round 3 caught the
+> replacement precondition being vacuous. Three rounds, one lesson: **the tree state is the precondition**, and it must
+> be asserted as a state, never as a checklist of known-suspect files.
 
 - [ ] **Step 1: Re-verify the baseline**
 
@@ -182,13 +228,21 @@ The single string literal is the *functional* radius of the value change; it is 
 | `adapter/http/options.go` | the `WithResponseHeaders` security CAUTION enumerating leakable reserved keys |
 | `message.go` (9 mentions), `message_test.go` (3), `adapter/database/sql/groupstore.go` (2), `errors.go` (1), `inbox_dedup.go` (1), `groupstore_unit_test.go` (2), `fakedialect_test.go` (1), `adapter/http/encode.go` (1) | godoc and test prose |
 
-Update every one to `msgin.message-id`. Then verify **both** names are gone in one grep:
+Update every one to `msgin.message-id`. Then **re-format**, and verify **both** names are gone in one grep:
 
 ```bash
+GOTOOLCHAIN=go1.25.12 gofmt -w .
 grep -rn '\bHeaderID\b\|msgin\.id\b' --include='*.go' .
 ```
 
-Expected: **no output**.
+Expected: **no output** from the grep.
+
+> **`gofmt -w .` is a required action here, not a check.** Round 3 simulated the rename and confirmed the longer
+> identifier breaks `gofmt`'s column alignment in exactly three files — `message.go` (the const block),
+> `message_test.go` (two `map[string]any` literals) and `adapter/database/sql/framing_test.go` (one literal). Step 6
+> asserts `gofmt -l .` is empty but gave no remediation, so an implementer would hit `GOFMT DIRTY` and stop with no
+> instruction. Round 3 also verified that **only the renamed lines move** — no sibling line realigns — so Step 8's
+> purity grep stays clean after the reformat.
 
 > Note this pulls `message_test.go` and `adapter/http/options.go` into the modified set — both must appear in Step 7's
 > `git add` list (they do). Step 8's first purity grep deliberately filters out lines matching `msgin\.id`, so it can
@@ -261,10 +315,19 @@ update it too so no example teaches the dead key.
 Then set ADR 0026's Status to `Accepted (2026-07-22)`.
 
 ```bash
-grep -rn 'HeaderID\|msgin\.id' docs/ *.md 2>/dev/null | grep -vE '0026-header-message-id-rename|022-header-message-id-rename'
+grep -rn 'HeaderID\|msgin\.id' docs/ *.md 2>/dev/null \
+  | grep -vE '0026-header-message-id-rename|022-header-message-id-rename|docs/HANDOVER\.md'
 ```
 
-Expected: **no output**. (Matches inside ADR 0026 and this plan are correct — both document the old name deliberately.)
+Expected: **no output**.
+
+> **Three files are excluded deliberately, and `docs/HANDOVER.md` is the round-3 addition.** ADR 0026 and this plan
+> quote the old name because documenting it *is* their job. `docs/HANDOVER.md` has three matches
+> (lines 74, 160, 170) which likewise **describe the rename decision itself** — "`HeaderID` → `HeaderMessageID`", and
+> two round-2 audit findings counted in terms of the old value. Rewriting them would corrupt a historical record and
+> make the audit trail nonsense. **Do not edit `docs/HANDOVER.md` in this task**, and note it is therefore absent from
+> Step 8's allow-list. Round 3 caught this as a guaranteed false failure: without the exclusion this grep can never
+> return empty, so an implementer would either stop on a phantom drift signal or edit a file the commit does not expect.
 
 - [ ] **Step 6: Full verification**
 
@@ -284,14 +347,18 @@ GOTOOLCHAIN=go1.25.12 go vet ./... && \
 GOTOOLCHAIN=go1.25.12 golangci-lint run ./... && \
 GOTOOLCHAIN=go1.25.12 go test ./... -race && echo "ROOT MODULE GREEN"
 
-# 3. EVERY nested module, standalone — mirrors .github/workflows/ci.yml.
+# 3. EVERY nested module, standalone. CI's matrix (.github/workflows/ci.yml:33-45) is
+#    . / harness / postgres / mysql / sqlite / dbtest; crontest is an extra this loop
+#    adds. Unlike CI, this loop runs build+vet only — no go test, no golangci-lint.
+fail=0
 for d in adapter/database/sql/harness adapter/database/sql/postgres adapter/database/sql/mysql \
          adapter/database/sql/sqlite adapter/database/sql/dbtest adapter/cron/crontest; do
   [ -f "$d/go.mod" ] || continue
   echo "--- $d"
   ( cd "$d" && GOWORK=off GOTOOLCHAIN=go1.25.12 go build ./... && GOWORK=off GOTOOLCHAIN=go1.25.12 go vet ./... ) \
-    || { echo "MODULE FAILED: $d"; break; }
+    || { echo "MODULE FAILED: $d"; fail=1; }
 done
+[ "$fail" = 0 ] && echo "NESTED MODULES GREEN" || { echo "NESTED MODULES FAILED — STOP"; false; }
 
 # 4. Coverage must not move — same normalization and -count=1 as Step 1.
 GOTOOLCHAIN=go1.25.12 go test ./... -cover -count=1 2>&1 | grep coverage \
@@ -302,8 +369,16 @@ diff /tmp/cov-before.txt /tmp/cov-after.txt && echo "COVERAGE UNCHANGED"
 GOTOOLCHAIN=go1.25.12 go mod tidy && git diff --exit-code go.mod go.sum && echo "MODULE CLEAN"
 ```
 
-Expected: `GOFMT CLEAN`; both builds succeed; vet and lint clean; all root packages `ok`; **every nested module builds
-and vets** with no `MODULE FAILED`; **`COVERAGE UNCHANGED`**; `MODULE CLEAN`.
+Expected: `GOFMT CLEAN`; both builds succeed; vet and lint clean; all root packages `ok`; **`NESTED MODULES GREEN`**;
+**`COVERAGE UNCHANGED`**; `MODULE CLEAN`.
+
+> **Run the five blocks in order and read §3's verdict line before trusting §4/§5.** They are separate commands, so a
+> §3 failure does not stop §4 and §5 from printing their own green verdicts. Round 3 found the previous form worse
+> still: `|| { echo …; break; }` left the block's exit status **0**, so a broken `harness` module — which holds 16 of
+> the 36 references and which the root module does not import, so `go build ./...` never touches it — produced a full
+> green wall with one `MODULE FAILED` line buried mid-output. That is round-2 finding M3 recurring: the fix added the
+> loop but not the failure propagation. `fail=1` (rather than `break`) now also reports *every* broken module, not just
+> the first.
 
 > Two round-2 fixes are load-bearing here. (a) The coverage capture is **normalized and `-count=1` on both sides** —
 > the previous form compared a cached Step-1 run against an uncached Step-6 run, so `diff` reported all 6 lines changed
@@ -322,17 +397,19 @@ and vets** with no `MODULE FAILED`; **`COVERAGE UNCHANGED`**; `MODULE CLEAN`.
 
 ```bash
 git add -u   # stage every TRACKED modification — see the note below on why this is now correct
-git add docs/adrs/0026-header-message-id-rename.md docs/plans/022-header-message-id-rename.md
 ```
 
-**`git add -u` is safe here ONLY because Step 0 guaranteed the tree contains nothing unrelated**, and it is *safer* than
-a hand-written path list: round 2 proved the curated list was simultaneously **incomplete** (it omitted
-`message_test.go`, whose 4 renamed references would have made HEAD a broken-build commit, and `adapter/http/options.go`
-from Step 3b) and **polluting** (it staged an already-dirty `docs/specs/011-http-adapter.md`). A list that must
-enumerate ~21 paths correctly, by hand, is the wrong tool; a clean precondition plus `-u` is the right one.
+**`git add -u` is safe here ONLY because Step 0 asserted `TREE CLEAN`**, and it is *safer* than a hand-written path
+list: round 2 proved the curated list was simultaneously **incomplete** (it omitted `message_test.go`, whose 4 renamed
+references would have made HEAD a broken-build commit, and `adapter/http/options.go` from Step 3b) and **polluting**
+(it staged an already-dirty spec). A list that must enumerate ~23 paths correctly, by hand, is the wrong tool; a clean
+precondition plus `-u` is the right one — but **only** with Step 0's state assertion actually in force, which is what
+round 3 found missing.
 
-Note `-u` stages only tracked files, so the two new untracked docs are added explicitly and nothing else untracked can
-sneak in.
+> **ADR 0026 and this plan file are already TRACKED** (committed in `8459d07`), so `-u` picks up their modifications
+> and the separate `git add` the previous version of this step performed is unnecessary — its accompanying claim that
+> they were "the two new untracked docs" was stale. **Tick this plan's checkboxes as you go and let them ride in the
+> commit**; Step 8's allow-list assumes the file is present.
 
 Now verify the staged set is **exactly** what this plan touches — bidirectionally:
 
@@ -347,8 +424,12 @@ echo "=== staged set ==="
 git diff --cached --name-only | sort
 ```
 
-Expected: the first two are empty; the staged set is the 6 Go files, the 13 markdown files, ADR 0026 and this plan.
-**A non-empty first list is a hard stop** — it means a renamed file is not in the commit.
+Expected: the first two are empty; the staged set is **23 Go files + 15 markdown files = 38**, matching Step 8's
+allow-list exactly. **A non-empty first list is a hard stop** — it means a renamed file is not in the commit.
+
+> Round 3 caught the previous expectation here — "the 6 Go files" — as flatly wrong: 23 Go files are modified. An
+> implementer using it as the acceptance criterion would conclude a correct 23-file stage was broken, or that a 6-file
+> stage was right.
 
 Then commit. Note the type is `feat!`, not `refactor!`: CLAUDE.md defines `refactor` as a *behaviour-preserving*
 restructure, and a wire-format change is not behaviour-preserving. The footer uses the Conventional-Commits
@@ -395,6 +476,7 @@ MESSAGING.md
 adapter/database/sql/errors.go
 adapter/database/sql/fakedialect_test.go
 adapter/database/sql/framing.go
+adapter/database/sql/framing_test.go
 adapter/database/sql/groupdialect.go
 adapter/database/sql/groupstore.go
 adapter/database/sql/groupstore_unit_test.go
@@ -405,6 +487,8 @@ adapter/database/sql/harness/outbound.go
 adapter/database/sql/harness/outbox.go
 adapter/database/sql/harness/queuestore.go
 adapter/database/sql/inbox_dedup.go
+adapter/database/sql/outbound_unit_test.go
+adapter/database/sql/source_unit_test.go
 adapter/http/encode.go
 adapter/http/encode_test.go
 adapter/http/options.go
@@ -427,22 +511,40 @@ message_test.go
 splitter.go
 splitter_test.go
 EOF
+wc -l < /tmp/expected-files.txt      # must print 38
 diff <(git show --name-only --format= HEAD | grep -v '^$' | sort) <(sort /tmp/expected-files.txt) \
   && echo "COMMIT CONTENTS EXACT"
 ```
 
-Expected: the first grep prints only the added test case's lines; the diff prints nothing and
+Expected: `38`; the first grep prints only the added test case's lines; the diff prints nothing and
 **`COMMIT CONTENTS EXACT`** appears. Anything else is unintended change riding along in a commit that claims to be
 mechanical — reset and restage before proceeding.
 
-> **Re-derive the expected list from the actual Step 2/3/3b/5 edits before running this** — it is written from the
-> pre-implementation survey and a file may legitimately drop out (e.g. if a doc mention turns out to be inside a code
-> fence that should keep the old name for historical accuracy).
+> **ROUND-3 CRITICAL, now fixed.** The previous list had **35** entries and was missing three files that carry
+> `HeaderID` **code** references `gopls` will rename — `adapter/database/sql/framing_test.go`,
+> `adapter/database/sql/outbound_unit_test.go`, `adapter/database/sql/source_unit_test.go`. `diff` would have reported
+> them as extra on every run, so `COMMIT CONTENTS EXACT` could **never** print, on a *correct* commit.
 >
-> This replaces an extension-pattern check (`grep -vE '\.go$|^docs/|\.md$'`) that round 2 proved was blind to the
-> pollution class that actually exists on this tree: its `^docs/` clause whitelisted **everything** under `docs/`, and
-> 3 of the 4 currently-dirty tracked files live there. Round 1 patched the check for the one file it had named
-> (`.claude/settings.json`) rather than for the class — an exact allow-list is the only form that closes it.
+> The root cause is worth naming, because it is round 2's shallow-fix pattern for a third time: the list was derived
+> from the **prose** survey (Step 3b's `msgin.id` files) rather than from the **union** of both greps, so it silently
+> substituted six prose-only files for the six code-reference files. ADR 0026 already had the right shape
+> ("13 files under `adapter/database/sql` — 7 in the adapter, 6 under `harness/`") and the plan disagreed with it
+> without either noticing.
+>
+> **Re-derive, do not hand-edit.** The expected set is, by definition:
+>
+> ```bash
+> { grep -rl '\bHeaderID\b' --include='*.go' . ; grep -rl 'msgin\.id' --include='*.go' . ; } \
+>   | sed 's|^\./||' | sort -u          # 22 Go files, run BEFORE any edit
+> ```
+>
+> plus `adapter/http/encode_test.go` (Step 4), plus Step 5's 13 markdown files, plus ADR 0026 and this plan = **38**.
+> `docs/HANDOVER.md` is deliberately **not** in the set (Step 5). Run that derivation before Step 2 and keep its output;
+> the literal list above is a convenience, and if the two ever disagree, **the derivation wins**.
+>
+> This whole check replaces an extension-pattern grep (`grep -vE '\.go$|^docs/|\.md$'`) that round 2 proved was blind
+> to the pollution class that actually exists here: its `^docs/` clause whitelisted **everything** under `docs/`. An
+> exact allow-list is the only form that closes it — but only if the list is right, which is what round 3 caught.
 
 - [ ] **Step 9: Merge (requires explicit user approval)**
 
@@ -488,8 +590,46 @@ alone" → satisfied more strongly than the ADR states, since it is now its own 
 - **m1/m2/m3** `git add <dir>` staging untracked files → superseded by `-u`; `gofmt -l` never asserted → now
   `test -z`; `govulncheck` deliberately skipped (no dependency change) rather than silently omitted.
 
-**Remaining judgement call for round 3:** Step 8's expected-file list is written from a pre-implementation survey and
-is the one place this plan hard-codes a 35-entry list — exactly the brittleness that sank the Step 7 path list. It is
-retained because its failure mode is *inverted*: a stale entry makes the check fail loudly on a correct commit
-(annoying, safe), whereas a stale `git add` list failed *silently* on a broken one. The step says to re-derive it from
-the actual edits before running.
+**Round-3 audit findings, all folded in (verdict was NOT READY).** Round 3's brief was specifically to test whether
+round 2's fixes were shallow in the way round 1's had been. They were, in three places:
+
+- **C1** Step 8's expected-file list was **missing 3 files** (`framing_test.go`, `outbound_unit_test.go`,
+  `source_unit_test.go`) that carry `HeaderID` *code* references, because the list was derived from the **prose**
+  survey rather than the **union** of both greps. `COMMIT CONTENTS EXACT` could never print on a correct commit →
+  list corrected to 38 and the derivation formula made normative, with "the derivation wins" over the literal list.
+  *This was the exact item the previous round flagged as its own remaining judgement call, and it was indeed wrong.*
+- **C2** Step 0's precondition was **vacuous** — it asked only whether one named file was dirty, which by then it was
+  not, while `.claude/settings.json` **was** dirty and `git add -u` would have swept it in → replaced with a
+  `test -z "$(git status --porcelain)"` state assertion naming the actual dirty file.
+- **C3** **No branch step existed**, so the plan would execute on `feat/producer-retry-http-outbound` and its
+  whole-branch gate would see the producer-retry design too — defeating ADR 0026 §4's "ships alone" mitigation →
+  new **Step 0a**, plus the sequencing decision to run this plan *after* Plan 023 merges so no cherry-pick is needed.
+- **M1** Step 5's markdown grep could never return empty because `docs/HANDOVER.md` matches → excluded, with the
+  reason (its mentions describe the rename decision and must stay).
+- **M2** Step 7's stated expectation was "the 6 Go files"; the real number is **23** → corrected.
+- **M3** Step 0's narrative premise was stale (the files it described as dirty had all landed), making the step read as
+  already-satisfied → rewritten as a state assertion, which is also the C2 fix.
+- **M4** Step 6's module loop **swallowed failure** (`break` left the block's exit status 0), so a broken `harness`
+  module — which the root build never touches — produced a green wall → `fail` flag + an asserted verdict line.
+- **m1–m5** Task 1's Files list mis-attributed which files `gopls` touches (the likely root of C1); `gofmt -w` was
+  required after the rename but never stated (3 files affected, verified); Step 7 called two tracked files "untracked";
+  the checkbox-commit policy was unstated; the "mirrors CI" claim was inaccurate (CI's matrix omits `crontest` and CI
+  also runs `go test`/lint per module). All corrected inline.
+
+**The three-round meta-lesson, which is the thing to carry into Plans 023/024:** each round's fix addressed the
+*instance* the previous auditor named, and each time the *class* re-manifested through a different file. `git add -A`
+→ a curated path list (incomplete **and** polluting) → `git add -u` behind a precondition that did not actually assert
+tree state. The durable fix in each case was to assert an invariant (`TREE CLEAN`, a derived file set, a propagated
+exit status) rather than to enumerate the known-bad cases.
+
+**Remaining judgement calls for a round-4 audit, if one is run:**
+
+1. Step 8's list is now **derived**, but the literal 38-entry copy is still in the document and can go stale again if
+   the tree changes before implementation. It is retained because its failure mode is *inverted* — a stale entry fails
+   loudly on a correct commit (annoying, safe), whereas a stale `git add` list failed *silently* on a broken one — and
+   because the step now states that the derivation is authoritative.
+2. Round 3 found an **ADR 0026 defect this plan does not fix**: the migration SQL covers the `JSONB` `headers` column
+   of the queue/outbox tables but not the aggregator group-member table, whose `headers` column is **`BYTEA`**
+   (`adapter/database/sql/postgres/groupddl.go:48`), where the `-` and `?` jsonb operators do not exist. A consumer
+   following the ADR would migrate half their data. **Fixed in ADR 0026 as part of Step 5's ADR edit** — verify it is
+   there before committing.
