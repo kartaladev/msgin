@@ -249,8 +249,12 @@ func (e *ChannelExchange) routeUnmatched(ctx context.Context, reply Message[any]
 // ErrGatewayClosed. An empty correlation id is ErrNoCorrelation and a duplicate
 // in-flight id is ErrDuplicateCorrelation (audit G1). Both are direct-caller
 // guards: the Gateway/OutboundGateway façades always set a fresh non-empty id,
-// so they never surface them (audit N3). A request-channel send error propagates
-// (waiter deregistered).
+// so they never surface them (audit N3).
+//
+// A request-channel send error propagates, and any abandonment — send error,
+// ctx, reply timeout, or a PANIC unwinding out of the flow — releases the
+// waiter via a single deferred reconciler. The panic is never recovered here:
+// it propagates unchanged, with its slot already reclaimed (ADR 0022 Addendum A1).
 func (e *ChannelExchange) Exchange(ctx context.Context, req Message[any]) (Message[any], error) {
 	id, _ := req.Headers().String(HeaderCorrelationID)
 	if id == "" {
@@ -260,34 +264,48 @@ func (e *ChannelExchange) Exchange(ctx context.Context, req Message[any]) (Messa
 	if err != nil {
 		return Message[any]{}, err // ErrGatewayClosed | ErrDuplicateCorrelation
 	}
+	// settled is false on every exit that abandons the slot — send error, ctx,
+	// timeout, AND a panic unwinding out of request.Send (a DirectChannel runs
+	// the flow synchronously on this goroutine). The deferred reconciler is the
+	// SINGLE give-up site; it deliberately does not recover, so a consumer panic
+	// keeps unwinding with its original value and stack (ADR 0022 Addendum A1).
+	settled := false
+	defer func() {
+		if !settled {
+			e.giveUp(ctx, slot, deregister)
+		}
+	}()
 	if err := e.request.Send(ctx, req); err != nil {
-		e.giveUp(ctx, slot, deregister)
 		return Message[any]{}, err
 	}
 	timer := e.clock.NewTimer(e.timeout)
 	defer timer.Stop()
 	select {
 	case reply, open := <-slot:
+		// The ONLY state in which the slot is provably no longer ours: a
+		// deliver consumed it, or closeAll removed and closed it. Running
+		// giveUp here would deadlock — deregister returns false and the drain
+		// blocks on an emptied, never-closed channel (Spec 012 §5, arm 3).
+		settled = true
 		if !open {
 			return Message[any]{}, ErrGatewayClosed // closeAll closed our slot
 		}
 		return reply, nil
 	case <-ctx.Done():
-		e.giveUp(ctx, slot, deregister)
 		return Message[any]{}, ctx.Err()
 	case <-timer.Chan():
-		e.giveUp(ctx, slot, deregister)
 		return Message[any]{}, ErrReplyTimeout
 	}
 }
 
-// giveUp reconciles a waiter that is abandoning its slot (send error, ctx,
-// timeout) with a possibly-concurrent deliver. If deregister removed the slot,
-// no reply was in flight and we are done. Otherwise a deliver already claimed
-// the slot and is committed to sending (or closeAll closed it): we block on the
-// slot and route any delivered reply to the unmatched path rather than dropping
-// it silently (audit G4). context.WithoutCancel is used so the sink send is not
-// itself cancelled by the ctx that just fired.
+// giveUp reconciles a waiter that is abandoning its slot — send error, ctx,
+// reply timeout, or a PANIC unwinding out of request.Send — with a
+// possibly-concurrent deliver. If deregister removed the slot, no reply was in
+// flight and we are done. Otherwise a deliver already claimed the slot and is
+// committed to sending (or closeAll closed it): we block on the slot and route
+// any delivered reply to the unmatched path rather than dropping it silently
+// (audit G4). context.WithoutCancel is used so the sink send is not itself
+// cancelled by the ctx that just fired.
 func (e *ChannelExchange) giveUp(ctx context.Context, slot chan Message[any], deregister func() bool) {
 	if deregister() {
 		return

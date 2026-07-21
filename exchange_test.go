@@ -843,3 +843,160 @@ func TestChannelExchange_reusedIDAbandon_drainsOwnReply(t *testing.T) {
 	}
 	require.NoError(t, ex.Close())
 }
+
+// panicExchange builds a ChannelExchange whose request flow panics with
+// panicVal. Because a DirectChannel runs its subscriber chain synchronously on
+// the caller's goroutine, the panic unwinds out of request.Send inside
+// Exchange — the exact defect path of Spec 012 §1.
+func panicExchange(t *testing.T, panicVal any, opts ...msgin.ExchangeOption) (*msgin.ChannelExchange, msgin.MessageChannel) {
+	t.Helper()
+	request := msgin.NewDirectChannel()
+	reply := msgin.NewDirectChannel()
+	ex, err := msgin.NewChannelExchange(request, reply, opts...)
+	require.NoError(t, err)
+	require.NoError(t, request.Subscribe(msgin.Chain(msgin.Consume(func(_ context.Context, _ msgin.Message[any]) error {
+		panic(panicVal)
+	}))))
+	return ex, reply
+}
+
+// exchangeRecoveringPanic calls ex.Exchange and returns the recovered panic
+// value (nil if it did not panic), so a test can assert on the value WITHOUT
+// the recover happening inside library code.
+func exchangeRecoveringPanic(t *testing.T, ex *msgin.ChannelExchange, req msgin.Message[any]) (recovered any) {
+	t.Helper()
+	defer func() { recovered = recover() }()
+	_, _ = ex.Exchange(t.Context(), req)
+	return nil
+}
+
+// Spec 012 §6 cases 1 & 2: a panicking flow handler must propagate its panic
+// UNCHANGED (no recover/re-panic laundering in the library) and must not leave
+// the correlation id registered. The reclamation probe is ErrDuplicateCorrelation:
+// replyCorrelator is unexported, so id reuse is the blackbox observable.
+func TestChannelExchange_panickingFlow_propagatesAndReclaimsSlot(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	tests := []struct {
+		name     string
+		panicVal any
+		assert   func(t *testing.T, recovered any)
+	}{
+		{
+			name:     "string panic value propagates identically",
+			panicVal: "boom",
+			assert: func(t *testing.T, recovered any) {
+				assert.Equal(t, "boom", recovered)
+			},
+		},
+		{
+			name:     "error panic value propagates as the same error instance",
+			panicVal: errors.New("handler exploded"),
+			assert: func(t *testing.T, recovered any) {
+				err, ok := recovered.(error)
+				require.True(t, ok, "expected the recovered value to still be an error, got %T", recovered)
+				assert.Equal(t, "handler exploded", err.Error())
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeClock := clockwork.NewFakeClock()
+			ex, _ := panicExchange(t, tt.panicVal, msgin.WithExchangeClock(fakeClock))
+			const id = "corr-panic"
+			req := msgin.New[any]("payload", msgin.WithHeaders(map[string]any{msgin.HeaderCorrelationID: id}))
+
+			recovered := exchangeRecoveringPanic(t, ex, req)
+
+			require.NotNil(t, recovered, "Exchange must not swallow the handler panic")
+			tt.assert(t, recovered)
+
+			// The reclamation probe (Spec 012 §6 case 2): the slot must be gone,
+			// so REUSING the id must get past register(). It panics again (same
+			// flow) rather than failing with ErrDuplicateCorrelation — which is
+			// exactly the proof. Capture the error too, so a leaked slot fails
+			// with the precise cause rather than a confusing "no panic".
+			var (
+				secondErr error
+				second    any
+			)
+			func() {
+				defer func() { second = recover() }()
+				_, secondErr = ex.Exchange(t.Context(), req)
+			}()
+			require.NotErrorIs(t, secondErr, msgin.ErrDuplicateCorrelation,
+				"the panicking first request leaked its correlator slot — Spec 012 §1")
+			require.NotNil(t, second, "the reused correlation id must reach the flow again, not fail registration")
+		})
+	}
+}
+
+// Spec 012 §6 case 4: the ctx-cancel and reply-timeout arms lose their explicit
+// giveUp call in this task and are reconciled by the deferred path instead.
+// These pin that the slot is still reclaimed on both.
+func TestChannelExchange_abandonedArmsReclaimSlot(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	tests := []struct {
+		name string
+		// trigger drives the in-flight Exchange to its abandonment arm. It owns
+		// everything arm-specific — cancelling the ctx, or advancing the clock —
+		// so the shared body below needs no per-case branching.
+		trigger func(t *testing.T, cancel context.CancelFunc, fakeClock *clockwork.FakeClock)
+		assert  func(t *testing.T, err error)
+	}{
+		{
+			name: "ctx cancel reclaims the slot",
+			trigger: func(_ *testing.T, cancel context.CancelFunc, _ *clockwork.FakeClock) {
+				cancel()
+			},
+			assert: func(t *testing.T, err error) { assert.ErrorIs(t, err, context.Canceled) },
+		},
+		{
+			name: "reply timeout reclaims the slot",
+			trigger: func(t *testing.T, _ context.CancelFunc, fakeClock *clockwork.FakeClock) {
+				require.NoError(t, fakeClock.BlockUntilContext(t.Context(), 1))
+				fakeClock.Advance(30 * time.Second)
+			},
+			assert: func(t *testing.T, err error) { assert.ErrorIs(t, err, msgin.ErrReplyTimeout) },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeClock := clockwork.NewFakeClock()
+			ex, _, sinkHit := newBlockingExchange(t, msgin.WithExchangeClock(fakeClock))
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			const id = "corr-abandon"
+
+			// First request: registers the waiter, then abandons via tt.trigger.
+			req := msgin.New[any]("payload", msgin.WithHeaders(map[string]any{msgin.HeaderCorrelationID: id}))
+			errCh := make(chan error, 1)
+			go func() {
+				_, err := ex.Exchange(ctx, req)
+				errCh <- err
+			}()
+			<-sinkHit // the flow ran, so the waiter is registered
+			tt.trigger(t, cancel, fakeClock)
+			tt.assert(t, <-errCh)
+
+			// Reclamation probe: the id must be reusable. The second call hits
+			// the same never-replying flow, so drive it to its own timeout on
+			// a ctx the first case's cancel cannot affect.
+			second := msgin.New[any]("second", msgin.WithHeaders(map[string]any{msgin.HeaderCorrelationID: id}))
+			secondErrCh := make(chan error, 1)
+			go func() {
+				_, err := ex.Exchange(t.Context(), second)
+				secondErrCh <- err
+			}()
+			<-sinkHit
+			require.NoError(t, fakeClock.BlockUntilContext(t.Context(), 1))
+			fakeClock.Advance(30 * time.Second)
+			secondErr := <-secondErrCh
+			require.NotErrorIs(t, secondErr, msgin.ErrDuplicateCorrelation, "the abandoned slot was not reclaimed")
+			assert.ErrorIs(t, secondErr, msgin.ErrReplyTimeout)
+		})
+	}
+}
