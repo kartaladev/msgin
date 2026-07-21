@@ -21,6 +21,15 @@ const defaultReplyTimeout = 30 * time.Second
 // request and returns the correlated reply (or an error). ChannelExchange is the
 // in-process implementation; a future HTTP/NATS adapter implements Exchange for
 // a real external round-trip, so both gateway façades work over it unchanged.
+//
+// Contract: an implementation MUST release every piece of request-scoped state
+// it acquires — a correlator entry, an in-flight connection, a response body —
+// on EVERY exit path, including a panic unwinding out of a downstream call.
+// Deferred cleanup is the only reliable way to honour this; an implementation
+// that cleans up at each return site alone will leak whenever a caller-supplied
+// handler panics. An implementation MUST NOT recover such a panic into an error
+// return: the panic belongs to the caller's code and must propagate with its
+// original value and stack (ADR 0022 Addendum A3; Spec 012).
 type RequestReplyExchange interface {
 	Exchange(ctx context.Context, req Message[any]) (Message[any], error)
 }
@@ -143,6 +152,11 @@ func WithReplyTimeout(d time.Duration) ExchangeOption {
 // drain path (a reply that raced a timeout/cancel) it runs on the abandoning
 // caller's goroutine, so a slow synchronous sink delays that Exchange's return.
 // A nil sink is a no-op (leaves the default log-and-drop behaviour).
+//
+// The sink must also neither panic nor block: it can run inside Exchange's
+// deferred cleanup while a handler panic is already unwinding. A second panic
+// would replace — and therefore mask — the consumer's original one, and a
+// blocking sink stalls the unwind itself (Spec 012 §5.3).
 func WithUnmatchedReplySink(out OutboundAdapter) ExchangeOption {
 	return func(c *exchangeConfig) {
 		if out != nil {
@@ -162,6 +176,13 @@ func WithExchangeClock(clock clockwork.Clock) ExchangeOption {
 }
 
 // WithExchangeLogger injects the structured logger (default: a discard logger).
+//
+// The logger must neither panic nor block: routeUnmatched can call it on
+// either branch — the sink-error path and the default warn-log-and-drop
+// path — and it can run inside Exchange's deferred cleanup while a handler
+// panic is already unwinding, where a panicking slog.Handler would replace —
+// and therefore mask — the consumer's original panic, and a blocking one would
+// stall the unwind (Spec 012 §5.3).
 func WithExchangeLogger(l *slog.Logger) ExchangeOption {
 	return func(c *exchangeConfig) {
 		if l != nil {
