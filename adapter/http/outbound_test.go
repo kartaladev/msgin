@@ -3,6 +3,7 @@ package msghttp_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -806,4 +807,44 @@ func TestOutbound_Send_endToEnd(t *testing.T) {
 		url, hits := retryThenOK(t, http.StatusTooManyRequests, "30")
 		runRetry(t, url, hits, 30*time.Second)
 	})
+}
+
+// ExampleNewOutbound wires the O1 webhook adapter behind a msgin.Producer and
+// POSTs a []byte message to an httptest.Server that echoes back what it
+// received.
+//
+// The load-bearing line is WithProducerCodec(msgin.BytesPayloadCodec{}): a
+// NewProducer[[]byte] defaults to the JSON codec, which would marshal the body
+// to a base64 string ("b3JkZXItNDI=") before it ever reaches the wire. Pairing
+// BytesPayloadCodec explicitly passes the []byte through verbatim, so the
+// endpoint sees the exact bytes the flow produced.
+//
+// The httptest.Server binds a random port, so the URL is never printed — only
+// the stable body the endpoint received. context.Background is used because an
+// Example cannot take a *testing.T.
+func ExampleNewOutbound() {
+	received := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		received <- string(body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	out, err := msghttp.NewOutbound(srv.URL)
+	if err != nil {
+		panic(err)
+	}
+
+	producer, err := msgin.NewProducer[[]byte](out, msgin.WithProducerCodec[[]byte](msgin.BytesPayloadCodec{}))
+	if err != nil {
+		panic(err)
+	}
+
+	if err := producer.Send(context.Background(), msgin.New[[]byte]([]byte("order-42"))); err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("endpoint received: %s\n", <-received)
+	// Output: endpoint received: order-42
 }

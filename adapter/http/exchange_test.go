@@ -3,6 +3,7 @@ package msghttp_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -592,4 +593,41 @@ func TestExchange_gateway(t *testing.T) {
 		require.True(t, ok, "the incoming correlation id must be restored on the forwarded reply")
 		assert.Equal(t, "incoming-corr", got)
 	})
+}
+
+// ExampleNewExchange drives the O2 synchronous request-reply adapter through a
+// msgin.NewGateway against an httptest.Server that answers every request with a
+// fixed body.
+//
+// The gateway must be NewGateway[[]byte, []byte]: msgin.Gateway carries no codec
+// and type-asserts the reply, so a []byte request payload (what EncodeRequest
+// accepts) and a []byte reply (what Exchange produces) are the only types that
+// round-trip. The call is g.Request(ctx, []byte(...)) — it takes a raw value and
+// returns a raw []byte reply, not a message.
+//
+// Only the fixed reply bytes are printed; the server's random port never is.
+func ExampleNewExchange() {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte("pong"))
+	}))
+	defer srv.Close()
+
+	exchange, err := msghttp.NewExchange(srv.URL)
+	if err != nil {
+		panic(err)
+	}
+
+	gateway, err := msgin.NewGateway[[]byte, []byte](exchange)
+	if err != nil {
+		panic(err)
+	}
+
+	reply, err := gateway.Request(context.Background(), []byte("ping"))
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("reply: %s\n", reply)
+	// Output: reply: pong
 }
