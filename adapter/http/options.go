@@ -79,8 +79,10 @@ type Config struct {
 	// set-flag pattern. A hand-built &Config{} reaching an outbound call reads
 	// httpClient/maxResponseBytes directly (there is intentionally no
 	// nil-fallback accessor for them — an unsupported hand-built &Outbound{}
-	// nil-derefs, exactly like a hand-built &msgin.ChannelExchange{}), while the
-	// header allow-lists and clock keep their nil-safe accessors.
+	// nil-derefs, exactly like a hand-built &msgin.ChannelExchange{}), as does the
+	// reply-header allow-list (reached only through Exchange). The outbound-request
+	// header allow-list and clock keep their nil-safe accessors, because they are
+	// reachable through the exported EncodeRequest/ClassifyResponse with a nil cfg.
 	httpClient          *http.Client
 	followRedirects     bool
 	outboundHeaders     []string
@@ -178,13 +180,17 @@ func (c *Config) allowedOutboundHeaders() []string {
 }
 
 // allowedReplyHeaders is the outbound reply-header allow-list an Exchange copies
-// from the remote response onto the reply message, empty for a nil Config. A
-// plain nil-guard; the reserved-msgin.* strip (INV-2) is applied where the reply
-// message is built, so the remote server can never forge a core header.
+// from the remote response onto the reply message. The reserved-msgin.* strip
+// (INV-2) is applied where the reply message is built (buildReply), so the remote
+// server can never forge a core header.
+//
+// Unlike allowedOutboundHeaders/clockOrDefault, this field is read DIRECTLY with
+// no nil-Config fallback: its only caller is buildReply, reached only through
+// Exchange, whose cfg is always the one NewConfig produced. A nil-guard here
+// would be blackbox-unreachable dead code (no exported function passes a nil
+// *Config to it), so it is omitted — a hand-built &Exchange{} nil-derefs, exactly
+// as it does on maxResponseBytes and the no-follow client.
 func (c *Config) allowedReplyHeaders() []string {
-	if c == nil {
-		return nil
-	}
 	return c.replyHeaders
 }
 
