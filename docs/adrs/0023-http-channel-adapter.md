@@ -25,7 +25,7 @@
     the typed runtime owns `PayloadCodec[T]`; header framing is the type-agnostic adapter concern.
   - [ADR 0003 — Multi-module layout](0003-multi-module-repository-layout.md) — the heavy-client-adapter-as-separate-module
     precedent (`database/pgx`) applied to the gin binding.
-- **Scoped follow-on ADR:** **ADR 0024** — the `gin` dependency justification (authored with Plan 025, Phase 5). This
+- **Scoped follow-on ADR:** **ADR 0024** — the `gin` dependency justification (authored with Plan 027, Phase 5). This
   ADR fixes the *architecture* that keeps gin isolated; ADR 0024 fixes the *dependency admission*.
 
 ## Context
@@ -140,10 +140,11 @@ runtime already understands:
   or invalid-message path owns it.
 - `5xx`, `408`, `429`, network error, timeout → **transient** error — the runtime retries per `RetryPolicy`.
 
-**Open point (resolved in Plan 022, recorded here):** if the `Producer`/outbound path already applies a `RetryPolicy`
-to `OutboundAdapter.Send`, the adapter adds **no** backoff (reliability stays runtime-owned). If it does not, Phase 2
-adds a thin producer-side retry rather than importing `cenkalti/backoff` into the adapter. Either way, backoff is never
-adapter-private state.
+**Open point (RESOLVED in [Plan 023](../plans/023-producer-outbound-retry.md), recorded here):** the producer path now
+applies a `RetryPolicy` to `OutboundAdapter.Send` via `WithProducerRetry` ([Spec 013](../specs/013-producer-outbound-retry.md)
+/ [ADR 0025](0025-producer-outbound-retry.md)), so the adapter adds **no** backoff (reliability stays runtime-owned) and
+`cenkalti/backoff` is not imported into the adapter. Backoff is never adapter-private state. (Plan 024's O1/O2 are the
+first adapters driven by this producer retry; see Addendum B.)
 
 ### 6. Delivery guarantees, documented per mode
 
@@ -191,9 +192,10 @@ statement, and both constructors' godoc point at it.
 - `gin` remains a *future* admitted dependency (ADR 0024); this ADR only guarantees it can be isolated when admitted.
 
 **Follow-ups**
-- ADR 0024 admits `github.com/gin-gonic/gin` to the `adapter/http/gin` module (Plan 025).
+- ADR 0024 admits `github.com/gin-gonic/gin` to the `adapter/http/gin` module (Plan 027).
 - The async-callback request-reply variant (cross-instance Return Address) is a named future increment.
-- Plan 022 resolves the outbound-retry open point (§5).
+- [Plan 023](../plans/023-producer-outbound-retry.md) resolved the outbound-retry open point (§5); Plan 024 (Addendum B)
+  delivers the O1/O2 adapters that consume it.
 - [Spec 012 — panic-safe `ChannelExchange` cleanup](../specs/012-exchange-panic-safe-cleanup.md): the core-side
   correlator-slot leak that Phase 1's panic recovery contained but could not fix — **resolved**, see the
   resolution note appended to Addendum A5.
@@ -341,3 +343,126 @@ response.WriteHeader call". The error's *identity* is the structural signal of w
 **Consequences.** A caller writing its own binding gets an unambiguous, `errors.Is`-testable "the response is already
 committed" marker. `ErrWriteResponse` maps to `500` in `DefaultErrorStatus` for completeness, but on the delivered
 path that status is never actually written.
+
+---
+
+## Addendum B — Phase 2 (outbound) delivery decisions
+
+- **Status:** Accepted (2026-07-22), appended with [Plan 024](../plans/024-http-outbound.md) (Phase 2 — the O1 webhook
+  `OutboundAdapter` and O2 `RequestReplyExchange`), authored ahead of the code and audited across three adversarial
+  rounds before implementation.
+- **Prompted by:** four decisions Phase 2 makes that the Decision section above did not anticipate, plus two settled
+  user deviations (B5, B6). Each **amends an existing section of this ADR** rather than deciding something it was silent
+  about — recorded here as an Addendum (the established shape, mirroring Addendum A) rather than silently editing the
+  Decision section or minting a separate ADR that would leave §1/§4/§5/§7 stating things no longer true.
+- **Scope:** Phase 2 outbound only (`adapter/http`; O1/O2). The architecture in the Decision section is **unchanged** —
+  reliability stays runtime-owned (§5, as delivered by [Plan 023](../plans/023-producer-outbound-retry.md) /
+  [ADR 0025](0025-producer-outbound-retry.md)); the adapter performs one attempt and only classifies. Spec 011
+  §3.0/§3.1/§3.4/§3.6/§4/§6 carry the same content in specification form; Plan 024's INV-1..INV-7 are the verifying
+  invariants.
+
+### B1 — outbound redirect policy: no-follow by default (amends §7)
+
+**Decision.** Every client the adapter uses has a non-nil `CheckRedirect` returning `http.ErrUseLastResponse`, so a
+remote `3xx` is **classified** (→ `Permanent`), never followed. It is installed on a **shallow copy** of the caller's
+`*http.Client` (Transport and Jar stay shared by pointer — connection pooling and cookies preserved) resolved **once at
+construction**, never per-`Send`. `WithFollowRedirects()` opts out; a caller-supplied client whose own `CheckRedirect`
+is already non-nil **wins** (their explicit choice is honored — decision 1).
+
+**Why.** §7's one-line "SSRF invariant (outbound URL never derived from payload)" is **false in practice** against the
+default `net/http` client, which follows up to 10 redirects: `validateURL` runs once at construction, so a
+`302 → http://169.254.169.254/latest/meta-data/iam/security-credentials/` makes **O2 return instance-metadata
+credentials into the flow as the reply payload**, and a `307`/`308` **replays the POST body and every allow-listed
+header** to the attacker's host (Go strips only `Authorization`/`Cookie`), including an `https → http` downgrade. This is
+new exported security API (a new option) and a genuine hardening of §7, not a refinement (Plan 024 INV-1).
+
+**Consequences / non-guarantee.** The invariant is **not absolute** and its two escapes must be named wherever it is
+stated (godoc, Spec 011 §4, here): the caller owns the SSRF risk they re-open with `WithFollowRedirects()` or a
+following `CheckRedirect`. Independently, msgin performs **no** private-IP/link-local/loopback/metadata-endpoint
+filtering — it prevents **message-driven** SSRF only. `NewOutbound("http://169.254.169.254/…")` issues exactly that
+request.
+
+### B2 — the outbound reflected-XSS reversal (amends §2 and §7; mirror of A1, opposite direction)
+
+**Decision.** A `Content-Type` read from an untrusted remote `*http.Response` lands on the **non-reserved
+`http.content-type`** header, **never** on the reserved `msgin.content-type`. This is the exact mirror of Addendum A1 —
+which demoted the *client's* request `Content-Type` to `http.content-type` on the inbound side — applied to the
+*remote server's* response on the outbound side.
+
+**Why.** The remote server is untrusted input exactly as an inbound client is. Writing its `Content-Type` onto
+`msgin.HeaderContentType` — the key `EncodeResponse` trusts as the response media type, and which `DecodeRequest`
+deliberately refuses to let a client set — re-opens A1's **reflected XSS** from the outbound side: an upstream chooses
+`text/html`, an `OutboundGateway` → `EncodeResponse` flow serves its bytes back executable, and
+`X-Content-Type-Options: nosniff` does not stop an *explicit* `text/html` (Plan 024 INV-2).
+
+**Consequences.** The response media type of a downstream `EncodeResponse` stays a flow decision, never a remote one.
+The remote `Content-Type` remains available to the flow as inert `http.content-type` metadata.
+
+### B3 — reply header provenance (amends §4)
+
+**Decision.** O2's reply `Message[any]` is **seeded from the request message's headers** rather than built empty, so a
+correlation id an `OutboundGateway` stamped on the request survives onto the reply and its save/restore is honored. The
+reserved `msgin.message-id`, `msgin.timestamp` and `msgin.content-type` are **dropped and re-stamped fresh** (a reply
+is a new envelope, and its media type is B2's `http.content-type`, never the request's).
+
+**Why.** §4 established Return-Address-by-construction for synchronous request-reply but was silent on how the reply
+message is constructed; building it empty would lose the correlation key `OutboundGateway` relies on, and copying the
+request's `msgin.*` verbatim would forge a stale message id / timestamp and re-open B2.
+
+**Consequences.** O2 slots into `OutboundGateway`'s correlate-and-restore contract without the caller re-threading the
+correlation id, while the reserved-namespace hygiene of B2 is preserved on the reply path.
+
+### B4 — package placement: O1/O2 live in `adapter/http`, not `adapter/http/stdlib` (amends §1)
+
+**Decision.** `outbound.go` and `exchange.go` (O1 + O2) live in the framework-agnostic **`adapter/http`** package,
+**not** the `adapter/http/stdlib` binding slot §1 reserved for the server-side constructors.
+
+**Why.** §1's `adapter/http/stdlib` exists to bind the framework-neutral cores to `net/http` **server** types
+(`http.Handler`, `*http.ServeMux`) — the place a gin binding has a peer for. An HTTP **client** has no framework
+variant: gin has no HTTP client, so a `stdlib` outbound file would be an empty passthrough the gin module would then
+have to re-export. O1/O2 are complete in `adapter/http` (package `msghttp`) with no binding layer.
+
+**Consequences.** The three-package layout (§1) is unchanged in principle; the outbound files simply have no binding
+tier. Spec 011 §3.0's layout block is corrected to match.
+
+### B5 — `WithOutboundHeaders` strips reserved `msgin.*` names (decision 4; amends §7)
+
+**Decision.** `WithOutboundHeaders` copies only an allow-listed set of message headers onto the outbound request, and
+an entry whose name, lowercased, carries the reserved `msgin.` prefix is **silently dropped** — internal flow metadata
+(`msgin.correlation-id`, `msgin.message-id`, …) is never published to the remote endpoint through this option. The
+reserved-**name** guard is case-insensitive (a security filter, not casing-bypassable); the message-header **value**
+lookup stays case-sensitive (an exact map key). `Content-Type` is written after the allow-list, so an entry naming it
+cannot override it.
+
+**Why (settled deviation).** §7 made the inbound **response** allow-list deliberately *asymmetric* — trusted operator
+config, not reserved-guarded (`WithResponseHeaders`' `CAUTION`). Plan 024 originally carried that asymmetry to the
+outbound request path. **The user chose SYMMETRY instead** (decision 4): reserved names are dropped on the outbound
+request path too, matching `WithOutboundReplyHeaders` (B2/INV-2) and the inbound `DecodeRequest`. Recorded here as
+symmetry, superseding the plan's original asymmetry recommendation.
+
+**Consequences.** One consistent rule — reserved `msgin.*` names are never publishable to a remote peer through any
+outbound allow-list option. A caller who genuinely needs to forward flow metadata does so under a non-reserved header
+name of their own choosing.
+
+### B6 — the opt-in `WithErrorBodyExcerpt` (decision 5; amends §7's INV-4 posture)
+
+**Decision.** §7's default outbound-error posture is **"status code only"** — `StatusError` carries only the `int` code,
+no URL, no body, no `resp.Status` text — so no remote-controlled bytes reach caller logs. `WithErrorBodyExcerpt()` opts
+into a **bounded, fully-sanitized** excerpt of the remote response body on `StatusError.Excerpt`: at most
+`errorBodyExcerptMax` (**256**) bytes are **read** from the body (cap the READ — a DoS-amplification bound, not merely
+an output-length bound), then sanitized at the **rune** level with `strconv.Quote`, which escapes every
+non-`unicode.IsPrint` rune (C0/C1, ANSI `\x1b`, bidi `U+202E`, `U+2028`/`U+2029`, NEL, BOM) and invalid UTF-8 to
+`\uXXXX`/`\xNN`, **preserves** printable accented/CJK/emoji runes, and delimits the excerpt in quotes.
+
+**Why (settled deviation).** Plan 024 originally recommended **deferring** this capability. **The user chose to ship it
+now** (decision 5). Because it opens a **new remote-controlled-bytes → error-string path** — the exact boundary INV-4
+and INV-5 guard — it is specified with a **stricter-than-`sanitizeHeaderValue`** sanitizer (`sanitizeExcerpt`, which is
+`strconv.Quote`, not the inbound CR/LF-only strip) and was subjected to a focused round-3 adversarial audit before code.
+That audit corrected the sanitizer from a byte-level C0/C1 strip (which corrupts legitimate printable runes whose UTF-8
+continuation byte lands in `0x80`–`0x9f` and lets `U+FEFF`/bidi survive) to the rune-level `strconv.Quote` primitive.
+
+**Consequences.** INV-4's §7 posture is amended from **"code only"** to **"code only, or opt-in bounded+sanitized
+excerpt"**. The excerpt deliberately surfaces remote-influenced bytes into caller logs — safe to render under the
+rune-level sanitizer, but still untrusted when parsed. The transport-error path (INV-5) independently discards the
+target URL's userinfo/path/query via `ErrOutboundTransport`, so a webhook token in the query string never leaks into a
+logged timeout.

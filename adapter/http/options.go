@@ -5,6 +5,9 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"time"
+
+	"github.com/jonboulle/clockwork"
 )
 
 // defaultMaxBodyBytes bounds the number of request-body bytes DecodeRequest
@@ -17,6 +20,32 @@ import (
 // a caller's legitimate payload size, so the default errs conservative
 // rather than permissive.
 const defaultMaxBodyBytes int64 = 1 << 20 // 1 MiB
+
+// defaultMaxResponseBytes bounds the number of response-body bytes an Exchange
+// reads into the reply payload when WithMaxResponseBytes is unset, and also
+// caps O1's post-Send connection-reuse drain (round-2 audit F6). 1 MiB mirrors
+// defaultMaxBodyBytes: the remote endpoint is untrusted, so the default errs
+// conservative rather than permissive. Override it via WithMaxResponseBytes.
+const defaultMaxResponseBytes int64 = 1 << 20 // 1 MiB
+
+// defaultHTTPClientTimeout is the timeout on the default outbound *http.Client.
+// It is finite ON PURPOSE: http.DefaultClient has NO timeout at all, so a
+// stalled endpoint would otherwise block a producer goroutine indefinitely.
+//
+// This is the per-attempt I/O bound — it caps a SINGLE client.Do, the one thing
+// ADR 0025 §1.1 could not bound from the producer side (the producer treats one
+// adapter call as opaque and unbounded). It is therefore orthogonal to, and
+// well below, the producer's retry BUDGET (2m) and Retry-After CAP (60s), which
+// govern the sum and spacing of retries ACROSS attempts, not the duration of
+// any one attempt. 30s bounds one hop; 2m/60s bound the retry envelope around
+// many hops — no interaction, no ordering constraint between them.
+const defaultHTTPClientTimeout = 30 * time.Second
+
+// errorBodyExcerptMax caps the number of remote response-body bytes embedded in
+// StatusError.Excerpt when WithErrorBodyExcerpt() is set (decision 5). It is a
+// DoS-amplification bound (the read is capped before reading), not merely an
+// output-length bound.
+const errorBodyExcerptMax = 256
 
 // Config holds the resolved settings DecodeRequest and EncodeResponse (and
 // the inbound handler cores built on top of them) use to convert between an
@@ -43,6 +72,25 @@ type Config struct {
 	responseHeaders    []string
 	errorStatus        func(error) int
 	logger             *slog.Logger
+
+	// Outbound (O1 NewOutbound / O2 NewExchange) settings — see the WithX
+	// options below. NewConfig back-fills httpClient (a client with a 30s
+	// timeout) and clock (a real clock), and validates maxResponseBytes via the
+	// set-flag pattern. A hand-built &Config{} reaching an outbound call reads
+	// httpClient/maxResponseBytes directly (there is intentionally no
+	// nil-fallback accessor for them — an unsupported hand-built &Outbound{}
+	// nil-derefs, exactly like a hand-built &msgin.ChannelExchange{}), as does the
+	// reply-header allow-list (reached only through Exchange). The outbound-request
+	// header allow-list and clock keep their nil-safe accessors, because they are
+	// reachable through the exported EncodeRequest/ClassifyResponse with a nil cfg.
+	httpClient          *http.Client
+	followRedirects     bool
+	outboundHeaders     []string
+	replyHeaders        []string
+	maxResponseBytes    int64
+	maxResponseBytesSet bool // distinguishes explicit WithMaxResponseBytes(n<=0) (rejected) from unset (default)
+	clock               clockwork.Clock
+	errorBodyExcerpt    bool
 }
 
 // maxBody is the request-body cap to apply, back-filling defaultMaxBodyBytes
@@ -117,6 +165,52 @@ func (c *Config) allowedResponseHeaders() []string {
 		return nil
 	}
 	return c.responseHeaders
+}
+
+// allowedOutboundHeaders is the outbound request-header allow-list, empty for a
+// nil Config. A plain nil-guard mirroring allowedRequestHeaders: the
+// reserved-msgin.* strip is applied by EncodeRequest at use (decision 4
+// symmetry), exactly as DecodeRequest strips the inbound allow-list — never in
+// the accessor, so the strip lives in one place and is covered once.
+func (c *Config) allowedOutboundHeaders() []string {
+	if c == nil {
+		return nil
+	}
+	return c.outboundHeaders
+}
+
+// allowedReplyHeaders is the outbound reply-header allow-list an Exchange copies
+// from the remote response onto the reply message. The reserved-msgin.* strip
+// (INV-2) is applied where the reply message is built (buildReply), so the remote
+// server can never forge a core header.
+//
+// Unlike allowedOutboundHeaders/clockOrDefault, this field is read DIRECTLY with
+// no nil-Config fallback: its only caller is buildReply, reached only through
+// Exchange, whose cfg is always the one NewConfig produced. A nil-guard here
+// would be blackbox-unreachable dead code (no exported function passes a nil
+// *Config to it), so it is omitted — a hand-built &Exchange{} nil-derefs, exactly
+// as it does on maxResponseBytes and the no-follow client.
+func (c *Config) allowedReplyHeaders() []string {
+	return c.replyHeaders
+}
+
+// clockOrDefault is the clock the outbound adapters use for time-dependent
+// parsing — currently only the HTTP-date form of a Retry-After response header.
+// It back-fills a real clock for a nil or hand-built Config, so ClassifyResponse
+// never nil-calls it (the Config nil-safety contract).
+func (c *Config) clockOrDefault() clockwork.Clock {
+	if c == nil || c.clock == nil {
+		return clockwork.NewRealClock()
+	}
+	return c.clock
+}
+
+// errorBodyExcerptEnabled reports whether WithErrorBodyExcerpt() was set. A nil
+// or hand-built Config returns false, so the default posture stays INV-4's "code
+// only" — no remote-controlled bytes reach the error string unless the caller
+// opted in.
+func (c *Config) errorBodyExcerptEnabled() bool {
+	return c != nil && c.errorBodyExcerpt
 }
 
 // Option configures a Config built by NewConfig.
@@ -330,6 +424,153 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
+// WithHTTPClient sets the *http.Client the outbound adapters (NewOutbound,
+// NewExchange) use for their single per-attempt request. Default: a client with
+// a 30s timeout (defaultHTTPClientTimeout) — http.DefaultClient has NO timeout
+// at all, so relying on it would let a stalled endpoint block a producer
+// goroutine indefinitely.
+//
+// The caller's client is never mutated. When it leaves CheckRedirect nil
+// (net/http's follow-up-to-10-redirects default), a SHALLOW COPY is taken and a
+// no-follow CheckRedirect is installed on the copy; its Transport and Jar stay
+// shared by pointer so connection pooling and cookies are preserved. A client
+// that sets its own CheckRedirect is used verbatim — the caller's explicit
+// choice wins.
+//
+// SECURITY (INV-1 escape): supplying a client whose CheckRedirect FOLLOWS
+// redirects re-opens the SSRF the no-follow default closes — a 302 from the
+// configured host can steer the request to an internal address (e.g. a cloud
+// metadata endpoint) and return its bytes into the flow, and a 307/308 replays
+// the POST body and every allow-listed header to the new host. The caller owns
+// that risk; it is documented here at the option, not only in an open-decision
+// list. WithFollowRedirects opts out the same way via a flag.
+//
+// A nil client is a no-op: the default stays in place (mirrors WithLogger).
+func WithHTTPClient(c *http.Client) Option {
+	return func(cfg *Config) {
+		if c != nil {
+			cfg.httpClient = c
+		}
+	}
+}
+
+// WithFollowRedirects opts OUT of the outbound no-follow redirect policy,
+// letting the client follow up to 10 redirects as net/http does by default.
+//
+// SECURITY WARNING: by default msgin installs a no-follow CheckRedirect so a
+// response cannot steer a request to a host other than the one validated at
+// construction. Enabling this re-opens SSRF: a 302 can redirect an outbound
+// request to http://169.254.169.254/… and return cloud instance-metadata
+// credentials into the flow as the reply payload, and a 307/308 replays the
+// POST body and every allow-listed header to the attacker-chosen host. Only
+// enable this when every host the endpoint can redirect to is as trusted as the
+// endpoint itself.
+func WithFollowRedirects() Option {
+	return func(c *Config) { c.followRedirects = true }
+}
+
+// WithOutboundHeaders sets the allow-list of MESSAGE header names EncodeRequest
+// copies onto the outbound HTTP request (values CRLF-sanitized before being
+// written). Default: empty — no message header is sent unless allow-listed
+// here, matching WithRequestHeaders' opt-in-only default.
+//
+// A reserved msgin.* entry is defensively DROPPED (decision 4 — symmetry with
+// WithOutboundReplyHeaders and DecodeRequest): an entry whose name, lowercased,
+// carries the msgin. prefix is silently ignored, so internal flow metadata
+// (msgin.correlation-id, msgin.message-id, …) is never published to the remote
+// endpoint through this option. The reserved-name GUARD is case-INSENSITIVE — a
+// security filter must not be bypassable by casing, so "MSGIN.Foo" is dropped
+// too — while the message-header VALUE lookup stays case-SENSITIVE (an exact
+// msg.Headers().String map lookup, since a functional key must match the header
+// exactly as the flow stored it).
+//
+// Content-Type is written by EncodeRequest AFTER this allow-list, so an entry
+// naming it can never override the resolved request Content-Type.
+//
+// The names are cloned: a later mutation of the caller's own slice cannot
+// silently rewrite this security allow-list.
+func WithOutboundHeaders(names ...string) Option {
+	return func(c *Config) { c.outboundHeaders = slices.Clone(names) }
+}
+
+// WithOutboundReplyHeaders sets the allow-list of HTTP RESPONSE header names an
+// Exchange copies from the remote reply onto the reply message (matched
+// case-insensitively via http.Header.Get, first value only). Default: empty.
+//
+// This governs the OUTBOUND request-reply direction — do not confuse it with
+// WithResponseHeaders, which allow-lists MESSAGE headers emitted on an INBOUND
+// server's response. A reserved msgin.* entry is defensively dropped: the
+// remote server is untrusted input exactly as an inbound client is (INV-2), so
+// it can never be made to forge a core header such as msgin.content-type.
+//
+// The names are cloned: a later mutation of the caller's own slice cannot
+// silently rewrite this allow-list.
+func WithOutboundReplyHeaders(names ...string) Option {
+	return func(c *Config) { c.replyHeaders = slices.Clone(names) }
+}
+
+// WithMaxResponseBytes caps the number of response-body bytes an Exchange reads
+// into the reply payload. Default: defaultMaxResponseBytes (1 MiB). Name it
+// apart from WithMaxBodyBytes: WithMaxBodyBytes caps an inbound REQUEST body,
+// WithMaxResponseBytes an outbound RESPONSE body.
+//
+// CAVEAT: it bounds the BODY only. Response HEADERS are bounded instead by
+// http.Transport.MaxResponseHeaderBytes (~10 MiB by default) — lower it
+// alongside this option if the reply-header surface matters to your threat
+// model. The same cap also bounds O1's post-Send connection-reuse drain, not
+// only the O2 reply body: raising it for large O2 replies also raises how much
+// of an oversized O1 webhook response is drained before the connection returns
+// to the pool. With WithErrorBodyExcerpt() enabled, a non-2xx O1 response
+// additionally consumes up to errorBodyExcerptMax (256) bytes for the excerpt —
+// a separate, bounded budget on top of this drain.
+//
+// n MUST be > 0: NewConfig returns ErrInvalidMaxResponseBytes for an explicit
+// n <= 0 (the set-flag pattern distinguishes "unset" → default from "explicit
+// invalid"). Leaving this option unset is how a caller asks for the default.
+func WithMaxResponseBytes(n int64) Option {
+	return func(c *Config) {
+		c.maxResponseBytes = n
+		c.maxResponseBytesSet = true
+	}
+}
+
+// WithOutboundClock injects the clock the outbound adapters use for any
+// time-dependent parsing — currently only the HTTP-date form of a Retry-After
+// response header. Default: clockwork.NewRealClock().
+//
+// Named apart from msgin.WithClock (a MessageOption) and the per-component
+// WithProducerClock/WithExchangeClock, per the repo's distinct-clock-name-per-
+// component convention.
+//
+// A nil clock is a no-op: the real-clock default stays in place (mirrors
+// WithLogger).
+func WithOutboundClock(clk clockwork.Clock) Option {
+	return func(c *Config) {
+		if clk != nil {
+			c.clock = clk
+		}
+	}
+}
+
+// WithErrorBodyExcerpt makes a non-2xx StatusError carry a bounded, sanitized
+// excerpt of the remote response body. Default: OFF — a StatusError carries the
+// status code ONLY, so no remote-controlled bytes reach the error string
+// (INV-4's fail-safe default: no URL, no body, no resp.Status text).
+//
+// When enabled, up to errorBodyExcerptMax (256) bytes are read from the remote,
+// ATTACKER-CONTROLLED response body — capped BEFORE reading, so an oversized
+// error body cannot amplify into unbounded read/allocate work — then fully
+// sanitized before being embedded in the error string: every non-printable rune
+// is escaped, invalid UTF-8 is escaped, printable accented/CJK runes are
+// preserved, and the whole is delimited in quotes.
+//
+// This DELIBERATELY surfaces remote-influenced bytes into caller logs. They are
+// safe to render, but the caller should still treat them as untrusted when
+// parsing.
+func WithErrorBodyExcerpt() Option {
+	return func(c *Config) { c.errorBodyExcerpt = true }
+}
+
 // NewConfig validates opts and builds a Config, resolving the documented
 // default for any option left unset. WithMaxBodyBytes and WithSuccessStatus
 // use the set-flag pattern (mirrors msgin.WithMaxInFlight/WithAttemptTTL): an
@@ -352,6 +593,19 @@ func NewConfig(opts ...Option) (*Config, error) {
 		cfg.successStatus = http.StatusAccepted
 	} else if cfg.successStatus < 100 || cfg.successStatus > 599 {
 		return nil, ErrInvalidStatusCode
+	}
+
+	if !cfg.maxResponseBytesSet {
+		cfg.maxResponseBytes = defaultMaxResponseBytes
+	} else if cfg.maxResponseBytes <= 0 {
+		return nil, ErrInvalidMaxResponseBytes
+	}
+
+	if cfg.httpClient == nil {
+		cfg.httpClient = &http.Client{Timeout: defaultHTTPClientTimeout}
+	}
+	if cfg.clock == nil {
+		cfg.clock = clockwork.NewRealClock()
 	}
 
 	if cfg.errorStatus == nil {

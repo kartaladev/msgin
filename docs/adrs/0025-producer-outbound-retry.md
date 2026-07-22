@@ -159,6 +159,10 @@ added is `Retry-After`, which §3 solves in a few stdlib lines. Therefore:
 [ADR 0022 Addendum A3](0022-messaging-gateway.md), it MUST release that state on **every** exit path including a panic
 unwind (deferred cleanup), and MUST NOT recover a caller panic into an error return.
 
+**Delivered** as `msghttp.Exchange` / `NewExchange` in `adapter/http` (package `msghttp`) — the **first external
+`RequestReplyExchange`** — by [Plan 024](../plans/024-http-outbound.md) (Spec 011 Phase 2); its INV-7 pins the
+single-`defer` no-leak-on-unwind cleanup against a panicking response body.
+
 ### 6. `BytesPayloadCodec` — explicit, never an automatic default
 
 **Decided:** ship an identity `PayloadCodec[[]byte]` that passes bytes through unchanged, and require callers to

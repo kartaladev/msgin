@@ -44,11 +44,63 @@ var (
 	// before anything is written, leaving the ResponseWriter untouched.
 	ErrWriteResponse = errors.New("msghttp: write response body failed")
 
-	// ErrUnsupportedPayload is returned by EncodeResponse when a reply
-	// message's payload is neither []byte nor string. The adapter is
-	// type-agnostic (ADR 0001): it never encodes/decodes a domain type T,
-	// only forwards the flow's own wire-shaped payload, so a non-bytes reply
-	// payload is a WIRING fault, not a client input fault — hence its default
-	// HTTP mapping is 500, not 400.
-	ErrUnsupportedPayload = errors.New("msghttp: reply payload is not []byte or string")
+	// ErrUnsupportedPayload is returned when a message payload is neither
+	// []byte nor string: by EncodeResponse for a reply message, and by
+	// EncodeRequest for an outbound request message. The adapter is
+	// type-agnostic (ADR 0001): it never encodes/decodes a domain type T, it
+	// only forwards the flow's own wire-shaped payload, so a non-bytes payload
+	// is a WIRING fault, not a client input fault — hence EncodeResponse's
+	// default HTTP mapping for it is 500 (via DefaultErrorStatus), not 400.
+	ErrUnsupportedPayload = errors.New("msghttp: message payload is not []byte or string")
+
+	// ErrEmptyURL is returned by NewOutbound/NewExchange when the target URL
+	// is empty or only whitespace.
+	ErrEmptyURL = errors.New("msghttp: outbound URL is empty")
+
+	// ErrInvalidURL is returned by NewOutbound/NewExchange when the target URL
+	// fails to parse, does not use the http or https scheme, or has an empty
+	// host.
+	//
+	// It rejects a malformed or non-HTTP target only. msgin performs NO
+	// private-IP, link-local, loopback or metadata-endpoint filtering: a
+	// caller-configured "http://169.254.169.254/…" is accepted and requested
+	// verbatim. Because the URL is caller-configured and never derived from a
+	// message payload, this prevents MESSAGE-DRIVEN SSRF only — it is not an
+	// SSRF egress filter.
+	ErrInvalidURL = errors.New("msghttp: outbound URL is invalid")
+
+	// ErrInvalidMaxResponseBytes is returned by NewConfig when an explicit
+	// WithMaxResponseBytes is <= 0. Leaving WithMaxResponseBytes unset takes
+	// the 1 MiB default instead of hitting this error — the set-flag pattern
+	// distinguishes "unset" from "explicit invalid", mirroring
+	// ErrInvalidMaxBodyBytes.
+	ErrInvalidMaxResponseBytes = errors.New("msghttp: max response bytes must be > 0")
+
+	// ErrReplyTooLarge is returned by an Exchange when the remote response body
+	// exceeds the WithMaxResponseBytes cap (default 1 MiB).
+	ErrReplyTooLarge = errors.New("msghttp: reply body exceeds max response bytes")
+
+	// ErrNilResponse is returned by ClassifyResponse when it is handed a nil
+	// *http.Response. (*http.Client).Do never returns a nil response together
+	// with a nil error, so on the live path this arm is unreachable; it is kept
+	// (decision 3) as a typed guard so a caller feeding a hand-built nil gets a
+	// clear error rather than a nil-dereference panic.
+	ErrNilResponse = errors.New("msghttp: nil response")
+
+	// ErrOutboundStatus is the sentinel a *StatusError unwraps to: it marks an
+	// outbound request that completed but returned a non-2xx HTTP status.
+	// ClassifyResponse may additionally wrap it in msgin.Permanent or
+	// msgin.RetryAfter, but it never carries a payload-invalid or
+	// decode-failure meaning inferred from the status (INV-3): it is only ever
+	// "the remote returned status N".
+	ErrOutboundStatus = errors.New("msghttp: outbound request returned an error status")
+
+	// ErrOutboundTransport wraps a transport-level failure of an outbound
+	// request (the error (*http.Client).Do returns). The wrap deliberately
+	// discards the *url.Error's URL — whose own Error() redacts only the
+	// password, leaking username, host, path and query (e.g. a webhook token in
+	// the query string) — so no target URL reaches the error string (INV-5).
+	// The underlying cause is preserved with %w, so errors.Is(err,
+	// context.Canceled) and friends still hold on the cancellation arm.
+	ErrOutboundTransport = errors.New("msghttp: outbound request transport error")
 )
