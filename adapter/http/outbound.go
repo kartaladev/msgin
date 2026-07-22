@@ -175,7 +175,9 @@ func (e *StatusError) Unwrap() error { return ErrOutboundStatus }
 // the classification branches, so every non-2xx path carries it; the read is
 // bounded (readExcerpt caps at errorBodyExcerptMax) and best-effort — a read
 // error never masks the status error. The caller must therefore classify BEFORE
-// draining the body, or the excerpt is empty.
+// draining the body, or the excerpt is empty. A hand-built response with a nil
+// Body (legal outside net/http, which always backfills one) is tolerated: the
+// Excerpt stays empty rather than panicking on caller input.
 func ClassifyResponse(resp *http.Response, cfg *Config) error {
 	if resp == nil {
 		return ErrNilResponse
@@ -186,7 +188,11 @@ func ClassifyResponse(resp *http.Response, cfg *Config) error {
 	}
 
 	statusErr := &StatusError{Code: code}
-	if cfg.errorBodyExcerptEnabled() {
+	if cfg.errorBodyExcerptEnabled() && resp.Body != nil {
+		// resp.Body is nil-guarded: a response delivered by net/http always
+		// backfills a nil Body, but ClassifyResponse is exported and a
+		// hand-built &http.Response{} legally carries nil — never panic on
+		// caller input; the Excerpt just stays empty.
 		statusErr.Excerpt = readExcerpt(resp.Body)
 	}
 

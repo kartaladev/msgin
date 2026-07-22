@@ -120,11 +120,24 @@ func (x *Exchange) Exchange(ctx context.Context, req msgin.Message[any]) (msgin.
 		// NOT a lone Read. io.Reader legally returns (0, nil), which a `Read`+`n>0`
 		// check would misread as end-of-body and serve a truncated body as success
 		// (the silent-data-loss INV-6 closes; round-2 audit F4). ReadFull loops
-		// past (0, nil) until it fills the byte or hits a real EOF: n>0, or a
-		// non-EOF error, means there was more body than the cap allows.
+		// past (0, nil) until it fills the byte or hits a real error: ONLY n>0
+		// proves there was more body than the cap allows.
 		var probe [1]byte
-		if n, err := io.ReadFull(resp.Body, probe[:]); n > 0 || !errors.Is(err, io.EOF) {
+		n, probeErr := io.ReadFull(resp.Body, probe[:])
+		if n > 0 {
 			return zero, ErrReplyTooLarge
+		}
+		if !errors.Is(probeErr, io.EOF) {
+			// ONLY a clean io.EOF proves the body ended AT the cap; any other
+			// (0, err) probe outcome is a genuine READ failure at the boundary
+			// and surfaces raw, exactly as the pre-cap read-failure path above
+			// does — never as ErrReplyTooLarge (whole-branch review F5). That
+			// includes io.ErrUnexpectedEOF: io.ReadFull cannot manufacture it
+			// for a 1-byte buffer, so it came from the body itself — a
+			// TRUNCATED transfer (the connection died before Content-Length
+			// was satisfied, or mid-chunk), which must not be served as an
+			// at-cap success (the silent data loss INV-6 exists to prevent).
+			return zero, probeErr
 		}
 	}
 
@@ -137,7 +150,10 @@ func (x *Exchange) Exchange(ctx context.Context, req msgin.Message[any]) (msgin.
 // downstream Aggregator, and msgin.correlation-id is carried automatically (what
 // OutboundGateway's save/restore expects). Per-message identity is re-stamped
 // fresh by msgin.New (a new msgin.message-id and msgin.timestamp); the request's
-// media type is dropped because it describes the request, not the reply.
+// media type (msgin.content-type) AND the request-describing http.* metadata
+// (http.method, http.path, http.query, http.content-type) are dropped because
+// they describe the request, not the reply — only a Content-Type the remote
+// response actually carries lands on the reply's http.content-type.
 //
 // The remote response is untrusted input (INV-2): its Content-Type lands on the
 // NON-reserved http.content-type key — never msgin.content-type, which
@@ -150,6 +166,18 @@ func (x *Exchange) buildReply(req msgin.Message[any], resp *http.Response, body 
 	delete(h, msgin.HeaderMessageID)
 	delete(h, msgin.HeaderTimestamp)
 	delete(h, msgin.HeaderContentType)
+	// The request-DESCRIBING http.* metadata DecodeRequest stamps on an
+	// inbound-originated message describes the inbound request, not this reply
+	// (whole-branch review F4): left in place, a stale request-side
+	// http.content-type would masquerade as the reply's media type whenever the
+	// remote response carries no Content-Type, and http.method/path/query would
+	// misreport the reply's provenance. http.correlation-id is advisory FLOW
+	// metadata, not request shape, so it survives the hop like
+	// msgin.correlation-id does.
+	delete(h, headerHTTPMethod)
+	delete(h, headerHTTPPath)
+	delete(h, headerHTTPQuery)
+	delete(h, headerHTTPContentType)
 
 	reply := msgin.New[any](body, msgin.WithHeaders(h))
 	if ct := resp.Header.Get("Content-Type"); ct != "" {

@@ -602,6 +602,16 @@ func TestEncodeResponse_writeFailureWrapsErrWriteResponse(t *testing.T) {
 	assert.Equal(t, []int{http.StatusOK}, w.codes)
 }
 
+// TestErrUnsupportedPayload_text pins the sentinel's message (whole-branch
+// review F3): since Task 2 the sentinel covers BOTH EncodeResponse reply
+// payloads and EncodeRequest outbound request payloads, so it must say
+// "message payload", not the stale "reply payload".
+func TestErrUnsupportedPayload_text(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "msghttp: message payload is not []byte or string",
+		msghttp.ErrUnsupportedPayload.Error())
+}
+
 func TestWithRequestResponseHeaders_clonesTheCallerSlice(t *testing.T) {
 	t.Parallel()
 

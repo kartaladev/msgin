@@ -289,6 +289,22 @@ func TestClassifyResponse_direct(t *testing.T) {
 			"at most errorBodyExcerptMax bytes may be CONSUMED from the body (cap-before-read)")
 	})
 
+	t.Run("review F1: a nil Body with the excerpt enabled classifies without panicking", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := msghttp.NewConfig(msghttp.WithErrorBodyExcerpt())
+		require.NoError(t, err)
+
+		// A hand-built response may legally carry a nil Body (only a response
+		// delivered by net/http backfills it); the excerpt read must be guarded,
+		// never panic on caller input.
+		got := msghttp.ClassifyResponse(&http.Response{StatusCode: 500, Header: http.Header{}}, cfg)
+
+		var se *msghttp.StatusError
+		require.ErrorAs(t, got, &se, "the status must classify, not panic")
+		assert.Equal(t, 500, se.Code)
+		assert.Empty(t, se.Excerpt, "no body means no excerpt")
+	})
+
 	t.Run("decision 5: a mid-read error is best-effort, the status still surfaces (branch 19d)", func(t *testing.T) {
 		t.Parallel()
 		cfg, err := msghttp.NewConfig(msghttp.WithErrorBodyExcerpt())

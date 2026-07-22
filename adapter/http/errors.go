@@ -51,7 +51,7 @@ var (
 	// only forwards the flow's own wire-shaped payload, so a non-bytes payload
 	// is a WIRING fault, not a client input fault — hence EncodeResponse's
 	// default HTTP mapping for it is 500 (via DefaultErrorStatus), not 400.
-	ErrUnsupportedPayload = errors.New("msghttp: reply payload is not []byte or string")
+	ErrUnsupportedPayload = errors.New("msghttp: message payload is not []byte or string")
 
 	// ErrEmptyURL is returned by NewOutbound/NewExchange when the target URL
 	// is empty or only whitespace.

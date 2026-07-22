@@ -984,6 +984,18 @@ was the sanitizer algorithm**, plus two "asserts-nothing" tests and a missing pa
 
 ---
 
+## Whole-branch review (pre-merge gate). `/security-review` clean; all 5 `/code-review` findings fixed, mutation verdicts all RED.
+
+| # | Finding | Disposition |
+|---|---|---|
+| F1 | `ClassifyResponse` panics on a hand-built nil `resp.Body` with `WithErrorBodyExcerpt()` on — never panic on caller input. | **Fixed**: excerpt read guarded on `resp.Body != nil` (Excerpt stays empty); covering nil-Body test. |
+| F2 | No behavioral proof of the 1 MiB `defaultMaxResponseBytes` — every INV-6 test passed an explicit cap. | **Fixed**: default-config test through `Exchange` (exactly `1<<20` succeeds, `+1` → `ErrReplyTooLarge`); mutating the default to `1<<10` verified RED. |
+| F3 | `ErrUnsupportedPayload` text stale ("reply payload") — since Task 2 it also covers outbound request payloads. | **Fixed**: text now "message payload is not []byte or string"; message pinned by test. |
+| F4 | Request-describing `http.*` metadata (content-type/method/path/query) rode from the request seed onto the reply. | **Fixed**: `buildReply` deletes the four request-descriptive `http.*` keys before seeding; provenance tests both ways. |
+| F5 | A genuine read error at the INV-6 probe boundary was misreported as `ErrReplyTooLarge`. | **Fixed**: `(1,_)` → over-cap; `(0, EOF)` → clean end at cap; any other `(0, err)` — incl. `io.ErrUnexpectedEOF`, a truncated transfer — → raw read error, mirroring the pre-cap read-failure path. |
+
+---
+
 ## Self-review against the defect catalogue
 
 Every VERIFIED defect in `024-http-outbound-source-brief.md` is addressed: D3.1 (Task 2 extraction + staging), D3.2/D3.3

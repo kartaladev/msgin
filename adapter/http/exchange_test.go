@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -234,6 +235,114 @@ func TestExchange_replyProvenance(t *testing.T) {
 		_, ok := reply.Header(msgin.HeaderContentType)
 		assert.False(t, ok, "the request's msgin.content-type describes the request, not the reply")
 	})
+}
+
+// TestExchange_requestMetadataHygiene (whole-branch review F4): the reply is
+// seeded from the REQUEST's headers, but the request-DESCRIBING http.* keys
+// DecodeRequest stamps on an inbound-originated message (http.content-type,
+// http.method, http.path, http.query) describe the inbound request, not this
+// reply — they must be dropped before seeding, or a stale request-side
+// http.content-type survives whenever the remote response carries no
+// Content-Type. When the remote DOES carry one, the reply's http.content-type
+// must be the remote's, never the request's stale value.
+func TestExchange_requestMetadataHygiene(t *testing.T) {
+	t.Parallel()
+
+	requestHTTPKeys := []string{"http.content-type", "http.method", "http.path", "http.query"}
+	seed := msgin.New[any]([]byte("req")).
+		WithHeader("http.content-type", "text/stale").
+		WithHeader("http.method", "PUT").
+		WithHeader("http.path", "/inbound").
+		WithHeader("http.query", "a=1")
+
+	type testCase struct {
+		name       string
+		respHeader http.Header
+		assert     func(t *testing.T, reply msgin.Message[any])
+	}
+
+	cases := []testCase{
+		{
+			name: "no remote Content-Type: no request-side http.* survives onto the reply",
+			assert: func(t *testing.T, reply msgin.Message[any]) {
+				for _, k := range requestHTTPKeys {
+					_, ok := reply.Header(k)
+					assert.False(t, ok, "request-describing %s must not ride onto the reply", k)
+				}
+			},
+		},
+		{
+			name: "remote Content-Type lands on the reply, the request's stale value does not",
+			respHeader: func() http.Header {
+				h := http.Header{}
+				h.Set("Content-Type", "application/json")
+				return h
+			}(),
+			assert: func(t *testing.T, reply msgin.Message[any]) {
+				got, ok := reply.Headers().String("http.content-type")
+				require.True(t, ok)
+				assert.Equal(t, "application/json", got, "the remote media type wins, never the request's")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			x := exchangeReturning(t, http.StatusOK, "r", tc.respHeader)
+			reply, err := x.Exchange(t.Context(), seed)
+			require.NoError(t, err)
+			tc.assert(t, reply)
+		})
+	}
+}
+
+// TestExchange_defaultMaxResponseBytes proves the DEFAULT response cap
+// behaviorally (whole-branch review F2): with NO WithMaxResponseBytes, a reply
+// of exactly 1 MiB succeeds intact and one extra byte -> ErrReplyTooLarge.
+// Mutating defaultMaxResponseBytes in either direction turns a case red —
+// every prior INV-6 test passed an explicit cap, leaving the default unproven.
+func TestExchange_defaultMaxResponseBytes(t *testing.T) {
+	t.Parallel()
+
+	const defaultCap = 1 << 20 // the documented 1 MiB default
+
+	type testCase struct {
+		name   string
+		body   string
+		assert func(t *testing.T, reply msgin.Message[any], err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "a reply of exactly the 1 MiB default succeeds intact",
+			body: strings.Repeat("A", defaultCap),
+			assert: func(t *testing.T, reply msgin.Message[any], err error) {
+				require.NoError(t, err)
+				payload, ok := reply.Payload().([]byte)
+				require.True(t, ok)
+				assert.Len(t, payload, defaultCap)
+			},
+		},
+		{
+			name: "one byte over the 1 MiB default -> ErrReplyTooLarge",
+			body: strings.Repeat("A", defaultCap+1),
+			assert: func(t *testing.T, reply msgin.Message[any], err error) {
+				assert.ErrorIs(t, err, msghttp.ErrReplyTooLarge)
+				assert.Nil(t, reply.Payload())
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			// No WithMaxResponseBytes: the default applies.
+			x := exchangeReturning(t, http.StatusOK, tc.body, nil)
+			reply, err := x.Exchange(t.Context(), msgin.New[any]([]byte("req")))
+			tc.assert(t, reply, err)
+		})
+	}
 }
 
 // TestExchange_replyHeaders covers branches 9, 11-14: INV-2's non-reserved
@@ -515,6 +624,41 @@ func TestExchange_bodyBounds(t *testing.T) {
 		_, err := x.Exchange(t.Context(), msgin.New[any]([]byte("req")))
 		assert.ErrorIs(t, err, msghttp.ErrReplyTooLarge,
 			"the io.ReadFull probe must loop past (0,nil), not serve a truncated success")
+	})
+
+	t.Run("review F5: a genuine read error at the cap boundary is NOT ErrReplyTooLarge", func(t *testing.T) {
+		t.Parallel()
+		// Exactly cap bytes arrive, then the probe's read fails (a connection
+		// reset at the boundary): that is a READ failure, not proof of more
+		// body, and must surface exactly as the pre-cap read-failure path does
+		// (the raw read error), never as ErrReplyTooLarge.
+		body := io.NopCloser(io.MultiReader(strings.NewReader("AAAA"), &erroringReader{}))
+		x := newExchange(t, http.StatusOK, body, msghttp.WithMaxResponseBytes(4))
+		_, err := x.Exchange(t.Context(), msgin.New[any]([]byte("req")))
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, msghttp.ErrReplyTooLarge,
+			"a boundary read failure must not be misreported as an over-cap")
+		assert.EqualError(t, err, "boom",
+			"the probe's read error surfaces raw, mirroring the pre-cap read-failure path")
+	})
+
+	t.Run("review F5: an ErrUnexpectedEOF at the cap boundary is a truncated transfer, not a clean end", func(t *testing.T) {
+		t.Parallel()
+		// io.ReadFull can never manufacture ErrUnexpectedEOF for a 1-byte
+		// buffer (ReadAtLeast only converts EOF when 0 < n < min, impossible
+		// for min=1), so a boundary (0, io.ErrUnexpectedEOF) came from the
+		// underlying body — for a net/http body that means the transfer was
+		// TRUNCATED (the connection died before Content-Length was satisfied,
+		// or mid-chunk). Serving the truncated body as success would be the
+		// silent data loss INV-6 exists to prevent: it must surface raw,
+		// mirroring the pre-cap truncation path (branch 21), and never as
+		// ErrReplyTooLarge.
+		body := io.NopCloser(io.MultiReader(strings.NewReader("AAAA"), iotest.ErrReader(io.ErrUnexpectedEOF)))
+		x := newExchange(t, http.StatusOK, body, msghttp.WithMaxResponseBytes(4))
+		_, err := x.Exchange(t.Context(), msgin.New[any]([]byte("req")))
+		require.Error(t, err, "a truncated transfer must never be served as success")
+		assert.ErrorIs(t, err, io.ErrUnexpectedEOF, "the truncation surfaces raw, like the pre-cap path")
+		assert.NotErrorIs(t, err, msghttp.ErrReplyTooLarge, "truncation is not an over-cap")
 	})
 
 	t.Run("branch 21: a mid-body read failure errors with the body closed", func(t *testing.T) {
