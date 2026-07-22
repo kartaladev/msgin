@@ -1,7 +1,11 @@
 # ADR 0023 — HTTP channel adapter architecture (framework-agnostic core; stdlib & gin bindings; Return Address by construction)
 
 - **Status:** **Accepted** (2026-07-21) for Phase 1 (inbound server), which shipped per
-  [Plan 020](../plans/020-http-adapter-inbound.md); Phases 2–5 remain **Proposed**. The architecture below held
+  [Plan 020](../plans/020-http-adapter-inbound.md); **Accepted** (2026-07-22) for Phase 2 (outbound O1/O2), which
+  shipped per [Plan 024](../plans/024-http-outbound.md) with
+  **[Addendum B](#addendum-b--phase-2-outbound-delivery-decisions)**; the Phases-3+4 SSE design decisions are
+  **Accepted** (2026-07-22, design-time) in **[Addendum C](#addendum-c--sse-design-decisions-phases-34)**, with
+  Phases 3–5 otherwise **Proposed** pending their plans. The architecture below held
   unchanged through implementation, but the whole-branch `/code-review` + `/security-review` gate forced six
   decisions the audited design did not anticipate — recorded in **[Addendum A](#addendum-a--review-driven-design-changes-phase-1-delivery)**
   rather than by silently editing the Decision section (Nygard convention: supersede/append, never rewrite). One of
@@ -466,3 +470,77 @@ excerpt"**. The excerpt deliberately surfaces remote-influenced bytes into calle
 rune-level sanitizer, but still untrusted when parsed. The transport-error path (INV-5) independently discards the
 target URL's userinfo/path/query via `ErrOutboundTransport`, so a webhook token in the query string never leaks into a
 logged timeout.
+
+## Addendum C — SSE design decisions (Phases 3+4)
+
+- **Status:** Accepted (2026-07-22), authored at design time from the Phases-3+4 **combined brainstorm** (one design
+  pass over both SSE halves — they share the `sse.go` core — split into Plans 025/026 with one merged increment each,
+  in phase order), **ahead of the plans and the adversarial audit**. The audit and delivery may append here, mirroring
+  Addenda A/B.
+- **Prompted by:** four decisions settled with the user (C1–C4) plus two design-time security decisions (C5, C6) that
+  the Decision section (§3's mode table, §6, §7) did not anticipate. The architecture is **unchanged**: S-out stays
+  `OutboundAdapter` **and** `http.Handler`, S-in stays `StreamingSource` (§3); §6's at-most-once contracts stand.
+  [Spec 011 §3.5/§3.6/§4/§7](../specs/011-http-adapter.md) carry the same content in specification form.
+
+### C1 — server replay: opt-in bounded ring, per-process, best-effort (amends §6)
+
+**Decision.** `WithReplayBuffer(n)` (default **off**; `n <= 0` explicit → `ErrInvalidReplayBuffer`) keeps a bounded
+ring of the last `n` sent events. A `GET` carrying `Last-Event-ID` has the ring tail *after* that id snapshotted and
+the connection registered **in the same hub critical section** — no missed-event window between replay and live. An
+evicted/unknown id yields live-only. Ids are matched by **identity** (the ring is scanned for the exact id), never by
+order — `HeaderMessageID` UUIDs are not orderable.
+
+**Why (settled with the user).** §6 declared S-in "best-effort `Last-Event-ID` resume", but the spec'd server held
+**no history** — resume against our own server was silently a no-op, an undecided cross-component contract between
+Plans 025 and 026. The alternatives — ignore-and-document, or defer to the plan audit — were rejected in favor of a
+real, bounded, opt-in resume for short reconnect blips.
+
+**Consequences.** Delivery stays **at-most-once**: the ring is per-process, so a reconnect landing on another instance
+finds an empty buffer — the CLAUDE.md multi-instance rule's documented invariant (a gap-free deployment needs a
+durable/shared backbone feeding every instance; the SSE server is the last hop). Memory is bounded at `n` events of
+locally-produced size (the flow, not a remote, controls event size on this side).
+
+### C2 — heartbeat off by default (amends the defaults posture in §7's spirit)
+
+**Decision.** `WithHeartbeat(d)` (`d <= 0` explicit → `ErrInvalidHeartbeat`) writes `: ping` comment frames from the
+connection's existing writer goroutine (clockwork-driven; no extra goroutine per connection). **Off by default** — a
+user-settled deviation from the default-to-safe leaning (an always-on ~15 s ping). Per the defaults policy's
+documented-off requirement, `NewSSEServer`'s godoc must state plainly that idle streams behind proxies/LBs with
+30–60 s idle timeouts are silently dropped unless heartbeat is enabled.
+
+### C3 — client conformance: full WHATWG EventSource semantics (amends §3's S-in row)
+
+**Decision.** The client honors the standard's processing model: **`retry:`** sets the reconnect delay, **clamped**
+into `WithReconnectBackoff`'s `[min, max]` — a hostile server can neither force a hot loop (`retry: 0`) nor hang the
+source (`retry:` huge); **HTTP `204`** is the terminal stop signal (`Stream` returns nil, no reconnect); a 2xx with a
+`Content-Type` other than `text/event-stream` is `ErrNotEventStream` (reconnect-with-backoff, never a parse of
+garbage); an **empty `id:` line clears** the held last-event-id. Rejected: a reconnect-only subset (diverges from
+every standard SSE producer and can loop forever against a server that said stop) and per-rule-configurable
+conformance (three options and test axes nobody asked for — YAGNI).
+
+### C4 — server hub: mutex registry + one writer goroutine per connection (amends §3's S-out row)
+
+**Decision.** A `sync.Mutex`-guarded connection set; each connection owns a bounded channel (`WithConnectionBuffer`,
+default **16**) drained by its single writer goroutine (encode → `Flush`; heartbeat frames from the same goroutine).
+`Send` **non-blocking-enqueues** to every connection — a full buffer triggers `WithSlowClientPolicy` (**default
+drop-and-continue**, counted via the observability hook; alternative disconnect). `Close(ctx)` stops intake (new
+requests → 503), cancels connections, joins all writers within the deadline. Rejected: a central hub goroutine (an
+always-on goroutine, an extra hop per event, and C1's atomic snapshot+register would need a synchronous round-trip
+into it) and lock-held synchronous fan-out (one slow client blocks the whole broadcast — violates the backpressure
+invariant outright).
+
+### C5 — SSE field injection: reject, not sanitize (new security decision; extends §7)
+
+**Decision.** `EncodeSSEEvent` **rejects** an `id`/`event` value containing CR, LF, or NUL with
+`ErrInvalidEventField`; on the `Send` path the error is classified `msgin.Permanent` (a retry cannot fix a bad
+header). A message header reaching `id:`/`event:` unchecked could forge extra fields or whole events into every
+subscriber's stream — the SSE analog of the header-injection boundary A1/B2 guard, in the outbound-to-subscriber
+direction. Rejection over sanitization: a silently altered id would break C1's identity-matched replay and mask the
+flow bug that produced it.
+
+### C6 — per-event byte cap on the parser, default 1 MiB (new security decision; extends §7)
+
+**Decision.** The shared parser enforces a per-event byte cap — default **1 MiB**, overridable via `WithMaxEventBytes`
+(the `WithMaxResponseBytes` precedent; an explicit `n <= 0` is a typed construction error) — returning
+`ErrEventTooLarge` when exceeded. The client treats it as a connection fault (reconnect-with-backoff), never an OOM:
+the remote is untrusted input, and without the cap a single endless `data:` line grows memory unbounded.

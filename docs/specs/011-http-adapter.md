@@ -1,7 +1,10 @@
 # Spec 011 — HTTP channel adapter (inbound + outbound + SSE, stdlib & gin bindings)
 
 - **Status:** **Phase 1 DELIVERED** (2026-07-21) — `adapter/http` (package `msghttp`) + `adapter/http/stdlib` shipped
-  on branch `feat/http-adapter-inbound` per [Plan 020](../plans/020-http-adapter-inbound.md); Phases 2–5 remain Draft.
+  on branch `feat/http-adapter-inbound` per [Plan 020](../plans/020-http-adapter-inbound.md). **Phase 2 DELIVERED**
+  (2026-07-22) — `adapter/http` outbound (O1 webhook `OutboundAdapter` + O2 `RequestReplyExchange`) merged to `main`
+  per [Plan 024](../plans/024-http-outbound.md) / ADR 0023 Addendum B. Phases 3–5 remain Draft; the **Phases 3+4 SSE
+  design is settled** (2026-07-22 brainstorm — §3.5, ADR 0023 Addendum C), plans 025/026 to follow.
   The whole-branch `/code-review` + `/security-review` gate forced **six design changes the audited design did not
   anticipate**, all folded back into §3.2/§3.3/§3.6/§4/§7 below and recorded with their driving attack/defect in
   [ADR 0023 — Addendum A](../adrs/0023-http-channel-adapter.md#addendum-a--review-driven-design-changes-phase-1-delivery):
@@ -49,6 +52,17 @@
     multi-instance rule; Spec 010 §8.1 / ADR 0022) does **not** arise for the synchronous variant. The async-callback
     variant (reply arrives later via an inbound webhook), which *would* require an instance-addressable callback URL as
     the Return Address, is **out of scope for v1** and named as the future increment.
+- **Decisions settled with the user (2026-07-22 — Phases 3+4 combined brainstorm):** one design pass over both SSE
+  halves (they share the `sse.go` core), split into **Plans 025/026** with one merged increment each, in phase order.
+  **(C1)** server replay of `Last-Event-ID` is an **opt-in bounded ring** (`WithReplayBuffer(n)`, default off;
+  per-process, best-effort); **(C2)** heartbeat is **off by default** (opt-in `WithHeartbeat`, with the documented-off
+  proxy-idle-timeout warning); **(C3)** the client implements **full WHATWG EventSource semantics** (`retry:` honored
+  clamped to the caller's backoff bounds, `204` → clean terminal stop, `Content-Type` validated → `ErrNotEventStream`);
+  **(C4)** the server hub is a **mutex registry** with one writer goroutine per connection (central-hub-goroutine and
+  lock-held synchronous fan-out rejected). Plus two design-time security decisions: **(C5)** SSE field **injection is
+  rejected, not sanitized** (`ErrInvalidEventField`), and **(C6)** a **per-event byte cap** on the parser (default
+  1 MiB). All recorded in
+  [ADR 0023 Addendum C](../adrs/0023-http-channel-adapter.md#addendum-c--sse-design-decisions-phases-34).
 - **Governing product spec:** [Spec 001 — Messaging core](001-messaging-core.md) §9, which names **HTTP**
   (`adapter/http`, core module) among the six shipped adapters — "sync request-reply / async / outbound webhook".
   This spec realizes that adapter and **extends** it with SSE (server + client) and the dual stdlib/gin binding, both
@@ -133,10 +147,11 @@ adapter/http/            framework-agnostic core   (ROOT module, package msghttp
                 correlation-id resolution) + the exported DefaultErrorStatus mapping
   inbound.go    [Phase 1 SHIPPED] the I1 (ServeAsync) + I2 (ServeGateway-over-RequestReplyExchange) handler
                 cores, sharing a responseTracker + panic-recovery boundary
-  outbound.go   [Phase 2] the O1 webhook OutboundAdapter core: NewOutbound + EncodeRequest / ClassifyResponse /
+  outbound.go   [Phase 2 SHIPPED] the O1 webhook OutboundAdapter core: NewOutbound + EncodeRequest / ClassifyResponse /
                 StatusError + validateURL / resolveClient helpers
-  exchange.go   [Phase 2] the O2 request-reply core: NewExchange (sync POST + response)
-  sse.go        [Phases 3/4] SSE event framing (encode) + SSE stream parsing (decode) — shared by server & client
+  exchange.go   [Phase 2 SHIPPED] the O2 request-reply core: NewExchange (sync POST + response)
+  sse.go        [Phase 3 lands it; Phase 4 consumes] SSE event framing (encode) + SSE stream parsing (decode) —
+                shared by server & client; exported (blackbox tests + cross-package use)
   options.go    [Phase 1 SHIPPED] Config + WithX functional options shared across modes
   errors.go     [Phase 1 SHIPPED] typed sentinels (see §3.6)
   doc.go        [Phase 1 SHIPPED]
@@ -325,29 +340,83 @@ follows. **NON-GUARANTEE:** msgin performs **no** private-IP, link-local, loopba
 
 ### 3.5 Phase 3 & 4 — SSE
 
-- **S-out SSE server** — `NewSSEServer(opts…) *SSEServer` is **both** an `http.Handler` and an `OutboundAdapter`:
-  - **`http.Handler` (`GET`)**: sets `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection:
-    keep-alive`; flushes headers; registers the connection; streams events until the client disconnects or the request
-    `context` cancels. **One owned, cancellable goroutine per connection**, all joined on `Close()` within a deadline.
-    `WithMaxConnections` bounds concurrent connections (default a safe finite cap; connection-exhaustion guard, §4).
-    Optional keep-alive comment pings via `WithHeartbeat`.
-  - **`OutboundAdapter` (`Send`)**: formats the message as an SSE event — `id:` from `HeaderMessageID`, `event:` from
-    `WithEventName` (or a header), `data:` from payload `[]byte` (multi-line-safe framing via `sse.go`) — and **fans
-    out to all currently-connected clients**.
-  - **Backpressure**: bounded per-connection buffer; `WithSlowClientPolicy` (**default drop-and-continue**, alt
-    disconnect). A slow client can never block the sender or grow memory unbounded.
-  - **Wiring**: subscribe it to a `PublishSubscribeChannel` (or terminate a chain with `To(sseServer)`).
-  - **Multi-instance (documented invariant):** connected clients are **per-process** — a client on instance A sees only
-    messages that reach instance A. Cross-instance fan-out requires a shared pub/sub backbone (redis/nats) feeding every
-    instance; the SSE server is the **last hop**, not the fan-out fabric. Delivery = **at-most-once** (no client ack;
-    dropped on slow/disconnect).
-- **S-in SSE client** — `NewSSEClient(url, opts…) *SSEClient` is an `msgin.StreamingSource`. `Stream(ctx, out)`: opens
-  the connection, parses the `id:`/`event:`/`data:` stream (shared `sse.go` parser), emits each event as a `Delivery`
-  (data → payload `[]byte`; `event`/`id` → headers; `Ack`/`Nack` are **no-ops** — SSE has no ack protocol). On
-  disconnect: **auto-reconnect with backoff** (`WithReconnectBackoff`), resuming via **`Last-Event-ID`** (last emitted
-  id). Fully ctx-cancellable; the reconnect goroutine is joined on shutdown (`goleak`). Delivery = **at-most-once**,
-  best-effort resume. `NativeReliability`: `NativeRedelivery() = false` (resume is best-effort, not a redelivery
-  guarantee); `NativeDeadLetter() = false`.
+**Design settled with the user (2026-07-22 brainstorm — one combined design pass over both phases, split into Plans
+025/026 with one merged increment each; decisions C1–C6 recorded in
+[ADR 0023 Addendum C](../adrs/0023-http-channel-adapter.md#addendum-c--sse-design-decisions-phases-34)).**
+
+- **Shared SSE core** (`adapter/http/sse.go`, package `msghttp` — Phase 3 lands it, Phase 4 consumes it). Exported,
+  because `stdlib` is a different package and tests are blackbox-only:
+  - `SSEEvent{ID, Name string; Data []byte}` — `""` = omit the `id:`/`event:` line (a nameless event dispatches as
+    `message` per the standard).
+  - **Encode** — `EncodeSSEEvent(w io.Writer, ev SSEEvent) error`: `id:`/`event:`/`data:` lines + terminating blank
+    line; `Data` is split on `\n` into one `data:` line each (multi-line-safe; the parser rejoins). **SSE-injection
+    guard (C5):** an `ID`/`Name` containing CR, LF, or NUL could forge extra fields or whole events from a message
+    header — encode **rejects** it with `ErrInvalidEventField` (reject, not sanitize — a silently altered id would
+    break C1's identity-matched replay and mask the flow bug); never a corrupted stream.
+  - **Decode** — an incremental parser (constructor + per-event pull API; exact shape finalized in Plan 025)
+    implementing the **full WHATWG field rules**: comment lines (`:`), `data` accumulation joined with `\n`, `id`
+    ignored if it contains NUL, an **empty `id:` line clears** the last-event-id, `retry` digits-only (surfaced to
+    the reconnect loop), unknown fields ignored, CR/LF/CRLF line endings, a single leading BOM stripped. **Bounded
+    (C6):** per-event byte cap — default **1 MiB** (the `WithMaxResponseBytes` precedent), overridable via
+    `WithMaxEventBytes` — exceeded → `ErrEventTooLarge`. Implemented over `bufio.Reader` with explicit byte
+    accounting (no `bufio.Scanner`: its token cap and line splitting fit neither CR-only endings nor the cap
+    semantics). Both halves are goroutine-free state machines — unit-testable without a network; the parser is a
+    fuzz target (§7).
+- **S-out SSE server** (`adapter/http/stdlib`, Plan 025) — `NewSSEServer(opts…) (*SSEServer, error)` is **both** an
+  `http.Handler` and an `OutboundAdapter`. **Hub model (C4): mutex registry** — a `sync.Mutex`-guarded connection
+  set; each connection owns a bounded event channel (`WithConnectionBuffer`, default **16**) drained by its **one
+  owned writer goroutine** (encode → `Flush`), all joined by `Close(ctx)` within ctx's deadline.
+  - **Handler path (`GET` only; anything else → 405):** at `WithMaxConnections` (default **1024**) the request gets
+    **503** (connection-exhaustion guard, §4); a non-`http.Flusher` `ResponseWriter` gets 500 + a typed error to the
+    error hook; then `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, flush
+    headers, register. **Replay+register is atomic (C1):** with `WithReplayBuffer(n)` (default **off**) and a
+    `Last-Event-ID` request header, the ring tail *after* that id is snapshotted and the connection registered in the
+    same critical section — no missed-event window between replay and live; an evicted/unknown id yields live-only
+    (documented best-effort). Ids are matched by identity, not order (`HeaderMessageID` UUIDs are not orderable).
+  - **`Send(ctx, msg)` (`OutboundAdapter`):** payload must be `[]byte` (else `ErrUnsupportedPayload`); `id:` ←
+    `HeaderMessageID`; `event:` ← the `HeaderSSEEventName` message header, falling back to `WithEventName`'s fixed
+    name (header wins; precedence documented). Field validation per C5 — a violation returns `ErrInvalidEventField`
+    classified `msgin.Permanent` (a retry cannot fix a bad header). Then: append to the replay ring (if on) and
+    **non-blocking enqueue** to every live connection — a full buffer triggers `WithSlowClientPolicy` (**default
+    drop-and-continue**, counted via the observability hook; alternative disconnect). A slow client never blocks
+    `Send` or grows memory unbounded. `Send` with zero connections returns nil (fire-and-forget fan-out, documented).
+  - **Heartbeat (C2):** opt-in `WithHeartbeat(d)` — clockwork-driven `: ping` comment frames written from the same
+    writer goroutine (no second goroutine per connection). **Off by default**; per the defaults policy's
+    documented-off requirement, `NewSSEServer`'s godoc warns plainly that idle streams behind proxies/LBs with
+    30–60 s idle timeouts are silently dropped unless heartbeat is enabled.
+  - **Shutdown:** `Close(ctx)` stops accepting (new requests → 503), cancels every connection, joins all writer
+    goroutines within ctx's deadline; goleak-proven.
+  - **Wiring:** subscribe it to a `PublishSubscribeChannel` (or terminate a chain with `To(sseServer)`).
+  - **Multi-instance (documented invariant):** connected clients **and the replay ring are per-process** — a client
+    on instance A sees only messages that reach instance A, and a reconnect landing on instance B finds an empty
+    ring, so replay is best-effort even when enabled. Cross-instance fan-out requires a shared pub/sub backbone
+    (redis/nats) feeding every instance; the SSE server is the **last hop**, not the fan-out fabric. Delivery =
+    **at-most-once** (no client ack; dropped on slow/disconnect).
+- **S-in SSE client** (`adapter/http/stdlib`, Plan 026) — `NewSSEClient(url, opts…) (*SSEClient, error)`, an
+  `msgin.StreamingSource`. Reuses Phase 2's `validateURL` (`ErrEmptyURL`/`ErrInvalidURL`); the caller injects the
+  `*http.Client` via `WithHTTPClient` (TLS/proxy/auth stay caller-owned, the Phase-2 precedent); `WithConnectHeaders`
+  sets static request headers (e.g. `Authorization`) — the client-owned `Last-Event-ID`, `Accept` and
+  `Cache-Control` cannot be overridden.
+  - **Connect loop (`Stream(ctx, out)`):** `GET` with `Accept: text/event-stream`, `Cache-Control: no-cache`, plus
+    `Last-Event-ID` when held. **Full WHATWG triage (C3):** **`204` → clean terminal stop** (`Stream` returns nil —
+    the server said done, no reconnect); a 2xx with a `Content-Type` other than `text/event-stream` →
+    `ErrNotEventStream`, reconnect-with-backoff; any other non-2xx → reconnect-with-backoff. A never-succeeding
+    endpoint backs off until ctx cancels — give-up policy belongs to the runtime, per the SPI.
+  - **Parse loop:** each event → a `Delivery` — `Data` → payload `[]byte`, `Name` → `HeaderSSEEventName`, `ID` →
+    `HeaderMessageID` (absent field → header omitted); `Ack`/`Nack` are **no-ops** (SSE has no ack protocol); emit
+    respects ctx (no send after cancel). `id:` is tracked as the last-event-id (an empty `id:` clears it, per C3);
+    **`retry:` is honored, clamped** into the caller's backoff `[min, max]` — a hostile server can neither force a
+    hot loop (`retry: 0`) nor hang the source (`retry:` huge).
+  - **Reconnect:** on EOF/read error, exponential backoff via `WithReconnectBackoff(min, max)` (default
+    **500 ms → 30 s**, clockwork-driven; the `retry:` clamp shares the bounds); backoff resets after a connection
+    that yields at least one event.
+  - **Untrusted-remote posture (§4):** per-event cap (C6 — an oversized event is `ErrEventTooLarge` + reconnect, not
+    an OOM); redirects default-off per Addendum B1 (`WithFollowRedirects` opts out); transport failures wrapped by
+    the redacted `ErrOutboundTransport` (INV-5 — no URL/userinfo/query in error strings).
+  - **Shutdown & contracts:** ctx cancel aborts the in-flight request and joins the loop (`goleak`-proven); `Stream`
+    returns. `NativeRedelivery() = false` (resume is best-effort, not a redelivery guarantee);
+    `NativeDeadLetter() = false`. Delivery = **at-most-once, best-effort resume** — godoc names the gap: resume only
+    works against a server honoring `Last-Event-ID` (e.g. this package's own server with `WithReplayBuffer`).
 
 ### 3.6 Typed error sentinels
 
@@ -378,6 +447,22 @@ sentinel there). **Seven new functional options:** **`WithHTTPClient`**, **`With
 bounded/sanitized body excerpt, §4). **`StatusError`** (`{Code int; Excerpt string}`) is the exported classification
 error; its `Error()` carries the status code and — only when `WithErrorBodyExcerpt()` is set — a bounded, sanitized body
 excerpt, **never a URL** (INV-4/INV-5).
+
+**Phases 3/4 planned set** (settled at design time — §3.5 / Addendum C; finalized per plan). **Nine new sentinels:**
+**`ErrInvalidEventField`** (CR/LF/NUL in an SSE `id`/`event` field — the injection guard, C5; also the
+construction-time guard on a `WithEventName` value); **`ErrEventTooLarge`** (per-event cap exceeded, C6);
+**`ErrInvalidMaxConnections`**, **`ErrInvalidConnectionBuffer`**, **`ErrInvalidReplayBuffer`**,
+**`ErrInvalidHeartbeat`** (server construction-time validation — explicit non-positive values, the set-flag pattern);
+**`ErrInvalidMaxEventBytes`** (an explicit `WithMaxEventBytes(n <= 0)` — the `ErrInvalidMaxResponseBytes` precedent);
+**`ErrNotEventStream`** (a 2xx whose `Content-Type` is not `text/event-stream`, C3);
+**`ErrInvalidReconnectBackoff`** (client construction-time — non-positive or `min > max`). Reused: `ErrUnsupportedPayload`
+(non-`[]byte` payload on `Send`), `ErrEmptyURL`/`ErrInvalidURL` (client URL validation), `ErrOutboundTransport`
+(redacted transport failures), `msgin.Permanent` (the `Send`-side classification of `ErrInvalidEventField`). **New
+options** — server: `WithMaxConnections` (default **1024**), `WithConnectionBuffer` (**16**), `WithSlowClientPolicy`
+(**drop-and-continue**), `WithReplayBuffer` (**off**), `WithHeartbeat` (**off**), `WithEventName`, `WithSSEClock`;
+client: `WithHTTPClient`, `WithConnectHeaders`, `WithReconnectBackoff` (**500 ms → 30 s**), `WithMaxEventBytes`
+(**1 MiB**), `WithFollowRedirects`, `WithSSEClock`. All follow the set-flag option pattern; every default is godoc'd
+with its rationale (defaults policy).
 
 ## 4. Security — inbound is the untrusted boundary
 
@@ -459,6 +544,13 @@ adapter being the untrusted-input boundary (Spec 010 §8.1).
   no method filtering** — so an unauthenticated endpoint is world-writable by a simple cross-origin `POST` and a
   cookie-authenticated one is CSRF-vulnerable — and directs the caller to their own middleware. SSE's own timeout
   shape (no write timeout on the streaming response) and `WithMaxConnections` land with Phase 3.
+- **SSE attack surfaces (enumerated at design time; verified by Plans 025/026 and the Phase-3 `/security-review`):**
+  server — **SSE field injection** via message headers (`id:`/`event:` carrying CR/LF/NUL → rejected,
+  `ErrInvalidEventField`, C5); **connection exhaustion** (`WithMaxConnections` → 503); **slow-client memory/blocking**
+  (bounded per-connection buffer + drop/disconnect policy — `Send` never blocks); **replay-ring memory** (bounded `n`,
+  opt-in, C1). Client — the remote is untrusted input exactly as Phase 2's: **unbounded-event OOM** (per-event cap →
+  `ErrEventTooLarge`, C6); **hostile `retry:`** (clamped into the caller's backoff bounds, C3); **redirect SSRF**
+  (Addendum B1's no-follow default); **error redaction** (`ErrOutboundTransport`, INV-5). *(Phases 3/4.)*
 - **No secret logging** — injected `*slog.Logger` (default: discard, never `slog.Default()`); bodies/headers are not
   logged at info level.
 
@@ -470,7 +562,7 @@ adapter being the untrusted-input boundary (Spec 010 §8.1).
 | **I2** sync gateway | request-scoped; one response per request | reply / `504` timeout | process-local correlator suffices |
 | **O1** webhook | at-least-once (runtime retries transient) | status classification (`4xx`=`Permanent`) | reliability runtime-owned |
 | **O2** request-reply | request-scoped (synchronous response) | HTTP response | Return Address by construction |
-| **S-out** SSE server | at-most-once (fan-out, no ack) | none | per-process; drop on slow/disconnect |
+| **S-out** SSE server | at-most-once (fan-out, no ack) | none | per-process; drop on slow/disconnect; opt-in per-process replay ring (best-effort, C1) |
 | **S-in** SSE client | at-most-once, best-effort resume | none | `Last-Event-ID` resume, not a guarantee |
 
 **Phase-1 status contract as shipped** (`DefaultErrorStatus`, overridable via `WithErrorStatus`): I1 success =
@@ -486,9 +578,9 @@ the *client* retries on `5xx`. A body-write failure after the committed `200` is
 | Phase | Plan | Content | Depends on |
 |-------|------|---------|------------|
 | **1** ✅ **DELIVERED** | [020](../plans/020-http-adapter-inbound.md) | `adapter/http` shared encode core + `adapter/http/stdlib` inbound (I1, I2) → `http.Handler`; ADR 0023 (+ Addendum A) | ADR 0022 |
-| **2** | [024](../plans/024-http-outbound.md) | `adapter/http` outbound (O1 webhook `OutboundAdapter`, O2 `RequestReplyExchange`); ADR 0023 (+ Addendum B) | Phase 1; Plan 023 (`WithProducerRetry`) |
-| **3** | 025 | `adapter/http/stdlib` SSE server (S-out) | Phase 1 |
-| **4** | 026 | `adapter/http/stdlib` SSE client (S-in, `StreamingSource`) | (encode core) Phase 1 |
+| **2** ✅ **DELIVERED** | [024](../plans/024-http-outbound.md) | `adapter/http` outbound (O1 webhook `OutboundAdapter`, O2 `RequestReplyExchange`); ADR 0023 (+ Addendum B) | Phase 1; Plan 023 (`WithProducerRetry`) |
+| **3** | 025 | `adapter/http` shared SSE core (`sse.go`) + `adapter/http/stdlib` SSE server (S-out); ADR 0023 (+ Addendum C) | Phase 1 |
+| **4** | 026 | `adapter/http/stdlib` SSE client (S-in, `StreamingSource`) | Phase 3 (the `sse.go` core + Addendum C) |
 | **5** | 027 | `adapter/http/gin` module — gin bindings for I1/I2/S-out + `RegisterRoutes`; ADR 0024 (gin dependency) | Phases 1, 3 |
 
 Each phase: its plan is authored with the driving ADR content, the **spec + ADR + plan are adversarially audited by a
@@ -521,6 +613,14 @@ status, an `ErrWriteResponse` write failure via a failing `ResponseWriter`, the 
 later caller mutation, `DefaultErrorStatus` per-arm, and both cores driven with a **hand-built `&Config{}`** to prove
 the nil-safe accessors.
 
+**Phases 3/4 additions (planned):** the shared parser gets exhaustive WHATWG table tests plus a **`FuzzSSEParser`**
+fuzz target (an untrusted-input parser is the canonical fuzz surface); heartbeat and reconnect backoff are driven by
+`clockwork.NewFakeClock` — no real sleeps; and — per the measure-interleaving rule — the **slow-client-drop arm** and
+the **replay-snapshot/register race arm** get *instrumented* tests proving the target arm actually executes, not
+merely that the test passes. SSE server and client are tested against each other over `httptest.Server` (the resume
+path end-to-end: server ring + client `Last-Event-ID`). Coverage target: 100% on both packages (the Phase 1/2
+precedent).
+
 ## 8. Traceability
 
 - **Realizes:** [Spec 001 §9](001-messaging-core.md) (the HTTP adapter), extended with SSE + dual binding.
@@ -528,8 +628,8 @@ the nil-safe accessors.
   [ADR 0003](../adrs/0003-multi-module-repository-layout.md), [ADR 0006](../adrs/0006-resilience-flow-control.md),
   [ADR 0022](../adrs/0022-messaging-gateway.md) / [Spec 010](010-messaging-gateway.md).
 - **New ADRs:** [ADR 0023](../adrs/0023-http-channel-adapter.md) (HTTP adapter architecture — with Plan 020; **Addendum
-  A** records the Phase-1 review-driven design changes, **Addendum B** the Phase-2 outbound delivery decisions), ADR 0024
-  (gin dependency — with Plan 027).
+  A** records the Phase-1 review-driven design changes, **Addendum B** the Phase-2 outbound delivery decisions,
+  **Addendum C** the Phases-3+4 SSE design decisions C1–C6), ADR 0024 (gin dependency — with Plan 027).
 - **Plans:** [020](../plans/020-http-adapter-inbound.md) (Phase 1 — **delivered**),
   [024](../plans/024-http-outbound.md) (Phase 2), 025 (Phase 3), 026 (Phase 4), 027 (Phase 5). Plan 021 is
   [Spec 012](012-exchange-panic-safe-cleanup.md) — the core `ChannelExchange` panic-safe-cleanup fix, which lands first
