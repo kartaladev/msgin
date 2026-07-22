@@ -174,14 +174,9 @@ func DecodeRequest(r *http.Request, cfg *Config) (msgin.Message[any], error) {
 //
 // A nil cfg, or one built by hand rather than by NewConfig, is tolerated.
 func EncodeResponse(w http.ResponseWriter, msg msgin.Message[any], cfg *Config) error {
-	var body []byte
-	switch payload := msg.Payload().(type) {
-	case []byte:
-		body = payload
-	case string:
-		body = []byte(payload)
-	default:
-		return ErrUnsupportedPayload
+	body, err := payloadBytes(msg)
+	if err != nil {
+		return err
 	}
 
 	for _, name := range cfg.allowedResponseHeaders() {
@@ -190,11 +185,7 @@ func EncodeResponse(w http.ResponseWriter, msg msgin.Message[any], cfg *Config) 
 		}
 	}
 
-	ct, _ := msg.Headers().String(msgin.HeaderContentType)
-	if ct = sanitizeHeaderValue(ct); ct == "" {
-		ct = defaultResponseContentType
-	}
-	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Content-Type", contentTypeOf(msg))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 
 	w.WriteHeader(http.StatusOK)
@@ -202,6 +193,39 @@ func EncodeResponse(w http.ResponseWriter, msg msgin.Message[any], cfg *Config) 
 		return fmt.Errorf("%w: %w", ErrWriteResponse, err)
 	}
 	return nil
+}
+
+// payloadBytes extracts msg's payload as the raw bytes to put on the wire: a
+// []byte payload is used verbatim, a string payload is converted with
+// []byte(s), and any other payload type returns ErrUnsupportedPayload. It is
+// the single payload -> wire-bytes extraction shared by EncodeResponse (the
+// reply body) and EncodeRequest (the outbound request body): the adapter is
+// type-agnostic (ADR 0001) and never encodes a domain type T, it only forwards
+// the flow's own wire-shaped payload.
+func payloadBytes(msg msgin.Message[any]) ([]byte, error) {
+	switch payload := msg.Payload().(type) {
+	case []byte:
+		return payload, nil
+	case string:
+		return []byte(payload), nil
+	default:
+		return nil, ErrUnsupportedPayload
+	}
+}
+
+// contentTypeOf resolves the Content-Type to write for msg: the value of
+// msgin.HeaderContentType when it is present, a string, and non-empty after
+// CRLF sanitization; otherwise defaultResponseContentType. A value that
+// sanitizes to empty (e.g. "\r\n") collapses to the default, so net/http never
+// sniffs a media type out of a flow-controlled body. It is the single
+// Content-Type resolution shared by EncodeResponse and EncodeRequest so both
+// resolve it identically.
+func contentTypeOf(msg msgin.Message[any]) string {
+	ct, _ := msg.Headers().String(msgin.HeaderContentType)
+	if ct = sanitizeHeaderValue(ct); ct == "" {
+		return defaultResponseContentType
+	}
+	return ct
 }
 
 // sanitizeHeaderValue strips \r and \n from v before it is written as an HTTP

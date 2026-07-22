@@ -44,12 +44,13 @@ var (
 	// before anything is written, leaving the ResponseWriter untouched.
 	ErrWriteResponse = errors.New("msghttp: write response body failed")
 
-	// ErrUnsupportedPayload is returned by EncodeResponse when a reply
-	// message's payload is neither []byte nor string. The adapter is
-	// type-agnostic (ADR 0001): it never encodes/decodes a domain type T,
-	// only forwards the flow's own wire-shaped payload, so a non-bytes reply
-	// payload is a WIRING fault, not a client input fault — hence its default
-	// HTTP mapping is 500, not 400.
+	// ErrUnsupportedPayload is returned when a message payload is neither
+	// []byte nor string: by EncodeResponse for a reply message, and by
+	// EncodeRequest for an outbound request message. The adapter is
+	// type-agnostic (ADR 0001): it never encodes/decodes a domain type T, it
+	// only forwards the flow's own wire-shaped payload, so a non-bytes payload
+	// is a WIRING fault, not a client input fault — hence EncodeResponse's
+	// default HTTP mapping for it is 500 (via DefaultErrorStatus), not 400.
 	ErrUnsupportedPayload = errors.New("msghttp: reply payload is not []byte or string")
 
 	// ErrEmptyURL is returned by NewOutbound/NewExchange when the target URL
