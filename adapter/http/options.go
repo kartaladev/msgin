@@ -188,6 +188,25 @@ func (c *Config) allowedReplyHeaders() []string {
 	return c.replyHeaders
 }
 
+// clockOrDefault is the clock the outbound adapters use for time-dependent
+// parsing — currently only the HTTP-date form of a Retry-After response header.
+// It back-fills a real clock for a nil or hand-built Config, so ClassifyResponse
+// never nil-calls it (the Config nil-safety contract).
+func (c *Config) clockOrDefault() clockwork.Clock {
+	if c == nil || c.clock == nil {
+		return clockwork.NewRealClock()
+	}
+	return c.clock
+}
+
+// errorBodyExcerptEnabled reports whether WithErrorBodyExcerpt() was set. A nil
+// or hand-built Config returns false, so the default posture stays INV-4's "code
+// only" — no remote-controlled bytes reach the error string unless the caller
+// opted in.
+func (c *Config) errorBodyExcerptEnabled() bool {
+	return c != nil && c.errorBodyExcerpt
+}
+
 // Option configures a Config built by NewConfig.
 type Option func(*Config)
 

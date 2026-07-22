@@ -80,6 +80,13 @@ var (
 	// exceeds the WithMaxResponseBytes cap (default 1 MiB).
 	ErrReplyTooLarge = errors.New("msghttp: reply body exceeds max response bytes")
 
+	// ErrNilResponse is returned by ClassifyResponse when it is handed a nil
+	// *http.Response. (*http.Client).Do never returns a nil response together
+	// with a nil error, so on the live path this arm is unreachable; it is kept
+	// (decision 3) as a typed guard so a caller feeding a hand-built nil gets a
+	// clear error rather than a nil-dereference panic.
+	ErrNilResponse = errors.New("msghttp: nil response")
+
 	// ErrOutboundStatus is the sentinel a *StatusError unwraps to: it marks an
 	// outbound request that completed but returned a non-2xx HTTP status.
 	// ClassifyResponse may additionally wrap it in msgin.Permanent or
