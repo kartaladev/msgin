@@ -3,6 +3,7 @@ package msghttp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -261,4 +262,128 @@ func readExcerpt(body io.Reader) string {
 // printable runes and lets some dangerous code points survive.
 func sanitizeExcerpt(b []byte) string {
 	return strconv.Quote(string(b))
+}
+
+// Outbound is the O1 webhook OutboundAdapter: it POSTs a message's payload to a
+// fixed, caller-configured URL and classifies the response into the runtime's
+// error vocabulary (nil / plain-transient / msgin.RetryAfter / msgin.Permanent).
+// The adapter performs ONE attempt and only classifies; retry/backoff/dead-letter
+// are owned by the producer (WithProducerRetry, ADR 0002 / ADR 0025).
+//
+// Delivery guarantee: AT-MOST-ONCE by itself — one POST, no retry. AT-LEAST-ONCE
+// arises only under a retry authority (a Producer with WithProducerRetry, or a
+// Consumer-driven flow's redelivery); a source-less flow gets neither. The
+// receiver must therefore be idempotent — key on msgin.HeaderMessageID, which is
+// forwarded to the endpoint ONLY if the caller lists it in WithOutboundHeaders.
+//
+// Multi-instance topology: per-process by construction. Under WithProducerRetry,
+// N horizontally-scaled instances each retry independently, so a throttling
+// endpoint sees N× the load it asked to shed and Retry-After compliance is
+// per-instance. See the TOPOLOGY paragraph on WithProducerRetry (producer.go),
+// which names the ADR 0006 rate-limit/circuit-breaker seam a distributed limiter
+// plugs into — it is not restated here, to avoid a second driftable copy.
+//
+// SSRF non-guarantee (INV-1): the default no-follow redirect policy stops a
+// response from steering the request to another host, UNLESS the caller opted in
+// via WithFollowRedirects() or supplied a *http.Client whose own CheckRedirect
+// follows redirects. Independently, msgin performs NO private-IP, link-local,
+// loopback or metadata-endpoint filtering (see validateURL/ErrInvalidURL): a
+// caller-configured internal address is requested verbatim. The URL is never
+// derived from a message, so message-driven SSRF cannot arise.
+//
+// A hand-built &Outbound{} that skips NewOutbound is unsupported and will
+// nil-deref — the resolved *Config it reads directly (httpClient via the
+// no-follow client, maxResponseBytes) is only ever the one NewConfig produced,
+// exactly as a hand-built &msgin.ChannelExchange{} is unsupported.
+type Outbound struct {
+	url    string
+	client *http.Client
+	cfg    *Config
+}
+
+var _ msgin.OutboundAdapter = (*Outbound)(nil)
+
+// NewOutbound builds an Outbound webhook adapter targeting url. It validates the
+// options (NewConfig), then the URL (validateURL — non-empty, http/https,
+// non-empty host), then resolves the redirect-safe *http.Client ONCE
+// (resolveClient), so the no-follow policy is not re-derived on every Send.
+func NewOutbound(url string, opts ...Option) (*Outbound, error) {
+	cfg, err := NewConfig(opts...)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateURL(url); err != nil {
+		return nil, err
+	}
+	return &Outbound{url: url, client: resolveClient(cfg), cfg: cfg}, nil
+}
+
+// Send POSTs msg's payload to the configured URL and classifies the response.
+//
+// The order of operations is LOAD-BEARING (decision 5): ClassifyResponse runs
+// BEFORE drainBounded because, with WithErrorBodyExcerpt() set, it reads the
+// bounded error-body excerpt from resp.Body — draining first would empty it. On
+// a 2xx, ClassifyResponse returns nil without touching the body and the
+// subsequent drainBounded drains it (bounded by maxResponseBytes) so the
+// keep-alive connection can be reused. The single deferred Close, registered
+// immediately after a nil-error Do, is the ONLY close and covers every return
+// path including a panic unwind (INV-7); drainBounded never closes (round-2 F2).
+//
+// An encode failure returns msgin.Permanent (permanentEncode) — a non-bytes
+// payload can never succeed on retry — and NO request is sent. A transport
+// failure returns a redacted, still-transient error (redactTransport, INV-5)
+// carrying no target URL.
+func (o *Outbound) Send(ctx context.Context, msg msgin.Message[any]) error {
+	req, err := EncodeRequest(ctx, http.MethodPost, o.url, msg, o.cfg)
+	if err != nil {
+		return permanentEncode(err)
+	}
+	resp, err := o.client.Do(req)
+	if err != nil {
+		return redactTransport(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	classifyErr := ClassifyResponse(resp, o.cfg)
+	drainBounded(resp.Body, o.cfg.maxResponseBytes)
+	return classifyErr
+}
+
+// permanentEncode wraps an EncodeRequest failure in msgin.Permanent. A payload
+// that is neither []byte nor string is a wiring fault that no retry can fix, so
+// it must short-circuit the producer's retry budget and dead-letter path rather
+// than burning attempts on a request that was never sent.
+func permanentEncode(err error) error {
+	return msgin.Permanent(err)
+}
+
+// redactTransport re-wraps the error (*http.Client).Do returns so that NO target
+// URL reaches the error string (INV-5): (*url.Error).Error() redacts only the
+// password, leaking username, host, path and query (e.g. a webhook token). It
+// discards ue.URL and re-wraps ue.Op + ue.Err under ErrOutboundTransport.
+//
+// It stays TRANSIENT (never msgin.Permanent) so the runtime retries a transport
+// blip, and preserves the underlying cause with %w on ue.Err, so
+// errors.Is(err, context.Canceled) / context.DeadlineExceeded still hold. It is
+// written as a single return with a conditional assignment rather than an
+// `if errors.As { return } / return` pair: Do always wraps its failures in
+// *url.Error, so a trailing non-*url.Error return would be unreachable dead code
+// (round-2 audit F1). The "Post"/err fallbacks carry no separate statement, so
+// the false arm is covered without one.
+func redactTransport(err error) error {
+	op, inner := "Post", err
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		op, inner = ue.Op, ue.Err
+	}
+	return fmt.Errorf("%w: %s: %w", ErrOutboundTransport, op, inner)
+}
+
+// drainBounded reads and discards up to max bytes from body so the underlying
+// keep-alive connection can be returned to the pool for reuse. It is DRAIN-ONLY
+// and NEVER closes (round-2 audit F2): the io.Reader signature makes "never
+// closes" unforgeable, and the sole deferred resp.Body.Close() at the call site
+// is what closes. The drain is best-effort — a read error is ignored — because
+// the classified status is the real outcome and the drain only affects reuse.
+func drainBounded(body io.Reader, max int64) {
+	_, _ = io.CopyN(io.Discard, body, max)
 }
