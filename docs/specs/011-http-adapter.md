@@ -349,37 +349,50 @@ follows. **NON-GUARANTEE:** msgin performs **no** private-IP, link-local, loopba
   - `SSEEvent{ID, Name string; Data []byte}` — `""` = omit the `id:`/`event:` line (a nameless event dispatches as
     `message` per the standard).
   - **Encode** — `EncodeSSEEvent(w io.Writer, ev SSEEvent) error`: `id:`/`event:`/`data:` lines + terminating blank
-    line; `Data` is split on `\n` into one `data:` line each (multi-line-safe; the parser rejoins). **SSE-injection
-    guard (C5):** an `ID`/`Name` containing CR, LF, or NUL could forge extra fields or whole events from a message
-    header — encode **rejects** it with `ErrInvalidEventField` (reject, not sanitize — a silently altered id would
-    break C1's identity-matched replay and mask the flow bug); never a corrupted stream.
+    line; `Data` is split on `\n` into one `data:` line each, uniformly `data:` + one space + the line (the parser
+    strips exactly one leading space, so a payload whose first byte is a space round-trips; an empty `Data` still
+    emits one `data: ` line). **SSE-injection guard (C5):** an `ID`/`Name` containing CR, LF, or NUL could forge
+    extra fields or whole events from a message header — encode **rejects** it with `ErrInvalidEventField` (reject,
+    not sanitize — a silently altered id would break C1's identity-matched replay and mask the flow bug); never a
+    corrupted stream. **`SSEEventFromMessage(msg, cfg) (SSEEvent, error)` is exported** (message→event conversion —
+    reused by Phase 5's gin S-out binding without importing `stdlib`, and blackbox-testable); payload accepts
+    `[]byte` **or** `string` (the shared `payloadBytes` contract, `ErrUnsupportedPayload` otherwise).
   - **Decode** — an incremental parser (constructor + per-event pull API; exact shape finalized in Plan 025)
     implementing the **full WHATWG field rules**: comment lines (`:`), `data` accumulation joined with `\n`, `id`
     ignored if it contains NUL, an **empty `id:` line clears** the last-event-id, `retry` digits-only (surfaced to
     the reconnect loop), unknown fields ignored, CR/LF/CRLF line endings, a single leading BOM stripped. **Bounded
-    (C6):** per-event byte cap — default **1 MiB** (the `WithMaxResponseBytes` precedent), overridable via
-    `WithMaxEventBytes` — exceeded → `ErrEventTooLarge`. Implemented over `bufio.Reader` with explicit byte
-    accounting (no `bufio.Scanner`: its token cap and line splitting fit neither CR-only endings nor the cap
-    semantics). Both halves are goroutine-free state machines — unit-testable without a network; the parser is a
-    fuzz target (§7).
+    (C6):** the cap bounds `max(current-line-bytes, accumulated-data-buffer-bytes)` — the only two things that
+    buffer — default **1 MiB** (the `WithMaxResponseBytes` precedent), overridable via `WithMaxEventBytes` —
+    exceeded → `ErrEventTooLarge`. Comments, ignored fields, and blank lines never accumulate, so a long-lived idle
+    stream of `: ping` keep-alives never false-trips, while a single unterminated line or an oversized multi-`data:`
+    event still trips. Implemented over `bufio.Reader` with explicit byte accounting (no `bufio.Scanner`: its token
+    cap and line splitting fit neither CR-only endings nor the cap semantics). Both halves are goroutine-free state
+    machines — unit-testable without a network; the parser is a fuzz target (§7).
 - **S-out SSE server** (`adapter/http/stdlib`, Plan 025) — `NewSSEServer(opts…) (*SSEServer, error)` is **both** an
   `http.Handler` and an `OutboundAdapter`. **Hub model (C4): mutex registry** — a `sync.Mutex`-guarded connection
   set; each connection owns a bounded event channel (`WithConnectionBuffer`, default **16**) drained by its **one
-  owned writer goroutine** (encode → `Flush`), all joined by `Close(ctx)` within ctx's deadline.
-  - **Handler path (`GET` only; anything else → 405):** at `WithMaxConnections` (default **1024**) the request gets
-    **503** (connection-exhaustion guard, §4); a non-`http.Flusher` `ResponseWriter` gets 500 + a typed error to the
+  owned writer goroutine** (encode → `Flush`), all joined by `Close(ctx)` within ctx's deadline. Every `Write`/`Flush`
+  is bounded by a **per-write OS deadline** (`WithWriteTimeout`, default **30 s**) set via `http.ResponseController`
+  — this is what lets `Close` and the disconnect policy actually reap a writer wedged on a stalled reader's socket
+  under the mandatory `WriteTimeout: 0` (a real physical-time deadline, distinct from the logical heartbeat; a
+  `ResponseWriter` lacking deadline support proceeds best-effort with a one-time WARN).
+  - **Handler path (`GET` only; anything else → 405):** at `WithMaxConnections` (default **1024**, a
+    **process-global** cap — per-IP limiting is the caller's proxy concern) the request gets **503**
+    (connection-exhaustion guard, §4); a non-`http.Flusher` `ResponseWriter` gets 500 + a typed error to the
     error hook; then `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, flush
     headers, register. **Replay+register is atomic (C1):** with `WithReplayBuffer(n)` (default **off**) and a
     `Last-Event-ID` request header, the ring tail *after* that id is snapshotted and the connection registered in the
     same critical section — no missed-event window between replay and live; an evicted/unknown id yields live-only
     (documented best-effort). Ids are matched by identity, not order (`HeaderMessageID` UUIDs are not orderable).
-  - **`Send(ctx, msg)` (`OutboundAdapter`):** payload must be `[]byte` (else `ErrUnsupportedPayload`); `id:` ←
-    `HeaderMessageID`; `event:` ← the `HeaderSSEEventName` message header, falling back to `WithEventName`'s fixed
-    name (header wins; precedence documented). Field validation per C5 — a violation returns `ErrInvalidEventField`
-    classified `msgin.Permanent` (a retry cannot fix a bad header). Then: append to the replay ring (if on) and
-    **non-blocking enqueue** to every live connection — a full buffer triggers `WithSlowClientPolicy` (**default
-    drop-and-continue**, counted via the observability hook; alternative disconnect). A slow client never blocks
-    `Send` or grows memory unbounded. `Send` with zero connections returns nil (fire-and-forget fan-out, documented).
+  - **`Send(ctx, msg)` (`OutboundAdapter`):** payload is `[]byte` **or** `string` (else `ErrUnsupportedPayload` —
+    the shared `payloadBytes` contract); `id:` ← `HeaderMessageID`; `event:` ← the `HeaderSSEEventName` message
+    header, falling back to `WithEventName`'s fixed name (header wins; precedence documented). Field validation per
+    C5 — a violation returns `ErrInvalidEventField` classified `msgin.Permanent` (a retry cannot fix a bad header).
+    A `Send` after `Close` returns `msgin.Permanent(ErrSSEServerClosed)`; an unknown `WithSlowClientPolicy` value is
+    an `ErrInvalidSlowClientPolicy` construction error. Then: append to the replay ring (if on) and **non-blocking
+    enqueue** to every live connection — a full buffer triggers `WithSlowClientPolicy` (**default drop-and-continue**,
+    counted via the observability hook; alternative disconnect). A slow client never blocks `Send` or grows memory
+    unbounded. `Send` with zero connections returns nil (fire-and-forget fan-out, documented).
   - **Heartbeat (C2):** opt-in `WithHeartbeat(d)` — clockwork-driven `: ping` comment frames written from the same
     writer goroutine (no second goroutine per connection). **Off by default**; per the defaults policy's
     documented-off requirement, `NewSSEServer`'s godoc warns plainly that idle streams behind proxies/LBs with
@@ -402,9 +415,11 @@ follows. **NON-GUARANTEE:** msgin performs **no** private-IP, link-local, loopba
     the server said done, no reconnect); a 2xx with a `Content-Type` other than `text/event-stream` →
     `ErrNotEventStream`, reconnect-with-backoff; any other non-2xx → reconnect-with-backoff. A never-succeeding
     endpoint backs off until ctx cancels — give-up policy belongs to the runtime, per the SPI.
-  - **Parse loop:** each event → a `Delivery` — `Data` → payload `[]byte`, `Name` → `HeaderSSEEventName`, `ID` →
-    `HeaderMessageID` (absent field → header omitted); `Ack`/`Nack` are **no-ops** (SSE has no ack protocol); emit
-    respects ctx (no send after cancel). `id:` is tracked as the last-event-id (an empty `id:` clears it, per C3);
+  - **Parse loop:** each event → a `Delivery` — `Data` → payload `[]byte`, `Name` → the **non-reserved**
+    `HeaderSSEEventName` (`http.sse-event`), `ID` → the **non-reserved** `HeaderSSEEventID` (`http.sse-event-id`),
+    **never** the reserved `msgin.message-id` (the INV-2 class — no remote-read value on a reserved `msgin.*` key;
+    the emitted message's own id/timestamp are freshly minted by `msgin.New`); absent field → header omitted.
+    `Ack`/`Nack` are **no-ops** (SSE has no ack protocol); emit respects ctx (no send after cancel). `id:` is tracked as the last-event-id (an empty `id:` clears it, per C3);
     **`retry:` is honored, clamped** into the caller's backoff `[min, max]` — a hostile server can neither force a
     hot loop (`retry: 0`) nor hang the source (`retry:` huge).
   - **Reconnect:** on EOF/read error, exponential backoff via `WithReconnectBackoff(min, max)` (default
@@ -448,21 +463,27 @@ bounded/sanitized body excerpt, §4). **`StatusError`** (`{Code int; Excerpt str
 error; its `Error()` carries the status code and — only when `WithErrorBodyExcerpt()` is set — a bounded, sanitized body
 excerpt, **never a URL** (INV-4/INV-5).
 
-**Phases 3/4 planned set** (settled at design time — §3.5 / Addendum C; finalized per plan). **Nine new sentinels:**
-**`ErrInvalidEventField`** (CR/LF/NUL in an SSE `id`/`event` field — the injection guard, C5; also the
-construction-time guard on a `WithEventName` value); **`ErrEventTooLarge`** (per-event cap exceeded, C6);
-**`ErrInvalidMaxConnections`**, **`ErrInvalidConnectionBuffer`**, **`ErrInvalidReplayBuffer`**,
-**`ErrInvalidHeartbeat`** (server construction-time validation — explicit non-positive values, the set-flag pattern);
-**`ErrInvalidMaxEventBytes`** (an explicit `WithMaxEventBytes(n <= 0)` — the `ErrInvalidMaxResponseBytes` precedent);
-**`ErrNotEventStream`** (a 2xx whose `Content-Type` is not `text/event-stream`, C3);
-**`ErrInvalidReconnectBackoff`** (client construction-time — non-positive or `min > max`). Reused: `ErrUnsupportedPayload`
-(non-`[]byte` payload on `Send`), `ErrEmptyURL`/`ErrInvalidURL` (client URL validation), `ErrOutboundTransport`
-(redacted transport failures), `msgin.Permanent` (the `Send`-side classification of `ErrInvalidEventField`). **New
-options** — server: `WithMaxConnections` (default **1024**), `WithConnectionBuffer` (**16**), `WithSlowClientPolicy`
-(**drop-and-continue**), `WithReplayBuffer` (**off**), `WithHeartbeat` (**off**), `WithEventName`, `WithSSEClock`;
-client: `WithHTTPClient`, `WithConnectHeaders`, `WithReconnectBackoff` (**500 ms → 30 s**), `WithMaxEventBytes`
-(**1 MiB**), `WithFollowRedirects`, `WithSSEClock`. All follow the set-flag option pattern; every default is godoc'd
-with its rationale (defaults policy).
+**Phases 3/4 planned set** (settled at design time — §3.5 / Addendum C; finalized per plan, audit rounds 1–3).
+**13 new sentinels — 10 server (Plan 025) + 3 client (Plan 026).** *Server:* **`ErrInvalidEventField`** (CR/LF/NUL
+in an SSE `id`/`event` field — the injection guard, C5; also the construction-time guard on a `WithEventName`
+value); **`ErrEventTooLarge`** (per-event cap exceeded, C6); **`ErrInvalidMaxConnections`**,
+**`ErrInvalidConnectionBuffer`**, **`ErrInvalidReplayBuffer`**, **`ErrInvalidHeartbeat`**,
+**`ErrInvalidWriteTimeout`** (server construction-time validation — explicit non-positive values, the set-flag
+pattern; `WithWriteTimeout` is the per-write stalled-reader reap, audit BLOCKER-1); **`ErrInvalidMaxEventBytes`**
+(an explicit `WithMaxEventBytes(n <= 0)` — the `ErrInvalidMaxResponseBytes` precedent);
+**`ErrInvalidSlowClientPolicy`** (an unknown `WithSlowClientPolicy` enum value); **`ErrSSEServerClosed`** (a `Send`
+after `Close`, classified `msgin.Permanent`). *Client:* **`ErrNotEventStream`** (a 2xx whose `Content-Type` is not
+`text/event-stream`, C3 — **terminal**); **`ErrInvalidReconnectBackoff`** (non-positive or `min > max`);
+**`ErrInvalidReadTimeout`** (an explicit `WithReadTimeout(n <= 0)` — the opt-in dead-peer read-idle watchdog, audit
+F1). Reused: `ErrUnsupportedPayload` (non-`[]byte`/`string` payload on `Send`), `ErrEmptyURL`/`ErrInvalidURL`
+(client URL validation), `ErrOutboundTransport` (redacted transport failures), `msgin.Permanent` (the `Send`-side
+classification of `ErrInvalidEventField`/`ErrSSEServerClosed`). **New options** — server: `WithMaxConnections`
+(default **1024**, process-global), `WithConnectionBuffer` (**16**), `WithSlowClientPolicy` (**drop-and-continue**),
+`WithReplayBuffer` (**off**), `WithHeartbeat` (**off**), `WithWriteTimeout` (**30 s**), `WithEventName`,
+`WithSSEClock`; client: `WithHTTPClient` (SSE default carries **no `Timeout`**), `WithConnectHeaders`,
+`WithReconnectBackoff` (**500 ms → 30 s**), `WithReadTimeout` (**off**), `WithMaxEventBytes` (**1 MiB**),
+`WithFollowRedirects`, `WithSSEClock`. All follow the set-flag option pattern; every default is godoc'd with its
+rationale (defaults policy).
 
 ## 4. Security — inbound is the untrusted boundary
 

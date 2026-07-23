@@ -529,6 +529,15 @@ always-on goroutine, an extra hop per event, and C1's atomic snapshot+register w
 into it) and lock-held synchronous fan-out (one slow client blocks the whole broadcast — violates the backpressure
 invariant outright).
 
+**Amendment (audit rounds 1–3, 2026-07-23).** SSE forces `http.Server.WriteTimeout: 0`, so a writer blocked inside
+`Write` on a stalled reader's socket cannot be reaped by cancelling the connection's derived ctx — `Close`'s join
+and the disconnect policy would leak the goroutine + connection slot (audit BLOCKER-1). Added **`WithWriteTimeout`**
+(default **30 s**; `d <= 0` → `ErrInvalidWriteTimeout`): before every `Write`/`Flush` the writer sets a per-write
+OS deadline via `http.ResponseController.SetWriteDeadline` — a real physical-time deadline (distinct from the
+logical heartbeat; the socket deadline cannot use `clockwork`). A deadline-exceeded write ends the writer loop and
+unregisters; a `ResponseWriter` returning `errors.ErrUnsupported` proceeds best-effort with a one-time latched WARN
+(F5) so a voided protection is observable. The cap is **process-global**, not per-IP (audit NIT-2).
+
 ### C5 — SSE field injection: reject, not sanitize (new security decision; extends §7)
 
 **Decision.** `EncodeSSEEvent` **rejects** an `id`/`event` value containing CR, LF, or NUL with
@@ -538,9 +547,22 @@ subscriber's stream — the SSE analog of the header-injection boundary A1/B2 gu
 direction. Rejection over sanitization: a silently altered id would break C1's identity-matched replay and mask the
 flow bug that produced it.
 
+**Amendment (plan time / audit rounds 1–3, 2026-07-23).** The message→event conversion **`SSEEventFromMessage`** is
+**exported** (Phase 5's gin S-out binding reuses it without importing `stdlib`; blackbox-testable). `Send`'s
+payload accepts `[]byte` **or** `string` (the shared `payloadBytes` contract), not `[]byte` only. Encode emits
+`data:` + one space + line uniformly (the parser strips one leading space, so a space-leading payload round-trips).
+Added sentinels `ErrInvalidSlowClientPolicy` (unknown enum) and `ErrSSEServerClosed` (`Send` after `Close`,
+`msgin.Permanent`).
+
 ### C6 — per-event byte cap on the parser, default 1 MiB (new security decision; extends §7)
 
 **Decision.** The shared parser enforces a per-event byte cap — default **1 MiB**, overridable via `WithMaxEventBytes`
 (the `WithMaxResponseBytes` precedent; an explicit `n <= 0` is a typed construction error) — returning
 `ErrEventTooLarge` when exceeded. The client treats it as a connection fault (reconnect-with-backoff), never an OOM:
 the remote is untrusted input, and without the cap a single endless `data:` line grows memory unbounded.
+
+**Amendment (audit rounds 1–3, 2026-07-23).** The cap bounds `max(current-line-bytes, accumulated-data-buffer-bytes)`
+— the only two things that actually buffer — not "bytes since a boundary" (audit MAJOR-4/F4). The line counter
+resets at each line ending, the data buffer at each dispatch; comments, ignored fields, and blank lines never
+accumulate, so a long-lived idle stream of `: ping` keep-alives never false-trips, while a single unterminated line
+or an oversized multi-`data:` event still trips.
