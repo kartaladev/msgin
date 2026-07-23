@@ -42,6 +42,41 @@ const defaultMaxResponseBytes int64 = 1 << 20 // 1 MiB
 // default errs conservative rather than permissive.
 const defaultMaxEventBytes int64 = 1 << 20 // 1 MiB
 
+// defaultMaxConnections bounds the number of concurrently registered SSE
+// connections NewSSEServer's http.Handler accepts, applied when
+// WithMaxConnections is unset. It is the connection-exhaustion guard: past
+// this many open connections the handler responds 503 rather than
+// registering an unbounded number of long-lived streaming responses. The
+// cap is PROCESS-GLOBAL, not per-IP — a caller who needs per-IP/per-tenant
+// limiting applies it at their own reverse proxy or load balancer, not
+// through this option. Override it explicitly via WithMaxConnections.
+const defaultMaxConnections = 1024
+
+// defaultConnectionBuffer sizes the per-connection buffered event channel
+// each registered SSE connection's writer goroutine drains, applied when
+// WithConnectionBuffer is unset. 16 is the slow-client isolation bound: a
+// connection whose reader/network cannot keep up fills only ITS OWN buffer,
+// never blocking Send for any other connection or for the flow that calls
+// it. Override it explicitly via WithConnectionBuffer.
+const defaultConnectionBuffer = 16
+
+// defaultWriteTimeout is the per-write OS deadline NewSSEServer's writer
+// goroutine applies (via http.ResponseController.SetWriteDeadline) before
+// every event Write/Flush, applied when WithWriteTimeout is unset. SSE
+// forces the underlying http.Server's WriteTimeout to 0 (a streaming
+// response has no fixed total duration), so this PER-WRITE deadline is what
+// actually reaps a writer goroutine wedged inside Write on a stalled
+// reader's socket — without it, neither Close's join nor
+// WithSlowClientPolicy's disconnect could ever interrupt a blocked Write.
+// It is a REAL, physical-time OS deadline, distinct from the logical
+// WithHeartbeat interval: heartbeat decides how often an otherwise-idle
+// connection speaks, this decides how long any single write may take
+// before being aborted. 30s is generous enough that a healthy connection's
+// frame write never trips it, while still bounding how long a truly
+// stalled connection can wedge its writer goroutine. Override it explicitly
+// via WithWriteTimeout.
+const defaultWriteTimeout = 30 * time.Second
+
 // defaultHTTPClientTimeout is the timeout on the default outbound *http.Client.
 // It is finite ON PURPOSE: http.DefaultClient has NO timeout at all, so a
 // stalled endpoint would otherwise block a producer goroutine indefinitely.
@@ -119,6 +154,28 @@ type Config struct {
 	// defaultMaxEventBytes), mirroring maxBodyBytesSet/maxResponseBytesSet.
 	maxEventBytes    int64
 	maxEventBytesSet bool
+
+	// maxConnections through sseClock are the SSE server (Task 3)
+	// construction-time settings NewSSEServer reads starting Task 4 — see
+	// each WithX option's godoc below for its default and rationale. Every
+	// *Set flag mirrors the maxBodyBytesSet/maxResponseBytesSet pattern: it
+	// distinguishes an explicit-but-invalid value (a construction error)
+	// from unset (the documented default). Nothing in this package reads
+	// these fields yet; NewConfig only validates them and resolves
+	// defaults.
+	maxConnections      int
+	maxConnectionsSet   bool
+	connectionBuffer    int
+	connectionBufferSet bool
+	slowClientPolicy    SlowClientPolicy
+	slowClientPolicySet bool
+	replayBuffer        int
+	replayBufferSet     bool
+	heartbeat           time.Duration
+	heartbeatSet        bool
+	writeTimeout        time.Duration
+	writeTimeoutSet     bool
+	sseClock            clockwork.Clock
 }
 
 // maxBody is the request-body cap to apply, back-filling defaultMaxBodyBytes
@@ -663,6 +720,176 @@ func WithMaxEventBytes(n int64) Option {
 	}
 }
 
+// SlowClientPolicy selects what NewSSEServer's Send does for a single
+// registered connection whose per-connection event buffer
+// (WithConnectionBuffer) is already full when a new event arrives.
+type SlowClientPolicy int
+
+const (
+	// SlowClientDrop drops the event for that ONE connection only — every
+	// other connection still receives it, and Send itself never blocks or
+	// errors because of one slow subscriber. It is iota 0, the safe
+	// default: SSE fan-out is already an at-most-once delivery guarantee,
+	// so losing one already-lossy event for one already-degraded
+	// connection stays within the documented contract, whereas
+	// disconnecting by default would drop that subscriber's WHOLE stream
+	// over what may be a transient burst.
+	SlowClientDrop SlowClientPolicy = iota
+
+	// SlowClientDisconnect cancels the slow connection instead of
+	// dropping individual events for it: the connection is unregistered
+	// and its writer goroutine joined, so a client that cannot keep up is
+	// told (its stream closes, triggering its own reconnect) rather than
+	// silently missing events indefinitely.
+	SlowClientDisconnect
+)
+
+// WithMaxConnections caps the number of concurrently registered SSE
+// connections NewSSEServer's http.Handler accepts. Default:
+// defaultMaxConnections (1024) — the connection-exhaustion guard: once the
+// cap is reached, the handler responds 503 rather than registering an
+// unbounded number of long-lived streaming connections. The cap is
+// PROCESS-GLOBAL, not per-IP: it budgets the whole process's open SSE
+// connections, so per-IP or per-tenant limiting, where needed, is the
+// caller's own reverse-proxy/load-balancer concern, not something this
+// option attempts.
+//
+// n MUST be > 0: NewConfig returns ErrInvalidMaxConnections for an explicit
+// n <= 0, so a caller mistake (e.g. an uninitialized zero value passed
+// through) is a construction error rather than a silently-disabled cap.
+// Leaving this option unset (rather than calling it with 0) is how a
+// caller asks for the default.
+func WithMaxConnections(n int) Option {
+	return func(c *Config) {
+		c.maxConnections = n
+		c.maxConnectionsSet = true
+	}
+}
+
+// WithConnectionBuffer sets the size of the per-connection buffered event
+// channel each registered SSE connection's writer goroutine drains.
+// Default: defaultConnectionBuffer (16 events) — the slow-client isolation
+// bound: a connection whose reader or network cannot keep up fills only ITS
+// OWN buffer without blocking Send for any other connection or for the flow
+// calling it; once that buffer is full, WithSlowClientPolicy decides what
+// happens next for that one connection.
+//
+// n MUST be > 0: NewConfig returns ErrInvalidConnectionBuffer for an
+// explicit n <= 0. Leaving this option unset is how a caller asks for the
+// default.
+func WithConnectionBuffer(n int) Option {
+	return func(c *Config) {
+		c.connectionBuffer = n
+		c.connectionBufferSet = true
+	}
+}
+
+// WithSlowClientPolicy selects the SlowClientPolicy NewSSEServer's Send
+// applies to a connection whose per-connection buffer is already full when
+// a new event needs to be enqueued. Default: SlowClientDrop — "a slow
+// subscriber loses events, never the flow": Send always returns promptly
+// and no other connection is ever affected, matching SSE's inherently
+// at-most-once delivery contract.
+//
+// p MUST be a recognized SlowClientPolicy (SlowClientDrop or
+// SlowClientDisconnect): NewConfig returns ErrInvalidSlowClientPolicy for
+// any other value. Leaving this option unset is how a caller asks for the
+// default.
+func WithSlowClientPolicy(p SlowClientPolicy) Option {
+	return func(c *Config) {
+		c.slowClientPolicy = p
+		c.slowClientPolicySet = true
+	}
+}
+
+// WithReplayBuffer enables a per-connection-set REPLAY RING of the last n
+// events NewSSEServer sends, used to resume a reconnecting client that
+// supplies a Last-Event-ID request header. Default: OFF — no ring is kept,
+// so Last-Event-ID is ignored and a reconnecting client sees only events
+// sent after it re-registers.
+//
+// MULTI-INSTANCE NOTE (CLAUDE.md "Production robustness — multi-instance
+// awareness"): the ring is per-process, best-effort, in-memory state. A
+// reconnect that lands on a DIFFERENT instance behind a load balancer finds
+// an empty ring regardless of this setting, so enabling it improves a
+// same-instance reconnect blip only — it does not make replay gap-free
+// across a horizontally-scaled deployment. A gap-free cross-instance resume
+// needs a durable/shared backbone feeding every instance; this option does
+// not attempt that.
+//
+// n MUST be > 0 when set explicitly: NewConfig returns
+// ErrInvalidReplayBuffer for an explicit n <= 0 — there is no explicit
+// value that means "off" through this option; only leaving it unset does.
+func WithReplayBuffer(n int) Option {
+	return func(c *Config) {
+		c.replayBuffer = n
+		c.replayBufferSet = true
+	}
+}
+
+// WithHeartbeat enables periodic ": ping" SSE comment frames, written every
+// d from the connection's own writer goroutine (no extra goroutine per
+// connection), to keep an otherwise-idle stream's underlying socket active.
+// Default: OFF.
+//
+// WARNING — read before leaving this unset: an idle stream behind a
+// reverse proxy or load balancer with a 30-60s idle timeout is SILENTLY
+// DROPPED unless heartbeat is enabled. If your deployment sits behind such
+// a proxy (most production deployments do), enable this with a d
+// comfortably below the shortest idle timeout anywhere in the path.
+//
+// d MUST be > 0 when set explicitly: NewConfig returns ErrInvalidHeartbeat
+// for an explicit d <= 0 — there is no explicit value that means "off"
+// through this option; only leaving it unset does.
+func WithHeartbeat(d time.Duration) Option {
+	return func(c *Config) {
+		c.heartbeat = d
+		c.heartbeatSet = true
+	}
+}
+
+// WithWriteTimeout sets the per-write OS deadline NewSSEServer's writer
+// goroutine applies (via http.ResponseController.SetWriteDeadline) before
+// every event Write/Flush. Default: defaultWriteTimeout (30s).
+//
+// This is the mechanism that lets Close and WithSlowClientPolicy's
+// disconnect actually reap a writer goroutine wedged inside Write on a
+// stalled reader's socket: SSE forces the underlying http.Server's
+// WriteTimeout to 0 (a streaming response has no fixed total duration), so
+// without a PER-WRITE deadline a stalled reader would block that
+// connection's writer — and Close's join — forever. It is a REAL,
+// physical-time OS deadline, distinct from the logical WithHeartbeat
+// interval: heartbeat decides how often an otherwise-idle connection
+// SPEAKS, this decides how long any single WRITE may take before being
+// aborted. 30s is generous enough that a healthy connection's frame write
+// never trips it, while still bounding how long a truly stalled connection
+// can wedge its writer goroutine.
+//
+// d MUST be > 0: NewConfig returns ErrInvalidWriteTimeout for an explicit
+// d <= 0. Leaving this option unset is how a caller asks for the default.
+func WithWriteTimeout(d time.Duration) Option {
+	return func(c *Config) {
+		c.writeTimeout = d
+		c.writeTimeoutSet = true
+	}
+}
+
+// WithSSEClock injects the clockwork.Clock NewSSEServer's per-connection
+// writer goroutines use for WithHeartbeat's interval timing. Default:
+// clockwork.NewRealClock(). Named apart from WithOutboundClock and
+// msgin.WithClock per the repo's distinct-clock-name-per-component
+// convention.
+//
+// A nil clock is a no-op: the real-clock default stays in place (mirrors
+// WithLogger/WithOutboundClock).
+func WithSSEClock(clk clockwork.Clock) Option {
+	return func(c *Config) {
+		if clk != nil {
+			c.sseClock = clk
+		}
+	}
+}
+
 // NewConfig validates opts and builds a Config, resolving the documented
 // default for any option left unset. WithMaxBodyBytes and WithSuccessStatus
 // use the set-flag pattern (mirrors msgin.WithMaxInFlight/WithAttemptTTL): an
@@ -701,6 +928,42 @@ func NewConfig(opts ...Option) (*Config, error) {
 		cfg.maxEventBytes = defaultMaxEventBytes
 	} else if cfg.maxEventBytes <= 0 {
 		return nil, ErrInvalidMaxEventBytes
+	}
+
+	if !cfg.maxConnectionsSet {
+		cfg.maxConnections = defaultMaxConnections
+	} else if cfg.maxConnections <= 0 {
+		return nil, ErrInvalidMaxConnections
+	}
+
+	if !cfg.connectionBufferSet {
+		cfg.connectionBuffer = defaultConnectionBuffer
+	} else if cfg.connectionBuffer <= 0 {
+		return nil, ErrInvalidConnectionBuffer
+	}
+
+	if !cfg.slowClientPolicySet {
+		cfg.slowClientPolicy = SlowClientDrop
+	} else if cfg.slowClientPolicy != SlowClientDrop && cfg.slowClientPolicy != SlowClientDisconnect {
+		return nil, ErrInvalidSlowClientPolicy
+	}
+
+	if cfg.replayBufferSet && cfg.replayBuffer <= 0 {
+		return nil, ErrInvalidReplayBuffer
+	}
+
+	if cfg.heartbeatSet && cfg.heartbeat <= 0 {
+		return nil, ErrInvalidHeartbeat
+	}
+
+	if !cfg.writeTimeoutSet {
+		cfg.writeTimeout = defaultWriteTimeout
+	} else if cfg.writeTimeout <= 0 {
+		return nil, ErrInvalidWriteTimeout
+	}
+
+	if cfg.sseClock == nil {
+		cfg.sseClock = clockwork.NewRealClock()
 	}
 
 	if cfg.httpClient == nil {

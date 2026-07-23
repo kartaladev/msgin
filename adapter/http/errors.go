@@ -135,4 +135,50 @@ var (
 	// "explicit invalid", mirroring ErrInvalidMaxBodyBytes /
 	// ErrInvalidMaxResponseBytes.
 	ErrInvalidMaxEventBytes = errors.New("msghttp: max event bytes must be > 0")
+
+	// ErrInvalidMaxConnections is returned by NewConfig when an explicit
+	// WithMaxConnections is <= 0. Leaving WithMaxConnections unset takes the
+	// 1024 default instead of hitting this error — the set-flag pattern
+	// distinguishes "unset" from "explicit invalid", mirroring
+	// ErrInvalidMaxBodyBytes.
+	ErrInvalidMaxConnections = errors.New("msghttp: max connections must be > 0")
+
+	// ErrInvalidConnectionBuffer is returned by NewConfig when an explicit
+	// WithConnectionBuffer is <= 0. Leaving WithConnectionBuffer unset takes
+	// the 16 default instead of hitting this error.
+	ErrInvalidConnectionBuffer = errors.New("msghttp: connection buffer must be > 0")
+
+	// ErrInvalidSlowClientPolicy is returned by NewConfig when an explicit
+	// WithSlowClientPolicy value is neither SlowClientDrop nor
+	// SlowClientDisconnect. Leaving WithSlowClientPolicy unset takes the
+	// SlowClientDrop default instead of hitting this error.
+	ErrInvalidSlowClientPolicy = errors.New("msghttp: unrecognized slow client policy")
+
+	// ErrInvalidReplayBuffer is returned by NewConfig when an explicit
+	// WithReplayBuffer is <= 0. Leaving WithReplayBuffer unset takes the off
+	// (no replay ring) default instead of hitting this error — there is no
+	// explicit value that means "off"; only leaving the option unset does.
+	ErrInvalidReplayBuffer = errors.New("msghttp: replay buffer must be > 0")
+
+	// ErrInvalidHeartbeat is returned by NewConfig when an explicit
+	// WithHeartbeat duration is <= 0. Leaving WithHeartbeat unset takes the
+	// off (no heartbeat frames) default instead of hitting this error —
+	// there is no explicit value that means "off"; only leaving the option
+	// unset does.
+	ErrInvalidHeartbeat = errors.New("msghttp: heartbeat interval must be > 0")
+
+	// ErrInvalidWriteTimeout is returned by NewConfig when an explicit
+	// WithWriteTimeout duration is <= 0. Leaving WithWriteTimeout unset
+	// takes the 30s default (defaultWriteTimeout) instead of hitting this
+	// error.
+	ErrInvalidWriteTimeout = errors.New("msghttp: write timeout must be > 0")
+
+	// ErrSSEServerClosed is returned, wrapped in msgin.Permanent, by
+	// NewSSEServer's Send when called after Close: a retry cannot revive a
+	// server that has already stopped accepting and joined its writer
+	// goroutines. NewConfig never returns it — construction is unaffected by
+	// server lifecycle, so it is declared here alongside the other SSE
+	// server sentinels but first USED on the Send-after-Close path built in
+	// a later increment.
+	ErrSSEServerClosed = errors.New("msghttp: SSE server is closed")
 )
