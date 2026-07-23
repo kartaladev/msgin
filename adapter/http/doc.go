@@ -77,6 +77,93 @@
 // Consumer-driven flow's redelivery. A source-less flow gets neither, so the
 // receiving endpoint must be idempotent.
 //
+// # Server-Sent Events (SSE)
+//
+// SSEEvent, EncodeSSEEvent, and SSEEventFromMessage are the encoding half of
+// the SSE framing core. EncodeSSEEvent writes a single event (an optional id,
+// an optional event name, and a data payload) in the WHATWG
+// text/event-stream wire format; before any byte is written it rejects a CR,
+// LF, or NUL embedded in the id or event name, so a hostile field value can
+// never inject additional, unintended SSE fields into the frame.
+// SSEEventFromMessage bridges a msgin.Message[any] into that shape: the
+// message's ID becomes the event id, its payload (a []byte or string; any
+// other type is ErrUnsupportedPayload) becomes the data, and an optional
+// HeaderSSEEventName message header — or, if absent, the WithEventName
+// construction-time default — becomes the event name.
+//
+// SSEParser is the reverse direction: it reads a text/event-stream byte
+// stream and yields one SSEEvent per call to Next, implementing the full
+// WHATWG field-processing algorithm (a leading BOM, comment lines,
+// multi-line data, the persistent last-event-id and retry buffers) with a
+// per-event byte cap (WithMaxEventBytes) so an unterminated line or a
+// pathologically large event cannot grow the parser's memory without bound.
+// A future NewSSEClient in this package will build on SSEParser to turn a
+// subscribed stream into a channel of messages; today SSEParser is directly
+// usable by any caller reading an SSE response body, exactly as this
+// package's own example does.
+//
+// # Serving SSE
+//
+// NewSSEServer builds an http.Handler that registers each GET request as a
+// long-lived streaming connection and, via Send (which also makes SSEServer a
+// msgin.OutboundAdapter), fans a message out to every registered connection as
+// one SSE event. See NewSSEServer's own doc comment for its full delivery,
+// topology, and heartbeat contract; this section covers what changes in the
+// "Deploying these handlers safely" checklist (adapter/http/stdlib's package
+// doc) once an SSEServer is one of the routes being served.
+//
+// Give the route (or the whole server, if nothing else shares it)
+// WriteTimeout: 0:
+//
+//	srv := &http.Server{
+//		Addr:              ":8080",
+//		Handler:           mux,
+//		ReadHeaderTimeout: 5 * time.Second,  // unchanged — still the slow-loris defense
+//		IdleTimeout:       120 * time.Second, // unchanged
+//		WriteTimeout:      0,                 // NOT 30s here — an SSE stream would die at it
+//	}
+//
+// net/http's http.Server.WriteTimeout bounds the WHOLE response, and an SSE
+// response is, by design, a single write that never completes until the
+// client disconnects — the stdlib package's ordinary WriteTimeout: 30s
+// recommendation would silently cut every SSE stream off at 30 seconds.
+// ReadHeaderTimeout and IdleTimeout are unaffected by SSE and should still be
+// set exactly as documented there.
+//
+// Setting WriteTimeout to 0 does NOT give up stalled-writer protection: it
+// moves to a different, complementary layer. NewSSEServer applies its OWN
+// per-write deadline (WithWriteTimeout, default 30s) via
+// http.ResponseController.SetWriteDeadline before every Write/Flush. The two
+// timeouts are not redundant — http.Server.WriteTimeout: 0 is what lets a
+// HEALTHY stream stay open past any fixed duration, while WithWriteTimeout is
+// what aborts an individual write that wedges on a stalled reader's full TCP
+// window, which is in turn what lets Close and WithSlowClientPolicy's
+// disconnect ever join a stuck connection's writer goroutine. Getting either
+// one wrong fails differently: a nonzero http.Server.WriteTimeout kills every
+// healthy SSE stream at that duration regardless of client behavior, while an
+// absent (or absurdly large) per-write deadline lets one stalled reader wedge
+// its writer — and anything waiting on Close — indefinitely.
+//
+// WARNING — heartbeat vs. proxies: an idle SSE connection sitting behind a
+// reverse proxy or load balancer with its own 30-60s idle timeout is SILENTLY
+// DROPPED unless WithHeartbeat is enabled, with an interval comfortably below
+// the shortest idle timeout anywhere in the path. Most production deployments
+// sit behind such a proxy. Heartbeat defaults OFF because the library cannot
+// know your network topology; enabling it is on you.
+//
+// MULTI-INSTANCE NOTE (CLAUDE.md "Production robustness — multi-instance
+// awareness"): an SSEServer's registered connections, and its optional replay
+// ring, are PER-PROCESS in-memory state — it is the LAST hop from one process
+// to its own directly-connected clients, not a message bus. In a
+// horizontally-scaled deployment (N instances behind a load balancer), a Send
+// on instance B never reaches a subscriber connected to instance A on its
+// own; cross-instance fan-out needs a shared pub/sub backbone (Redis, NATS,
+// …) feeding every instance, each of which then re-fans-out to its own local
+// subscribers via Send. WithMaxConnections is likewise a PROCESS-GLOBAL cap
+// on one instance's own connections, not a cluster-wide or per-IP one —
+// per-IP/per-tenant limiting is a reverse-proxy/load-balancer concern, not
+// something this package attempts.
+//
 // # Phase
 //
 // Phase 1 (this package plus adapter/http/stdlib) ships the two inbound server
@@ -85,6 +172,7 @@
 // ships the two outbound modes: O1 NewOutbound (webhook) and O2 NewExchange
 // (client request-reply). This file's siblings hold the shared Config/Option/
 // WithX surface, DecodeRequest/EncodeResponse (inbound) and EncodeRequest/
-// ClassifyResponse (outbound), plus the inbound handler cores. SSE is a later
-// phase still (Spec 011 §6).
+// ClassifyResponse (outbound), the inbound handler cores, the SSE framing core
+// (SSEEvent/EncodeSSEEvent/SSEEventFromMessage/SSEParser), and NewSSEServer —
+// see "Server-Sent Events (SSE)" above for both.
 package msghttp
