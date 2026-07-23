@@ -310,6 +310,40 @@ func (c *Config) eventNameOrDefault() string {
 	return c.eventName
 }
 
+// The five accessors below expose the resolved SSE-server settings NewSSEServer
+// (adapter/http/sse_server.go) reads. Unlike the exported-consumer accessors
+// above, they read cfg.<field> DIRECTLY with no nil/zero back-fill: their only
+// caller is a *SSEServer whose cfg always came from NewConfig (NewSSEServer's
+// constructor), which resolved every default and rejected every explicit
+// invalid value, so a zero/nil field can never reach them on any supported
+// path. They are named apart from the identically-named struct fields
+// (maxConnections, connectionBuffer, heartbeat, writeTimeout, sseClock) only
+// because Go forbids a method and a field sharing a name on one type — the
+// accessor is the field, resolved.
+
+// maxConns is the resolved WithMaxConnections cap the SSE server enforces
+// before registering a new connection (default 1024).
+func (c *Config) maxConns() int { return c.maxConnections }
+
+// connBuffer is the resolved WithConnectionBuffer size of each connection's
+// buffered frame channel (default 16).
+func (c *Config) connBuffer() int { return c.connectionBuffer }
+
+// heartbeatInterval is the resolved WithHeartbeat interval; 0 means heartbeat
+// is off (the default), and the writer's heartbeat select arm is a nil channel.
+func (c *Config) heartbeatInterval() time.Duration { return c.heartbeat }
+
+// perWriteTimeout is the resolved WithWriteTimeout per-write OS deadline the
+// writer applies before every Write/Flush (default 30s). It is a real,
+// physical-time bound — the socket deadline cannot be faked — distinct from the
+// logical heartbeat interval driven by streamClock.
+func (c *Config) perWriteTimeout() time.Duration { return c.writeTimeout }
+
+// streamClock is the resolved WithSSEClock the writer uses for heartbeat
+// interval timing (default a real clock). It drives the LOGICAL heartbeat
+// cadence only; the per-write OS deadline uses real wall-clock time regardless.
+func (c *Config) streamClock() clockwork.Clock { return c.sseClock }
+
 // Option configures a Config built by NewConfig.
 type Option func(*Config)
 
