@@ -112,4 +112,27 @@ var (
 	// fields into the frame, so it is rejected before any byte is written
 	// rather than silently truncated or escaped.
 	ErrInvalidEventField = errors.New("msghttp: SSE id or event name contains CR, LF, or NUL")
+
+	// ErrEventTooLarge is returned by SSEParser.Next when a single
+	// Server-Sent Event exceeds WithMaxEventBytes (default 1 MiB) on either
+	// of the two things that actually buffer while parsing a
+	// text/event-stream: the current in-progress line's byte count, or the
+	// accumulated "data" buffer's byte count. Neither counter accumulates
+	// across the whole stream — a comment line, an ignored field, or a
+	// blank line never contributes to either — so this is a per-line/
+	// per-event bound, not a stream-lifetime one.
+	//
+	// The oversized event is skipped, not fatal: SSEParser is safe to call
+	// Next on again after this error, and parsing resumes at the following
+	// event — see SSEParser.Next's doc comment for the exact recovery
+	// contract.
+	ErrEventTooLarge = errors.New("msghttp: SSE event exceeds max event bytes")
+
+	// ErrInvalidMaxEventBytes is returned by NewConfig (and so by
+	// NewSSEParser) when an explicit WithMaxEventBytes is <= 0. Leaving
+	// WithMaxEventBytes unset takes the 1 MiB default instead of hitting
+	// this error — the set-flag pattern distinguishes "unset" from
+	// "explicit invalid", mirroring ErrInvalidMaxBodyBytes /
+	// ErrInvalidMaxResponseBytes.
+	ErrInvalidMaxEventBytes = errors.New("msghttp: max event bytes must be > 0")
 )

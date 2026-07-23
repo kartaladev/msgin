@@ -28,6 +28,20 @@ const defaultMaxBodyBytes int64 = 1 << 20 // 1 MiB
 // conservative rather than permissive. Override it via WithMaxResponseBytes.
 const defaultMaxResponseBytes int64 = 1 << 20 // 1 MiB
 
+// defaultMaxEventBytes bounds the number of bytes NewSSEParser's SSEParser
+// buffers for a single Server-Sent Event — the max of the current
+// in-progress line's byte count and the accumulated "data" buffer's byte
+// count, the only two things that actually buffer while parsing a
+// text/event-stream — when WithMaxEventBytes is unset. 1 MiB mirrors
+// defaultMaxBodyBytes/defaultMaxResponseBytes: the remote SSE stream is
+// untrusted input (CLAUDE.md "Production robustness"), generous enough for a
+// typical event payload while bounding the memory an endless unterminated
+// line or a pathologically multi-"data:"-line event can force the parser to
+// hold. Override it explicitly via WithMaxEventBytes for legitimately larger
+// events — the library cannot guess a caller's legitimate event size, so the
+// default errs conservative rather than permissive.
+const defaultMaxEventBytes int64 = 1 << 20 // 1 MiB
+
 // defaultHTTPClientTimeout is the timeout on the default outbound *http.Client.
 // It is finite ON PURPOSE: http.DefaultClient has NO timeout at all, so a
 // stalled endpoint would otherwise block a producer goroutine indefinitely.
@@ -98,6 +112,13 @@ type Config struct {
 	// WithEventName call (validated by NewConfig) from unset (default "").
 	eventName    string
 	eventNameSet bool
+
+	// maxEventBytes is the Task 2 SSEParser per-event byte cap
+	// (WithMaxEventBytes). maxEventBytesSet distinguishes an explicit
+	// WithMaxEventBytes(n<=0) (rejected) from unset (default
+	// defaultMaxEventBytes), mirroring maxBodyBytesSet/maxResponseBytesSet.
+	maxEventBytes    int64
+	maxEventBytesSet bool
 }
 
 // maxBody is the request-body cap to apply, back-filling defaultMaxBodyBytes
@@ -613,6 +634,35 @@ func WithEventName(name string) Option {
 	}
 }
 
+// WithMaxEventBytes caps the number of bytes NewSSEParser's SSEParser
+// buffers for a single Server-Sent Event: the max of the current
+// in-progress line's byte count and the accumulated "data" buffer's byte
+// count — the only two things that actually buffer while parsing a
+// text/event-stream — never the sum of bytes read across the whole stream.
+// A comment line, an ignored field, or a blank line never accumulates
+// toward this cap, so a long-lived idle stream of small "ping" comments, or
+// a run of small blank-line-separated events, never trips it regardless of
+// its cumulative length. Default: defaultMaxEventBytes (1 MiB).
+//
+// Exceeding the cap on either counter returns ErrEventTooLarge from Next: an
+// endless unterminated line trips the line counter; a single event built
+// from too many "data:" lines trips the data-buffer counter. Both counters
+// reset independently of one another — the line counter at every line
+// ending, the data buffer at every dispatch — so the cap bounds a single
+// line or a single event, not the stream's lifetime.
+//
+// n MUST be > 0: NewSSEParser (via NewConfig) returns ErrInvalidMaxEventBytes
+// for an explicit n <= 0, so a caller mistake (e.g. an uninitialized zero
+// value passed through) is a construction error rather than a
+// silently-disabled cap. Leaving this option unset (rather than calling it
+// with 0) is how a caller asks for the default.
+func WithMaxEventBytes(n int64) Option {
+	return func(c *Config) {
+		c.maxEventBytes = n
+		c.maxEventBytesSet = true
+	}
+}
+
 // NewConfig validates opts and builds a Config, resolving the documented
 // default for any option left unset. WithMaxBodyBytes and WithSuccessStatus
 // use the set-flag pattern (mirrors msgin.WithMaxInFlight/WithAttemptTTL): an
@@ -645,6 +695,12 @@ func NewConfig(opts ...Option) (*Config, error) {
 
 	if cfg.eventNameSet && !validSSEField(cfg.eventName) {
 		return nil, ErrInvalidEventField
+	}
+
+	if !cfg.maxEventBytesSet {
+		cfg.maxEventBytes = defaultMaxEventBytes
+	} else if cfg.maxEventBytes <= 0 {
+		return nil, ErrInvalidMaxEventBytes
 	}
 
 	if cfg.httpClient == nil {
