@@ -103,4 +103,13 @@ var (
 	// The underlying cause is preserved with %w, so errors.Is(err,
 	// context.Canceled) and friends still hold on the cancellation arm.
 	ErrOutboundTransport = errors.New("msghttp: outbound request transport error")
+
+	// ErrInvalidEventField is returned by EncodeSSEEvent and
+	// SSEEventFromMessage when an SSEEvent's ID or Name contains a CR, LF, or
+	// NUL byte, and by NewConfig when an explicit WithEventName value does.
+	// An SSE "id:"/"event:" field is framed as a single line (INV-S1): an
+	// embedded newline would let the value inject additional, unintended SSE
+	// fields into the frame, so it is rejected before any byte is written
+	// rather than silently truncated or escaped.
+	ErrInvalidEventField = errors.New("msghttp: SSE id or event name contains CR, LF, or NUL")
 )

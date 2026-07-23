@@ -91,6 +91,13 @@ type Config struct {
 	maxResponseBytesSet bool // distinguishes explicit WithMaxResponseBytes(n<=0) (rejected) from unset (default)
 	clock               clockwork.Clock
 	errorBodyExcerpt    bool
+
+	// eventName is the SSE (Task 1) default "event:" field name
+	// SSEEventFromMessage falls back to when a message carries no
+	// HeaderSSEEventName header. eventNameSet distinguishes an explicit
+	// WithEventName call (validated by NewConfig) from unset (default "").
+	eventName    string
+	eventNameSet bool
 }
 
 // maxBody is the request-body cap to apply, back-filling defaultMaxBodyBytes
@@ -211,6 +218,18 @@ func (c *Config) clockOrDefault() clockwork.Clock {
 // opted in.
 func (c *Config) errorBodyExcerptEnabled() bool {
 	return c != nil && c.errorBodyExcerpt
+}
+
+// eventNameOrDefault is the fallback SSE "event:" field name
+// SSEEventFromMessage uses when the message carries no HeaderSSEEventName
+// header. It back-fills "" for a nil or hand-built Config (the Config
+// nil-safety contract) — an empty name means no event: line is emitted and
+// the client dispatches the frame as the SSE default event "message".
+func (c *Config) eventNameOrDefault() string {
+	if c == nil {
+		return ""
+	}
+	return c.eventName
 }
 
 // Option configures a Config built by NewConfig.
@@ -571,6 +590,29 @@ func WithErrorBodyExcerpt() Option {
 	return func(c *Config) { c.errorBodyExcerpt = true }
 }
 
+// WithEventName sets the default SSE "event:" field name SSEEventFromMessage
+// falls back to when the message carries no HeaderSSEEventName header.
+// Default: "" — no event: line is written, and the client dispatches the
+// frame as the SSE default event "message" (WHATWG semantics).
+//
+// The HeaderSSEEventName message header, when present and non-empty, ALWAYS
+// wins over this construction-time default — a per-message flow-set name
+// overrides the adapter-wide one.
+//
+// name MUST NOT contain CR, LF, or NUL: NewConfig returns
+// ErrInvalidEventField for an explicit name containing any of those bytes —
+// an SSE "event:" field is framed as a single line, so an embedded newline
+// would let name inject additional, unintended SSE fields into the frame.
+// Leaving this option unset (rather than calling it with a clean empty
+// string) is how a caller asks for the default; either way an empty name
+// never errors.
+func WithEventName(name string) Option {
+	return func(c *Config) {
+		c.eventName = name
+		c.eventNameSet = true
+	}
+}
+
 // NewConfig validates opts and builds a Config, resolving the documented
 // default for any option left unset. WithMaxBodyBytes and WithSuccessStatus
 // use the set-flag pattern (mirrors msgin.WithMaxInFlight/WithAttemptTTL): an
@@ -599,6 +641,10 @@ func NewConfig(opts ...Option) (*Config, error) {
 		cfg.maxResponseBytes = defaultMaxResponseBytes
 	} else if cfg.maxResponseBytes <= 0 {
 		return nil, ErrInvalidMaxResponseBytes
+	}
+
+	if cfg.eventNameSet && !validSSEField(cfg.eventName) {
+		return nil, ErrInvalidEventField
 	}
 
 	if cfg.httpClient == nil {
