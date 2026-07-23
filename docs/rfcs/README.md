@@ -1,9 +1,10 @@
-# msgin RFCs — pre-v1 refactor program
+# msgin RFCs — pre-v1 refactor & gap-closure program
 
-A coordinated set of RFCs for one pre-v1 refactor: reduce reader/maintainer cognitive load and align with the
-EIP / Spring Integration consensus. They share a **single breaking window** (`v0.x`, SemVer-major intent) and
-one design language: **interfaces + value types in the core; implementations and providers in isolated
-packages; dependencies point inward.**
+A coordinated set of RFCs for one pre-v1 effort: reduce reader/maintainer cognitive load, align with the
+EIP / Spring Integration consensus, and close the catalogued pattern gaps. The **refactor** RFCs (0001–0004)
+share a **single breaking window** (`v0.x`, SemVer-major intent); the **gap-closure** RFC (0005) is additive
+and lands independently. All share one design language: **interfaces + value types in the core; implementations
+and providers in isolated packages; dependencies point inward.**
 
 Each RFC follows the [RFC template](https://gist.github.com/rowlando/416f41e34fe32840c5634a660df790e1). All are
 **Draft**. They precede the CLAUDE.md artifact chain (spec → plan → ADR) — an accepted RFC spawns those.
@@ -16,6 +17,7 @@ Each RFC follows the [RFC template](https://gist.github.com/rowlando/416f41e34fe
 | [0002](0002-eip-alignment.md) | EIP semantic & lexical alignment | Fidelity-audit renames + godoc fixes | Partly |
 | [0003](0003-endpoint-behavior-types.md) | Endpoint behavior types & provider model | Named `FilterPredicate`/`RoutingFunction`/…; expr becomes a provider; drop expr from core | Partly (amends ADR 0019) |
 | [0004](0004-trigger-scheduling.md) | Trigger-driven scheduling: Poller & scheduled sources | One `Trigger` SPI; extract `Poller`; dissolve `adapter/cron` | Partly (amends ADR 0016/0017) |
+| [0005](0005-eip-gap-components.md) | Fill the EIP scope gaps | Add Idempotent Receiver, Resequencer, Recipient List, Content Enricher, Message Expiration | No (additive) |
 
 ## How they relate
 
@@ -32,6 +34,9 @@ Each RFC follows the [RFC template](https://gist.github.com/rowlando/416f41e34fe
   Spring-aligned names so they add no new drift.
 - **0004 unifies** the Poller (RFC's item a) and the cron dissolution (item b) under one `Trigger` SPI —
   design them together, not as two shapes.
+- **0005 is additive and downstream** — it adds the patterns 0002's audit found missing, born into 0001's
+  `endpoint` package and reusing existing seams (`MessageGroupStore`, `adapter/database/sql`'s `InboxDeduper`).
+  Best landed after 0001; not part of the breaking window.
 
 ## Recommended sequencing (one breaking window)
 
@@ -39,7 +44,9 @@ Each RFC follows the [RFC template](https://gist.github.com/rowlando/416f41e34fe
    RFC-0004 phases 2–3 (extract `Poller`, add triggers, `WithTrigger` sugar), RFC-0002 godoc fixes.
 2. **The window** (breaking, one ADR + apidiff pass): RFC-0001 package moves + RFC-0002 renames together;
    then RFC-0003 phase 3 (drop expr from core) and RFC-0004 phases 4–5 (cron dissolution, robfig isolation).
-3. **Deferred:** RFC-0001 C-full (extract the engine to `runtime`) — once the API stabilises.
+3. **Additive, after the refactor:** RFC-0005's components, incrementally (Idempotent Receiver + Recipient
+   List first), born into the new `endpoint` package.
+4. **Deferred:** RFC-0001 C-full (extract the engine to `runtime`) — once the API stabilises.
 
 **Sequence the whole program after the pending feature roadmap** (see `docs/HANDOVER.md`); package moves and
 renames conflict badly with in-flight feature branches. Split from a quiet `main`.
