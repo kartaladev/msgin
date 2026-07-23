@@ -310,16 +310,16 @@ func (c *Config) eventNameOrDefault() string {
 	return c.eventName
 }
 
-// The five accessors below expose the resolved SSE-server settings NewSSEServer
+// The accessors below expose the resolved SSE-server settings NewSSEServer
 // (adapter/http/sse_server.go) reads. Unlike the exported-consumer accessors
 // above, they read cfg.<field> DIRECTLY with no nil/zero back-fill: their only
 // caller is a *SSEServer whose cfg always came from NewConfig (NewSSEServer's
 // constructor), which resolved every default and rejected every explicit
 // invalid value, so a zero/nil field can never reach them on any supported
 // path. They are named apart from the identically-named struct fields
-// (maxConnections, connectionBuffer, heartbeat, writeTimeout, sseClock) only
-// because Go forbids a method and a field sharing a name on one type — the
-// accessor is the field, resolved.
+// (maxConnections, connectionBuffer, heartbeat, writeTimeout, sseClock,
+// slowClientPolicy, replayBuffer) only because Go forbids a method and a field
+// sharing a name on one type — the accessor is the field, resolved.
 
 // maxConns is the resolved WithMaxConnections cap the SSE server enforces
 // before registering a new connection (default 1024).
@@ -343,6 +343,15 @@ func (c *Config) perWriteTimeout() time.Duration { return c.writeTimeout }
 // interval timing (default a real clock). It drives the LOGICAL heartbeat
 // cadence only; the per-write OS deadline uses real wall-clock time regardless.
 func (c *Config) streamClock() clockwork.Clock { return c.sseClock }
+
+// slowPolicy is the resolved WithSlowClientPolicy the SSE server's Send applies
+// to a connection whose per-connection buffer is full (default SlowClientDrop).
+func (c *Config) slowPolicy() SlowClientPolicy { return c.slowClientPolicy }
+
+// replaySize is the resolved WithReplayBuffer ring depth: the number of most
+// recent id-bearing events the SSE server retains for reconnect replay. 0 means
+// replay is OFF (the default) — no ring is kept and Last-Event-ID is ignored.
+func (c *Config) replaySize() int { return c.replayBuffer }
 
 // Option configures a Config built by NewConfig.
 type Option func(*Config)

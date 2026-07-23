@@ -1,11 +1,15 @@
 package msghttp
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/kartaladev/msgin"
 )
 
 // sseHeartbeat is the raw SSE COMMENT frame the writer emits every
@@ -17,7 +21,7 @@ import (
 var sseHeartbeat = []byte(": ping\n\n")
 
 // SSEServer is a Server-Sent Events fan-out hub: an http.Handler that registers
-// each GET request as a long-lived streaming connection and (from Task 5)
+// each GET request as a long-lived streaming connection and, via Send,
 // broadcasts messages to every connection. Build one with NewSSEServer.
 //
 // A hand-built &SSEServer{} is UNSUPPORTED and nil-dereferences on first use:
@@ -25,14 +29,21 @@ var sseHeartbeat = []byte(": ping\n\n")
 // nil-derefs. Always construct through NewSSEServer, which resolves a validated
 // Config and initializes the hub.
 //
-// SSEServer is safe for concurrent use: ServeHTTP, Close (and Send, Task 5) may
-// be called from many goroutines at once.
+// SSEServer is safe for concurrent use: ServeHTTP, Close, and Send may be
+// called from many goroutines at once.
 type SSEServer struct {
 	cfg *Config
 
 	mu     sync.Mutex
 	conns  map[*sseConn]struct{}
 	closed bool
+	// ring is the replay buffer: the most recent id-bearing event frames, in
+	// send order, capped at WithReplayBuffer entries (empty when replay is off).
+	// A reconnecting client that supplies a Last-Event-ID naming a ring entry has
+	// the frames after it snapshotted into its sseConn.replay at register time —
+	// all under mu, atomically with the registration, so no Send can interleave
+	// between the snapshot and the insert (INV-S5). Guarded by mu.
+	ring []ringEntry
 	// deadlineUnsupportedWarned latches the one-time WARN emitted when a
 	// connection's ResponseWriter does not support SetWriteDeadline (INV-S8 /
 	// audit F5): the per-write OS deadline is then unenforceable and the
@@ -46,16 +57,37 @@ type SSEServer struct {
 // handler registers, then loops draining frames until the client disconnects,
 // Close cancels it, or a write fails.
 type sseConn struct {
-	// frames carries live event frames from Send (Task 5) to this connection's
-	// writer; capacity is WithConnectionBuffer. Unused until Task 5, but sized
-	// here so the writer's select is complete.
+	// frames carries live event frames from Send to this connection's writer;
+	// capacity is WithConnectionBuffer.
 	frames chan []byte
 	// cancel cancels this connection's derived context, unblocking the writer's
-	// select so Close (and, in Task 5, the disconnect policy) can reap it.
+	// select so Close and the SlowClientDisconnect policy can reap it.
 	cancel context.CancelFunc
 	// done is closed by the handler on exit, AFTER it has unregistered — Close
 	// waits on it to join the writer.
 	done chan struct{}
+	// replay is the snapshot of ring frames (after the client's Last-Event-ID)
+	// taken atomically at register time; the writer writes them, in order, before
+	// entering its live-frame select loop. nil/empty means live-only. It is set
+	// once under mu at registration and thereafter read only by this connection's
+	// own writer goroutine, so it needs no further synchronization.
+	replay [][]byte
+	// remote is the connection's RemoteAddr, captured at register for the
+	// slow-client drop WARN. Read only after registration; no synchronization.
+	remote string
+	// warned latches the one-time SlowClientDrop WARN for this connection, and
+	// dropped counts how many events have been dropped for it (surfaced at DEBUG
+	// on each further drop). Both are guarded by SSEServer.mu.
+	warned  bool
+	dropped int
+}
+
+// ringEntry is one replay-buffer slot: an event's id and its fully-encoded SSE
+// frame. Only id-bearing events are ringed (an id-less frame can never be
+// resumed to), so id is always non-empty.
+type ringEntry struct {
+	id    string
+	frame []byte
 }
 
 // NewSSEServer builds an SSEServer from opts, validating them through NewConfig
@@ -66,7 +98,7 @@ type sseConn struct {
 //
 // Delivery is AT-MOST-ONCE: a frame is written to whichever connections are
 // registered when it is sent, with no acknowledgement, redelivery, or durable
-// buffering beyond the optional per-process replay ring (Task 5).
+// buffering beyond the optional per-process replay ring.
 //
 // Connected subscribers (and the replay ring) are PER-PROCESS in-memory state.
 // A subscriber connected to instance A sees only messages that reach A; in a
@@ -94,8 +126,12 @@ func NewSSEServer(opts ...Option) (*SSEServer, error) {
 	}, nil
 }
 
-// Interface guard: SSEServer is an http.Handler.
-var _ http.Handler = (*SSEServer)(nil)
+// Interface guards: SSEServer is an http.Handler (its inbound streaming side)
+// and a msgin.OutboundAdapter (its Send fan-out side).
+var (
+	_ http.Handler          = (*SSEServer)(nil)
+	_ msgin.OutboundAdapter = (*SSEServer)(nil)
+)
 
 // ServeHTTP registers r as an SSE streaming connection and serves it until the
 // client disconnects, Close is called, or a write fails. The guards run in a
@@ -145,6 +181,19 @@ func (s *SSEServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		frames: make(chan []byte, s.cfg.connBuffer()),
 		cancel: cancel,
 		done:   make(chan struct{}),
+		remote: r.RemoteAddr,
+	}
+	// Snapshot the replay tail and register in ONE critical section (INV-S5): a
+	// Send that appends to the ring is serialized against this whole block by mu,
+	// so it either lands in the snapshot (its id is in the ring, visible here) or
+	// it lands in conn.frames after the insert below — never lost in a gap
+	// between the two. Replay is best-effort: an unset ring, an absent
+	// Last-Event-ID, or an id already evicted all yield an empty (live-only)
+	// snapshot.
+	if s.cfg.replaySize() > 0 {
+		if lastID := r.Header.Get("Last-Event-ID"); lastID != "" {
+			conn.replay = s.replayAfter(lastID)
+		}
 	}
 	s.conns[conn] = struct{}{}
 	s.mu.Unlock()
@@ -174,6 +223,17 @@ func (s *SSEServer) runWriter(ctx context.Context, w http.ResponseWriter, flushe
 	s.applyWriteDeadline(w, r)
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
+
+	// Replay the ring tail (snapshotted at register, INV-S5) before any live
+	// frame, so a resuming client sees a contiguous stream: the events after its
+	// Last-Event-ID first, then whatever Send delivers next. Each replay frame
+	// goes through the same deadline→write→flush→error-exit path as a live frame,
+	// so a client that hangs up mid-replay is reaped identically.
+	for _, frame := range conn.replay {
+		if err := s.writeFrame(w, flusher, r, frame); err != nil {
+			return
+		}
+	}
 
 	// A nil ticker channel (heartbeat off) makes its select arm block forever at
 	// zero cost, so the loop needs no special-case for the off state.
@@ -282,4 +342,140 @@ func (s *SSEServer) Close(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// sseSlowClientDropMsg is the message logged (WARN on the first drop for a
+// connection, DEBUG on each subsequent one) when SlowClientDrop discards an
+// event for a connection whose buffer is full.
+const sseSlowClientDropMsg = "msghttp: SSE slow client; dropping event"
+
+// dropNotice is a deferred slow-client-drop log record: the observability is
+// decided under mu (which drop latches the WARN, its running count) but EMITTED
+// after mu is released, so a slow slog handler can never stall the broadcast the
+// way holding mu across the log call would.
+type dropNotice struct {
+	remote string
+	count  int
+	warn   bool // true = first drop for the connection (WARN); false = DEBUG
+}
+
+// Send fans msg out to every currently-registered connection as one SSE event,
+// non-blocking per connection: it encodes the event ONCE, then does a
+// non-blocking enqueue into each connection's bounded buffer, applying
+// WithSlowClientPolicy to any connection whose buffer is full. It never blocks
+// on, and never grows memory unboundedly for, a slow or dead subscriber
+// (INV-S2), and returns promptly — including with zero connections, where it is
+// a fire-and-forget no-op returning nil.
+//
+// Delivery is AT-MOST-ONCE: there is no acknowledgement or redelivery, and under
+// the default SlowClientDrop a full-buffer event is dropped for that one
+// connection (every other connection still receives it). ctx is used only for
+// the drop-observability log records; the enqueue itself cannot block, so there
+// is nothing for a cancelled ctx to interrupt.
+//
+// Errors are Permanent (a retry cannot fix them):
+//
+//   - a payload that is neither []byte nor string → Permanent(ErrUnsupportedPayload);
+//   - an id or event name carrying CR/LF/NUL → Permanent(ErrInvalidEventField),
+//     with ZERO bytes reaching any subscriber (the injection is rejected before
+//     any fan-out, INV-S1);
+//   - a Send after Close → Permanent(ErrSSEServerClosed).
+//
+// When WithReplayBuffer is enabled, an event with a non-empty id is appended to
+// the replay ring (evicting the oldest past the cap) so a reconnecting client
+// can resume from it. An id-less event still fans out live but is NEVER ringed —
+// it has no id a Last-Event-ID could name.
+func (s *SSEServer) Send(ctx context.Context, msg msgin.Message[any]) error {
+	ev, err := SSEEventFromMessage(msg, s.cfg)
+	if err != nil {
+		return msgin.Permanent(err)
+	}
+	// EncodeSSEEvent cannot fail here: SSEEventFromMessage already validated ev's
+	// id and name (the sole ErrInvalidEventField source — Data is never
+	// validated), and a bytes.Buffer write never errors. The error is
+	// structurally nil, so it is deliberately dropped rather than guarded by a
+	// branch no caller can reach.
+	var buf bytes.Buffer
+	_ = EncodeSSEEvent(&buf, ev)
+	frame := buf.Bytes()
+
+	var notices []dropNotice
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return msgin.Permanent(ErrSSEServerClosed)
+	}
+	if s.cfg.replaySize() > 0 && ev.ID != "" {
+		s.appendRing(ringEntry{id: ev.ID, frame: frame})
+	}
+	for conn := range s.conns {
+		select {
+		case conn.frames <- frame:
+			continue
+		default:
+		}
+		// Buffer full: this connection is slow. Apply the policy WITHOUT ever
+		// blocking on the channel — a blocking send here would let one slow client
+		// stall the whole broadcast.
+		if s.cfg.slowPolicy() == SlowClientDisconnect {
+			conn.cancel()
+			continue
+		}
+		// SlowClientDrop: drop this one event for this one connection, latching a
+		// one-time WARN (running count at DEBUG thereafter). The log record is
+		// emitted after mu is released.
+		conn.dropped++
+		notices = append(notices, dropNotice{remote: conn.remote, count: conn.dropped, warn: !conn.warned})
+		conn.warned = true
+	}
+	s.mu.Unlock()
+
+	for _, n := range notices {
+		if n.warn {
+			s.cfg.log().WarnContext(ctx, sseSlowClientDropMsg,
+				slog.String("remote", n.remote), slog.Int("dropped", n.count))
+			continue
+		}
+		s.cfg.log().DebugContext(ctx, sseSlowClientDropMsg,
+			slog.String("remote", n.remote), slog.Int("dropped", n.count))
+	}
+	return nil
+}
+
+// appendRing appends e to the replay ring, evicting the oldest entries so the
+// ring never exceeds WithReplayBuffer. It shifts surviving entries down to the
+// front (rather than reslicing off the head) so the backing array does not
+// retain evicted frames or grow its offset unboundedly. Caller holds mu.
+func (s *SSEServer) appendRing(e ringEntry) {
+	if max := s.cfg.replaySize(); len(s.ring) >= max {
+		n := copy(s.ring, s.ring[len(s.ring)-max+1:])
+		s.ring = s.ring[:n]
+	}
+	s.ring = append(s.ring, e)
+}
+
+// replayAfter returns copies of the ring frames AFTER the last entry whose id
+// equals lastID — the events a client resuming from lastID has not yet seen. It
+// scans for the LAST match so that, if a flow bug produced duplicate ids, resume
+// picks the most recent occurrence (resume assumes unique HeaderMessageIDs). An
+// unknown or already-evicted id yields nil (live-only, best-effort). Caller
+// holds mu; the returned slice is a fresh snapshot the caller's connection owns,
+// so later ring mutation cannot disturb it. Frames themselves are never mutated
+// after creation, so copying the slice of references is sufficient.
+func (s *SSEServer) replayAfter(lastID string) [][]byte {
+	idx := -1
+	for i := range s.ring {
+		if s.ring[i].id == lastID {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		return nil
+	}
+	tail := s.ring[idx+1:]
+	frames := make([][]byte, len(tail))
+	for i := range tail {
+		frames[i] = tail[i].frame
+	}
+	return frames
 }
