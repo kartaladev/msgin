@@ -348,8 +348,9 @@ they catch.
 
 **Files:** create `adapter/http/example_sse_client_test.go` (`ExampleNewSSEClient` — against a tiny
 `httptest.Server` emitting fixed events, deterministic `// Output:`); modify `adapter/http/doc.go` (S-in
-paragraph: triage contract, at-most-once + resume caveat, multi-instance godoc text); test additions in
-`adapter/http/stdlib/sse_test.go` or a new `adapter/http/stdlib/sse_e2e_test.go`.
+paragraph: triage contract, at-most-once + resume caveat, multi-instance godoc text); test additions in a new
+`adapter/http/sse_e2e_test.go` (both `SSEServer` and `SSEClient` now live in `msghttp` — Addendum C8 — so the
+cross-phase resume e2e is a single `package msghttp_test` file, no `stdlib`).
 
 - [ ] **The resume e2e the two plans exist for:** `SSEServer` (`WithReplayBuffer(n)`) ↔ `SSEClient` over
       `httptest.Server` — client receives `1..k`, connection killed server-side, client reconnects (fake-clock

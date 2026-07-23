@@ -566,3 +566,30 @@ the remote is untrusted input, and without the cap a single endless `data:` line
 resets at each line ending, the data buffer at each dispatch; comments, ignored fields, and blank lines never
 accumulate, so a long-lived idle stream of `: ping` keep-alives never false-trips, while a single unterminated line
 or an oversized multi-`data:` event still trips.
+
+### C8 — SSE server placement: `msghttp`, not `adapter/http/stdlib` (audit round 4, 2026-07-24)
+
+**Decision.** The stateful `SSEServer` (the hub + `ServeHTTP` + `Send` + `Close`) lives in **`adapter/http` (package
+`msghttp`)**, alongside `Outbound`/`NewExchange`/`ServeAsync`/`ServeGateway` — NOT in `adapter/http/stdlib`. It reads
+its resolved configuration through **unexported, same-package `Config` accessors** (`cfg.maxConnections()`,
+`cfg.connectionBuffer()`, `cfg.slowClientPolicy()`, `cfg.replayBuffer()`, `cfg.heartbeat()`, `cfg.writeTimeout()`,
+`cfg.sseClock()`), mirroring the existing `cfg.maxBody()`/`cfg.log()`/`cfg.clockOrDefault()`/`cfg.eventNameOrDefault()`.
+There is no `stdlib` passthrough for the SSE server; consumers call `msghttp.NewSSEServer`.
+
+**Why (settled with the user at plan-execution time).** Plan 025 originally placed the server in `stdlib` and had it
+read `cfg.<field>` "directly" — but that is same-package shorthand that cannot cross the `msghttp`→`stdlib` boundary:
+all 13 `Config` accessors are **deliberately unexported** (`outbound.go:28`: "intentionally no accessor"), and
+`stdlib` is pure thin sugar that delegates to the exported `msghttp.ServeAsync`/`ServeGateway` handler logic. A
+`stdlib`-hosted hub would force the **first-ever exported `Config` getters**, breaking that encapsulation and leaking
+the resolved-config shape into the public API. The established pattern is "cfg-reading logic lives in `msghttp`;
+`stdlib` is a net/http-registration convenience" — the SSE server, a stateful cfg-reading `OutboundAdapter` that is
+also an `http.Handler` (exactly like the net/http handler functions already in `msghttp`), belongs in `msghttp`.
+This is symmetric with the S-in client placement (Plan 026, recorded as Addendum C7) and with `Outbound` (an
+`OutboundAdapter` already in `msghttp`). Rejected: exported `Config` accessors (breaks the encapsulation; every
+future binding would read cfg through public getters), and keeping the hub in `stdlib` (impossible without the above).
+
+**Consequences.** `stdlib` is **untouched** by Plan 025. A future gin S-out binding (Phase 5) reuses the exported
+framework-neutral core (`SSEEventFromMessage`, `EncodeSSEEvent`) and, if it needs the hub, extracts a framework-neutral
+subscribe seam then — a Phase-5 concern, not built now (YAGNI). The SSE server's `http.Server{WriteTimeout: 0}`
+deployment guidance moves to `adapter/http/doc.go` (cross-referencing `stdlib/doc.go`'s existing snippet). The SSE
+server's tests are `package msghttp_test`, sharing that package's existing `goleak.VerifyTestMain`.

@@ -368,8 +368,9 @@ follows. **NON-GUARANTEE:** msgin performs **no** private-IP, link-local, loopba
     event still trips. Implemented over `bufio.Reader` with explicit byte accounting (no `bufio.Scanner`: its token
     cap and line splitting fit neither CR-only endings nor the cap semantics). Both halves are goroutine-free state
     machines — unit-testable without a network; the parser is a fuzz target (§7).
-- **S-out SSE server** (`adapter/http/stdlib`, Plan 025) — `NewSSEServer(opts…) (*SSEServer, error)` is **both** an
-  `http.Handler` and an `OutboundAdapter`. **Hub model (C4): mutex registry** — a `sync.Mutex`-guarded connection
+- **S-out SSE server** (`adapter/http`, package `msghttp` — ADR 0023 Addendum C8; the stateful hub reads unexported
+  same-package `Config` accessors, so it lives with `Outbound`/`ServeAsync`, not in the thin `stdlib` binding),
+  Plan 025 — `NewSSEServer(opts…) (*SSEServer, error)` is **both** an `http.Handler` and an `OutboundAdapter`. **Hub model (C4): mutex registry** — a `sync.Mutex`-guarded connection
   set; each connection owns a bounded event channel (`WithConnectionBuffer`, default **16**) drained by its **one
   owned writer goroutine** (encode → `Flush`), all joined by `Close(ctx)` within ctx's deadline. Every `Write`/`Flush`
   is bounded by a **per-write OS deadline** (`WithWriteTimeout`, default **30 s**) set via `http.ResponseController`
@@ -600,7 +601,7 @@ the *client* retries on `5xx`. A body-write failure after the committed `200` is
 |-------|------|---------|------------|
 | **1** ✅ **DELIVERED** | [020](../plans/020-http-adapter-inbound.md) | `adapter/http` shared encode core + `adapter/http/stdlib` inbound (I1, I2) → `http.Handler`; ADR 0023 (+ Addendum A) | ADR 0022 |
 | **2** ✅ **DELIVERED** | [024](../plans/024-http-outbound.md) | `adapter/http` outbound (O1 webhook `OutboundAdapter`, O2 `RequestReplyExchange`); ADR 0023 (+ Addendum B) | Phase 1; Plan 023 (`WithProducerRetry`) |
-| **3** | 025 | `adapter/http` shared SSE core (`sse.go`) + `adapter/http/stdlib` SSE server (S-out); ADR 0023 (+ Addendum C) | Phase 1 |
+| **3** | 025 | `adapter/http` (`msghttp`): shared SSE core (`sse.go`) + SSE server (S-out, `sse_server.go` — Addendum C8, not `stdlib`); ADR 0023 (+ Addendum C) | Phase 1 |
 | **4** | 026 | `adapter/http/stdlib` SSE client (S-in, `StreamingSource`) | Phase 3 (the `sse.go` core + Addendum C) |
 | **5** | 027 | `adapter/http/gin` module — gin bindings for I1/I2/S-out + `RegisterRoutes`; ADR 0024 (gin dependency) | Phases 1, 3 |
 

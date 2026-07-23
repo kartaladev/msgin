@@ -18,9 +18,17 @@
 > TDD-first from the invariants and branch tables below.
 
 **Goal.** Ship Spec 011 Phase 3: the **shared SSE core** in `adapter/http` (`SSEEvent`, `EncodeSSEEvent`,
-`SSEEventFromMessage`, the WHATWG `SSEParser` — Phase 4 consumes the parser) and the **S-out SSE server** in
-`adapter/http/stdlib` — `NewSSEServer`, both an `http.Handler` and an `msgin.OutboundAdapter`, fanning flow messages
-out to connected `text/event-stream` subscribers.
+`SSEEventFromMessage`, the WHATWG `SSEParser` — Phase 4 consumes the parser) and the **S-out SSE server** — also in
+`adapter/http` (package `msghttp`) — `NewSSEServer`, both an `http.Handler` and an `msgin.OutboundAdapter`, fanning
+flow messages out to connected `text/event-stream` subscribers.
+
+> **Placement (settled 2026-07-24, audit-round-4 gap — ADR 0023 Addendum C8):** the stateful `SSEServer` lives in
+> **`msghttp`**, NOT `adapter/http/stdlib`. It must read resolved `Config` values whose accessors are **unexported
+> and same-package** in `msghttp` (all 13 are, deliberately — `outbound.go:28` "intentionally no accessor"), and
+> `stdlib` is pure thin sugar that delegates to `msghttp.ServeAsync`. Putting the hub in `stdlib` would force the
+> first-ever exported `Config` getters, breaking that encapsulation. So — like `Outbound`/`ServeAsync` and the
+> just-moved S-in client (C7) — the SSE server's hub + `ServeHTTP` + `Send` + `Close` live in `msghttp`, reading
+> `cfg` via new unexported same-package accessors. No `stdlib` passthrough.
 
 **Architecture.** Decisions C1–C6 of [ADR 0023 Addendum C](../adrs/0023-http-channel-adapter.md#addendum-c--sse-design-decisions-phases-34):
 mutex-registry hub, **zero spawned goroutines** (the per-connection writer *is* the net/http handler goroutine),
@@ -31,8 +39,8 @@ is **at-most-once, per-process** (multi-instance obligations below). **A per-wri
 goroutine — the mechanism that makes `Close`'s join and the disconnect policy actually reap connections under the
 mandatory `WriteTimeout: 0` server config (audit BLOCKER-1; amends C4). No new dependency.
 
-**Tech stack.** Go 1.25 (`GOTOOLCHAIN=go1.25.12`), root module: package `msghttp` in `adapter/http` (core) +
-package `stdlib` in `adapter/http/stdlib` (server binding).
+**Tech stack.** Go 1.25 (`GOTOOLCHAIN=go1.25.12`), root module: package `msghttp` in `adapter/http` — both the SSE
+core AND the SSE server (per Addendum C8; `stdlib` is untouched by this plan).
 
 **Traceability.** Implements [Spec 011](../specs/011-http-adapter.md) §3.5 (Phase 3 rows), §3.6, §4, §7; decided by
 [ADR 0023](../adrs/0023-http-channel-adapter.md) Addendum C (C1–C6). Follows Plan 024 (Phase 2 — merged @ `51330e9`).
@@ -65,7 +73,8 @@ Capture before Task 1: `GOTOOLCHAIN=go1.25.12 go test ./... -race >/dev/null && 
 
 - **Go 1.25 only.** `GOTOOLCHAIN=go1.25.12` on every invocation.
 - **No new dependency.** `go.mod`/`go.sum` byte-identical at the end (`go mod tidy && git diff --exit-code go.mod go.sum`).
-- **Blackbox only** — `package msghttp_test` / `package stdlib_test`, exported API only. No whitebox test, ever.
+- **Blackbox only** — `package msghttp_test` (the SSE server now lives in `msghttp`, so its tests share that
+  package's existing `goleak.VerifyTestMain`), exported API only. No whitebox test, ever.
 - **Assert-closure tables always** (`table-test`); `t.Context()`, never `context.Background()`, outside `Example`s.
 - **Hermetic HTTP only** (Spec 011 §7): `httptest.Server`, `httptest.NewRecorder`, hand-built writer fakes. No network.
 - **Do NOT add `defer goleak.VerifyNone(t)`** — both packages already run `goleak.VerifyTestMain`; per-test
@@ -76,7 +85,8 @@ Capture before Task 1: `GOTOOLCHAIN=go1.25.12 go test ./... -race >/dev/null && 
 - **Never call `require`/`t.Fatal`/`t.FailNow` from a spawned goroutine** — buffer and assert on the test goroutine.
 - **Every task ends in a green commit** — `GOTOOLCHAIN=go1.25.12 go test ./... -race` passes — with
   `Spec: 011` / `Plan: 025` / `ADR: 0023` trailers.
-- **Coverage gate: both packages stay at 100.0%** (`go tool cover -func` per function) — a **delivery** gate
+- **Coverage gate: `adapter/http` (`msghttp`) stays at 100.0%** (`go tool cover -func` per function) — the SSE
+  server now lives here too, so one package carries it; `stdlib` is untouched by this plan — a **delivery** gate
   (Task 6), not a literal per-task gate where a helper is first reachable in a later task (the Plan 024 Task-1
   lesson). If an arm proves blackbox-unreachable during implementation, **DELETE it** (Plan 023 Task 1 precedent);
   never `//nolint`, never relax the gate.
@@ -106,9 +116,12 @@ The `Config` nil-safety contract covers **exported `*Config`-taking functions** 
   `NewSSEParser(r)` with default options must work — so `eventNameOrDefault()` and the parser's cap resolution get
   nil/zero-Config fallbacks, provable blackbox.
 - **DO NOT WRITE** nil-fallback accessors whose only caller sits behind `NewSSEServer` (its cfg always came from
-  `NewConfig`): read `cfg.maxConnections`, `cfg.connectionBuffer`, `cfg.slowClientPolicy`, `cfg.replayBuffer`,
-  `cfg.heartbeat`, `cfg.writeTimeout`, `cfg.sseClock` directly. A hand-built `&stdlib.SSEServer{}` is unsupported and nil-derefs —
-  say so in the type godoc (the `&msghttp.Outbound{}` precedent).
+  `NewConfig`). Because the server now lives in `msghttp` (Addendum C8), add **non-nil-safe unexported same-package
+  accessors** on `Config` — `cfg.maxConnections()`, `cfg.connectionBuffer()`, `cfg.slowClientPolicy()`,
+  `cfg.replayBuffer()`, `cfg.heartbeat()`, `cfg.writeTimeout()`, `cfg.sseClock()` — mirroring the existing unexported
+  accessors (`cfg.maxBody()`, `cfg.log()`, `cfg.clockOrDefault()`, `cfg.eventNameOrDefault()`, …). They read the
+  resolved field directly (no nil guard). A hand-built `&msghttp.SSEServer{}` is unsupported and nil-derefs — say so
+  in the type godoc (the `&msghttp.Outbound{}` precedent).
 
 ---
 
@@ -257,9 +270,9 @@ ErrInvalidEventField, ErrEventTooLarge, ErrInvalidMaxEventBytes, ErrInvalidMaxCo
 ErrInvalidConnectionBuffer, ErrInvalidSlowClientPolicy, ErrInvalidReplayBuffer, ErrInvalidHeartbeat,
 ErrInvalidWriteTimeout, ErrSSEServerClosed
 
-// adapter/http/stdlib — sse.go
+// adapter/http (package msghttp) — sse_server.go   [C8: was adapter/http/stdlib; Option is the same package's Option]
 type SSEServer struct{ /* unexported */ }
-func NewSSEServer(opts ...msghttp.Option) (*SSEServer, error)
+func NewSSEServer(opts ...Option) (*SSEServer, error)
 func (s *SSEServer) ServeHTTP(w http.ResponseWriter, r *http.Request)
 func (s *SSEServer) Send(ctx context.Context, msg msgin.Message[any]) error
 func (s *SSEServer) Close(ctx context.Context) error
@@ -477,9 +490,10 @@ test file comment; buffer/policy/replay/heartbeat behavior lands in Tasks 4–5.
 
 ### Task 4 — `SSEServer` lifecycle: constructor, `ServeHTTP`, heartbeat, `Close`
 
-**Files:** create `adapter/http/stdlib/sse.go`, `adapter/http/stdlib/sse_test.go`.
+**Files:** create `adapter/http/sse_server.go`, `adapter/http/sse_server_test.go` (package `msghttp` / test
+`msghttp_test` — Addendum C8).
 
-**Interfaces — Consumes:** Task 3's resolved `Config` (direct field reads — see coverage realism);
+**Interfaces — Consumes:** Task 3's resolved `Config` (via new unexported same-package accessors — see coverage realism);
 `msghttp.EncodeSSEEvent` (heartbeat writes the raw `: ping\n\n` comment bytes directly — comments are not events;
 document the constant). **Produces:** `NewSSEServer`/`ServeHTTP`/`Close` per the surface block; `Send` lands in
 Task 5 (until then `Send` is **not stubbed** — the type simply doesn't implement `OutboundAdapter` yet; the
@@ -518,9 +532,9 @@ deadline+write+flush+error-exit path as frames.
 
 ### Task 5 — `Send` fan-out, slow-client policies, replay ring
 
-**Files:** modify `adapter/http/stdlib/sse.go` (+`sse_test.go`).
+**Files:** modify `adapter/http/sse_server.go` (+`sse_server_test.go`), package `msghttp`.
 
-**Interfaces — Consumes:** `msghttp.SSEEventFromMessage`, `msghttp.EncodeSSEEvent` (Task 1). **Produces:**
+**Interfaces — Consumes:** `SSEEventFromMessage`, `EncodeSSEEvent` (Task 1, same package). **Produces:**
 `Send` + the `var _ msgin.OutboundAdapter = (*SSEServer)(nil)` assertion; the full INV-S1/S2/S4/S5 behavior.
 
 Normative behavior: the Hub design section. Drop-arm observability: WARN once per connection (the `warned` latch)
@@ -552,9 +566,10 @@ asserts the WARN record (INV-S2's instrumentation).
 
 ### Task 6 — examples, package docs, delivery gate
 
-**Files:** modify `adapter/http/stdlib/doc.go` (SSE deployment section), `adapter/http/doc.go` (SSE core
-paragraph); create `adapter/http/stdlib/example_sse_test.go` (`ExampleNewSSEServer` — subscribe-and-send over
-`httptest`, deterministic `// Output:`).
+**Files:** modify `adapter/http/doc.go` (SSE core paragraph + the SSE server deployment section — the server lives
+in `msghttp` now, C8, so its `http.Server{WriteTimeout: 0}` deployment note lives here, cross-referencing
+`stdlib/doc.go`'s existing "Deploying these handlers safely" snippet); create `adapter/http/example_sse_server_test.go`
+(`ExampleNewSSEServer` — subscribe-and-send over `httptest`, deterministic `// Output:`), package `msghttp_test`.
 
 - [ ] **doc.go obligation (Spec §4's "SSE timeout shape"):** the existing "Deploying these handlers safely"
       `http.Server` snippet mandates `WriteTimeout` — an SSE stream **dies at WriteTimeout**. Add the SSE
@@ -567,7 +582,8 @@ paragraph); create `adapter/http/stdlib/example_sse_test.go` (`ExampleNewSSEServ
 - [ ] Gate, in order (CLAUDE.md §5): `/code-review` on the branch diff → fix; **dedicated `/security-review`**
       (the Spec §4 Phase-3 mandate — SSE server is an untrusted-input boundary; attack surfaces: field injection,
       connection exhaustion, slow-client memory, replay-ring memory) → fix; coverage `go tool cover -func` —
-      both packages 100.0%, every branch-table row checked off; fuzz 30s clean; **mutation spot-checks** on
+      `adapter/http` 100.0% (the server lives here now, C8; `stdlib` unchanged), every branch-table row checked off;
+      fuzz 30s clean; **mutation spot-checks** on
       INV-S1 (drop the validation), INV-S2 (make enqueue blocking), INV-S6 (remove one of the two cap counters →
       a named INV-S6 test RED), INV-S8 (remove the per-write `SetWriteDeadline` → INV-S8 test RED) — each must turn
       a named test RED (the whole-branch-review memory lesson); **plus an INV-S5 *inspection* check (F2): confirm
