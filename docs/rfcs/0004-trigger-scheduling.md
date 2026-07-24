@@ -57,6 +57,16 @@ else `LastCompleted+d`, **reproducing today's drain-fast/idle-slow exactly**; **
 - **SQL coordination** (`SQLElector`/`SQLLocker`/`LockerDialect`/dialects) moves to `adapter/database/sql`,
   reusing its `Querier` (removes the duplication) and dialect seam.
 
+> **Audit (2026-07-24) — the dialect seam is realized as separate MODULES; decide where the Locker dialects
+> land.** `adapter/cron` today keeps its concrete `PostgresLocker`/`MySQLLocker`/`SQLiteLocker` (and matching
+> Electors) **monolithic in one root-module file** (`adapter/cron/dialect.go`), and both `adapter/cron` and
+> `adapter/database/sql` are part of the **root module**, so the *core* move is within-module (good — `Querier`
+> dedup is clean). BUT `adapter/database/sql` realizes its dialect seam as **per-dialect submodules**
+> (`postgres`/`mysql`/`sqlite`, each its own `go.mod` — ADR 0011/0012). The plan MUST decide: do the Locker/
+> Elector dialect impls follow that convention into the per-dialect submodules (consistent with ADR 0011/0012,
+> but changes each consumer's import path), or stay monolithic in the sql core (simpler, but diverges from the
+> adapter it's joining)? This is unaddressed in the draft and changes the public import surface either way.
+
 Dependency graph (inward, acyclic): `CronTrigger`(robfig) → runtime SPI ← `adapter/database/sql`(SQL coord).
 
 ### Examples
@@ -72,9 +82,20 @@ Dependency graph (inward, acyclic): `CronTrigger`(robfig) → runtime SPI ← `a
   (correct for cron/rate), drain-fast retained inside adaptive `FixedDelay`.
 - **Credit exhausted at a scheduled fire:** *block* (late but never over-pull; default) vs opt-in
   *try-and-skip* (punctual, overrun-skip).
-- **`robfig` boundary:** keep the core robfig-free — `CronTrigger` in its **own module** (like pgx/redis/nats,
-  recommended) or a same-module `trigger/cron` subpackage. Alternative (rejected): accept robfig into core and
-  re-ratify ADR 0016 — opposite to RFC-0003's direction.
+- **`robfig` boundary:** keep the core robfig-free — `CronTrigger` in its **own module** (recommended) or a
+  same-module `trigger/cron` subpackage. Alternative (rejected): accept robfig into core and re-ratify ADR 0016
+  — opposite to RFC-0003's direction.
+
+> **Audit (2026-07-24) — "own vs same-module" is load-bearing, not stylistic (see Open Question 1).** The core
+> *package* is **already** robfig-free: `go list -deps .` today shows no `robfig` — only `adapter/cron` (a
+> separate package in the same root module) imports it. The genuine, unrealized goal is removing `robfig` from
+> the **root module's `go.mod`** (`go.mod` line 8), which is forced on every root-module consumer. That is
+> achieved **only by moving `CronTrigger` to its own module**; a same-module `trigger/cron` subpackage leaves
+> `robfig` in the root require and delivers **none** of the dependency-policy benefit. Also: (a) the removed
+> "like pgx/redis/nats" analogy pointed at modules that **do not exist yet** — only `memory`, `database/sql`
+> (+dialect submodules), `cron`, and `http` are built; (b) this move **reverses ADR 0016**, which deliberately
+> accepted `robfig` as a root-module exception, so the window must supersede ADR 0016 **and** amend CLAUDE.md's
+> Dependency policy (which still enumerates `robfig` as accepted).
 
 ### Trade-offs
 
@@ -102,8 +123,10 @@ phases 4–5 move import paths (breaking).
 
 ### Success Metrics
 
-Core package deps exclude `robfig`; default polling behaviour byte-identical (poll-loop tests unchanged);
-cron overrun-skip / timezone / seconds / unsatisfiable-schedule semantics preserved by the relocated tests.
+**Root module `go.mod` no longer requires `robfig`** (the operative metric — the *core package* already
+excludes it per `go list -deps .`, so "core package deps exclude robfig" was already true and is the wrong
+target; see the audit note in §4); default polling behaviour byte-identical (poll-loop tests unchanged); cron
+overrun-skip / timezone / seconds / unsatisfiable-schedule semantics preserved by the relocated tests.
 
 ## 6. Risks & Mitigations
 
@@ -117,7 +140,8 @@ cron overrun-skip / timezone / seconds / unsatisfiable-schedule semantics preser
 
 ## 7. Open Questions
 
-1. `CronTrigger` — own module vs same-module subpackage.
+1. `CronTrigger` — own module vs same-module subpackage. **(Load-bearing — see §4 audit note: only "own
+   module" removes `robfig` from the root `go.mod`; a subpackage delivers no dependency-policy benefit.)**
 2. Export `Poller` publicly, or only expose `WithTrigger`?
 3. Trigger set for v1 — `FixedDelay`+`FixedRate`+`Once`+`Cron`, or a subset?
 4. Block vs opt-in skip on credit exhaustion at a scheduled fire.

@@ -41,6 +41,13 @@ Base constructors just get typed (`func Filter[A any](p FilterPredicate[A], opts
 **Naming a func type is backward-compatible** — a bare closure stays assignable — so introducing the types is
 non-breaking.
 
+> **Audit (2026-07-24) — "non-breaking" is source-level; expect an apidiff signal.** Callers passing bare
+> closures or func literals still compile (Go assignability), so phase 1 is **source-compatible**. But the
+> library quality gate runs `apidiff`/`gorelease`, which **will report the parameter-type change** on each
+> typed constructor. That is expected and benign — the plan should record it as a *reviewed, source-compatible*
+> apidiff entry rather than claim zero apidiff output, so the gate's "only intended changes" check passes
+> deliberately rather than by surprise.
+
 Expr becomes a provider (in `endpoint/expr`, or its own module) that returns `(T, error)`:
 
 ```go
@@ -83,7 +90,15 @@ core (amends ADR 0019), which is the breaking step.
 1. Introduce the named types + type the base constructors — **non-breaking**, ship first. — S
 2. Add the `endpoint/expr` provider package producing those types — additive. — M
 3. Deprecate the core `*Expr` (thin shims over the provider), drop `expr-lang` from core deps; amend
-   ADR 0019 — **breaking**, in the window. — S
+   ADR 0019 **and CLAUDE.md's Dependency policy** (which lists `expr-lang` as one of the three accepted
+   core-module exceptions) in the same commit — **breaking**, in the window. — S
+
+> **Audit (2026-07-24) — verified & scoped.** `go list -deps .` today pulls in the full `expr-lang` tree via
+> `expr.go`/`doc_composition.go`, so the motivation is real and phase 3 genuinely removes a forced transitive
+> dep. Two consequences to encode in the plan: (a) removing `expr-lang` from the **root module** requires the
+> provider to live in a **separate module** (an `endpoint/expr` *subpackage* in the root module would leave
+> `expr-lang` in the root `go.mod`); (b) the CLAUDE.md Dependency-policy edit is mandatory, not optional — that
+> file currently ratifies `expr-lang` as a core exception, and traceability forbids leaving it stale.
 
 ### Timeline
 

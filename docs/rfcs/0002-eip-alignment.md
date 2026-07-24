@@ -85,7 +85,8 @@ RFC-0003/0004's new names.
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Rename churn across adapters/examples | Wide diff | Bundle with RFC-0001's moves; `gopls` rename |
+| Rename churn across adapters/examples | Wide diff | Bundle with RFC-0001's moves; `gopls` rename. **Audit (2026-07-24):** churn scales with the corrected **87** adapter-referenced `msgin.*` symbols (see RFC-0001), not ~40 — size the apidiff/review pass for that. |
+| Renamed symbols documented in CLAUDE.md | Stale docs / traceability breach | The window must also update CLAUDE.md's Architecture-blueprint naming (e.g. `StreamingSource`→`EventDrivenSource`) in the same commit, per the traceability rule |
 | Interface segregation breaks implementers | Compile breaks downstream | Pre-v1; document in `MIGRATION.md` |
 | Over-aligning to Spring hurts Go ergonomics | Awkward API | Keep Go-idiomatic names where clearer (e.g. `FilterPredicate`) |
 

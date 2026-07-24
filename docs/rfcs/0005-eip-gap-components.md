@@ -37,11 +37,25 @@ Recipient List first**, then Resequencer, then Content Enricher and Message Expi
 | Content Enricher | `Enricher` | 1→1 | `Transform` + Gateway/Exchange for external lookup | S |
 | Message Expiration | (header) | 1→0/1 | `HeaderTimestamp` + invalid/expired sink | S |
 
-- **Idempotent Receiver.** A `DedupStore` SPI in core (`SeenBefore`/claim-settle keyed by a dedup key, default
-  `HeaderMessageID`, overridable to a business key); a receiver endpoint/decorator that Acks-and-drops a
-  duplicate. Impls: memory + `adapter/database/sql` (**expose the existing `InboxDeduper` as a `DedupStore`**).
-  Turns at-least-once into effectively-once. *Subtlety:* a legitimate retry/redelivery must not be seen as a
-  duplicate — reuse `InboxDeduper`'s claim/settle semantics, don't roll a naive "mark seen on receipt."
+- **Idempotent Receiver.** A `DedupStore` SPI in core keyed by a dedup key (default `HeaderMessageID`,
+  overridable to a business key), and a receiver endpoint that drops a duplicate. Impls: memory +
+  `adapter/database/sql` (reuse the existing `InboxDeduper`).
+
+  > **Audit (2026-07-24) — `InboxDeduper` has no claim/settle protocol; the naive decorator reintroduces the
+  > very race this bullet warns about.** The draft said to "reuse `InboxDeduper`'s **claim/settle** semantics."
+  > It has none: its API is `MarkProcessed(ctx, tx *sql.Tx, msgID) (already bool, err)` (`inbox_dedup.go:126`)
+  > — a **single, transactional** mark-processed. Its retry-vs-duplicate correctness comes entirely from
+  > running **inside the caller's business transaction**, atomic with the handler's work: if the handler's tx
+  > rolls back, the dedup mark rolls back with it, so a redelivery is correctly re-processed. A `DedupStore`
+  > decorator that runs **before** the handler and "Acks-and-drops a duplicate" (as the original example
+  > implied) is **not** transaction-coupled — a crash after the mark commits but before the handler completes
+  > loses the message: exactly the failure this pattern must prevent. **Design consequence:** the `DedupStore`
+  > SPI must be shaped around transactional-inbox reality — either (i) the store's claim participates in the
+  > same transaction/settlement as the handler (the endpoint dedups *and* settles atomically), or (ii) a
+  > genuine two-phase `Claim`→`Settle`/`Release` contract is defined and **`InboxDeduper` gets a new method to
+  > satisfy it** (it cannot today). Do **not** model this as a pre-handler mark-seen decorator over the current
+  > `MarkProcessed`. Settle this in Open Question 6 before promotion. Turns at-least-once into effectively-once
+  > *only if* this coupling is correct.
 - **Resequencer.** The Aggregator's sibling: buffer correlated messages, release them in ascending
   `HeaderSequenceNumber` as a contiguous prefix completes; hold gaps; on timeout release-partial-in-order or
   route to an expired sink. **Reuse `MessageGroupStore`** + an ordered release strategy. Single-process by
@@ -105,7 +119,7 @@ branch tested; multi-instance behaviour documented (in-process vs durable seam) 
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Idempotent Receiver dedups a legitimate retry | Message loss | Reuse `InboxDeduper` claim/settle; don't mark-seen-on-receipt |
+| Idempotent Receiver dedups a legitimate retry / drops after a crash | Message loss | **Audit (2026-07-24):** `InboxDeduper` is transactional `MarkProcessed`, not claim/settle — make the dedup mark atomic with handler settlement (or define a real two-phase `Claim`/`Settle` and extend `InboxDeduper`); never a pre-handler mark-seen decorator (see §3 audit note) |
 | Resequencer unbounded buffering on a missing sequence member | Memory/DB growth | Order-timeout → partial release / expired sink; bound the store |
 | Surface bloat from marginal patterns | Maintenance cost | Gate Content Enricher on whether it beats plain `Transform` (§7) |
 | New names re-introduce lexical drift | Consensus drift | Use Spring names (`RecipientListRouter`, `Resequencer`, `IdempotentReceiver`); coordinate with RFC-0002 |
@@ -117,6 +131,10 @@ branch tested; multi-instance behaviour documented (in-process vs durable seam) 
 3. Resequencer — its own `ResequencerStore`, or reuse `MessageGroupStore` with an ordered release strategy?
 4. Message Expiration — divert to the invalid-message sink, or a dedicated expired sink?
 5. Priority/scope for v1 — all five, or just Idempotent Receiver + Recipient List + Resequencer?
+6. **Idempotent Receiver transactional coupling (audit-raised, blocker):** does the `DedupStore` claim run
+   atomically with handler settlement (extending `InboxDeduper`, which today only offers transactional
+   `MarkProcessed`), or is a real two-phase `Claim`/`Settle` contract defined? A pre-handler mark-seen
+   decorator is unsafe — resolve before promoting to a spec.
 
 ## 8. Appendix
 

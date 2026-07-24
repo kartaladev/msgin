@@ -7,7 +7,7 @@
 
 ## 1. Summary
 
-The root module is a single flat `package msgin` with 85 files. This RFC splits the composable families into
+The root module is a single flat `package msgin` with 77 `.go` files (32 source + 45 test). This RFC splits the composable families into
 concept subpackages (`channel`, `endpoint`, `resilience`) while keeping the vocabulary, SPI, and engine in the
 root, so a reader navigates by folder and the core stays a narrow, stable contract.
 
@@ -26,8 +26,17 @@ break affordable; this RFC scopes it so cycles are avoided by construction.
 ### Overview
 
 Organising principle — **interfaces + value types in the root; concrete implementations in subpackages.**
-Adapters reference ~40 `msgin.*` symbols, most of them SPI interfaces; keeping those in root leaves the adapter
+Adapters reference `msgin.*` symbols, most of them SPI interfaces; keeping those in root leaves the adapter
 tree almost untouched and preserves the "core is a narrow SPI" invariant.
+
+> **Audit (2026-07-24) — correct the count and enumerate the movers.** The adapter tree references **87
+> distinct `msgin.*` symbols** today (`grep -rhoE '\bmsgin\.[A-Z][A-Za-z0-9]*' adapter -r | sort -u | wc -l`),
+> not the ~40 originally estimated. The *conclusion* (SPI/vocabulary/engine stay in root → adapters barely
+> move) still holds, but the estimate is 2.1× low, so the "narrow SPI" framing must be **shown, not asserted**:
+> the plan MUST enumerate exactly which of the 87 relocate (currently `ChannelExchange`→`endpoint`, concrete
+> channels→`channel`, `ExponentialBackoff`→`resilience`) and prove the remaining ~84 keep the `msgin.*` path,
+> and the apidiff success-metric below must be read against that enumerated move-list. This count also **grows
+> with every new adapter landed before the window** — see the sequencing caveat in the [index](README.md).
 
 ```
 msgin/       root: Message/Headers, errors, Delivery + SPI ifaces, MessageChannel/Handler ifaces,
@@ -75,10 +84,11 @@ errors.go gateway*.go message.go resilience_*.go runtime_consumer.go runtime_pro
 
 ### Trade-offs
 
-Blast radius is *not* contained to root: ~40 adapter symbols. Under C-lite, SPI/vocabulary/engine stay
-`msgin.*`, so pure adapter code is untouched; only a few symbols move (`ChannelExchange`→`endpoint`,
-`ExponentialBackoff`→`resilience`, concrete channels→`channel`). Recommend **no re-export facade** (clean
-pre-v1 break with a `MIGRATION.md`) over a deprecated-alias facade.
+Blast radius is *not* contained to root: **87 distinct `msgin.*` symbols** are referenced by `adapter/` (audit
+count, 2026-07-24). Under C-lite, SPI/vocabulary/engine stay `msgin.*`, so pure adapter code is untouched; only
+a few symbols move (`ChannelExchange`→`endpoint`, `ExponentialBackoff`→`resilience`, concrete
+channels→`channel`). Recommend **no re-export facade** (clean pre-v1 break with a `MIGRATION.md`) over a
+deprecated-alias facade.
 
 ## 5. Implementation Plan
 
@@ -124,5 +134,12 @@ the intended symbol moves and nothing else** (proves no accidental break beyond 
 **Appendix A — file consolidation mapping (root 32→21):** `codec.go(+payload)`, `spi.go(+reliability)`,
 `channel.go(+store, +handler/groupstore ifaces)`, `resilience_flowcontrol.go(+credit interfaces)`,
 `resilience_retry.go(+backoff)`, `channel_pubsub.go(+registry)`, `endpoint.go(handler+transformer+filter+
-activator+router)`, `endpoint_aggregator.go(+groupstore logic)`, `doc.go(doc_composition)`; the four large
-files (`consumer`, `producer`, `aggregator`, `expr`) stay standalone. Tests mirror the prefixes.
+activator+router)`, `endpoint_aggregator.go(+groupstore logic)`, `doc.go(doc_composition)`; the three large
+files that **stay standalone in root** are `consumer`, `producer`, `expr` (the last only until RFC-0003 phase 3
+removes `expr-lang`). Tests mirror the prefixes.
+
+> **Audit (2026-07-24) — Aggregator home, resolved.** An earlier draft listed `aggregator` among the "four
+> large files [that] stay standalone" in root, contradicting §3 ("`Aggregator` logic in `endpoint`") and this
+> appendix's own `endpoint_aggregator.go(+groupstore logic)`. Resolution: the **`MessageGroupStore` interface
+> (SPI) stays in root**; the **`Aggregator` implementation moves to `endpoint`** as `endpoint_aggregator.go`.
+> Hence three (not four) large files remain standalone in root.

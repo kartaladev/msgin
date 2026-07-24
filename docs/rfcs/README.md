@@ -51,6 +51,21 @@ Each RFC follows the [RFC template](https://gist.github.com/rowlando/416f41e34fe
 **Sequence the whole program after the pending feature roadmap** (see `docs/HANDOVER.md`); package moves and
 renames conflict badly with in-flight feature branches. Split from a quiet `main`.
 
+> **Audit (2026-07-24) — deferral risk compounds; land the non-breaking slices early.** The roadmap is still
+> *growing* (next up is Plan 027 HTTP SSE gin binding, and CLAUDE.md's blueprint still lists **unbuilt**
+> `redis`/`nats`/`pgx` adapters). Every adapter landed before the window **enlarges RFC-0001's blast radius**
+> (the adapter tree already references **87** `msgin.*` symbols, up from the ~40 originally estimated) and
+> RFC-0002's rename churn, and the "quiet `main`" to split from keeps receding. Mitigation: pull the
+> **non-breaking** work forward now, independent of the window — RFC-0003 phase 1 (name the behavior types),
+> RFC-0004 phases 2–3 (extract `Poller`, add triggers), and RFC-0002's godoc fixes — so only the genuinely
+> breaking moves wait for the quiet-`main` window.
+
+> **Process note (2026-07-24) — RFCs are a new artifact type.** CLAUDE.md's *Documentation artifacts* section
+> knows only specs/plans/ADRs. This program's "accepted RFC → spec + ADR(s) + plan → adversarial design audit
+> → SDD" flow is CLAUDE.md-compliant, but if RFCs become a standing artifact class, CLAUDE.md should be amended
+> to record where they live (`docs/rfcs/`), their numbering, and how they promote — so the artifact chain stays
+> traceable end-to-end.
+
 ## Using this for a refactor session
 
 Read CLAUDE.md, then this index, then the RFCs in number order. Each RFC's §5 Implementation Plan is
