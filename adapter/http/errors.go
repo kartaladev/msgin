@@ -103,4 +103,83 @@ var (
 	// The underlying cause is preserved with %w, so errors.Is(err,
 	// context.Canceled) and friends still hold on the cancellation arm.
 	ErrOutboundTransport = errors.New("msghttp: outbound request transport error")
+
+	// ErrInvalidEventField is returned by EncodeSSEEvent and
+	// SSEEventFromMessage when an SSEEvent's ID or Name contains a CR, LF, or
+	// NUL byte, and by NewConfig when an explicit WithEventName value does.
+	// An SSE "id:"/"event:" field is framed as a single line: an embedded
+	// newline would let the value inject additional, unintended SSE fields
+	// into the frame, so it is rejected before any byte is written rather than
+	// silently truncated or escaped. (A payload's own CR/LF/CRLF is not an
+	// error — EncodeSSEEvent normalizes it into data: framing instead.)
+	ErrInvalidEventField = errors.New("msghttp: SSE id or event name contains CR, LF, or NUL")
+
+	// ErrEventTooLarge is returned by SSEParser.Next when a single
+	// Server-Sent Event exceeds WithMaxEventBytes (default 1 MiB) on either
+	// of the two things that actually buffer while parsing a
+	// text/event-stream: the current in-progress line's byte count, or the
+	// accumulated "data" buffer's byte count. Neither counter accumulates
+	// across the whole stream — a comment line, an ignored field, or a
+	// blank line never contributes to either — so this is a per-line/
+	// per-event bound, not a stream-lifetime one.
+	//
+	// The oversized event is skipped, not fatal: SSEParser is safe to call
+	// Next on again after this error, and parsing resumes at the following
+	// event — see SSEParser.Next's doc comment for the exact recovery
+	// contract.
+	ErrEventTooLarge = errors.New("msghttp: SSE event exceeds max event bytes")
+
+	// ErrInvalidMaxEventBytes is returned by NewConfig (and so by
+	// NewSSEParser) when an explicit WithMaxEventBytes is <= 0. Leaving
+	// WithMaxEventBytes unset takes the 1 MiB default instead of hitting
+	// this error — the set-flag pattern distinguishes "unset" from
+	// "explicit invalid", mirroring ErrInvalidMaxBodyBytes /
+	// ErrInvalidMaxResponseBytes.
+	ErrInvalidMaxEventBytes = errors.New("msghttp: max event bytes must be > 0")
+
+	// ErrInvalidMaxConnections is returned by NewConfig when an explicit
+	// WithMaxConnections is <= 0. Leaving WithMaxConnections unset takes the
+	// 1024 default instead of hitting this error — the set-flag pattern
+	// distinguishes "unset" from "explicit invalid", mirroring
+	// ErrInvalidMaxBodyBytes.
+	ErrInvalidMaxConnections = errors.New("msghttp: max connections must be > 0")
+
+	// ErrInvalidConnectionBuffer is returned by NewConfig when an explicit
+	// WithConnectionBuffer is <= 0. Leaving WithConnectionBuffer unset takes
+	// the 16 default instead of hitting this error.
+	ErrInvalidConnectionBuffer = errors.New("msghttp: connection buffer must be > 0")
+
+	// ErrInvalidSlowClientPolicy is returned by NewConfig when an explicit
+	// WithSlowClientPolicy value is neither SlowClientDrop nor
+	// SlowClientDisconnect. Leaving WithSlowClientPolicy unset takes the
+	// SlowClientDrop default instead of hitting this error.
+	ErrInvalidSlowClientPolicy = errors.New("msghttp: unrecognized slow client policy")
+
+	// ErrInvalidReplayBuffer is returned by NewConfig when an explicit
+	// WithReplayBuffer is <= 0. Leaving WithReplayBuffer unset takes the off
+	// (no replay ring) default instead of hitting this error — there is no
+	// explicit value that means "off"; only leaving the option unset does.
+	ErrInvalidReplayBuffer = errors.New("msghttp: replay buffer must be > 0")
+
+	// ErrInvalidHeartbeat is returned by NewConfig when an explicit
+	// WithHeartbeat duration is <= 0. Leaving WithHeartbeat unset takes the
+	// off (no heartbeat frames) default instead of hitting this error —
+	// there is no explicit value that means "off"; only leaving the option
+	// unset does.
+	ErrInvalidHeartbeat = errors.New("msghttp: heartbeat interval must be > 0")
+
+	// ErrInvalidWriteTimeout is returned by NewConfig when an explicit
+	// WithWriteTimeout duration is <= 0. Leaving WithWriteTimeout unset
+	// takes the 30s default (defaultWriteTimeout) instead of hitting this
+	// error.
+	ErrInvalidWriteTimeout = errors.New("msghttp: write timeout must be > 0")
+
+	// ErrSSEServerClosed is returned, wrapped in msgin.Permanent, by
+	// NewSSEServer's Send when called after Close: a retry cannot revive a
+	// server that has already stopped accepting and joined its writer
+	// goroutines. NewConfig never returns it — construction is unaffected by
+	// server lifecycle, so it is declared here alongside the other SSE
+	// server sentinels but first USED on the Send-after-Close path built in
+	// a later increment.
+	ErrSSEServerClosed = errors.New("msghttp: SSE server is closed")
 )

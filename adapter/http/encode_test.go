@@ -94,6 +94,25 @@ func TestNewConfig_validation(t *testing.T) {
 				require.NotNil(t, cfg)
 			},
 		},
+		{
+			// Branch 10: an explicit WithEventName carrying CR/LF/NUL is a
+			// construction error, not a silently-substituted default.
+			name: "WithEventName with an embedded LF is invalid",
+			opts: []msghttp.Option{msghttp.WithEventName("a\nb")},
+			assert: func(t *testing.T, cfg *msghttp.Config, err error) {
+				assert.Nil(t, cfg)
+				assert.ErrorIs(t, err, msghttp.ErrInvalidEventField)
+			},
+		},
+		{
+			// Branch 10: a clean WithEventName value is accepted.
+			name: "WithEventName with a clean value is accepted",
+			opts: []msghttp.Option{msghttp.WithEventName("my-event")},
+			assert: func(t *testing.T, cfg *msghttp.Config, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, cfg)
+			},
+		},
 	}
 
 	for _, tc := range cases {
