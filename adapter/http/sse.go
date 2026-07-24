@@ -218,12 +218,26 @@ func NewSSEParser(r io.Reader, opts ...Option) (*SSEParser, error) {
 		return nil, err
 	}
 
+	return newSSEParserWithCap(r, cfg.maxEventBytes), nil
+}
+
+// newSSEParserWithCap builds an SSEParser reading from r with maxEventBytes
+// already resolved and validated by the caller — it is NewSSEParser's own
+// body, factored out so a caller holding an already-NewConfig-validated cap
+// (SSEClient.readEvents) can build a parser directly, with no error to guard:
+// re-running NewConfig's validation on a value it already validated at
+// construction time could never fail, so that call site would otherwise carry
+// an unreachable error branch (Plan 026 Task 4, coverage-to-100%).
+//
+// A single leading UTF-8 byte order mark (U+FEFF) on r is consumed here, at
+// construction, if present — it is never treated as part of the stream's
+// first line (mirrors NewSSEParser's own BOM handling).
+func newSSEParserWithCap(r io.Reader, maxEventBytes int64) *SSEParser {
 	br := bufio.NewReader(r)
 	if bom, peekErr := br.Peek(len(sseBOM)); peekErr == nil && bytes.Equal(bom, sseBOM) {
 		_, _ = br.Discard(len(sseBOM))
 	}
-
-	return &SSEParser{r: br, maxEventBytes: cfg.maxEventBytes}, nil
+	return &SSEParser{r: br, maxEventBytes: maxEventBytes}
 }
 
 // Next reads and returns the next dispatched SSEEvent from the stream,

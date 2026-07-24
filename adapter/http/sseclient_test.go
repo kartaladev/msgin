@@ -828,10 +828,21 @@ func TestSSEClient_noTimeoutDefault(t *testing.T) {
 		srv := httptest.NewServer(sseHoldOpenHandler(&hits))
 		defer srv.Close()
 
-		client, err := msghttp.NewSSEClient(srv.URL)
+		// WithReconnectBackoff is what makes this test LOAD-BEARING (a
+		// mutation spot-check proved the prior version was not): with the
+		// default ~500ms backoff, IF the default http.Client secretly carried
+		// a finite Timeout of the ~100ms magnitude a mutation injects, the
+		// stream would abort at ~100ms and then park on the 500ms backoff,
+		// which would never fire before a short ctx window elapses — hits
+		// would stay 1 either way, so the assertion below couldn't
+		// distinguish "one long stream held open" from "aborted early, then
+		// stuck on a backoff that never re-fires". A FAST backoff closes that
+		// gap: a finite-Timeout abort would now visibly reconnect (hits>=2)
+		// well within the window.
+		client, err := msghttp.NewSSEClient(srv.URL, msghttp.WithReconnectBackoff(10*time.Millisecond, 10*time.Millisecond))
 		require.NoError(t, err)
 
-		ctx, cancel := context.WithTimeout(t.Context(), 250*time.Millisecond)
+		ctx, cancel := context.WithTimeout(t.Context(), 350*time.Millisecond)
 		defer cancel()
 		out := make(chan msgin.Delivery, 4)
 		done := make(chan error, 1)
@@ -845,8 +856,17 @@ func TestSSEClient_noTimeoutDefault(t *testing.T) {
 		case <-time.After(3 * time.Second):
 			t.Fatal("Stream did not return after the ctx timeout")
 		}
-		// The 250ms real-time margin comfortably exceeds what a wrongly-finite
-		// default Timeout would have aborted at, yet only ONE attempt occurred.
+		// The 350ms window comfortably exceeds the ~100ms mutation-Timeout
+		// magnitude plus a couple of the 10ms backoffs above, so a
+		// hypothetical finite default Timeout would force a visible 2nd (or
+		// 3rd) connection attempt inside it. The REAL default (Timeout: 0)
+		// holds the single connection open for the entire window regardless
+		// of backoff — the server never closes it until ctx cancel — so
+		// hits stays at 1 deterministically; this is not a timing race for
+		// the real code path. This proves the absence of a Timeout up to
+		// roughly the window's magnitude; it cannot detect a Timeout in the
+		// tens-of-seconds range (e.g. a 30s leak) — that residual gap is a
+		// known, accepted limitation of a fast blackbox test.
 		assert.EqualValues(t, 1, hits.Load())
 	})
 
@@ -1105,6 +1125,10 @@ func TestSSEClient_hostileValuesRedactedAndResumeVerbatim(t *testing.T) {
 	// it lands only as the VALUE of the fixed HeaderSSEEventName key.
 	_, forged := d.Msg.Headers().String("msgin.forged-event")
 	assert.False(t, forged, "a hostile event value must never become a header key")
+	// Symmetric check (whole-branch review 3-M1): the hostile ID value
+	// likewise never resolves as a header key of its own.
+	_, idForged := d.Msg.Headers().String(weirdID)
+	assert.False(t, idForged, "a hostile id value must never become a header key")
 
 	// Connection 1 ends cleanly having emitted an event -> reset to min.
 	expectReconnectAfter(t, clk, hits, 1, 500*time.Millisecond)

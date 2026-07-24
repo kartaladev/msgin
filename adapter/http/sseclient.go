@@ -250,14 +250,13 @@ func (c *SSEClient) connect(ctx context.Context, out chan<- msgin.Delivery, last
 	cctx, ccancel := context.WithCancel(ctx)
 	defer ccancel()
 
-	req, reqErr := http.NewRequestWithContext(cctx, http.MethodGet, c.url, nil)
-	if reqErr != nil {
-		// Unreachable on any supported path: c.url was validated by
-		// validateURL at NewSSEClient construction time and the method is
-		// the constant "GET" — kept as a typed guard rather than a silent
-		// panic on an impossible input (mirrors ErrNilResponse's decision 3).
-		return connResult{terminal: true, terminalErr: reqErr, lastEventID: lastEventID}
-	}
+	// http.NewRequestWithContext can only fail on a malformed method or an
+	// unparseable url; the method here is the constant "GET" and c.url was
+	// already validated by validateURL at NewSSEClient construction time
+	// (and cctx is never nil), so this construction cannot error on any
+	// supported path — the error is deliberately discarded rather than
+	// guarded by an unreachable branch (Plan 026 Task 4, coverage-to-100%).
+	req, _ := http.NewRequestWithContext(cctx, http.MethodGet, c.url, nil)
 
 	for name, values := range c.cfg.connectHeaders {
 		for _, v := range values {
@@ -377,13 +376,12 @@ func classifySSEResponse(resp *http.Response) sseTriageOutcome {
 // (every connection-end error is reconnectable; only ctx cancellation while
 // blocked emitting is terminal, INV-C5).
 func (c *SSEClient) readEvents(ctx context.Context, out chan<- msgin.Delivery, body io.Reader, lastEventID string) connResult {
-	parser, err := NewSSEParser(body, WithMaxEventBytes(c.cfg.maxEventBytes))
-	if err != nil {
-		// Unreachable: c.cfg.maxEventBytes was already validated (> 0) by
-		// NewConfig at NewSSEClient construction time, so NewSSEParser's own
-		// re-validation of that same value can never fail here.
-		return connResult{terminal: true, terminalErr: err, lastEventID: lastEventID}
-	}
+	// newSSEParserWithCap takes c.cfg.maxEventBytes directly rather than going
+	// through NewSSEParser(WithMaxEventBytes(...)): that value was already
+	// validated (> 0) by NewConfig at NewSSEClient construction time, so
+	// re-running NewConfig's validation here could never fail — there is no
+	// error left to guard (Plan 026 Task 4, coverage-to-100%).
+	parser := newSSEParserWithCap(body, c.cfg.maxEventBytes)
 
 	gotEvent := false
 	for {
@@ -432,7 +430,11 @@ func (c *SSEClient) backoffWait(ctx context.Context, d time.Duration) error {
 }
 
 // clampDelay bounds d into [minD,maxD]. Used for a server-supplied SSE
-// "retry:" hint (INV-C4).
+// "retry:" hint (INV-C4). The d < minD arm is also the last line of defense
+// against a "retry:" value that fits int64 milliseconds but overflows
+// time.Duration on the *time.Millisecond conversion (≳9.3e12 ms), which wraps
+// to a negative duration — safe (no hot loop, no hang) only because this
+// floor catches it; do not remove or narrow this arm as an "optimization".
 func clampDelay(d, minD, maxD time.Duration) time.Duration {
 	switch {
 	case d < minD:
