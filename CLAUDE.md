@@ -51,16 +51,24 @@ Follow this loop for every feature or bugfix, not just large ones. The skills na
 
 Persist the workflow's written outputs under `docs/`, each **prefixed with an incrementing version number**:
 
-- **Specs** (from `superpowers:brainstorming` / spec work) → `docs/specs/` — e.g. `docs/specs/001-<slug>.md`.
-- **Plans** (from `superpowers:writing-plans`) → `docs/plans/` — e.g. `docs/plans/001-<slug>.md`. Pair a plan's number with its originating spec where practical.
-- **Architecture Decision Records** → `docs/adrs/`, one file per decision, following **Michael Nygard's ADR convention** (Title, Status, Context, Decision, Consequences), numbered incrementally — e.g. `docs/adrs/0001-<slug>.md`. Record *every* architectural decision as it is made; supersede rather than rewrite old ADRs (set the old one's Status to `Superseded by ADR-NNNN`).
+- **Specs** — the ***what*** (from `superpowers:brainstorming` / spec work) → `docs/specs/` — e.g. `docs/specs/001-<slug>.md`. The contract and observable behavior a component must satisfy, free of implementation detail. Answers "what are we building, and why," not "how."
+- **RFCs** — the ***how***, as design discussion (**optional, triggered**) → `docs/rfcs/` — e.g. `docs/rfcs/0001-<slug>.md` (4-digit, like ADRs). Explore and argue implementation approaches, trade-offs, and open questions. **Reserve RFCs for a genuinely contested or expensive "how"** — multi-package refactors, dependency changes, breaking windows; **skip** the RFC for a straightforward feature (go straight `spec → plan`). An accepted RFC is ratified into ADR(s) and promoted into a spec/plan. Commits as `docs:`; like a spec, an RFC may stand alone ahead of code.
+- **Architecture Decision Records** — the ***decided how*** → `docs/adrs/`, one file per decision, following **Michael Nygard's ADR convention** (Title, Status, Context, Decision, Consequences), numbered incrementally — e.g. `docs/adrs/0001-<slug>.md`. Record *every* architectural decision as it is made; supersede rather than rewrite old ADRs (set the old one's Status to `Superseded by ADR-NNNN`). One RFC/spec typically yields **several** ADRs that crystallize *as each decision settles* — a stream, not a single rigid stage.
+- **Plans** — the ***execution*** (from `superpowers:writing-plans`) → `docs/plans/` — e.g. `docs/plans/001-<slug>.md`. Decompose the decided design into green-per-increment tasks; pair a plan's number with its originating spec where practical.
 
-**Traceability is a hard requirement.** Every artifact must be cross-linked so any decision can be traced end to end — spec → plan → ADR(s) → code/commit — and back. Concretely:
+**Promotion path (artifact ordering).** The four artifacts form a dependency chain — each stage presupposes the one before it: "how" (RFC) needs a "what" (spec); a decision (ADR) needs the discussion that produced it (RFC/spec); a plan needs a *decided* design. The ordering flips with the **kind** of work:
 
+- **Default — new feature / greenfield "what": `spec → rfc → adr → plan`.** Fix the contract first, explore the "how", record the decisions, then sequence the work. **Drop the RFC when the "how" isn't contested** → `spec → adr → plan` (or just `spec → plan` when nothing architectural is decided). Do not insert a mandatory RFC stage for routine features — that is ceremony, not rigor.
+- **Refactor / change to existing code: `rfc → (spec + adr + plan)`.** The "what it does" already exists as running code, so there is no new contract to write first: the RFC states the problem and the proposed "how", and an accepted RFC **spawns** the spec/ADR(s)/plan (this is exactly what `docs/rfcs/` 0001–0005 do).
+- In **both** paths, **ADR precedes the plan** (you plan against a *decided* design), and the **adversarial design audit** (Development workflow) runs on the assembled bundle — spec + ADR + plan — before any implementation code.
+
+**Traceability is a hard requirement.** Every artifact must be cross-linked so any decision can be traced end to end — spec → rfc → ADR(s) → plan → code/commit (RFC where one exists) — and back. Concretely:
+
+- An **RFC** (when one exists) must reference the **spec** it discusses — or, for a refactor, the code/area it changes — and the **ADR(s)** it produces must cite that RFC; the spec should list the RFC(s) that shaped it.
 - A **plan** must reference the **spec** it implements; a **spec** should list the plans that realize it.
-- An **ADR** must cite the spec/plan that prompted it; the plan (and any relevant spec) must link back to the ADRs it depends on.
+- An **ADR** must cite the spec/RFC/plan that prompted it; the plan (and any relevant spec) must link back to the ADRs it depends on.
 - **Code and commits** must reference the driving artifact (e.g. `Implements spec 003 / plan 003; see ADR-0007`) so reviewers can follow the chain.
-- Do not merge or commit work whose governing spec/plan/ADR link is missing. A new artifact with no traceable parent (or a decision with no ADR) is incomplete.
+- Do not merge or commit work whose governing spec/rfc/plan/ADR link is missing. A new artifact with no traceable parent (or a decision with no ADR) is incomplete.
 
 ## Session handover
 
@@ -115,7 +123,7 @@ Plan: 003
 ADR: 0007
 ```
 
-This keeps the spec→plan→ADR→commit chain greppable (`git log --grep`), survives rebases, and lets CI enforce that every `feat`/`fix`/`refactor` commit carries at least a `Plan:` (and, for architectural changes, an `ADR:`) trailer. Prefer this over embedding references in the subject line.
+This keeps the spec→plan→ADR→commit chain greppable (`git log --grep`), survives rebases, and lets CI enforce that every `feat`/`fix`/`refactor` commit carries at least a `Plan:` (and, for architectural changes, an `ADR:`) trailer. RFC-driven work additionally carries an `RFC:` trailer naming the originating RFC. Prefer this over embedding references in the subject line.
 
 ## Go conventions & skills
 
