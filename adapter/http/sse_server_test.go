@@ -177,8 +177,9 @@ func (h *captureHandler) count(level slog.Level) int {
 // returned cancel, and returns a done channel closed when the handler exits.
 // The test MUST drain done (join) before returning so the goleak backstop is
 // meaningful.
-func serveInBackground(s *msghttp.SSEServer, w http.ResponseWriter) (cancel context.CancelFunc, done <-chan struct{}) {
-	ctx, cancelFn := context.WithCancel(context.Background())
+func serveInBackground(t *testing.T, s *msghttp.SSEServer, w http.ResponseWriter) (cancel context.CancelFunc, done <-chan struct{}) {
+	t.Helper()
+	ctx, cancelFn := context.WithCancel(t.Context())
 	req := httptest.NewRequest(http.MethodGet, "/events", nil).WithContext(ctx)
 	d := make(chan struct{})
 	go func() {
@@ -278,7 +279,7 @@ func TestSSEServer_maxConnections(t *testing.T) {
 
 	// open opens a streaming GET; on 200 it returns a cancel+close cleanup.
 	open := func() (*http.Response, func()) {
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
 		require.NoError(t, reqErr)
 		resp, doErr := client.Do(req)
@@ -309,7 +310,7 @@ func TestSSEServer_maxConnections(t *testing.T) {
 	// Tear down: cancel remaining streams, close the SSE server so every
 	// handler returns, then close the httptest server.
 	close2()
-	require.NoError(t, server.Close(context.Background()))
+	require.NoError(t, server.Close(t.Context()))
 	srv.Close()
 }
 
@@ -345,7 +346,7 @@ func TestSSEServer_happyHeaders(t *testing.T) {
 	require.NoError(t, err)
 
 	w := newCaptureWriter()
-	cancel, done := serveInBackground(server, w)
+	cancel, done := serveInBackground(t, server, w)
 
 	// The writer flushes the headers before entering its loop.
 	<-w.flushed
@@ -373,7 +374,7 @@ func TestSSEServer_clientDisconnect(t *testing.T) {
 	defer srv.Close()
 	client := srv.Client()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
 	require.NoError(t, err)
 	resp, err := client.Do(req)
@@ -387,7 +388,7 @@ func TestSSEServer_clientDisconnect(t *testing.T) {
 	_ = resp.Body.Close()
 
 	require.Eventually(t, func() bool {
-		c2, cancel2 := context.WithCancel(context.Background())
+		c2, cancel2 := context.WithCancel(t.Context())
 		defer cancel2()
 		r2, reqErr := http.NewRequestWithContext(c2, http.MethodGet, srv.URL, nil)
 		require.NoError(t, reqErr)
@@ -400,7 +401,7 @@ func TestSSEServer_clientDisconnect(t *testing.T) {
 		return ok
 	}, 3*time.Second, 10*time.Millisecond)
 
-	require.NoError(t, server.Close(context.Background()))
+	require.NoError(t, server.Close(t.Context()))
 }
 
 // -----------------------------------------------------------------------------
@@ -419,7 +420,7 @@ func TestSSEServer_heartbeatOn(t *testing.T) {
 	require.NoError(t, err)
 
 	w := newCaptureWriter()
-	cancel, done := serveInBackground(server, w)
+	cancel, done := serveInBackground(t, server, w)
 
 	<-w.flushed // headers flushed; writer is about to register the ticker
 
@@ -445,7 +446,7 @@ func TestSSEServer_heartbeatOff(t *testing.T) {
 	require.NoError(t, err)
 
 	w := newCaptureWriter()
-	cancel, done := serveInBackground(server, w)
+	cancel, done := serveInBackground(t, server, w)
 
 	<-w.flushed // headers flushed
 
@@ -476,7 +477,7 @@ func TestSSEServer_close(t *testing.T) {
 
 	var closers []func()
 	for i := 0; i < 3; i++ {
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
 		require.NoError(t, reqErr)
 		resp, doErr := client.Do(req)
@@ -491,13 +492,13 @@ func TestSSEServer_close(t *testing.T) {
 	}()
 
 	// Close joins all three handlers (their derived ctx is cancelled).
-	require.NoError(t, server.Close(context.Background()))
+	require.NoError(t, server.Close(t.Context()))
 
 	// Idempotent: a second Close finds no connections and returns nil.
-	require.NoError(t, server.Close(context.Background()))
+	require.NoError(t, server.Close(t.Context()))
 
 	// Post-Close a new request is refused with 503.
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
 	require.NoError(t, err)
@@ -525,7 +526,7 @@ func TestSSEServer_closeExpiredCtx(t *testing.T) {
 	require.NoError(t, err)
 
 	w := newBlockingWriter()
-	_, done := serveInBackground(server, w)
+	_, done := serveInBackground(t, server, w)
 
 	<-w.flushed                                                // headers flushed
 	require.NoError(t, fake.BlockUntilContext(t.Context(), 1)) // ticker registered
@@ -534,7 +535,7 @@ func TestSSEServer_closeExpiredCtx(t *testing.T) {
 
 	// Close with an already-expired ctx. The wedged Write cannot be interrupted
 	// by the ctx cancel, so Close's join times out and returns ctx.Err().
-	expired, cancelExpired := context.WithCancel(context.Background())
+	expired, cancelExpired := context.WithCancel(t.Context())
 	cancelExpired()
 	err = server.Close(expired)
 	assert.ErrorIs(t, err, context.Canceled)
@@ -545,7 +546,7 @@ func TestSSEServer_closeExpiredCtx(t *testing.T) {
 	<-done
 
 	// A subsequent Close now finds everything drained and returns nil.
-	require.NoError(t, server.Close(context.Background()))
+	require.NoError(t, server.Close(t.Context()))
 }
 
 // -----------------------------------------------------------------------------
@@ -566,7 +567,7 @@ func TestSSEServer_stalledReaderDeadline(t *testing.T) {
 	require.NoError(t, err)
 
 	w := newBlockingWriter()
-	_, done := serveInBackground(server, w)
+	_, done := serveInBackground(t, server, w)
 
 	<-w.flushed                                                // headers flushed
 	require.NoError(t, fake.BlockUntilContext(t.Context(), 1)) // ticker registered
@@ -576,7 +577,7 @@ func TestSSEServer_stalledReaderDeadline(t *testing.T) {
 	// Close cancels the connection (no effect on the wedged Write) and waits.
 	// The write deadline is what actually reaps the writer, letting Close join.
 	start := time.Now()
-	require.NoError(t, server.Close(context.Background()))
+	require.NoError(t, server.Close(t.Context()))
 	assert.GreaterOrEqual(t, time.Since(start), 100*time.Millisecond,
 		"Close should have blocked until the write deadline reaped the writer")
 
@@ -604,7 +605,7 @@ func TestSSEServer_writeDeadlineUnsupported(t *testing.T) {
 	w := newCaptureWriter()
 	w.deadlineErr = errors.ErrUnsupported
 
-	cancel, done := serveInBackground(server, w)
+	cancel, done := serveInBackground(t, server, w)
 
 	<-w.flushed // headers flushed; the header write already tripped ErrUnsupported once
 
@@ -706,8 +707,9 @@ func (f *failWriter) Flush() {
 // serveWithHeader runs s.ServeHTTP on a background goroutine for a GET request
 // carrying header:value (e.g. Last-Event-ID), returning a cancel and a done
 // channel closed when the handler exits. The test MUST join done.
-func serveWithHeader(s *msghttp.SSEServer, w http.ResponseWriter, header, value string) (context.CancelFunc, <-chan struct{}) {
-	ctx, cancel := context.WithCancel(context.Background())
+func serveWithHeader(t *testing.T, s *msghttp.SSEServer, w http.ResponseWriter, header, value string) (context.CancelFunc, <-chan struct{}) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
 	req := httptest.NewRequest(http.MethodGet, "/events", nil).WithContext(ctx)
 	if header != "" {
 		req.Header.Set(header, value)
@@ -857,7 +859,7 @@ func TestSSEServer_Send_payloadTypes(t *testing.T) {
 			require.NoError(t, err)
 
 			w := newCaptureWriter()
-			cancel, done := serveInBackground(server, w)
+			cancel, done := serveInBackground(t, server, w)
 			<-w.flushed // headers flushed; the subscriber is registered
 
 			sendErr := server.Send(t.Context(), idMsg("1", tc.payload))
@@ -890,7 +892,7 @@ func TestSSEServer_Send_fanout(t *testing.T) {
 	dones := make([]<-chan struct{}, n)
 	for i := range writers {
 		writers[i] = newCaptureWriter()
-		cancels[i], dones[i] = serveInBackground(server, writers[i])
+		cancels[i], dones[i] = serveInBackground(t, server, writers[i])
 		<-writers[i].flushed // each subscriber registered
 	}
 
@@ -923,7 +925,7 @@ func TestSSEServer_Send_hostileHeader(t *testing.T) {
 	require.NoError(t, err)
 
 	w := newCaptureWriter()
-	cancel, done := serveInBackground(server, w)
+	cancel, done := serveInBackground(t, server, w)
 	<-w.flushed // headers flushed; subscriber registered
 
 	hostile := idMsg("1", []byte("x")).WithHeader(msghttp.HeaderSSEEventName, "evil\nevent: forged")
@@ -941,6 +943,50 @@ func TestSSEServer_Send_hostileHeader(t *testing.T) {
 	require.Len(t, delivered, 1)
 	assert.Equal(t, "2", delivered[0].ID)
 	assert.Equal(t, []byte("good"), delivered[0].Data)
+
+	cancel()
+	<-done
+}
+
+// -----------------------------------------------------------------------------
+// Row 4b — CR in the PAYLOAD cannot forge fields into a subscriber's stream
+// (whole-branch review C1 — the INV-S1 data-path gap). Mirrors the hostile
+// HeaderSSEEventName test, but the injection vector is a bare CR in the message
+// PAYLOAD, which SSEEventFromMessage never validates: EncodeSSEEvent must
+// normalize it into data: framing so a WHATWG parser sees exactly ONE event
+// whose data carries the literal bytes — no forged id:, no second event.
+// -----------------------------------------------------------------------------
+
+func TestSSEServer_Send_payloadCRCannotInject(t *testing.T) {
+	t.Parallel()
+
+	server, err := msghttp.NewSSEServer()
+	require.NoError(t, err)
+
+	w := newCaptureWriter()
+	cancel, done := serveInBackground(t, server, w)
+	<-w.flushed // headers flushed; subscriber registered
+
+	// A payload that, framed naively (split on '\n' only), would forge an id:
+	// and a whole second event once a WHATWG client reinterprets the bare CRs
+	// as line boundaries.
+	const hostilePayload = "foo\rid: forged\r\rdata: hijacked"
+	require.NoError(t, server.Send(t.Context(), idMsg("1", []byte(hostilePayload))))
+
+	delivered := waitEvents(t, w, 1)
+
+	// Exactly ONE event is dispatched — the CRs became data: line boundaries,
+	// not field/event boundaries. A forged event would show up as a second
+	// dispatched frame.
+	require.Len(t, delivered, 1)
+	// The id is the server-minted "1" only — never the forged "forged".
+	assert.Equal(t, "1", delivered[0].ID)
+	// The literal injected text survives inside the data payload (CR -> LF),
+	// carrying no field authority.
+	assert.Equal(t, "foo\nid: forged\n\ndata: hijacked", string(delivered[0].Data))
+
+	// Belt-and-braces: no bare CR ever reached the wire.
+	assert.NotContains(t, string(w.bytes()), "\r", "no bare CR may reach a subscriber")
 
 	cancel()
 	<-done
@@ -965,11 +1011,11 @@ func TestSSEServer_Send_dropPolicy(t *testing.T) {
 	require.NoError(t, err)
 
 	stalled := newWedgeWriter()
-	_, stalledDone := serveInBackground(server, stalled)
+	_, stalledDone := serveInBackground(t, server, stalled)
 	<-stalled.flushed // stalled headers flushed
 
 	healthy := newCaptureWriter()
-	healthyCancel, healthyDone := serveInBackground(server, healthy)
+	healthyCancel, healthyDone := serveInBackground(t, server, healthy)
 	<-healthy.flushed // healthy headers flushed
 
 	// Send #1: the stalled writer pulls it and wedges inside Write; its buffer is
@@ -1025,11 +1071,11 @@ func TestSSEServer_Send_disconnectPolicy(t *testing.T) {
 	require.NoError(t, err)
 
 	stalled := newWedgeWriter()
-	_, stalledDone := serveInBackground(server, stalled)
+	_, stalledDone := serveInBackground(t, server, stalled)
 	<-stalled.flushed
 
 	healthy := newCaptureWriter()
-	healthyCancel, healthyDone := serveInBackground(server, healthy)
+	healthyCancel, healthyDone := serveInBackground(t, server, healthy)
 	<-healthy.flushed
 
 	// Wedge the stalled writer, fill its buffer, then overflow once: the policy
@@ -1074,7 +1120,7 @@ func TestSSEServer_Send_replayOff(t *testing.T) {
 	require.NoError(t, err)
 
 	w := newCaptureWriter()
-	cancel, done := serveWithHeader(server, w, "Last-Event-ID", "3")
+	cancel, done := serveWithHeader(t, server, w, "Last-Event-ID", "3")
 	<-w.flushed
 
 	require.NoError(t, server.Send(t.Context(), idMsg("4", []byte("d4"))))
@@ -1102,7 +1148,7 @@ func TestSSEServer_Send_replayContiguous(t *testing.T) {
 
 	// Subscriber A observes 1..3, then disconnects.
 	a := newCaptureWriter()
-	cancelA, doneA := serveInBackground(server, a)
+	cancelA, doneA := serveInBackground(t, server, a)
 	<-a.flushed
 	for _, id := range []string{"1", "2", "3"} {
 		require.NoError(t, server.Send(t.Context(), idMsg(id, []byte("d"+id))))
@@ -1119,7 +1165,7 @@ func TestSSEServer_Send_replayContiguous(t *testing.T) {
 	// B reconnects with Last-Event-ID=3: it must replay the ring tail after id 3
 	// (i.e. id 4), then receive live 5,6 — contiguous 4,5,6, no gap, no dup.
 	b := newCaptureWriter()
-	cancelB, doneB := serveWithHeader(server, b, "Last-Event-ID", "3")
+	cancelB, doneB := serveWithHeader(t, server, b, "Last-Event-ID", "3")
 	<-b.flushed
 	require.NoError(t, server.Send(t.Context(), idMsg("5", []byte("d5"))))
 	require.NoError(t, server.Send(t.Context(), idMsg("6", []byte("d6"))))
@@ -1147,7 +1193,7 @@ func TestSSEServer_Send_replayUnknownID(t *testing.T) {
 
 	// Reconnect naming an id that was never in the ring → no replay.
 	w := newCaptureWriter()
-	cancel, done := serveWithHeader(server, w, "Last-Event-ID", "999")
+	cancel, done := serveWithHeader(t, server, w, "Last-Event-ID", "999")
 	<-w.flushed
 	require.NoError(t, server.Send(t.Context(), idMsg("3", []byte("d3"))))
 
@@ -1176,12 +1222,12 @@ func TestSSEServer_Send_replayEviction(t *testing.T) {
 
 	// Resume from the EVICTED id 1 → live-only.
 	evicted := newCaptureWriter()
-	cancelE, doneE := serveWithHeader(server, evicted, "Last-Event-ID", "1")
+	cancelE, doneE := serveWithHeader(t, server, evicted, "Last-Event-ID", "1")
 	<-evicted.flushed
 
 	// Resume from the RETAINED id 2 → replays the ring tail after 2 (id 3).
 	retained := newCaptureWriter()
-	cancelR, doneR := serveWithHeader(server, retained, "Last-Event-ID", "2")
+	cancelR, doneR := serveWithHeader(t, server, retained, "Last-Event-ID", "2")
 	<-retained.flushed
 
 	require.NoError(t, server.Send(t.Context(), idMsg("4", []byte("d4"))))
@@ -1207,7 +1253,7 @@ func TestSSEServer_Send_idlessNotRinged(t *testing.T) {
 
 	// A live subscriber to prove the id-less event still fans out.
 	a := newCaptureWriter()
-	cancelA, doneA := serveInBackground(server, a)
+	cancelA, doneA := serveInBackground(t, server, a)
 	<-a.flushed
 
 	require.NoError(t, server.Send(t.Context(), idMsg("1", []byte("d1"))))
@@ -1226,7 +1272,7 @@ func TestSSEServer_Send_idlessNotRinged(t *testing.T) {
 	// B reconnects at id 1: the ring holds only the id-bearing events, so the
 	// replay tail after 1 is [2] — the id-less event is absent from the ring.
 	b := newCaptureWriter()
-	cancelB, doneB := serveWithHeader(server, b, "Last-Event-ID", "1")
+	cancelB, doneB := serveWithHeader(t, server, b, "Last-Event-ID", "1")
 	<-b.flushed
 	require.NoError(t, server.Send(t.Context(), idMsg("3", []byte("d3"))))
 
@@ -1290,9 +1336,9 @@ func TestSSEServer_writeErrorEndsWriter(t *testing.T) {
 				done   <-chan struct{}
 			)
 			if tc.lastID != "" {
-				cancel, done = serveWithHeader(server, w, "Last-Event-ID", tc.lastID)
+				cancel, done = serveWithHeader(t, server, w, "Last-Event-ID", tc.lastID)
 			} else {
-				cancel, done = serveInBackground(server, w)
+				cancel, done = serveInBackground(t, server, w)
 			}
 			defer cancel()
 

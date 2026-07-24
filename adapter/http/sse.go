@@ -23,12 +23,10 @@ import (
 // the inbound allow-list strip.
 const HeaderSSEEventName = "http.sse-event"
 
-// HeaderSSEEventID is the non-reserved message header the SSE CLIENT (Plan
-// 026, Phase 4) writes with the last event id it observed on a stream, so a
-// flow reading a message built from a reconnect can resume from it. It is
-// declared here — as a constant only — because Task 1 (the encode side) and
-// the future client both need to agree on the same header name; nothing in
-// this task reads or writes it.
+// HeaderSSEEventID is the non-reserved message header an SSE client writes
+// with the last event id it observed on a stream, so a flow reading a message
+// built from a reconnect can resume from it. It is declared alongside the
+// encode side so both agree on the same header name.
 const HeaderSSEEventID = "http.sse-event-id"
 
 // SSEEvent is one Server-Sent Event frame: an optional id, an optional event
@@ -41,9 +39,9 @@ type SSEEvent struct {
 	// written, and the client dispatches the frame as the SSE default event,
 	// "message".
 	Name string
-	// Data is the event's payload. It is split on '\n' and framed one
-	// "data: " line per element (see EncodeSSEEvent's doc comment). An empty
-	// or nil Data still produces a single "data: \n" line.
+	// Data is the event's payload. Its CR, LF, and CRLF line terminators are
+	// each framed as a separate "data: " line (see EncodeSSEEvent's doc
+	// comment). An empty or nil Data still produces a single "data: \n" line.
 	Data []byte
 }
 
@@ -66,12 +64,17 @@ type SSEEvent struct {
 // silently turning a legitimate empty-payload send into a no-op.
 //
 // Before any byte is written, ID and Name are validated: either containing a
-// CR, LF, or NUL returns ErrInvalidEventField and writes nothing (INV-S1). A
-// raw newline in an id:/event: field would let it inject additional,
+// CR, LF, or NUL returns ErrInvalidEventField and writes nothing. A raw
+// newline in an id:/event: field would otherwise let it inject additional,
 // unintended SSE fields into the frame; NUL is rejected alongside it as a
-// defensive line-oriented-parser precaution. Data is NOT subject to this
-// check: splitting it on '\n' into multiple data: lines is the documented,
-// intended multi-line-data mechanism, not an injection.
+// defensive line-oriented-parser precaution.
+//
+// Data takes a different, equally-safe path: every CR, LF, and CRLF in it is a
+// line terminator — never data content in text/event-stream — so each is
+// normalized to a data:-line boundary rather than rejected. A bare CR in a
+// payload therefore never survives raw on the wire to be reinterpreted by a
+// client as a field boundary (the SSE analog of HTTP response splitting),
+// while legitimate multi-line data still frames into multiple data: lines.
 //
 // A write failure from w is returned exactly as w produced it (unwrapped):
 // the caller already knows the write target, and EncodeSSEEvent adds no
@@ -93,7 +96,18 @@ func EncodeSSEEvent(w io.Writer, ev SSEEvent) error {
 		b.WriteByte('\n')
 	}
 
-	for _, line := range strings.Split(string(ev.Data), "\n") {
+	// Normalize every SSE line terminator in Data to '\n' before framing so no
+	// bare CR reaches a subscriber: CR, LF, and CRLF are all line terminators in
+	// text/event-stream and can never be data CONTENT, so a bare '\r' left raw
+	// inside a data: value would be reinterpreted by any conforming WHATWG
+	// client (browser EventSource, this package's own SSEParser) as a line
+	// boundary — forging id:/event:/whole events into the stream (the SSE analog
+	// of HTTP response splitting). Collapsing CRLF first, then any remaining bare
+	// CR, makes each terminator exactly one data: line, so "a\rb", "a\r\nb" and
+	// "a\nb" all frame identically and round-trip to "a\nb".
+	data := strings.ReplaceAll(string(ev.Data), "\r\n", "\n")
+	data = strings.ReplaceAll(data, "\r", "\n")
+	for _, line := range strings.Split(data, "\n") {
 		b.WriteString("data: ")
 		b.WriteString(line)
 		b.WriteByte('\n')
@@ -165,9 +179,13 @@ var sseBOM = []byte{0xEF, 0xBB, 0xBF}
 // contributed anything — dispatches nothing at all (only the event-name
 // buffer resets; the last-event-id persists).
 //
-// SSEParser buffers at most WithMaxEventBytes (default 1 MiB) for a single
-// event: see WithMaxEventBytes for the exact cap semantics and
-// ErrEventTooLarge for the error it produces when exceeded.
+// SSEParser bounds the memory a single event may buffer with WithMaxEventBytes
+// (default 1 MiB): see WithMaxEventBytes for the exact cap semantics and
+// ErrEventTooLarge for the error it produces when exceeded. The transient peak
+// can reach ~2× that cap — a near-cap accumulated "data" buffer plus one
+// further line-capped "data:" value appended just before the over-cap check
+// trips — so the buffered memory is bounded (it never grows without limit) but
+// its ceiling is ~2× the cap, not exactly the cap.
 //
 // SSEParser is built over a bufio.Reader with explicit byte accounting
 // rather than bufio.Scanner, whose token cap and line-splitting fit neither

@@ -349,12 +349,15 @@ follows. **NON-GUARANTEE:** msgin performs **no** private-IP, link-local, loopba
   - `SSEEvent{ID, Name string; Data []byte}` — `""` = omit the `id:`/`event:` line (a nameless event dispatches as
     `message` per the standard).
   - **Encode** — `EncodeSSEEvent(w io.Writer, ev SSEEvent) error`: `id:`/`event:`/`data:` lines + terminating blank
-    line; `Data` is split on `\n` into one `data:` line each, uniformly `data:` + one space + the line (the parser
-    strips exactly one leading space, so a payload whose first byte is a space round-trips; an empty `Data` still
-    emits one `data: ` line). **SSE-injection guard (C5):** an `ID`/`Name` containing CR, LF, or NUL could forge
-    extra fields or whole events from a message header — encode **rejects** it with `ErrInvalidEventField` (reject,
-    not sanitize — a silently altered id would break C1's identity-matched replay and mask the flow bug); never a
-    corrupted stream. **`SSEEventFromMessage(msg, cfg) (SSEEvent, error)` is exported** (message→event conversion —
+    line; `Data` is **line-terminator-normalized** (CRLF→LF, then any remaining bare CR→LF) then split on `\n` into
+    one `data:` line each, uniformly `data:` + one space + the line (the parser strips exactly one leading space, so
+    a payload whose first byte is a space round-trips; an empty `Data` still emits one `data: ` line). **SSE-injection
+    guard (C5):** the guard covers **both** message-derived channels. On `ID`/`Name`, CR/LF/NUL could forge extra
+    fields or whole events, so encode **rejects** it with `ErrInvalidEventField` (reject, not sanitize — a silently
+    altered id would break C1's identity-matched replay and mask the flow bug). On the **`Data`** channel, a bare CR
+    (or CRLF) in an unvalidated payload would forge fields exactly the same way if written raw, so encode instead
+    **normalizes** every CR/LF/CRLF to a `data:`-line boundary (they are SSE line terminators, never data content) —
+    no bare CR reaches a subscriber; never a corrupted stream. **`SSEEventFromMessage(msg, cfg) (SSEEvent, error)` is exported** (message→event conversion —
     reused by Phase 5's gin S-out binding without importing `stdlib`, and blackbox-testable); payload accepts
     `[]byte` **or** `string` (the shared `payloadBytes` contract, `ErrUnsupportedPayload` otherwise).
   - **Decode** — an incremental parser (constructor + per-event pull API; exact shape finalized in Plan 025)
@@ -567,8 +570,10 @@ adapter being the untrusted-input boundary (Spec 010 §8.1).
   cookie-authenticated one is CSRF-vulnerable — and directs the caller to their own middleware. SSE's own timeout
   shape (no write timeout on the streaming response) and `WithMaxConnections` land with Phase 3.
 - **SSE attack surfaces (enumerated at design time; verified by Plans 025/026 and the Phase-3 `/security-review`):**
-  server — **SSE field injection** via message headers (`id:`/`event:` carrying CR/LF/NUL → rejected,
-  `ErrInvalidEventField`, C5); **connection exhaustion** (`WithMaxConnections` → 503); **slow-client memory/blocking**
+  server — **SSE field injection** via any message-derived byte (header OR payload): `id:`/`event:` carrying
+  CR/LF/NUL → rejected (`ErrInvalidEventField`, C5), and a bare CR/CRLF in the **payload** → normalized into `data:`
+  framing so no bare CR reaches a subscriber to forge fields (the data-path close; whole-branch review 2026-07-24);
+  **connection exhaustion** (`WithMaxConnections` → 503); **slow-client memory/blocking**
   (bounded per-connection buffer + drop/disconnect policy — `Send` never blocks); **replay-ring memory** (bounded `n`,
   opt-in, C1). Client — the remote is untrusted input exactly as Phase 2's: **unbounded-event OOM** (per-event cap →
   `ErrEventTooLarge`, C6); **hostile `retry:`** (clamped into the caller's backoff bounds, C3); **redirect SSRF**

@@ -554,6 +554,17 @@ payload accepts `[]byte` **or** `string` (the shared `payloadBytes` contract), n
 Added sentinels `ErrInvalidSlowClientPolicy` (unknown enum) and `ErrSSEServerClosed` (`Send` after `Close`,
 `msgin.Permanent`).
 
+**Amendment (whole-branch security review, 2026-07-24).** The reject-guard on `id`/`event` is **complemented by
+CR/LF/CRLF _normalization_ on the `data` channel.** The original guard covered only the header-derived `id:`/`event:`
+fields; the payload path (`Data`, sourced from `payloadBytes(msg)` unvalidated) was not guarded at all. A bare CR (or
+CRLF) in a payload, written raw inside a `data:` value, is reinterpreted as a line boundary by every conforming
+WHATWG parser (browser `EventSource`, and this repo's own `SSEParser`, whose `readLine` treats a bare CR as a line
+ending) — forging `id:`/`event:`/whole events into every subscriber's stream (the SSE analog of HTTP response
+splitting). Because CR/LF/CRLF are SSE line **terminators** and can never be data content, the fix **normalizes** them
+(CRLF→LF, then bare CR→LF) into legitimate `data:`-line boundaries rather than rejecting the payload — `"a\rb"`,
+`"a\r\nb"`, `"a\nb"` all frame identically and round-trip to `"a\nb"`. INV-S1 is widened accordingly from "no
+message-**header**-derived byte" to "no **message-derived** byte (header OR payload)".
+
 ### C6 — per-event byte cap on the parser, default 1 MiB (new security decision; extends §7)
 
 **Decision.** The shared parser enforces a per-event byte cap — default **1 MiB**, overridable via `WithMaxEventBytes`

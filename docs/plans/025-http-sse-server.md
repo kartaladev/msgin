@@ -127,14 +127,26 @@ The `Config` nil-safety contract covers **exported `*Config`-taking functions** 
 
 ## Security invariants — the gate; each needs a test that fails if the invariant is removed
 
-**INV-S1 — No byte influenced by a message header may reach a subscriber's stream except through
-`EncodeSSEEvent`'s validated `id:`/`event:` fields or `data:` line framing.** An `ID`/`Name` containing CR, LF or
-NUL forges fields or whole events into every subscriber's stream (the SSE analog of header injection; C5).
-*Realized by:* `EncodeSSEEvent` rejects with `ErrInvalidEventField` (reject, not sanitize — a silently altered id
-breaks C1's identity-matched replay); `Data` is split on `\n` into one `data:` line each; `Send` wraps the
-rejection in `msgin.Permanent`. *Verify:* encode table over the class (`"a\nb"`, `"a\rb"`, `"a\x00b"`, in both ID
-and Name); an end-to-end `Send` with a hostile `HeaderSSEEventName` asserting the error is `msgin.Permanent` +
-`errors.Is(ErrInvalidEventField)` **and zero bytes reached a connected subscriber**.
+**INV-S1 — No message-derived byte (header OR payload) may reach a subscriber's stream except through
+`EncodeSSEEvent`'s validated `id:`/`event:` fields or its normalized `data:` line framing.** An `ID`/`Name`
+containing CR, LF or NUL forges fields or whole events into every subscriber's stream (the SSE analog of header
+injection; C5) — and, symmetrically, a **bare CR (or CRLF) in the payload `Data`** would forge fields too if it
+reached the wire raw inside a `data:` value, because every conforming WHATWG parser (browser `EventSource` and this
+repo's own `SSEParser`, whose `readLine` treats a bare CR as a line ending) reinterprets it as a line boundary (the
+SSE analog of HTTP response splitting). The original scoping ("no byte influenced by a message *header*") missed the
+payload path entirely: `Data` flows from `payloadBytes(msg)` unvalidated.
+*Realized by:* `EncodeSSEEvent` rejects an `ID`/`Name` with CR/LF/NUL via `ErrInvalidEventField` (reject, not
+sanitize — a silently altered id breaks C1's identity-matched replay) and wraps it in `msgin.Permanent` at `Send`;
+`Data` is instead **normalized** — CRLF→LF then any remaining bare CR→LF — and split on `\n` into one `data:` line
+each, so CR/LF/CRLF are all treated as the line terminators SSE defines them to be and **no bare CR ever reaches a
+subscriber outside `data:` framing** (`"a\rb"`, `"a\r\nb"`, `"a\nb"` all frame identically and round-trip to
+`"a\nb"`; the CR→LF normalization is inherent to SSE, not a bug). *Verify:* encode table over the class (`"a\nb"`,
+`"a\rb"`, `"a\x00b"`, in both ID and Name); encode rows for CR/CRLF/consecutive-CR **in `Data`** asserting the
+framed bytes carry no raw `\r`; round-trip rows (`"a\rb"`, `"a\r\nb"` → `"a\nb"`); an end-to-end `Send` with a
+hostile `HeaderSSEEventName` asserting the error is `msgin.Permanent` + `errors.Is(ErrInvalidEventField)` **and zero
+bytes reached a connected subscriber**; and an end-to-end `Send` whose **payload** carries a bare CR
+(`"foo\rid: forged\r\rdata: hijacked"`) asserting the subscriber's parsed stream is exactly **one** event with no
+forged `id:` and no second event.
 
 **INV-S2 — `Send` never blocks on, and never allocates unboundedly for, a slow or dead subscriber.** *Realized
 by:* non-blocking enqueue into a bounded per-connection buffer; on full → `SlowClientDrop` (default; drop the
@@ -186,7 +198,11 @@ counter), a single event with too many `data:` lines trips it (data-buffer count
 ignored fields, and blank lines never accumulate** — a long-lived idle stream of `: ping\n` keep-alives (with or
 without blank lines) or blank-line-separated small events never false-trips. (This supersedes the earlier
 "bytes-consumed-since-last-blank-line" rule, which over-counted non-buffering comment bytes and still false-tripped
-bare `: ping\n` heartbeats — F4.) *Verify:* at-cap
+bare `: ping\n` heartbeats — F4.) **Peak-vs-cap honesty (whole-branch review M1):** the transient buffered peak can
+reach **~2× the cap** — a near-cap `data` buffer plus one further line-capped `data:` value appended just before the
+`> cap` check trips — so the bound is "buffered memory is bounded, never unbounded", with a ceiling of ~2× the cap,
+not exactly the cap. This is current, intended behavior (the boundary tests pin it); the cap godoc states the ~2×
+peak. *Verify:* at-cap
 event parses; cap+1 as a single unterminated line → `ErrEventTooLarge` (line counter); a single event with many
 small `data:` lines whose accumulated buffer exceeds the cap → `ErrEventTooLarge` (data-buffer counter); a long run
 of small complete events whose *cumulative* bytes exceed the cap but no single line and no single event's data
@@ -375,9 +391,12 @@ nil-safe accessor, construction-time CR/LF/NUL validation in `NewConfig`).
 server; Task 5 consumes `SSEEventFromMessage` + `EncodeSSEEvent`; Plan 026 consumes `HeaderSSEEventID`.
 
 Framing rules (WHATWG, encode side): write `id: <ID>\n` when `ID != ""`; `event: <Name>\n` when `Name != ""`;
-`Data` split on `\n` — one line per element, **uniformly emitting `data:` + colon + exactly one space + the line
-(no special-case)** (the parser strips exactly one leading space of a value, so this single space is the round-trip
-convention — a payload whose first byte is itself a space then survives; audit MINOR-1). **An empty `Data` still
+`Data` **line-terminator-normalized first** (CRLF→LF, then any remaining bare CR→LF) then split on `\n` — one line
+per element, **uniformly emitting `data:` + colon + exactly one space + the line (no special-case)** (the parser
+strips exactly one leading space of a value, so this single space is the round-trip convention — a payload whose
+first byte is itself a space then survives; audit MINOR-1). The CR/CRLF normalization is what closes the INV-S1
+data-path gap: a bare CR left raw in a `data:` value would be reinterpreted by any WHATWG parser as a line boundary
+and forge fields (whole-branch security review). **An empty `Data` still
 emits one line, `data: \n`** (colon-space-newline — the same uniform rule; an SSE event with no data line is never
 dispatched by any conforming parser, so silently emitting nothing would turn `Send` into a no-op, and the parser
 strips the one space back to `""` — F5: keep the rule uniform, no branch); terminating `\n`. Field validation first, before any byte is
@@ -394,6 +413,7 @@ non-empty, else `cfg.eventNameOrDefault()`; then the same field validation (the 
 | 2 | encode: `ID==""` / `Name==""` → line omitted | table |
 | 3 | encode: empty `Data` → single `data: \n` line (colon-space-newline, uniform rule), event still framed | table |
 | 3b | encode golden (F5, uniform rule): payload beginning with a space → `data:  hello\n` (colon+space+the payload's own space); payload `""` → `data: \n` (MINOR-1; the encode-side byte proof — the round-trip is Task 2 branch RT) | table |
+| 3c | encode: CR / CRLF / consecutive-CR in `Data` → each terminator becomes its own `data:` line boundary, framed bytes carry **no raw `\r`** (`"a\rb"`→`data: a\ndata: b`; `"a\r\nb"`→same; `"a\r\rb"`→`data: a\ndata: \ndata: b`) — the INV-S1 data-path close (whole-branch review) | table over the class |
 | 4 | encode: CR / LF / NUL in ID and in Name → `ErrInvalidEventField`, zero bytes written | table over the class |
 | 5 | encode: writer error → returned raw | failing-writer fake |
 | 6 | `SSEEventFromMessage`: `[]byte` payload / `string` payload / other → `ErrUnsupportedPayload` | table |
@@ -445,7 +465,9 @@ strip, id persistence across events, clean EOF, mid-event EOF, at-cap, **over-ca
 the cap but no single line and no single event's data buffer does → no error, and a run of bare `: ping\n` comments
 (no blank line between them) whose cumulative bytes exceed the cap → no error (MAJOR-4/F4), **RT** — round-trip: a
 payload beginning with a space and a `""` payload survive `EncodeSSEEvent`→`NewSSEParser` byte-exact (discharges
-Task 1 branch 3b; MINOR-1)) **plus** construction: `WithMaxEventBytes(0)/(-1)` → `ErrInvalidMaxEventBytes`, unset →
+Task 1 branch 3b; MINOR-1), and a **CR/CRLF-bearing** payload (`"a\rb"`, `"a\r\nb"`) round-trips to `"a\nb"` — the
+CR is an SSE line terminator, never content, so normalization to LF is the correct, lossless behavior (whole-branch
+review)) **plus** construction: `WithMaxEventBytes(0)/(-1)` → `ErrInvalidMaxEventBytes`, unset →
 1 MiB default proven behaviorally (an event of exactly `defaultMaxEventBytes` data-buffer bytes parses; one byte
 more errors — the Plan 024 "prove the default, don't read the field" rule).
 
@@ -549,6 +571,7 @@ asserts the WARN record (INV-S2's instrumentation).
 | 2 | `Send` fan-out to N healthy subscribers → each receives the identical frame | e2e, parse with `NewSSEParser` |
 | 3 | payload `[]byte` / `string` / other → frames vs `msgin.Permanent(ErrUnsupportedPayload)` | table |
 | 4 | hostile `HeaderSSEEventName` → `Permanent` + `ErrInvalidEventField`, zero subscriber bytes (INV-S1 e2e) | e2e |
+| 4b | bare CR in the **payload** (`"foo\rid: forged\r\rdata: hijacked"`) → subscriber's parsed stream is exactly **one** event, no forged `id:`, no second event, no raw `\r` on the wire (INV-S1 data-path e2e — the header blind spot; whole-branch review) | e2e |
 | 5 | full buffer + Drop policy → WARN latch observed, healthy peer unaffected (INV-S2) — **blocking-writer fake** so `frames` deterministically fills, NOT loopback (MAJOR-3) | blocking fake |
 | 6 | full buffer + Disconnect policy → stalled conn ends, healthy peer unaffected — same blocking-writer fake | blocking fake |
 | 7 | post-`Close` `Send` → `msgin.Permanent(ErrSSEServerClosed)` (INV-S4's last arm) | unit |

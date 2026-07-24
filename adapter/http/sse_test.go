@@ -98,6 +98,41 @@ func TestEncodeSSEEvent(t *testing.T) {
 			},
 		},
 		{
+			// Data CR/LF/CRLF normalization (whole-branch review C1): a bare
+			// CR in Data is a line boundary, framed as its own data: line —
+			// never written raw, where a WHATWG parser would reinterpret it as
+			// a field boundary and forge events. "a\rb" -> two data: lines.
+			name: "CR in Data becomes a data-line boundary",
+			ev:   msghttp.SSEEvent{Data: []byte("a\rb")},
+			assert: func(t *testing.T, written string, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, "data: a\ndata: b\n\n", written)
+				assert.NotContains(t, written, "\r", "no bare CR may survive on the wire")
+			},
+		},
+		{
+			// CRLF in Data normalizes to a single line boundary (not two): the
+			// \r\n pair is one terminator, exactly as SSE defines it.
+			name: "CRLF in Data becomes a single data-line boundary",
+			ev:   msghttp.SSEEvent{Data: []byte("a\r\nb")},
+			assert: func(t *testing.T, written string, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, "data: a\ndata: b\n\n", written)
+				assert.NotContains(t, written, "\r", "no bare CR may survive on the wire")
+			},
+		},
+		{
+			// Two consecutive bare CRs are two line boundaries, yielding an
+			// empty middle data: line — the same as "a\n\nb" would.
+			name: "consecutive CRs in Data yield an empty middle data line",
+			ev:   msghttp.SSEEvent{Data: []byte("a\r\rb")},
+			assert: func(t *testing.T, written string, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, "data: a\ndata: \ndata: b\n\n", written)
+				assert.NotContains(t, written, "\r", "no bare CR may survive on the wire")
+			},
+		},
+		{
 			// Branch 4: CR in ID -> ErrInvalidEventField, zero bytes written.
 			name: "CR in ID is rejected",
 			ev:   msghttp.SSEEvent{ID: "bad\rid", Data: []byte("x")},
@@ -863,6 +898,29 @@ func TestSSEParser_Next(t *testing.T) {
 				ev, err := p.Next()
 				require.NoError(t, err)
 				assert.Equal(t, []byte(" hello"), ev.Data)
+			},
+		},
+		{
+			// RT (whole-branch review C1): a payload carrying a bare CR
+			// round-trips to LF — the CR is an SSE line terminator, never
+			// data content, so "a\rb" legitimately encodes to two data: lines
+			// and parses back to "a\nb". No bare CR reaches a subscriber.
+			name:  "RT: payload with a bare CR round-trips to LF",
+			input: mustEncodeSSE(t, msghttp.SSEEvent{Data: []byte("a\rb")}),
+			assert: func(t *testing.T, p *msghttp.SSEParser) {
+				ev, err := p.Next()
+				require.NoError(t, err)
+				assert.Equal(t, []byte("a\nb"), ev.Data)
+			},
+		},
+		{
+			// RT: a CRLF payload normalizes to a single LF the same way.
+			name:  "RT: payload with a CRLF round-trips to a single LF",
+			input: mustEncodeSSE(t, msghttp.SSEEvent{Data: []byte("a\r\nb")}),
+			assert: func(t *testing.T, p *msghttp.SSEParser) {
+				ev, err := p.Next()
+				require.NoError(t, err)
+				assert.Equal(t, []byte("a\nb"), ev.Data)
 			},
 		},
 		{

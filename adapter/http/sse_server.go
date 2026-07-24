@@ -314,7 +314,7 @@ func (s *SSEServer) warnWriteDeadlineUnsupported(r *http.Request) {
 // cancels every registered connection, and joins each connection's writer,
 // waiting up to ctx for the joins.
 //
-// The join is only possible because of the per-write OS deadline (INV-S8):
+// The join is only possible because of the per-write OS deadline:
 // cancelling a connection's context unblocks a writer sitting in select, but a
 // writer wedged inside Write on a stalled reader is reaped by the deadline, not
 // the cancel. If ctx expires before every writer has exited, Close returns
@@ -363,9 +363,9 @@ type dropNotice struct {
 // non-blocking per connection: it encodes the event ONCE, then does a
 // non-blocking enqueue into each connection's bounded buffer, applying
 // WithSlowClientPolicy to any connection whose buffer is full. It never blocks
-// on, and never grows memory unboundedly for, a slow or dead subscriber
-// (INV-S2), and returns promptly — including with zero connections, where it is
-// a fire-and-forget no-op returning nil.
+// on, and never grows memory unboundedly for, a slow or dead subscriber, and
+// returns promptly — including with zero connections, where it is a
+// fire-and-forget no-op returning nil.
 //
 // Delivery is AT-MOST-ONCE: there is no acknowledgement or redelivery, and under
 // the default SlowClientDrop a full-buffer event is dropped for that one
@@ -378,7 +378,8 @@ type dropNotice struct {
 //   - a payload that is neither []byte nor string → Permanent(ErrUnsupportedPayload);
 //   - an id or event name carrying CR/LF/NUL → Permanent(ErrInvalidEventField),
 //     with ZERO bytes reaching any subscriber (the injection is rejected before
-//     any fan-out, INV-S1);
+//     any fan-out; a CR/LF/CRLF in the payload is instead normalized into data:
+//     framing by the encoder, so it too can never forge fields into a stream);
 //   - a Send after Close → Permanent(ErrSSEServerClosed).
 //
 // When WithReplayBuffer is enabled, an event with a non-empty id is appended to

@@ -107,10 +107,11 @@ var (
 	// ErrInvalidEventField is returned by EncodeSSEEvent and
 	// SSEEventFromMessage when an SSEEvent's ID or Name contains a CR, LF, or
 	// NUL byte, and by NewConfig when an explicit WithEventName value does.
-	// An SSE "id:"/"event:" field is framed as a single line (INV-S1): an
-	// embedded newline would let the value inject additional, unintended SSE
-	// fields into the frame, so it is rejected before any byte is written
-	// rather than silently truncated or escaped.
+	// An SSE "id:"/"event:" field is framed as a single line: an embedded
+	// newline would let the value inject additional, unintended SSE fields
+	// into the frame, so it is rejected before any byte is written rather than
+	// silently truncated or escaped. (A payload's own CR/LF/CRLF is not an
+	// error — EncodeSSEEvent normalizes it into data: framing instead.)
 	ErrInvalidEventField = errors.New("msghttp: SSE id or event name contains CR, LF, or NUL")
 
 	// ErrEventTooLarge is returned by SSEParser.Next when a single

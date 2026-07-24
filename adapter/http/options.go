@@ -141,28 +141,26 @@ type Config struct {
 	clock               clockwork.Clock
 	errorBodyExcerpt    bool
 
-	// eventName is the SSE (Task 1) default "event:" field name
-	// SSEEventFromMessage falls back to when a message carries no
-	// HeaderSSEEventName header. eventNameSet distinguishes an explicit
-	// WithEventName call (validated by NewConfig) from unset (default "").
+	// eventName is the SSE default "event:" field name SSEEventFromMessage
+	// falls back to when a message carries no HeaderSSEEventName header.
+	// eventNameSet distinguishes an explicit WithEventName call (validated by
+	// NewConfig) from unset (default "").
 	eventName    string
 	eventNameSet bool
 
-	// maxEventBytes is the Task 2 SSEParser per-event byte cap
-	// (WithMaxEventBytes). maxEventBytesSet distinguishes an explicit
-	// WithMaxEventBytes(n<=0) (rejected) from unset (default
-	// defaultMaxEventBytes), mirroring maxBodyBytesSet/maxResponseBytesSet.
+	// maxEventBytes is the SSEParser per-event byte cap (WithMaxEventBytes).
+	// maxEventBytesSet distinguishes an explicit WithMaxEventBytes(n<=0)
+	// (rejected) from unset (default defaultMaxEventBytes), mirroring
+	// maxBodyBytesSet/maxResponseBytesSet.
 	maxEventBytes    int64
 	maxEventBytesSet bool
 
-	// maxConnections through sseClock are the SSE server (Task 3)
-	// construction-time settings NewSSEServer reads starting Task 4 — see
-	// each WithX option's godoc below for its default and rationale. Every
-	// *Set flag mirrors the maxBodyBytesSet/maxResponseBytesSet pattern: it
-	// distinguishes an explicit-but-invalid value (a construction error)
-	// from unset (the documented default). Nothing in this package reads
-	// these fields yet; NewConfig only validates them and resolves
-	// defaults.
+	// maxConnections through sseClock are the SSE server construction-time
+	// settings NewSSEServer reads — see each WithX option's godoc below for
+	// its default and rationale. Every *Set flag mirrors the
+	// maxBodyBytesSet/maxResponseBytesSet pattern: it distinguishes an
+	// explicit-but-invalid value (a construction error) from unset (the
+	// documented default).
 	maxConnections      int
 	maxConnectionsSet   bool
 	connectionBuffer    int
