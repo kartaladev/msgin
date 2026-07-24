@@ -270,6 +270,29 @@ func (c *SSEClient) connect(ctx context.Context, out chan<- msgin.Delivery, last
 		req.Header.Set("Last-Event-ID", lastEventID)
 	}
 
+	// INV-C7 read-idle watchdog (Task 3, WithReadTimeout, guarded by
+	// cfg.readTimeoutSet — default OFF). Its action IS ccancel: an expiry
+	// cancels cctx exactly like a caller cancelling just this connection
+	// attempt, aborting whatever client.Do/Read is currently blocked on. That
+	// surfaces to Stream as an ordinary transport/read error and reconnects —
+	// NEVER terminal (see Stream's doc comment: the terminal-vs-reconnect
+	// decision keys on the PARENT ctx via backoffWait's select, never on
+	// cctx, so a watchdog fire cannot be mistaken for a real shutdown).
+	//
+	// Armed BEFORE client.Do (audit F6): a peer that completes the TCP
+	// handshake but never sends response headers is reaped too, not only a
+	// peer that goes silent mid-body.
+	//
+	// REAL time (stdlib time.AfterFunc), deliberately NOT cfg.streamClock():
+	// the watchdog must abort a REAL blocked socket read/Do, which a
+	// fake/virtual clock cannot do — the same real-vs-virtual clock split as
+	// the SSE server's WithWriteTimeout.
+	var watchdog *time.Timer
+	if c.cfg.readTimeoutSet {
+		watchdog = time.AfterFunc(c.cfg.readTimeout, ccancel)
+		defer watchdog.Stop()
+	}
+
 	resp, doErr := c.client.Do(req)
 	if doErr != nil {
 		c.cfg.log().WarnContext(ctx, "msghttp: sse client connect failed",
@@ -280,7 +303,18 @@ func (c *SSEClient) connect(ctx context.Context, out chan<- msgin.Delivery, last
 
 	switch classifySSEResponse(resp) {
 	case sseTriageStream:
-		return c.readEvents(ctx, out, resp.Body, lastEventID)
+		body := io.Reader(resp.Body)
+		if watchdog != nil {
+			// Headers arrived: re-arm the full deadline for the message
+			// phase, then hand readEvents a reader that resets the deadline
+			// on every byte-yielding Read (per-READ, not per-parsed-event —
+			// audit F2: an SSE comment heartbeat ("`: ping\n`") yields bytes
+			// with no dispatched event, and must still keep the connection
+			// alive).
+			watchdog.Reset(c.cfg.readTimeout)
+			body = &readTimeoutReader{r: resp.Body, w: watchdog, d: c.cfg.readTimeout}
+		}
+		return c.readEvents(ctx, out, body, lastEventID)
 	case sseTriageDone:
 		drainBounded(resp.Body, c.cfg.maxResponseBytes)
 		return connResult{terminal: true, lastEventID: lastEventID}
@@ -420,6 +454,32 @@ func doubleDelay(d, maxD time.Duration) time.Duration {
 		return maxD
 	}
 	return next
+}
+
+// readTimeoutReader wraps an SSE connection's response body so every
+// byte-yielding Read resets the INV-C7 idle watchdog (w) to its full
+// duration (d) — this is what makes the watchdog measure READ idleness
+// rather than EVENT idleness (audit F2): an SSE comment heartbeat is a Read
+// that yields bytes but dispatches no event, and must still keep the
+// watchdog from firing. Used only when cfg.readTimeoutSet; when the read
+// timeout is off, connect passes resp.Body directly to readEvents with no
+// wrapper and no timer, so the watchdog imposes zero overhead when unused.
+type readTimeoutReader struct {
+	r io.Reader
+	w *time.Timer
+	d time.Duration
+}
+
+// Read implements io.Reader, resetting rt.w to rt.d whenever the underlying
+// read yields at least one byte (a zero-byte read, or an error with n==0,
+// leaves the deadline running down — exactly what allows it to eventually
+// expire on a genuinely idle connection).
+func (rt *readTimeoutReader) Read(p []byte) (int, error) {
+	n, err := rt.r.Read(p)
+	if n > 0 {
+		rt.w.Reset(rt.d)
+	}
+	return n, err
 }
 
 // sseNoopAck / sseNoopNack settle a delivered SSE event: SSE carries no

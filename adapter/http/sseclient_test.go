@@ -879,3 +879,669 @@ func TestSSEClient_noTimeoutDefault(t *testing.T) {
 		}
 	})
 }
+
+// =============================================================================
+// Task 3 — hardening: cancellation, caps, redaction, no-follow, read-timeout
+// watchdog (INV-C7).
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Row 1 (INV-C5) — ctx cancel during a blocked READ (headers sent, then the
+// server holds with no data ever written) returns ctx.Err() promptly.
+// -----------------------------------------------------------------------------
+
+func TestSSEClient_ctxCancelDuringBlockedRead(t *testing.T) {
+	t.Parallel()
+
+	url, hits, _, closeSrv := newSSEStubServer(t, []sseAttempt{{
+		status: http.StatusOK,
+		header: sseEventStreamHeader,
+		hold:   true, // headers only; no data is ever written
+	}})
+	defer closeSrv()
+
+	client, err := msghttp.NewSSEClient(url)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	out := make(chan msgin.Delivery, 1)
+	done := make(chan error, 1)
+	go func() { done <- client.Stream(ctx, out) }()
+
+	require.Eventually(t, func() bool { return hits() >= 1 }, time.Second, 5*time.Millisecond,
+		"the request never reached the server")
+	time.Sleep(20 * time.Millisecond) // let the read settle into a blocked state
+
+	start := time.Now()
+	cancel()
+
+	var streamErr error
+	select {
+	case streamErr = <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Stream did not return promptly after ctx cancel during a blocked read")
+	}
+	assert.Less(t, time.Since(start), 300*time.Millisecond,
+		"cancel during a blocked read must return promptly, not wait on any timer")
+	assert.ErrorIs(t, streamErr, context.Canceled)
+	assert.EqualValues(t, 1, hits(), "must not reconnect on a terminal ctx cancel")
+}
+
+// -----------------------------------------------------------------------------
+// Row 2 — ctx cancel while parked on the backoff wait returns promptly (no
+// clock advance is ever made — the fake clock never fires on its own).
+// -----------------------------------------------------------------------------
+
+func TestSSEClient_ctxCancelDuringBackoffWait(t *testing.T) {
+	t.Parallel()
+
+	url, hits, _, closeSrv := newSSEStubServer(t, []sseAttempt{{status: http.StatusInternalServerError}})
+	defer closeSrv()
+
+	clk := clockwork.NewFakeClock()
+	client, err := msghttp.NewSSEClient(url, msghttp.WithSSEClock(clk))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	out := make(chan msgin.Delivery, 1)
+	done := make(chan error, 1)
+	go func() { done <- client.Stream(ctx, out) }()
+
+	parkOnBackoff(t, clk)
+	cancel()
+
+	var streamErr error
+	select {
+	case streamErr = <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Stream did not return after ctx cancel while parked on the backoff timer")
+	}
+	assert.ErrorIs(t, streamErr, context.Canceled)
+	assert.EqualValues(t, 1, hits(), "must not reconnect — the clock was never advanced")
+}
+
+// -----------------------------------------------------------------------------
+// Row 3 — ctx cancel while blocked trying to EMIT (out unbuffered, no reader)
+// returns promptly; nothing is sent on out after Stream returns.
+// -----------------------------------------------------------------------------
+
+func TestSSEClient_ctxCancelWhileEmitBlocked(t *testing.T) {
+	t.Parallel()
+
+	url, hits, _, closeSrv := newSSEStubServer(t, []sseAttempt{{
+		status: http.StatusOK,
+		header: sseEventStreamHeader,
+		body:   "data: hello\n\n",
+		hold:   true,
+	}})
+	defer closeSrv()
+
+	client, err := msghttp.NewSSEClient(url)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	out := make(chan msgin.Delivery) // unbuffered, deliberately never drained
+	done := make(chan error, 1)
+	go func() { done <- client.Stream(ctx, out) }()
+
+	require.Eventually(t, func() bool { return hits() >= 1 }, time.Second, 5*time.Millisecond)
+	time.Sleep(20 * time.Millisecond) // let readEvents block trying to send the parsed event on out
+
+	start := time.Now()
+	cancel()
+
+	var streamErr error
+	select {
+	case streamErr = <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Stream did not return promptly after ctx cancel while emit-blocked")
+	}
+	assert.Less(t, time.Since(start), 300*time.Millisecond)
+	assert.ErrorIs(t, streamErr, context.Canceled)
+
+	select {
+	case v := <-out:
+		t.Fatalf("nothing must be sent on out after Stream returns; got %+v", v)
+	default:
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Row 4 (INV-C3) — an over-cap event trips ErrEventTooLarge, which is handled
+// as an ordinary mid-stream fault (reconnect, never terminal, never OOM); the
+// next connection's valid event is still delivered.
+// -----------------------------------------------------------------------------
+
+func TestSSEClient_overCapEventReconnects(t *testing.T) {
+	t.Parallel()
+
+	attempts := []sseAttempt{
+		{status: http.StatusOK, header: sseEventStreamHeader, body: "data: 0123456789\n\n"},     // "data: 0123456789" (16 bytes) exceeds maxEventBytes(10)
+		{status: http.StatusOK, header: sseEventStreamHeader, body: "data: ok\n\n", hold: true}, // "data: ok" (8 bytes) fits under the same cap
+	}
+	url, hits, _, closeSrv := newSSEStubServer(t, attempts)
+	defer closeSrv()
+
+	clk := clockwork.NewFakeClock()
+	client, err := msghttp.NewSSEClient(url,
+		msghttp.WithSSEClock(clk),
+		msghttp.WithMaxEventBytes(10),
+	)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	out := make(chan msgin.Delivery, 4)
+	done := make(chan error, 1)
+	go func() { done <- client.Stream(ctx, out) }()
+
+	expectReconnectAfter(t, clk, hits, 1, 500*time.Millisecond) // defaultReconnectMin
+
+	var d msgin.Delivery
+	select {
+	case d = <-out:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the valid event after reconnect never arrived")
+	}
+	assert.Equal(t, []byte("ok"), d.Msg.Payload())
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stream did not return after cancel")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Row 5 (INV-C2) — hostile event/id values land ONLY on the http.sse-* headers
+// (never a forged msgin.* key); msg.ID() is never the remote id; a 500
+// response body never reaches the log; a weird-but-line-safe id round-trips
+// verbatim as the next connection's Last-Event-ID.
+// -----------------------------------------------------------------------------
+
+func TestSSEClient_hostileValuesRedactedAndResumeVerbatim(t *testing.T) {
+	t.Parallel()
+
+	const weirdID = `weird-id äöü 🎉 with:colons and spaces "quotes"`
+	const secretBody = "TOP-SECRET-INTERNAL-BODY-DO-NOT-LOG"
+
+	attempts := []sseAttempt{
+		{
+			status: http.StatusOK,
+			header: sseEventStreamHeader,
+			body:   "id: " + weirdID + "\nevent: msgin.forged-event\ndata: payload\n\n",
+		},
+		{status: http.StatusInternalServerError, body: secretBody},
+		{status: http.StatusNoContent},
+	}
+	url, hits, reqHeaders, closeSrv := newSSEStubServer(t, attempts)
+	defer closeSrv()
+
+	h := &captureHandler{}
+	clk := clockwork.NewFakeClock()
+	client, err := msghttp.NewSSEClient(url,
+		msghttp.WithLogger(slog.New(h)),
+		msghttp.WithSSEClock(clk),
+	)
+	require.NoError(t, err)
+
+	out := make(chan msgin.Delivery, 4)
+	done := make(chan error, 1)
+	go func() { done <- client.Stream(t.Context(), out) }()
+
+	d := <-out
+	assert.Equal(t, []byte("payload"), d.Msg.Payload())
+
+	name, ok := d.Msg.Headers().String(msghttp.HeaderSSEEventName)
+	assert.True(t, ok)
+	assert.Equal(t, "msgin.forged-event", name)
+
+	id, ok := d.Msg.Headers().String(msghttp.HeaderSSEEventID)
+	assert.True(t, ok)
+	assert.Equal(t, weirdID, id)
+	assert.NotEqual(t, weirdID, d.Msg.ID(), "msg.ID() must be freshly minted, never the remote event id")
+
+	// The hostile event NAME never creates a forged header key of its own —
+	// it lands only as the VALUE of the fixed HeaderSSEEventName key.
+	_, forged := d.Msg.Headers().String("msgin.forged-event")
+	assert.False(t, forged, "a hostile event value must never become a header key")
+
+	// Connection 1 ends cleanly having emitted an event -> reset to min.
+	expectReconnectAfter(t, clk, hits, 1, 500*time.Millisecond)
+	// Connection 2 (the 500) -> reconnect after the same min wait.
+	expectReconnectAfter(t, clk, hits, 2, 500*time.Millisecond)
+
+	var streamErr error
+	select {
+	case streamErr = <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stream did not return")
+	}
+	assert.NoError(t, streamErr)
+	assert.EqualValues(t, 3, hits())
+
+	hdrs := reqHeaders()
+	require.Len(t, hdrs, 3)
+	assert.Equal(t, weirdID, hdrs[1].Get("Last-Event-ID"),
+		"the weird-but-line-safe id must round-trip verbatim as a request header")
+
+	for _, s := range h.attrStrings() {
+		assert.NotContains(t, s, secretBody, "the 500 response body must never reach the log")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Row 6 (INV-C6) — a 302 from the configured host is surfaced as an "other
+// status" by the no-follow client (reconnect to the CONFIGURED url; the
+// redirect target sees zero hits); WithFollowRedirects() follows it instead.
+// -----------------------------------------------------------------------------
+
+func TestSSEClient_redirect(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no-follow by default: reconnects to the configured url, target never hit", func(t *testing.T) {
+		t.Parallel()
+
+		var targetHits atomic.Int32
+		target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			targetHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer target.Close()
+
+		var mainHits atomic.Int32
+		main := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mainHits.Add(1)
+			http.Redirect(w, r, target.URL, http.StatusFound)
+		}))
+		defer main.Close()
+
+		clk := clockwork.NewFakeClock()
+		client, err := msghttp.NewSSEClient(main.URL, msghttp.WithSSEClock(clk))
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		out := make(chan msgin.Delivery, 4)
+		done := make(chan error, 1)
+		go func() { done <- client.Stream(ctx, out) }()
+
+		expectReconnectAfter(t, clk, func() int32 { return mainHits.Load() }, 1, 500*time.Millisecond)
+
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatal("Stream did not return after cancel")
+		}
+		assert.EqualValues(t, 0, targetHits.Load(), "the redirect target must never be hit without WithFollowRedirects")
+		assert.GreaterOrEqual(t, mainHits.Load(), int32(2), "must reconnect to the CONFIGURED (main) url, not the target")
+	})
+
+	t.Run("WithFollowRedirects follows the redirect to the target", func(t *testing.T) {
+		t.Parallel()
+
+		var targetHits atomic.Int32
+		target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			targetHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "data: from-target\n\n")
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		}))
+		defer target.Close()
+
+		var mainHits atomic.Int32
+		main := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mainHits.Add(1)
+			http.Redirect(w, r, target.URL, http.StatusFound)
+		}))
+		defer main.Close()
+
+		client, err := msghttp.NewSSEClient(main.URL, msghttp.WithFollowRedirects())
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		out := make(chan msgin.Delivery, 1)
+		done := make(chan error, 1)
+		go func() { done <- client.Stream(ctx, out) }()
+
+		var d msgin.Delivery
+		select {
+		case d = <-out:
+		case <-time.After(3 * time.Second):
+			t.Fatal("no delivery received via the followed redirect")
+		}
+		assert.Equal(t, []byte("from-target"), d.Msg.Payload())
+		assert.EqualValues(t, 1, targetHits.Load())
+		assert.EqualValues(t, 1, mainHits.Load())
+
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatal("Stream did not return after cancel")
+		}
+	})
+
+	t.Run("no-follow with a caller-supplied http.Client also installs and invokes the closure", func(t *testing.T) {
+		t.Parallel()
+
+		// resolveSSEClient's shallow-copy branch (a caller-supplied
+		// WithHTTPClient with no CheckRedirect of its own) is structurally
+		// exercised by Task 1's TestNewSSEClient_construction, but that test
+		// never triggers a real redirect, so the copied client's no-follow
+		// CheckRedirect closure BODY never actually runs. This sibling
+		// discharges that deferral: same no-follow behavior as the default
+		// path above, but routed through the WithHTTPClient copy.
+		var targetHits atomic.Int32
+		target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			targetHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer target.Close()
+
+		var mainHits atomic.Int32
+		main := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mainHits.Add(1)
+			http.Redirect(w, r, target.URL, http.StatusFound)
+		}))
+		defer main.Close()
+
+		clk := clockwork.NewFakeClock()
+		client, err := msghttp.NewSSEClient(main.URL,
+			msghttp.WithSSEClock(clk),
+			msghttp.WithHTTPClient(&http.Client{}),
+		)
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		out := make(chan msgin.Delivery, 4)
+		done := make(chan error, 1)
+		go func() { done <- client.Stream(ctx, out) }()
+
+		expectReconnectAfter(t, clk, func() int32 { return mainHits.Load() }, 1, 500*time.Millisecond)
+
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatal("Stream did not return after cancel")
+		}
+		assert.EqualValues(t, 0, targetHits.Load())
+	})
+}
+
+// -----------------------------------------------------------------------------
+// Row 7 (INV-C7 arms a+c) — WithReadTimeout aborts an idle connection (headers
+// sent, then silence) and reconnects; off by default, the same silent server
+// never forces a reconnect on its own within a bounded real window.
+// -----------------------------------------------------------------------------
+
+// sseSilentAfterHeadersHandler writes the SSE headers, flushes, then blocks
+// forever (until the request context ends) without ever writing another
+// byte — the "headers sent, then the peer goes silent" shape rows 7/7b/7c
+// need. hits counts connection attempts.
+func sseSilentAfterHeadersHandler(hits *atomic.Int32) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}
+}
+
+func TestSSEClient_readTimeoutReconnectsOnIdleConnection(t *testing.T) {
+	t.Parallel()
+
+	var hits atomic.Int32
+	srv := httptest.NewServer(sseSilentAfterHeadersHandler(&hits))
+	defer srv.Close()
+
+	client, err := msghttp.NewSSEClient(srv.URL,
+		msghttp.WithReadTimeout(80*time.Millisecond),
+		msghttp.WithReconnectBackoff(5*time.Millisecond, 5*time.Millisecond),
+	)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	out := make(chan msgin.Delivery, 1)
+	done := make(chan error, 1)
+	go func() { done <- client.Stream(ctx, out) }()
+
+	require.Eventually(t, func() bool { return hits.Load() >= 2 }, 2*time.Second, 5*time.Millisecond,
+		"the read-idle watchdog must abort the silent connection and reconnect")
+
+	select {
+	case <-done:
+		t.Fatal("Stream returned on its own — a watchdog fire must reconnect, never terminate Stream")
+	default:
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stream did not return after cancel")
+	}
+}
+
+func TestSSEClient_readTimeoutOffByDefault(t *testing.T) {
+	t.Parallel()
+
+	var hits atomic.Int32
+	srv := httptest.NewServer(sseSilentAfterHeadersHandler(&hits))
+	defer srv.Close()
+
+	// No WithReadTimeout: only ctx cancellation or TCP-level keepalive could
+	// ever end this connection — the idle watchdog must not exist at all.
+	client, err := msghttp.NewSSEClient(srv.URL)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	out := make(chan msgin.Delivery, 1)
+	done := make(chan error, 1)
+	go func() { done <- client.Stream(ctx, out) }()
+
+	require.Eventually(t, func() bool { return hits.Load() >= 1 }, time.Second, 5*time.Millisecond)
+	// Bounded real window well past row 7's 80ms watchdog duration: with the
+	// watchdog off, no second attempt may occur in it.
+	time.Sleep(300 * time.Millisecond)
+	assert.EqualValues(t, 1, hits.Load(), "no read-timeout reconnect may occur when WithReadTimeout is unset")
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stream did not return after cancel")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Row 7b (F2) — the watchdog resets on every byte-yielding READ, not on every
+// PARSED EVENT: a server emitting only ": ping\n" comment heartbeats (reads,
+// no dispatched events) at an interval well under d must never be reaped.
+// This test FAILS under a reset-on-event implementation.
+// -----------------------------------------------------------------------------
+
+func sseHeartbeatCommentsHandler(hits *atomic.Int32, interval time.Duration) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fl := w.(http.Flusher)
+		fl.Flush()
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+				if _, err := io.WriteString(w, ": ping\n"); err != nil {
+					return
+				}
+				fl.Flush()
+			}
+		}
+	}
+}
+
+func TestSSEClient_readTimeoutResetsOnCommentHeartbeat(t *testing.T) {
+	t.Parallel()
+
+	const readTimeout = 90 * time.Millisecond
+	const pingInterval = 20 * time.Millisecond // well under readTimeout
+
+	var hits atomic.Int32
+	srv := httptest.NewServer(sseHeartbeatCommentsHandler(&hits, pingInterval))
+	defer srv.Close()
+
+	client, err := msghttp.NewSSEClient(srv.URL, msghttp.WithReadTimeout(readTimeout))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	out := make(chan msgin.Delivery, 1)
+	done := make(chan error, 1)
+	go func() { done <- client.Stream(ctx, out) }()
+
+	require.Eventually(t, func() bool { return hits.Load() >= 1 }, time.Second, 5*time.Millisecond)
+	// Hold across several read-timeout durations' worth of real time: a
+	// reset-on-event (rather than reset-on-read) implementation would have
+	// reaped and reconnected well before this elapses, since no event is
+	// ever dispatched from a comment-only stream.
+	time.Sleep(6 * readTimeout)
+	assert.EqualValues(t, 1, hits.Load(),
+		"a comment-only heartbeat stream must never be reaped — the watchdog must reset on every read, not on parsed events")
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stream did not return after cancel")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Row 7c (F1) — the terminal-vs-reconnect decision keys on the PARENT ctx,
+// never cctx: a parent-ctx cancel during a blocked read ends Stream
+// terminally with NO further attempt; a watchdog fire under the identical
+// blocked-read shape reconnects instead.
+// -----------------------------------------------------------------------------
+
+func TestSSEClient_watchdogVsParentCtxClassification(t *testing.T) {
+	t.Parallel()
+
+	t.Run("parent ctx cancel during a blocked read is terminal, no reconnect", func(t *testing.T) {
+		t.Parallel()
+
+		var hits atomic.Int32
+		srv := httptest.NewServer(sseSilentAfterHeadersHandler(&hits))
+		defer srv.Close()
+
+		// A read timeout long enough that it cannot fire before the parent
+		// ctx is cancelled below — this arm isolates the parent-ctx path.
+		client, err := msghttp.NewSSEClient(srv.URL, msghttp.WithReadTimeout(5*time.Second))
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		out := make(chan msgin.Delivery, 1)
+		done := make(chan error, 1)
+		go func() { done <- client.Stream(ctx, out) }()
+
+		require.Eventually(t, func() bool { return hits.Load() >= 1 }, time.Second, 5*time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
+
+		start := time.Now()
+		cancel()
+
+		var streamErr error
+		select {
+		case streamErr = <-done:
+		case <-time.After(time.Second):
+			t.Fatal("Stream did not return promptly after parent ctx cancel")
+		}
+		assert.Less(t, time.Since(start), 300*time.Millisecond)
+		assert.ErrorIs(t, streamErr, context.Canceled)
+		assert.EqualValues(t, 1, hits.Load(), "a parent-ctx cancel must never reconnect")
+	})
+
+	t.Run("watchdog fire during a blocked read reconnects, Stream keeps running", func(t *testing.T) {
+		t.Parallel()
+
+		var hits atomic.Int32
+		srv := httptest.NewServer(sseSilentAfterHeadersHandler(&hits))
+		defer srv.Close()
+
+		client, err := msghttp.NewSSEClient(srv.URL,
+			msghttp.WithReadTimeout(80*time.Millisecond),
+			msghttp.WithReconnectBackoff(5*time.Millisecond, 5*time.Millisecond),
+		)
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		out := make(chan msgin.Delivery, 1)
+		done := make(chan error, 1)
+		go func() { done <- client.Stream(ctx, out) }()
+
+		require.Eventually(t, func() bool { return hits.Load() >= 2 }, 2*time.Second, 5*time.Millisecond,
+			"a watchdog fire during a blocked read must reconnect, not terminate Stream")
+
+		select {
+		case <-done:
+			t.Fatal("Stream returned on its own — a watchdog fire must not be terminal")
+		default:
+		}
+
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatal("Stream did not return after cancel")
+		}
+	})
+}
+
+// -----------------------------------------------------------------------------
+// Row 7d (F6) — the watchdog is armed BEFORE client.Do: a peer that accepts
+// the connection but never sends response headers is reaped and reconnected
+// too, not just a peer that goes silent mid-body.
+// -----------------------------------------------------------------------------
+
+func TestSSEClient_watchdogReapsPreHeaderSilence(t *testing.T) {
+	t.Parallel()
+
+	var hits atomic.Int32
+	// The handler never calls WriteHeader/Write at all — client.Do itself is
+	// what's blocked, waiting on response headers that never arrive.
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	client, err := msghttp.NewSSEClient(srv.URL,
+		msghttp.WithReadTimeout(80*time.Millisecond),
+		msghttp.WithReconnectBackoff(5*time.Millisecond, 5*time.Millisecond),
+	)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	out := make(chan msgin.Delivery, 1)
+	done := make(chan error, 1)
+	go func() { done <- client.Stream(ctx, out) }()
+
+	require.Eventually(t, func() bool { return hits.Load() >= 2 }, 2*time.Second, 5*time.Millisecond,
+		"the watchdog must abort a peer that never sends headers and reconnect")
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stream did not return after cancel")
+	}
+}

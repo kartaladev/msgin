@@ -1079,6 +1079,17 @@ func WithReconnectBackoff(min, max time.Duration) Option {
 // for an explicit d <= 0 — there is no explicit value that means "off"
 // through this option; only leaving it unset does (mirrors
 // WithHeartbeat/WithReplayBuffer's off-by-default set-flag pattern).
+//
+// NIT — the deadline measures READ idleness, not delivery idleness: it
+// resets on every byte read off the connection, but Stream's read loop also
+// blocks trying to SEND a parsed event onto the caller's out channel (a slow
+// or stalled downstream consumer holding out full). That send-side stall is
+// NOT covered by this deadline — it only ever aborts a stalled underlying
+// Read — so a too-small d can force an unnecessary reconnect while a
+// perfectly healthy connection is simply waiting on a slow consumer (benign:
+// Last-Event-ID resume picks the stream back up). Choose d comfortably above
+// the plausible worst-case consumer-side stall, not just above the remote's
+// heartbeat/keepalive interval.
 func WithReadTimeout(d time.Duration) Option {
 	return func(c *Config) {
 		c.readTimeout = d
