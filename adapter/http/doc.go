@@ -164,15 +164,98 @@
 // per-IP/per-tenant limiting is a reverse-proxy/load-balancer concern, not
 // something this package attempts.
 //
+// # Consuming SSE (SSEClient)
+//
+// NewSSEClient is the S-in half of the SSE pair (the mirror of NewSSEServer
+// above): an msgin.StreamingSource that connects to a caller-configured
+// remote text/event-stream endpoint, parses it with SSEParser, and emits each
+// event as a msgin.Delivery — the wiring NewConsumer needs to run it as a
+// flow, over msgin.WithConsumerCodec[[]byte](msgin.BytesPayloadCodec{}) since
+// every SSEClient delivery carries a []byte wire payload, never a live Go
+// value.
+//
+// # Connection triage
+//
+// Stream's WHATWG triage decides each connection attempt's fate: a 200 whose
+// Content-Type is (or parses as, ignoring a ";charset=..." parameter)
+// text/event-stream is streamed to the parser; a 204 is the server's
+// deliberate stop and ends Stream with a nil error; a 200 with any OTHER (or
+// missing) Content-Type is TERMINAL — ends Stream with ErrNotEventStream,
+// since no amount of reconnecting fixes a misconfigured URL; every other
+// status (4xx, 5xx, a 3xx the no-follow client surfaces as a response, or a
+// transport-level failure) is logged at WARN and reconnected after a clamped
+// exponential backoff (WithReconnectBackoff). This has one sharp edge worth
+// naming: because every status OUTSIDE {204, 200-with-wrong-CT} reconnects
+// silently, a caller pointed at a wrong-but-still-answering URL (e.g. one
+// that happens to return a stray 404) sees Stream loop under backoff FOREVER
+// — visible only in the WARN log, never in Stream's return value, until ctx
+// is cancelled. Double-check the URL if a stream never seems to start.
+//
+// # Delivery guarantee and resume
+//
+// Delivery is AT-MOST-ONCE: Ack/Nack on every delivered message are no-ops,
+// since SSE carries no acknowledgement protocol on the wire, and a message
+// missed during a reconnect gap is simply gone unless the server replays it.
+// Resume is best-effort: the last-seen "id:" is carried as a Last-Event-ID
+// request header on the next connection attempt, honored only by a server
+// that keeps a replay buffer for it (e.g. this package's own NewSSEServer with
+// WithReplayBuffer) — a server that ignores the header, or one that evicted
+// the id from its own buffer, simply resumes live with nothing extra replayed.
+//
+// # Untrusted remote
+//
+// The remote SSE endpoint is UNTRUSTED input (CLAUDE.md "Production
+// robustness"), mirroring the outbound INV-1/INV-2/INV-4/INV-5 boundary
+// above: the default redirect policy is NO-FOLLOW (WithFollowRedirects opts
+// out); a transport-level connect failure is logged via redactTransport,
+// which never lets the target URL (host, path, query, or embedded
+// credentials) reach the log; a single event is capped at WithMaxEventBytes
+// (default 1 MiB) so a pathologically large or unterminated event cannot grow
+// the parser's memory without bound; and the remote-supplied event Name/ID
+// land ONLY on the non-reserved HeaderSSEEventName/HeaderSSEEventID message
+// headers — never on a reserved msgin.* key, and never as msg.ID() itself
+// (which is always freshly minted) — so a hostile or malformed remote value
+// can never forge a core header or hijack the message's identity.
+//
+// # No-Timeout client and dead-peer detection
+//
+// NewSSEClient resolves its own *http.Client (resolveSSEClient), deliberately
+// NOT the outbound adapters' resolveClient: it never back-fills the 30s
+// defaultHTTPClientTimeout, because http.Client.Timeout bounds the ENTIRE
+// request including the response body read, which would silently abort every
+// long-lived stream at that duration regardless of how healthy it is. Left at
+// its zero value, the default transport's TCP keepalive is what detects a
+// dead peer; WithReadTimeout is the stronger, explicit opt-in alternative — a
+// per-read idle deadline that resets on every byte read and aborts (then
+// reconnects) a connection that has gone silent, for a caller whose transport
+// disables keepalive or who needs a tighter bound than the OS interval
+// provides.
+//
+// MULTI-INSTANCE NOTE (CLAUDE.md "Production robustness — multi-instance
+// awareness"): an SSEClient's resume position (the last-seen event id) lives
+// ONLY in the local variables of one Stream call, for that call's lifetime —
+// it is never persisted or shared across Stream calls or process instances. A
+// restarted process, or a Stream call newly started on a different instance,
+// resumes from the live stream, not from the last id a prior instance saw.
+// Competing consumers do not apply here either: every SSEClient receives the
+// full stream independently, with no consumer-group partitioning — a
+// distributed at-least-once resume story would need a durable, shared
+// position store (the Return Address pattern's bookkeeping counterpart) fed
+// back into WithConnectHeaders/a future resume-seed option, which this
+// package does not attempt.
+//
 // # Phase
 //
 // Phase 1 (this package plus adapter/http/stdlib) ships the two inbound server
 // modes: I1 async inbound (ServeAsync) and I2 sync request-reply gateway
 // (ServeGateway, over any msgin.RequestReplyExchange). Phase 2 (this package)
 // ships the two outbound modes: O1 NewOutbound (webhook) and O2 NewExchange
-// (client request-reply). This file's siblings hold the shared Config/Option/
-// WithX surface, DecodeRequest/EncodeResponse (inbound) and EncodeRequest/
-// ClassifyResponse (outbound), the inbound handler cores, the SSE framing core
-// (SSEEvent/EncodeSSEEvent/SSEEventFromMessage/SSEParser), and NewSSEServer —
-// see "Server-Sent Events (SSE)" above for both.
+// (client request-reply). Phase 3 (this package) ships NewSSEServer (S-out);
+// Phase 4 (this package) ships NewSSEClient (S-in). This file's siblings hold
+// the shared Config/Option/WithX surface, DecodeRequest/EncodeResponse
+// (inbound) and EncodeRequest/ClassifyResponse (outbound), the inbound
+// handler cores, the SSE framing core
+// (SSEEvent/EncodeSSEEvent/SSEEventFromMessage/SSEParser), NewSSEServer, and
+// NewSSEClient — see "Server-Sent Events (SSE)", "Serving SSE" and "Consuming
+// SSE (SSEClient)" above for all three.
 package msghttp

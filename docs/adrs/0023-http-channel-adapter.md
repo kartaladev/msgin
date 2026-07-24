@@ -518,6 +518,21 @@ garbage); an **empty `id:` line clears** the held last-event-id. Rejected: a rec
 every standard SSE producer and can loop forever against a server that said stop) and per-rule-configurable
 conformance (three options and test axes nobody asked for — YAGNI).
 
+**Amendment (audit rounds 1–3, 2026-07-24).** (a) A `200` whose `Content-Type` is not `text/event-stream` is
+**terminal** (`Stream` returns `ErrNotEventStream`), not reconnect — a misconfigured URL fails loud through
+`Consumer.Run` rather than looping silently; correspondingly a non-2xx (≠204) **reconnects** (transient 5xx are
+normal for a long-lived consumer). **Documented asymmetry (MINOR-2):** a permanent 404/301/410 therefore loops
+silently (WARN-log only). (b) The client's default `*http.Client` carries **no `Timeout`** — a finite
+`http.Client.Timeout` interrupts the streaming body read and aborts every long-lived stream (MAJOR-1). (c)
+**Dead-peer detection (F1/INV-C7):** since the reconnect loop fires only on a connection that errors, a silently
+half-open socket is caught by `ctx` cancel, the default transport's TCP keepalive, or the opt-in
+**`WithReadTimeout(d)`** (off by default) — a per-read idle watchdog whose expiry aborts the connection.
+
+**Pacing precedence (user-decided 2026-07-24).** When a single connection both delivers ≥1 event and carries a
+valid `retry:` before it ends, the server's explicit `retry:` directive **takes precedence** over the client's
+event-reset heuristic for the next reconnect delay (`hasRetry > gotEvent > doubling`), so a healthy stream that
+names its own reconnect spacing is honored rather than hammered at `min`.
+
 ### C4 — server hub: mutex registry + one writer goroutine per connection (amends §3's S-out row)
 
 **Decision.** A `sync.Mutex`-guarded connection set; each connection owns a bounded channel (`WithConnectionBuffer`,
@@ -577,6 +592,22 @@ the remote is untrusted input, and without the cap a single endless `data:` line
 resets at each line ending, the data buffer at each dispatch; comments, ignored fields, and blank lines never
 accumulate, so a long-lived idle stream of `: ping` keep-alives never false-trips, while a single unterminated line
 or an oversized multi-`data:` event still trips.
+
+### C7 — SSE client placement: `msghttp`, not `adapter/http/stdlib` (2026-07-24)
+
+**Decision.** `NewSSEClient` / `SSEClient` (`msgin.StreamingSource`) live in **`adapter/http/sseclient.go`, package
+`msghttp`** — NOT `adapter/http/stdlib`.
+
+**Why (mirrors Addendum B4).** `stdlib` exists to bind a framework-neutral core to net/http **server** types; an HTTP
+**client** has no framework variant (gin has no SSE client), so a `stdlib` client would be the empty passthrough B4
+rejected for O1/O2. Decisively, the client reuses `validateURL`, `resolveClient` (the no-follow default) and
+`redactTransport` — all deliberately **unexported** in `msghttp`; a `stdlib` placement would force exporting security
+helpers or duplicating them. This is the same argument C8 makes for the server, in the client direction.
+
+**Consequences.** Both SSE halves live in `msghttp`; `stdlib` is untouched by Phases 3/4. The client is the first
+networked/untrusted-remote `StreamingSource` (cron's is in-process). Delivery = at-most-once, best-effort resume;
+resume state is per-`Stream`-call memory (a restarted process resumes from the live stream). See the C3 amendment for
+the triage/no-`Timeout`/dead-peer decisions.
 
 ### C8 — SSE server placement: `msghttp`, not `adapter/http/stdlib` (audit round 4, 2026-07-24)
 

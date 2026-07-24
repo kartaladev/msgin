@@ -113,12 +113,16 @@ valid one; assert the valid one is delivered.
 **INV-C4 — Two connection attempts are never closer than the current backoff delay, and the delay never falls
 below `min` — under `retry: 0`, instant EOF, instant refusal, or any combination (no hot loop).** *Realized by:*
 delay starts at `min`; each failed/ended connection waits `delay` on the fake clock then doubles (capped at
-`max`); a valid `retry: R` **replaces** the next delay with `clamp(R, min, max)` (doubling resumes from there); a
-connection that yielded ≥1 event resets the delay to `min`. *Verify (instrumented — the measure-interleaving
-rule):* fake clock; a server that EOFs instantly; assert attempt N+1 requires an explicit advance of exactly the
-expected delay (attempt count observed via server hit counter — the test FAILS if an attempt occurs without its
-advance); table over: doubling sequence min→max cap, `retry: 0` → clamped to `min`, `retry:` huge → clamped to
-`max`, reset-after-event.
+`max`); precedence, in order: a valid `retry: R` seen on the ended connection **replaces** the next delay with
+`clamp(R, min, max)` (doubling resumes from there) and takes precedence over the event-reset below; absent a
+`retry:`, a connection that yielded ≥1 event resets the delay to `min`; absent both, the delay doubles (capped at
+`max`). (The combined case — a connection that BOTH yields ≥1 event AND carries a `retry:` — was left ambiguous
+in the original prose; user-decided 2026-07-24: `hasRetry` wins over `gotEvent`, honoring the server's explicit
+directive even on an otherwise-healthy connection.) *Verify (instrumented — the measure-interleaving rule):* fake
+clock; a server that EOFs instantly; assert attempt N+1 requires an explicit advance of exactly the expected delay
+(attempt count observed via server hit counter — the test FAILS if an attempt occurs without its advance); table
+over: doubling sequence min→max cap, `retry: 0` → clamped to `min`, `retry:` huge → clamped to `max`,
+reset-after-event, and the combined event+retry case proving `hasRetry` wins.
 
 **INV-C5 — `Stream` honors ctx everywhere:** cancel during connect, during a blocked read, during a backoff wait,
 and during a blocked emit (`out` full) each return promptly with `ctx.Err()`; the in-flight request is aborted
@@ -312,8 +316,8 @@ Normative behavior: the Stream-loop block above. Every arm below is a hot-path b
 | 5 | transport refusal (closed port) → redacted wrap logged, reconnect | e2e |
 | 6 | mid-stream EOF → reconnect; `Last-Event-ID` header on attempt 2 = last seen id | e2e |
 | 7 | empty `id:` line mid-stream → subsequent reconnect sends **no** `Last-Event-ID` (cleared, C3/WHATWG) | e2e |
-| 8 | `retry: R` honored: next delay = clamp(R) — `retry: 0` → min; huge → max (INV-C4 rows) | fake-clock table |
-| 9 | doubling min→…→max cap; reset to min after a connection with ≥1 event | fake-clock table |
+| 8 | `retry: R` honored: next delay = clamp(R) — `retry: 0` → min; huge → max; combined with ≥1 event, `retry:` still wins (hasRetry > gotEvent, user-decided 2026-07-24) (INV-C4 rows) | fake-clock table |
+| 9 | doubling min→…→max cap; reset to min after a connection with ≥1 event and NO `retry:` | fake-clock table |
 | 10 | `Ack`/`Nack` no-ops return nil | unit on an emitted Delivery |
 | 11 | connect headers actually sent; reserved ones absent; clone proven (Task 1 rows 3–4 discharge) | e2e recording server |
 | 12 | **no-`Timeout` default (MAJOR-1):** default client streams events past a real-time margin without the request being aborted; an injected `WithHTTPClient(&http.Client{Timeout: <short>})` force-reconnects the same held-open stream (Timeout honored ⇒ a nonzero default would break streaming) — discharges Task 1 row 6 | e2e, short real-time margin |

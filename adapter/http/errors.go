@@ -174,6 +174,32 @@ var (
 	// error.
 	ErrInvalidWriteTimeout = errors.New("msghttp: write timeout must be > 0")
 
+	// ErrInvalidReconnectBackoff is returned by NewConfig when an explicit
+	// WithReconnectBackoff call sets min <= 0, or max < min. Leaving
+	// WithReconnectBackoff unset takes the 500ms-to-30s default
+	// (defaultReconnectMin/defaultReconnectMax) instead of hitting this
+	// error — the set-flag pattern distinguishes "unset" from "explicit
+	// invalid", mirroring ErrInvalidWriteTimeout.
+	ErrInvalidReconnectBackoff = errors.New("msghttp: reconnect backoff bounds are invalid")
+
+	// ErrNotEventStream is returned by NewSSEClient's Stream when a 200
+	// response's Content-Type is not text/event-stream (WHATWG "fail the
+	// connection" — Plan 026 correction 2): unlike a non-2xx status, which
+	// reconnects with backoff, a 200 with the wrong media type is TERMINAL —
+	// it almost always means the URL is misconfigured (pointing at a plain
+	// JSON/HTML endpoint rather than an SSE stream), and no amount of
+	// reconnecting will fix that. It is declared here (Task 1) but first
+	// USED by Stream (Task 2).
+	ErrNotEventStream = errors.New("msghttp: response is not a text/event-stream")
+
+	// ErrInvalidReadTimeout is returned by NewConfig when an explicit
+	// WithReadTimeout duration is <= 0. Leaving WithReadTimeout unset takes
+	// the off (no per-read idle deadline) default instead of hitting this
+	// error — there is no explicit value that means "off" through this
+	// option; only leaving it unset does, mirroring
+	// ErrInvalidHeartbeat/ErrInvalidReplayBuffer.
+	ErrInvalidReadTimeout = errors.New("msghttp: read timeout must be > 0")
+
 	// ErrSSEServerClosed is returned, wrapped in msgin.Permanent, by
 	// NewSSEServer's Send when called after Close: a retry cannot revive a
 	// server that has already stopped accepting and joined its writer

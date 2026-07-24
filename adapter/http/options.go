@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jonboulle/clockwork"
@@ -90,6 +91,21 @@ const defaultWriteTimeout = 30 * time.Second
 // many hops — no interaction, no ordering constraint between them.
 const defaultHTTPClientTimeout = 30 * time.Second
 
+// defaultReconnectMin is the smallest delay NewSSEClient's Stream waits
+// between reconnect attempts, applied when WithReconnectBackoff is unset. It
+// is the hot-loop floor (ADR 0023 Addendum C, C3): no server-supplied SSE
+// "retry:" value can push the client's reconnect pacing below it, so a
+// misbehaving or malicious endpoint cannot make the client hammer it in a
+// tight loop. Override it explicitly via WithReconnectBackoff.
+const defaultReconnectMin = 500 * time.Millisecond
+
+// defaultReconnectMax is the largest delay NewSSEClient's Stream waits
+// between reconnect attempts (the doubling backoff's cap), applied when
+// WithReconnectBackoff is unset. It bounds how long a real outage can delay
+// recovery once the backoff has climbed to its ceiling. Override it
+// explicitly via WithReconnectBackoff.
+const defaultReconnectMax = 30 * time.Second
+
 // errorBodyExcerptMax caps the number of remote response-body bytes embedded in
 // StatusError.Excerpt when WithErrorBodyExcerpt() is set (decision 5). It is a
 // DoS-amplification bound (the read is capped before reading), not merely an
@@ -174,6 +190,42 @@ type Config struct {
 	writeTimeout        time.Duration
 	writeTimeoutSet     bool
 	sseClock            clockwork.Clock
+
+	// httpClientSet distinguishes an explicit, non-nil WithHTTPClient(c) from
+	// unset/WithHTTPClient(nil) (F3 — Plan 026 audit MAJOR-1's fix). It is set
+	// ONLY inside WithHTTPClient's existing `if c != nil` guard, so a
+	// WithHTTPClient(nil) call can never flag a nil client: resolveSSEClient
+	// (sseclient.go) reads this flag, NOT NewConfig's own httpClient
+	// back-fill below, to decide whether the caller supplied a client at all
+	// — the SSE client must NOT inherit the 30s defaultHTTPClientTimeout
+	// NewConfig back-fills for the OUTBOUND adapters' resolveClient.
+	httpClientSet bool
+
+	// connectHeaders is the WithConnectHeaders allow-list of extra request
+	// headers NewSSEClient's Stream sends on every connect attempt, already
+	// cloned and stripped of the client-owned reserved names (Accept,
+	// Cache-Control, Last-Event-ID) by the option itself. nil (the default)
+	// means no extra headers.
+	connectHeaders http.Header
+
+	// reconnectMin/reconnectMax are the WithReconnectBackoff clamp bounds
+	// NewSSEClient's Stream paces reconnect attempts within.
+	// reconnectBackoffSet distinguishes an explicit-but-invalid
+	// WithReconnectBackoff call (rejected) from unset (defaults to
+	// defaultReconnectMin/defaultReconnectMax), mirroring
+	// maxBodyBytesSet/writeTimeoutSet.
+	reconnectMin        time.Duration
+	reconnectMax        time.Duration
+	reconnectBackoffSet bool
+
+	// readTimeout is the WithReadTimeout per-read idle deadline
+	// NewSSEClient's Stream applies to detect a silently-dead connection
+	// (INV-C7). readTimeoutSet distinguishes an explicit-but-invalid
+	// WithReadTimeout(d<=0) (rejected) from unset (default OFF — 0 is itself
+	// the "off" value, so there is no separate off-default constant to
+	// back-fill, unlike reconnectMin/reconnectMax).
+	readTimeout    time.Duration
+	readTimeoutSet bool
 }
 
 // maxBody is the request-body cap to apply, back-filling defaultMaxBodyBytes
@@ -584,10 +636,20 @@ func WithLogger(l *slog.Logger) Option {
 // list. WithFollowRedirects opts out the same way via a flag.
 //
 // A nil client is a no-op: the default stays in place (mirrors WithLogger).
+//
+// SSE NOTE (NewSSEClient): a client with a finite Timeout breaks streaming —
+// Timeout bounds the ENTIRE request including the response body read, so it
+// aborts a long-lived text/event-stream connection as soon as the deadline
+// elapses, no matter how healthy the stream is. Leave Timeout 0 for an SSE
+// client (NewSSEClient's own default resolution never applies this option's
+// 30s outbound default — see resolveSSEClient). Keep TCP keepalive enabled
+// (the default transport's is) so a dead peer is still detected, or set
+// WithReadTimeout for a stronger, explicit per-read idle deadline.
 func WithHTTPClient(c *http.Client) Option {
 	return func(cfg *Config) {
 		if c != nil {
 			cfg.httpClient = c
+			cfg.httpClientSet = true
 		}
 	}
 }
@@ -931,6 +993,110 @@ func WithSSEClock(clk clockwork.Clock) Option {
 	}
 }
 
+// reservedConnectHeaderNames lists the request-header names NewSSEClient's
+// Stream always sets itself on every connect attempt: "Accept:
+// text/event-stream" and "Cache-Control: no-cache" on every attempt, plus
+// "Last-Event-ID" on a resumed reconnect. WithConnectHeaders drops any of
+// these names from a caller-supplied http.Header (matched
+// case-insensitively) so a caller can never override a protocol invariant
+// the client depends on through this option.
+var reservedConnectHeaderNames = []string{"Accept", "Cache-Control", "Last-Event-ID"}
+
+// WithConnectHeaders sets extra request headers NewSSEClient's Stream sends
+// on every connect attempt (e.g. an Authorization or API-key header the
+// remote endpoint requires). Default: nil — no extra headers are sent beyond
+// the client's own Accept/Cache-Control/Last-Event-ID.
+//
+// h is CLONED (h.Clone()): a later mutation of the caller's own header after
+// construction cannot silently rewrite this config. A nil h is a no-op — it
+// leaves any earlier WithConnectHeaders value in place (mirrors WithLogger's
+// nil-guard) rather than clearing it.
+//
+// The reserved, CLIENT-OWNED names in reservedConnectHeaderNames — Accept,
+// Cache-Control, Last-Event-ID — are dropped from the clone, matched
+// case-insensitively (so "ACCEPT" or "last-event-id" is dropped exactly like
+// "Accept"/"Last-Event-ID"): the client itself sets Accept/Cache-Control on
+// every connection and Last-Event-ID on a resumed reconnect, and letting a
+// caller-supplied value override any of them would break the protocol
+// invariants Stream's resume logic depends on.
+//
+// This is TRUSTED operator configuration, not sanitized input (mirrors
+// WithResponseHeaders' CAUTION): a value containing an invalid character is
+// rejected by net/http's request-header validation at connect time, not by
+// this option.
+func WithConnectHeaders(h http.Header) Option {
+	return func(c *Config) {
+		if h == nil {
+			return
+		}
+		cloned := h.Clone()
+		for name := range cloned {
+			for _, reserved := range reservedConnectHeaderNames {
+				if strings.EqualFold(name, reserved) {
+					delete(cloned, name)
+					break
+				}
+			}
+		}
+		c.connectHeaders = cloned
+	}
+}
+
+// WithReconnectBackoff sets the clamp bounds NewSSEClient's Stream paces its
+// reconnect attempts within: the delay before the first reconnect is min,
+// doubling on each subsequent failed/ended connection up to max, reset to
+// min after a connection that yielded at least one event, and clamped into
+// [min,max] when the remote server supplies its own SSE "retry:" hint.
+// Default: defaultReconnectMin (500ms) to defaultReconnectMax (30s).
+//
+// min MUST be > 0 and max MUST be >= min: NewConfig returns
+// ErrInvalidReconnectBackoff for an explicit min <= 0 or max < min, so a
+// caller mistake is a construction error rather than a silently-substituted
+// value. Leaving this option unset (rather than calling it with invalid
+// bounds) is how a caller asks for the default.
+func WithReconnectBackoff(min, max time.Duration) Option {
+	return func(c *Config) {
+		c.reconnectMin = min
+		c.reconnectMax = max
+		c.reconnectBackoffSet = true
+	}
+}
+
+// WithReadTimeout sets a per-read idle deadline NewSSEClient's Stream applies
+// to its connection: the deadline is reset every time a read on the
+// underlying response body returns data, and its expiry aborts the current
+// connection (triggering the normal reconnect-with-backoff path, never a
+// terminal error). Default: OFF — no per-read deadline is applied beyond
+// whatever the *http.Client's transport itself does (the default transport's
+// TCP keepalive still detects most dead peers on its own; see INV-C7).
+//
+// Enable this for a stronger, explicit, and typically faster dead-peer
+// detection than TCP keepalive alone provides — for example when the
+// injected *http.Client uses a transport with keepalive disabled, or a
+// tighter bound than the OS keepalive interval is required.
+//
+// d MUST be > 0 when set explicitly: NewConfig returns ErrInvalidReadTimeout
+// for an explicit d <= 0 — there is no explicit value that means "off"
+// through this option; only leaving it unset does (mirrors
+// WithHeartbeat/WithReplayBuffer's off-by-default set-flag pattern).
+//
+// NIT — the deadline measures READ idleness, not delivery idleness: it
+// resets on every byte read off the connection, but Stream's read loop also
+// blocks trying to SEND a parsed event onto the caller's out channel (a slow
+// or stalled downstream consumer holding out full). That send-side stall is
+// NOT covered by this deadline — it only ever aborts a stalled underlying
+// Read — so a too-small d can force an unnecessary reconnect while a
+// perfectly healthy connection is simply waiting on a slow consumer (benign:
+// Last-Event-ID resume picks the stream back up). Choose d comfortably above
+// the plausible worst-case consumer-side stall, not just above the remote's
+// heartbeat/keepalive interval.
+func WithReadTimeout(d time.Duration) Option {
+	return func(c *Config) {
+		c.readTimeout = d
+		c.readTimeoutSet = true
+	}
+}
+
 // NewConfig validates opts and builds a Config, resolving the documented
 // default for any option left unset. WithMaxBodyBytes and WithSuccessStatus
 // use the set-flag pattern (mirrors msgin.WithMaxInFlight/WithAttemptTTL): an
@@ -1005,6 +1171,17 @@ func NewConfig(opts ...Option) (*Config, error) {
 
 	if cfg.sseClock == nil {
 		cfg.sseClock = clockwork.NewRealClock()
+	}
+
+	if !cfg.reconnectBackoffSet {
+		cfg.reconnectMin = defaultReconnectMin
+		cfg.reconnectMax = defaultReconnectMax
+	} else if cfg.reconnectMin <= 0 || cfg.reconnectMax < cfg.reconnectMin {
+		return nil, ErrInvalidReconnectBackoff
+	}
+
+	if cfg.readTimeoutSet && cfg.readTimeout <= 0 {
+		return nil, ErrInvalidReadTimeout
 	}
 
 	if cfg.httpClient == nil {
