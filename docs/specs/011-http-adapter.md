@@ -152,6 +152,10 @@ adapter/http/            framework-agnostic core   (ROOT module, package msghttp
   exchange.go   [Phase 2 SHIPPED] the O2 request-reply core: NewExchange (sync POST + response)
   sse.go        [Phase 3 lands it; Phase 4 consumes] SSE event framing (encode) + SSE stream parsing (decode) —
                 shared by server & client; exported (blackbox tests + cross-package use)
+  sse_server.go [Phase 3 SHIPPED — Addendum C8] NewSSEServer (S-out; http.Handler + OutboundAdapter); the stateful
+                hub lives here (reads unexported same-package Config), NOT in stdlib
+  sseclient.go  [Phase 4 — Addendum C7] NewSSEClient (S-in; StreamingSource); reuses the unexported security helpers,
+                so it lives here, NOT in stdlib
   options.go    [Phase 1 SHIPPED] Config + WithX functional options shared across modes
   errors.go     [Phase 1 SHIPPED] typed sentinels (see §3.6)
   doc.go        [Phase 1 SHIPPED]
@@ -160,7 +164,7 @@ adapter/http/            framework-agnostic core   (ROOT module, package msghttp
 adapter/http/stdlib/     net/http bindings         (ROOT module, stdlib only)
   inbound.go    [Phase 1 SHIPPED] NewInbound (I1) + NewInboundGateway (I2) → http.Handler, + Register(mux, …)
   doc.go        [Phase 1 SHIPPED] the deployment checklist (§4: the http.Server timeouts the caller MUST set)
-  sse.go        [Phases 3/4] NewSSEServer (S-out; http.Handler + OutboundAdapter) + NewSSEClient (S-in; StreamingSource)
+  (no SSE here — the SSE server/client are stateful cfg-reading adapters that live in msghttp; Addenda C7/C8)
 
 adapter/http/gin/        gin bindings              (SEPARATE go.mod: github.com/kartaladev/msgin/adapter/http/gin)
   gin.go        gin.HandlerFunc wrappers for I1/I2/S-out + RegisterRoutes(r gin.IRouter, …); reuses adapter/http core
@@ -409,16 +413,30 @@ follows. **NON-GUARANTEE:** msgin performs **no** private-IP, link-local, loopba
     ring, so replay is best-effort even when enabled. Cross-instance fan-out requires a shared pub/sub backbone
     (redis/nats) feeding every instance; the SSE server is the **last hop**, not the fan-out fabric. Delivery =
     **at-most-once** (no client ack; dropped on slow/disconnect).
-- **S-in SSE client** (`adapter/http/stdlib`, Plan 026) — `NewSSEClient(url, opts…) (*SSEClient, error)`, an
-  `msgin.StreamingSource`. Reuses Phase 2's `validateURL` (`ErrEmptyURL`/`ErrInvalidURL`); the caller injects the
-  `*http.Client` via `WithHTTPClient` (TLS/proxy/auth stay caller-owned, the Phase-2 precedent); `WithConnectHeaders`
-  sets static request headers (e.g. `Authorization`) — the client-owned `Last-Event-ID`, `Accept` and
-  `Cache-Control` cannot be overridden.
+- **S-in SSE client** (`adapter/http/sseclient.go`, package `msghttp` — ADR 0023 Addendum C7; a client has no
+  net/http-vs-gin binding tier and reuses the unexported security helpers `validateURL`/`resolveClient`/
+  `redactTransport`, so it lives in `msghttp`, not `stdlib`), Plan 026 — `NewSSEClient(url, opts…) (*SSEClient, error)`,
+  an `msgin.StreamingSource`. Reuses Phase 2's `validateURL` (`ErrEmptyURL`/`ErrInvalidURL`). The SSE client resolves
+  a **no-`Timeout` default `*http.Client`** (a finite `http.Client.Timeout` interrupts the streaming body read and
+  would force-abort every long-lived stream — audit MAJOR-1; the default keeps `Timeout: 0`, lifecycle owned by
+  `ctx` + the reconnect loop). `WithHTTPClient` overrides it (TLS/proxy/auth caller-owned, the Phase-2 precedent) but
+  a caller-supplied finite `Timeout` breaks streaming — godoc'd. **Dead-peer detection (audit F1/INV-C7):** the
+  reconnect loop fires only on a connection that *ends with an error*, so a silently half-open socket is detected by
+  (1) `ctx` cancel, (2) the default transport's TCP keepalive (~30 s), or (3) opt-in **`WithReadTimeout(d)`** (off by
+  default) — a per-read idle watchdog whose expiry aborts the connection → reconnect. `WithConnectHeaders` sets
+  static request headers (e.g. `Authorization`) — the client-owned `Last-Event-ID`, `Accept` and `Cache-Control`
+  cannot be overridden.
   - **Connect loop (`Stream(ctx, out)`):** `GET` with `Accept: text/event-stream`, `Cache-Control: no-cache`, plus
     `Last-Event-ID` when held. **Full WHATWG triage (C3):** **`204` → clean terminal stop** (`Stream` returns nil —
-    the server said done, no reconnect); a 2xx with a `Content-Type` other than `text/event-stream` →
-    `ErrNotEventStream`, reconnect-with-backoff; any other non-2xx → reconnect-with-backoff. A never-succeeding
-    endpoint backs off until ctx cancels — give-up policy belongs to the runtime, per the SPI.
+    the server said done, no reconnect); a **`200`** with a `Content-Type` other than `text/event-stream` →
+    **terminal `ErrNotEventStream`** (`Stream` returns it — a misconfigured URL pointed at a JSON API fails loud
+    through `Consumer.Run`, not a silent reconnect loop; correction 2); any other **non-2xx (≠204) →
+    reconnect-with-backoff** (transient 5xx during deploys are the norm for a long-lived consumer — a documented
+    deviation from WHATWG's fail-on-any-non-200; a `200 text/html` proxy error page ends the source and the operator
+    restarts it). **Documented asymmetry (audit MINOR-2):** a permanent wrong-URL returning `404`/`301`/`410`
+    therefore loops silently (visible only in the WARN log), whereas `200`+wrong-CT fails loud — the godoc states
+    this so a 404 is not mistaken for a terminating error. A never-succeeding endpoint backs off until ctx cancels —
+    give-up policy belongs to the runtime, per the SPI.
   - **Parse loop:** each event → a `Delivery` — `Data` → payload `[]byte`, `Name` → the **non-reserved**
     `HeaderSSEEventName` (`http.sse-event`), `ID` → the **non-reserved** `HeaderSSEEventID` (`http.sse-event-id`),
     **never** the reserved `msgin.message-id` (the INV-2 class — no remote-read value on a reserved `msgin.*` key;
@@ -607,7 +625,7 @@ the *client* retries on `5xx`. A body-write failure after the committed `200` is
 | **1** ✅ **DELIVERED** | [020](../plans/020-http-adapter-inbound.md) | `adapter/http` shared encode core + `adapter/http/stdlib` inbound (I1, I2) → `http.Handler`; ADR 0023 (+ Addendum A) | ADR 0022 |
 | **2** ✅ **DELIVERED** | [024](../plans/024-http-outbound.md) | `adapter/http` outbound (O1 webhook `OutboundAdapter`, O2 `RequestReplyExchange`); ADR 0023 (+ Addendum B) | Phase 1; Plan 023 (`WithProducerRetry`) |
 | **3** | 025 | `adapter/http` (`msghttp`): shared SSE core (`sse.go`) + SSE server (S-out, `sse_server.go` — Addendum C8, not `stdlib`); ADR 0023 (+ Addendum C) | Phase 1 |
-| **4** | 026 | `adapter/http/stdlib` SSE client (S-in, `StreamingSource`) | Phase 3 (the `sse.go` core + Addendum C) |
+| **4** | 026 | `adapter/http` (`msghttp`) SSE client (S-in, `StreamingSource`, `sseclient.go` — Addendum C7, not `stdlib`) | Phase 3 (the `sse.go` core + Addendum C) |
 | **5** | 027 | `adapter/http/gin` module — gin bindings for I1/I2/S-out + `RegisterRoutes`; ADR 0024 (gin dependency) | Phases 1, 3 |
 
 Each phase: its plan is authored with the driving ADR content, the **spec + ADR + plan are adversarially audited by a
