@@ -528,6 +528,11 @@ silently (WARN-log only). (b) The client's default `*http.Client` carries **no `
 half-open socket is caught by `ctx` cancel, the default transport's TCP keepalive, or the opt-in
 **`WithReadTimeout(d)`** (off by default) — a per-read idle watchdog whose expiry aborts the connection.
 
+**Pacing precedence (user-decided 2026-07-24).** When a single connection both delivers ≥1 event and carries a
+valid `retry:` before it ends, the server's explicit `retry:` directive **takes precedence** over the client's
+event-reset heuristic for the next reconnect delay (`hasRetry > gotEvent > doubling`), so a healthy stream that
+names its own reconnect spacing is honored rather than hammered at `min`.
+
 ### C4 — server hub: mutex registry + one writer goroutine per connection (amends §3's S-out row)
 
 **Decision.** A `sync.Mutex`-guarded connection set; each connection owns a bounded channel (`WithConnectionBuffer`,
