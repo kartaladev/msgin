@@ -1,76 +1,108 @@
 # Session handover — msgin
 
-> **READ FIRST, before doing anything.** Read `CLAUDE.md` (root), then the traceability pointers in §3. Trust those
-> files over this handover and over any memory. **Safepoint: on `main` @ `fa57091` (merge commit, PUSHED to `origin`).
-> Plan 026 (HTTP SSE Phase 4, S-in SSE client) is DONE & MERGED. Working tree is clean but for the permanently-dirty
-> `.claude/settings.json` (never commit it). `go test ./... -race` green, both `adapter/http` packages at 100%
-> coverage.** There is NO active branch and NO in-flight task — the next increment (Phase 5 / gin) is not yet
-> spec'd or planned.
+> **READ FIRST, before doing anything.** Read `CLAUDE.md` (root), then the traceability pointers in §3. Trust
+> those files over this handover and over any memory. **Safepoint: on branch `claude/repo-structure-refactor-jt79t1`
+> @ `2463a4f`, NOT pushed.** No Go code changed this session — the diff is documentation only, `go build ./...`
+> is green, and the test suite is untouched from `main`'s last green state. **The next gate is the mandatory
+> adversarial design audit on the Plan 027 bundle; no implementation code may be written before it passes.**
 
 ## 1. Objective & roadmap position
 
-`msgin` is a Go 1.25 Enterprise Integration Patterns library (`github.com/kartaladev/msgin`). The HTTP adapter's SSE
-work is being delivered in phases: **Phase 3 (S-out SSE *server*) — MERGED** (Plan 025); **Phase 4 (S-in SSE
-*client*) — MERGED** (Plan 026, this session). **The only remaining SSE-adjacent increment is Phase 5: the gin
-binding (Plan 027), which does not yet exist** — no spec section, no plan, no ADR beyond the placeholders. Starting it
-means brainstorming first (`superpowers:brainstorming`), then a spec/plan, then the mandatory adversarial design audit,
-then SDD — the full CLAUDE.md loop.
+`msgin` is a Go 1.25 Enterprise Integration Patterns library (`github.com/kartaladev/msgin`). The HTTP/SSE work
+is complete (Plans 025/026 merged). **The active effort is the pre-v1 refactor program** — five RFCs covering a
+core package restructure, EIP lexical alignment, endpoint behavior types, trigger-driven scheduling, and five
+missing EIP components.
+
+**All five RFCs are now Accepted** (22 open questions settled 2026-07-27), and **the first slice is promoted**
+to Spec 014 + ADRs 0027–0029 + Plan 027. Nothing is implemented.
+
+**Sequencing decision: the breaking window runs FIRST, ahead of the feature roadmap.** The gin binding
+(previously slated as "Plan 027", now a later plan number) and any `pgx`/`redis`/`nats` adapter wait — every
+adapter landed before the window enlarges its blast radius, and the C-full decision removed the "land the
+non-breaking slices early" mitigation the RFC index had relied on.
 
 ## 2. Exact state
 
-- **`main` @ `fa57091`** — `Merge branch 'feat/http-sse-client'` (Plan 026), pushed to `origin/main`. The branch
-  `feat/http-sse-client` has been **deleted** (local; it was never pushed to origin).
-- Plan 026's 6 commits (now on `main` via the merge): `1ea29bc` (Task 0 spec/ADR deltas), `cd5befc` (handover),
-  `973cc86` (options+constructor), `496c7c9` (Stream), `953912b` (hardening+watchdog), `ba282bf` (e2e+docs+100%+gate fixes).
-- `git status --short`: only ` M .claude/settings.json` (permanently dirty — NEVER commit).
-- Delivery gate that cleared the merge: whole-branch `/code-review` (opus) = READY TO MERGE; `/security-review` (opus)
-  = no high-confidence vulns; **5/5 mutation spot-checks** confirm the INV-C1/C2/C4/C7 + MAJOR-1 tests are load-bearing;
-  100% coverage; `-race` green; golangci-lint 0; govulncheck clean; `go mod tidy` no-op.
-- **This handover (`docs/HANDOVER.md`) is currently UNCOMMITTED** on `main` — offer to commit it as a standalone
-  `docs:` commit if a fresh clone/machine needs it (approval-gated).
+- Branch `claude/repo-structure-refactor-jt79t1`, two commits ahead of `main` (`6f44db6`), **not pushed**:
+  - `a54f023` — `docs(rfcs): settle all open questions; accept the refactor program`
+  - `2463a4f` — `docs: promote the first refactor slice to spec 014, ADRs 0027-0029, plan 027`
+- `git status --short`: ` M CLAUDE.md` only.
+- **`CLAUDE.md` is modified, uncommitted, and is NOT this session's change** — it was already dirty at session
+  start (a project-status refresh: greenfield → pre-v1, corrected adapter list, `go 1.25.0` wording). It was
+  deliberately kept out of both commits. Decide whether to commit it; it is unrelated to the RFC work.
+- No code changed. `GOTOOLCHAIN=go1.25.12 go build ./...` green.
 
 ## 3. Traceability pointers (read first, in this order)
 
-1. `CLAUDE.md` (root) — the workflow, gates, and conventions that OVERRIDE defaults.
-2. `docs/specs/011-http-adapter.md` — the HTTP adapter spec; §3.5/§3.6/§4/§7 (SSE), §3.0 (layout).
-3. `docs/adrs/0023-http-channel-adapter.md` — Addendum C (SSE decisions): C1–C8, C7 (client placement), and the
-   dated "Pacing precedence" note (server `retry:` wins over event-reset — user-decided 2026-07-24).
-4. `docs/plans/025-http-sse-server.md` and `docs/plans/026-http-sse-client.md` — the two delivered SSE plans.
-5. `.superpowers/sdd/progress.md` — Plan 026's SDD ledger (git-ignored scratch): per-task commits, review outcomes,
-   the full delivery-gate record (mutation results, the G1 fix). Recover from `git log` if `git clean -fdx` wipes it.
+1. `CLAUDE.md` (root) — workflow, gates, conventions that OVERRIDE defaults.
+2. `docs/rfcs/README.md` — program index, **the decided package layout**, promotion status, sequencing.
+3. `docs/rfcs/0001`–`0005` — each RFC's **§7 Decisions** records what was settled and why. Read §7 *before* §3:
+   several §3 passages predate the decisions and carry dated resolution notes rather than being rewritten.
+4. `docs/specs/014-core-package-layout.md` — the contract for the first slice.
+5. `docs/adrs/0027` (layout, C-full, clean break), `0028` (channel segregation), `0029` (renames, behavior
+   types, expr module).
+6. `docs/plans/027-core-package-layout.md` — 13 tasks, green per increment.
 
 ## 4. Decisions & deviations this session
 
-- **Reconnect-backoff precedence (user-decided 2026-07-24):** `hasRetry > gotEvent > doubling` — a server `retry:`
-  directive takes precedence over the event-reset-to-min heuristic when a connection both emits an event and carries a
-  `retry:`. Corrected the plan text (which said reset-to-min unconditionally) + ADR 0023 Addendum C.
-- **Controller scope split (Task 2↔3):** the `WithReadTimeout` idle watchdog code was deferred from Task 2 to Task 3
-  so it landed TDD-first alongside its tests; Task 2 built the rest of the `Stream` loop.
-- **Gate finding G1 (mutation-surfaced):** the MAJOR-1 "no-Timeout default" test was NOT load-bearing (its ctx window
-  was shorter than the reconnect backoff, masking a finite-Timeout abort). Fixed by a short `WithReconnectBackoff` in
-  the test; re-verified the mutation now goes RED. Both whole-branch reviews had passed the branch clean — the mutation
-  gate is what caught it.
-- No pending approvals; no open questions. The merge was user-approved and executed.
+All 22 RFC open questions were settled with the user, one decision at a time. The load-bearing ones:
+
+- **C-full** — the engine leaves root in this window; C-full is *chosen*, not deferred, to avoid buying a second
+  breaking window for a change already known to be wanted.
+- **EIP-chapter packages** — `endpoint`/`routing`/`transform` (+ `channel`, `resilience`). This corrected a
+  fidelity bug in RFC-0001's draft, which filed five ch.7/ch.8 patterns under a package named `endpoint`.
+- **Channel segregation** — `MessageChannel` (send-only) + `SubscribableChannel`; `PollableChannel` deliberately
+  omitted (it would duplicate `PollingSource` with no caller); `DirectChannel.Subscribe` gains a `Subscription`
+  return so both subscribable channels satisfy one contract.
+- **Named func types with combinator methods**, not interfaces; names drop the qualifier the package already
+  carries (`routing.Predicate`, not `FilterPredicate` or Spring's `MessageSelector`).
+- **`expr-lang` leaves to its own module; `robfig/cron` stays in root.** Reconciled by a stated rule: *a
+  zero-transitive dependency is pushed to its own module when its weight is material to consumers who don't use
+  it* — 7.1 MB vs 144 KB.
+- **`DedupStore` two-phase Claim/Settle with a lease** (the RFC-0005 OQ6 blocker), complementing the existing
+  tx-coupled `InboxDeduper` path rather than replacing it; **`MessageGroupStore.SettleMembers`** pulled into
+  this window.
+
+**Deviations from my recommendations, at the user's direction** — all recorded with their costs in the RFCs:
+`Poller` is exported publicly; `Once` ships in the v1 trigger set; Content Enricher is a full endpoint (S→M,
+re-opening a gate RFC-0005's risk table had set); `robfig` stays in-module, which **deleted** RFC-0004's own
+success metric rather than reworded it.
+
+**Pending approvals / open questions:**
+
+- **Nothing is pushed.** Pushing needs explicit approval.
+- **The adversarial design audit has NOT run.** Hard CLAUDE.md gate before any implementation code.
+- **Two items are deliberately left for the audit to settle, not resolved:**
+  1. ADR 0029 §2 asserts *from recall* that Spring Integration names its equivalent interface
+     `RequestReplyExchanger`. This gates the "keep `Exchange`" decision and **must be verified**; if it is
+     false, that decision reverts to a rename and Plan 027 Task 3 changes shape.
+  2. `SettleMembers` ships with **no in-tree caller**, justified solely by breaking-window timing. Plan 027
+     Task 11 explicitly invites the audit to reject it.
 
 ## 5. Next actions
 
-**No in-flight work.** To start the next increment (Phase 5 / gin binding, Plan 027):
-1. Branch off `main`: `git checkout -b feat/http-sse-gin` (or similar) — do NOT work on `main`.
-2. `superpowers:brainstorming` to settle the gin-binding design (it mirrors `adapter/http/stdlib`'s net/http binding;
-   note ADR 0023 B4/C7 already argued a gin SSE *client* has no place — Phase 5 is the *server*-side gin binding).
-3. Write the spec delta (`docs/specs/011` §Phase 5) + `docs/plans/027-*` + any ADR, then run the **mandatory
-   adversarial design audit** (fresh Opus subagent, full spec+ADR+plan bundle) BEFORE any code. ASK before implementing.
-4. Execute via SDD; close with the whole-branch `/code-review` + `/security-review` + mutation gate, then merge (approval-gated).
+1. **Run the adversarial design audit** on the complete bundle — Spec 014 + ADR 0027 + ADR 0028 + ADR 0029 +
+   Plan 027 handed to a fresh Opus subagent **together** (CLAUDE.md: auditing spec+ADR without the plan misses
+   plan-level flaws — task decomposition, coverage gaps, sequencing, test strategy, sizing). Fold every material
+   finding back; re-audit if the fixes destabilise the design (two rounds is this project's norm).
+2. Get the user's approval on the audited plan and confirm the execution mode (SDD is the default; direct
+   main-session implementation requires explicit per-task approval).
+3. Branch `refactor/core-package-layout` from a quiet `main` and start Plan 027 Task 0 (baseline + move-list).
 
-If instead the user wants something else, there is no half-done state to resume — start from their request + the loop above.
+## 6. Gotchas & environment
 
-## 6. Gotchas / environment
-
-- Go 1.25 pin: always `GOTOOLCHAIN=go1.25.12` (bare `go1.25` rejected). `govulncheck` at `$(go env GOPATH)/bin/govulncheck`;
-  `gofumpt` not installed (`gofmt` only — use `test -z "$(gofmt -l .)"`); `golangci-lint` on PATH (`0 issues`);
-  `gopls`/`LSP` at `$(go env GOPATH)/bin/gopls` (was NOT available inside SDD subagents — they read source directly).
-- All SSE code (core, server, client) lives in `package msghttp` (`adapter/http/sse.go`, `sse_server.go`, `sseclient.go`);
-  `adapter/http/stdlib` is the thin net/http binding. Tests are blackbox `package msghttp_test`; `goleak.VerifyTestMain`
-  is wired in `encode_test.go` — no per-test `goleak.VerifyNone`.
-- `.claude/settings.json` is permanently dirty — never commit it. Stage explicit pathspecs, never `git add .`.
-- Repo has zero git tags — do NOT propose tagging (unreleased, no consumers).
+- **`export GOTOOLCHAIN=go1.25.12`** always (bare `go1.25` is rejected — a language, not a toolchain, version).
+- **`./...` is not the repo.** Seven modules today, eight once `expr` lands; the gate is the per-module
+  `GOWORK=off` loop in CLAUDE.md's Commands section, exactly as CI runs it.
+- Tooling paths: `govulncheck` at `$(go env GOPATH)/bin/govulncheck`; **`gofumpt` is NOT installed** — use
+  `test -z "$(gofmt -l .)"`; `golangci-lint` on PATH; `gopls`/`LSP` at `$(go env GOPATH)/bin/gopls`. **`gopls`
+  was NOT available inside SDD subagents in past sessions** — they read source directly. Plan 027 leans hard on
+  `gopls` for the moves, so **verify subagent `gopls` access before dispatching Tasks 4–8**, or run those moves
+  from the main session with per-task approval.
+- `dbtest` and `crontest` need a running Docker daemon.
+- **Plan 027 Task 1 leaves expression support absent from the branch** until Task 10 restores it via the `expr`
+  module. That is deliberate (Spec 014 §7) — do not "fix" it by reinstating the `*Expr` constructors.
+- `.claude/settings.json` has been permanently dirty in past sessions — never commit it. Stage explicit
+  pathspecs, never `git add .`. (It happened to be clean this session; only `CLAUDE.md` was dirty.)
+- Repo has **zero git tags** — do NOT propose tagging (unreleased, no consumers). This is what makes every break
+  in Spec 014 affordable.
