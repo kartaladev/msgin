@@ -2,14 +2,15 @@
 
 - **Author:** kartaladev/msgin maintainers
 - **Date:** 2026-07-22
-- **Status:** Draft
+- **Status:** Accepted (open questions settled 2026-07-27 — see §7)
 - **Reviewers:** TBD
 
 ## 1. Summary
 
-Give each composition endpoint's behavioral closure a **named type** (`FilterPredicate[A]`, `RoutingFunction`,
-…) so expression support becomes a **provider of that type** passed into the one base constructor. This kills
-the six parallel `*Expr` constructors and lets the pattern core shed its `expr-lang` dependency.
+Give each composition endpoint's behavioral closure a **named func type** (`routing.Predicate[A]`,
+`routing.RouteFunc`, …) with combinator methods, so expression support becomes a **provider of that type** passed
+into the one base constructor. This kills the six parallel `*Expr` constructors and lets the pattern core shed
+its `expr-lang` dependency.
 
 ## 2. Background & Motivation
 
@@ -28,18 +29,41 @@ types; drop `expr-lang` from the core.
 
 ### Detailed Design
 
+The names are **package-qualified** (RFC-0001 puts them in `routing` and `transform`), so they drop the
+`Message*`/`*Predicate` prefixes that would repeat what the package already says:
+
 ```go
-type FilterPredicate[A any]  func(ctx context.Context, m Message[A]) (bool, error)
-type RoutingFunction         func(ctx context.Context, m Message[any]) (MessageChannel, error)
-type MessageTransformer[A,B any] func(ctx context.Context, m Message[A]) (Message[B], error)
-type MessageSplitter[A,B any]    func(ctx context.Context, m Message[A]) ([]Message[B], error)
-type CorrelationStrategy    func(m Message[any]) (string, error)   // already implicit
-type ReleaseStrategy        func(g MessageGroup) bool              // already implicit
+// package routing  (EIP ch.7)
+type Predicate[A any]      func(ctx context.Context, m Message[A]) (bool, error)
+type RouteFunc             func(ctx context.Context, m Message[any]) (MessageChannel, error)
+type SplitFunc[A, B any]   func(ctx context.Context, m Message[A]) ([]Message[B], error)
+type CorrelationStrategy   func(m Message[any]) (string, error)   // already implicit
+type ReleaseStrategy       func(g MessageGroup) bool              // already implicit
+
+// package transform  (EIP ch.8)
+type Transformer[A, B any] func(ctx context.Context, m Message[A]) (Message[B], error)
 ```
 
-Base constructors just get typed (`func Filter[A any](p FilterPredicate[A], opts ...FilterOption) Step`).
+Base constructors just get typed (`func Filter[A any](p Predicate[A], opts ...FilterOption) Step`).
 **Naming a func type is backward-compatible** — a bare closure stays assignable — so introducing the types is
 non-breaking.
+
+**Combinators are methods on the named types** (this is the payoff that distinguishes naming them from not):
+
+```go
+func (p Predicate[A]) And(q Predicate[A]) Predicate[A]
+func (p Predicate[A]) Or(q Predicate[A]) Predicate[A]
+func (p Predicate[A]) Not() Predicate[A]
+```
+
+**Decision — func types, not interfaces (2026-07-27).** An interface + `XxxFunc` adapter (the
+`http.Handler`/`HandlerFunc` shape) was the alternative; it would let a provider implement `String()` so a log
+line could name the expression that rejected a message. Rejected because generics make the adapter conversion
+**explicit at every inline call site** (`routing.PredicateFunc[Order](func(...){...})` — no inference on a
+generic type conversion), taxing the common case to serve the rare one. The debuggability need is met instead by
+**the expr provider wrapping runtime failures with the source expression text**, which covers the case that
+actually matters: a predicate that errors. Since widening func→interface later is itself breaking, this is
+decided up front rather than deferred.
 
 > **Audit (2026-07-24) — "non-breaking" is source-level; expect an apidiff signal.** Callers passing bare
 > closures or func literals still compile (Go assignability), so phase 1 is **source-compatible**. But the
@@ -48,10 +72,11 @@ non-breaking.
 > apidiff entry rather than claim zero apidiff output, so the gate's "only intended changes" check passes
 > deliberately rather than by surprise.
 
-Expr becomes a provider (in `endpoint/expr`, or its own module) that returns `(T, error)`:
+Expr becomes a provider in **its own module** (`expr`, separate `go.mod` — settled 2026-07-27, see §7.3) that
+returns `(T, error)`:
 
 ```go
-func Predicate[A any](s string) (endpoint.FilterPredicate[A], error)   // compiles once, fails at build
+func Predicate[A any](s string) (routing.Predicate[A], error)   // compiles once, fails at construction
 ```
 
 The compile error lives at the provider call, so the base `Filter` stays non-fallible and inline-composable,
@@ -62,7 +87,7 @@ and the "invalid expression fails at construction" contract is preserved.
 ```go
 p, err := expr.Predicate[Order]("payload.Amount > 100")
 if err != nil { /* handle */ }
-step := endpoint.Filter(p, endpoint.WithDiscardChannel(dlq))
+step := routing.Filter(p.And(notCancelled), routing.WithDiscardChannel(dlq))
 ```
 
 Third parties can supply other providers (regex, OPA, feature-flag) yielding the same types — endpoints are
@@ -87,9 +112,10 @@ core (amends ADR 0019), which is the breaking step.
 
 ### Phases
 
-1. Introduce the named types + type the base constructors — **non-breaking**, ship first. — S
-2. Add the `endpoint/expr` provider package producing those types — additive. — M
-3. Deprecate the core `*Expr` (thin shims over the provider), drop `expr-lang` from core deps; amend
+1. Introduce the named types + combinator methods, and type the base constructors — source-compatible, but
+   **no longer separable from the window** (see the Timeline note). — S
+2. Add the `expr` provider **module** producing those types — additive. — M
+3. Remove the core `*Expr` constructors outright, drop `expr-lang` from core deps; amend
    ADR 0019 **and CLAUDE.md's Dependency policy** (which lists `expr-lang` as one of the three accepted
    core-module exceptions) in the same commit — **breaking**, in the window. — S
 
@@ -102,7 +128,12 @@ core (amends ADR 0019), which is the breaking step.
 
 ### Timeline
 
-Phase 1 anytime; phase 3 in the shared breaking window (see [index](README.md)).
+> **Revised 2026-07-27 — phase 1 is no longer "anytime".** The draft treated phase 1 as non-breaking work that
+> could land ahead of the window, which was true only while the types were going to live in a flat `msgin.`
+> namespace. RFC-0001 chose C-full, so these types are **born in `routing` and `transform`** — packages that do
+> not exist until the restructure lands. All three phases now sit inside the window, in order. This removes the
+> mitigation the [index](README.md) relied on for deferral risk; the compensating decision is to run the window
+> **first**, ahead of the feature roadmap.
 
 ### Success Metrics
 
@@ -113,20 +144,45 @@ combinators (`And`/`Or`/`Not`) available.
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Wrong D1 choice (func vs interface) locks in a breaking change | Future churn | Decide interface+adapter now if introspection is wanted |
+| Wrong D1 choice (func vs interface) locks in a breaking change | Future churn | **Decided 2026-07-27: func types** (§7.1). Accepted consequence: no `String()`/`Describe()` on a behavior, so introspection must come from provider-side error wrapping. Revisiting this after v1 is a major bump |
 | Compile error leaks to per-message | Debuggability regression | Provider returns `(T, error)`; test build-time failure |
 | Over-abstraction (a type per callback) | API bloat | Scope to the six args that have alternate providers |
 
-## 7. Open Questions
+## 7. Decisions (settled 2026-07-27)
 
-1. Func type vs interface(+adapter) — the pivotal call.
-2. `FilterPredicate` vs Spring's `MessageSelector` (coordinate with RFC-0002).
-3. Expr as `endpoint/expr` subpackage vs own module (how far out to push the dep).
-4. Remove `*Expr` outright, or keep deprecated shims?
+1. **Func type vs interface → named func types, with combinators as methods.** Rationale and the rejected
+   interface shape are in §3. Decided up front because widening func→interface later is breaking.
+2. **Naming → drop the qualifier the package already carries.** Final set: `routing.Predicate[A]`,
+   `routing.RouteFunc`, `routing.SplitFunc[A,B]`, `routing.CorrelationStrategy`, `routing.ReleaseStrategy`,
+   `transform.Transformer[A,B]`. Neither `FilterPredicate` nor Spring's `MessageSelector` survives contact with
+   the package split; `transform.Transformer` has direct precedent in `golang.org/x/text/transform`. Each
+   godoc names its Spring equivalent so a Spring-trained reader still finds the type.
+3. **Expr → its own module** (separate `go.mod`), not a subpackage. The audit note in §5 is decisive: a
+   subpackage of the root module leaves `expr-lang` in the root `go.mod` and delivers none of the benefit.
+   **Weight is what justifies the module:** `expr-lang` is 7.1 MB on disk and propagates to all seven modules,
+   even for a consumer using only the SQL adapter.
+4. **`*Expr` → removed outright, no deprecated shims.** Consistent with RFC-0001's clean-break decision;
+   nothing is tagged, so there is no consumer a shim would protect.
+
+> **Dependency-policy rule adopted here (2026-07-27), to keep this coherent with RFC-0004.** RFC-0004 keeps
+> `robfig/cron` *inside* the root module while this RFC pushes `expr-lang` *out* — both are zero-transitive
+> leaves, so "purity" cannot distinguish them. The stated rule is: **a zero-transitive dependency is pushed to
+> its own module when its weight is material to consumers who do not use it.** `expr-lang` at 7.1 MB is;
+> `robfig/cron` at 144 KB (≈50× smaller) is not. Without this rule the two decisions read as arbitrary, and an
+> adversarial audit would flag them.
 
 ## 8. Appendix
 
-**Appendix A — endpoint → behavior type → provider map:** Filter→`FilterPredicate[A]`→`expr.Predicate`;
-Router→`RoutingFunction`→`expr.RoutingFunc`; Transform→`MessageTransformer[A,B]`→`expr.Transformer`;
-Split→`MessageSplitter[A,B]`→`expr.Splitter`; Aggregator correlation→`CorrelationStrategy`→`expr.Correlation`;
-Aggregator release→`ReleaseStrategy`→`expr.Release`.
+**Appendix A — endpoint → behavior type → provider map** (names updated 2026-07-27 for the package split):
+
+| Endpoint | Behavior type | Provider |
+|---|---|---|
+| `routing.Filter` | `routing.Predicate[A]` | `expr.Predicate` |
+| `routing.Router` | `routing.RouteFunc` | `expr.RouteFunc` |
+| `routing.Split` | `routing.SplitFunc[A,B]` | `expr.SplitFunc` |
+| `routing.Aggregator` (correlation) | `routing.CorrelationStrategy` | `expr.Correlation` |
+| `routing.Aggregator` (release) | `routing.ReleaseStrategy` | `expr.Release` |
+| `transform.Transform` | `transform.Transformer[A,B]` | `expr.Transformer` |
+
+Third parties can supply other providers (regex, OPA, feature-flag) yielding the same types — endpoints stay
+open for extension with no new constructor.

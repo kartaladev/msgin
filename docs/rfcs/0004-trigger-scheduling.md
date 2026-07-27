@@ -2,14 +2,16 @@
 
 - **Author:** kartaladev/msgin maintainers
 - **Date:** 2026-07-22
-- **Status:** Draft
+- **Status:** Accepted (open questions settled 2026-07-27 — see §7)
 - **Reviewers:** TBD
 
 ## 1. Summary
 
-Introduce one `Trigger` SPI (fixed-delay, fixed-rate, once/date, cron) and use it to (a) extract a dedicated
-`Poller` from `Consumer`, and (b) dissolve `adapter/cron` — its generic scheduling into runtime, its SQL
-Locker/Elector into `adapter/database/sql`, and the `robfig`-bound `CronTrigger` into an isolated package.
+Introduce one `Trigger` SPI (fixed-delay, fixed-rate, once/date, cron) and use it to (a) extract a dedicated,
+**publicly exported** `Poller` from `Consumer`, and (b) dissolve `adapter/cron` — its generic scheduling into
+`endpoint`, its `Elector`/`Locker` interfaces into root, its SQL Locker/Elector into the
+`adapter/database/sql` **per-dialect submodules**, and the `robfig`-bound `CronTrigger` into a `trigger/cron`
+subpackage of the root module.
 
 ## 2. Background & Motivation
 
@@ -31,7 +33,8 @@ Both are the same shape: *a schedule/trigger driving fetch-or-fire.* Design them
 ### Overview
 
 A pull-form `Trigger` SPI; a first-class `Poller`; a generic `ScheduledSource(trigger, factory, coordinator)`;
-the coordination SPI in runtime; SQL coordination in `adapter/database/sql`; `CronTrigger` isolated.
+the coordination SPI in **root**; SQL coordination in the `adapter/database/sql` per-dialect submodules;
+`CronTrigger` isolated in `trigger/cron`.
 
 ### Detailed Design
 
@@ -51,7 +54,8 @@ else `LastCompleted+d`, **reproducing today's drain-fast/idle-slow exactly**; **
 - **`ScheduledSource`** = the generic cron `Source[T]` firing loop (overrun-skip, coordinator gating,
   `EventDrivenSource`) minus the schedule and coordination impl. The old cron `Source` becomes
   `ScheduledSource(CronTrigger, factory, coordinator)`.
-- **Coordination SPI** (`Elector`/`Locker`) moves to runtime; it gates *message-generating* triggers only.
+- **Coordination SPI** (`Elector`/`Locker`) moves to **root** (they are interfaces — §7.5); it gates
+  *message-generating* triggers only.
   The **grid-schedule↔Locker constraint** (`ErrLockerRequiresGridSchedule`) must be expressed at the
   Trigger↔coordinator boundary (a `Trigger` "grid-aligned fire keys?" capability), not buried in cron.
 - **SQL coordination** (`SQLElector`/`SQLLocker`/`LockerDialect`/dialects) moves to `adapter/database/sql`,
@@ -66,8 +70,13 @@ else `LastCompleted+d`, **reproducing today's drain-fast/idle-slow exactly**; **
 > Elector dialect impls follow that convention into the per-dialect submodules (consistent with ADR 0011/0012,
 > but changes each consumer's import path), or stay monolithic in the sql core (simpler, but diverges from the
 > adapter it's joining)? This is unaddressed in the draft and changes the public import surface either way.
+>
+> **Resolved 2026-07-27 (§7.6): the per-dialect submodules.** Consistency with ADR 0011/0012 wins — the
+> alternative reintroduces engine-specific SQL into the sql core, re-opening a settled decision by the back
+> door. The import-path change for current cron-coordination consumers is accepted and goes in `MIGRATION.md`.
 
-Dependency graph (inward, acyclic): `CronTrigger`(robfig) → runtime SPI ← `adapter/database/sql`(SQL coord).
+Dependency graph (inward, acyclic): `trigger/cron`(robfig) → root SPI ← `adapter/database/sql`(SQL coord);
+`endpoint`(Poller, ScheduledSource) → root SPI.
 
 ### Examples
 
@@ -82,9 +91,9 @@ Dependency graph (inward, acyclic): `CronTrigger`(robfig) → runtime SPI ← `a
   (correct for cron/rate), drain-fast retained inside adaptive `FixedDelay`.
 - **Credit exhausted at a scheduled fire:** *block* (late but never over-pull; default) vs opt-in
   *try-and-skip* (punctual, overrun-skip).
-- **`robfig` boundary:** keep the core robfig-free — `CronTrigger` in its **own module** (recommended) or a
-  same-module `trigger/cron` subpackage. Alternative (rejected): accept robfig into core and re-ratify ADR 0016
-  — opposite to RFC-0003's direction.
+- **`robfig` boundary:** `CronTrigger` in its own module, or a same-module `trigger/cron` subpackage
+  (**chosen**). Alternative (rejected): accept robfig into core and re-ratify ADR 0016 — unnecessary, since
+  ADR 0016 already accepts it and stands unchanged.
 
 > **Audit (2026-07-24) — "own vs same-module" is load-bearing, not stylistic (see Open Question 1).** The core
 > *package* is **already** robfig-free: `go list -deps .` today shows no `robfig` — only `adapter/cron` (a
@@ -97,12 +106,26 @@ Dependency graph (inward, acyclic): `CronTrigger`(robfig) → runtime SPI ← `a
 > accepted `robfig` as a root-module exception, so the window must supersede ADR 0016 **and** amend CLAUDE.md's
 > Dependency policy (which still enumerates `robfig` as accepted).
 
+> **Resolution (2026-07-27) — the audit above is accepted as *fact* and rejected as *recommendation*.** Its
+> mechanics are correct: only an own-module `CronTrigger` removes `robfig` from the root `go.mod`. The decision
+> is nonetheless the **same-module `trigger/cron` subpackage**, because the audit priced the benefit but not the
+> cost. Measured: `robfig/cron/v3` has **zero onward edges** in `go mod graph` and occupies **144 KB** — a
+> dependency-free, pure-Go leaf. Against that, an own module costs an eighth `go.mod`, a `go.work` entry, a CI
+> job, and release-tag choreography, permanently. The dependency-policy rule adopted in **RFC-0003 §7** governs:
+> *a zero-transitive dependency is pushed to its own module when its weight is material to consumers who do not
+> use it* — 7.1 MB of `expr-lang` is, 144 KB of `robfig` is not.
+>
+> Consequences, all of which this RFC now reflects: **ADR 0016 stands** (no supersession), **CLAUDE.md's
+> dependency policy keeps `robfig` as an accepted core exception** (only the `expr-lang` entry is removed, by
+> RFC-0003), and this RFC's "root `go.mod` no longer requires robfig" **success metric is deleted rather than
+> restated** — it is now unmeetable by design, and keeping it would leave the RFC failing its own gate.
+
 ### Trade-offs
 
 `FixedRate`/`Cron` deliberately opt out of drain-fast for a predictable cadence — a feature, stated loudly.
 Multi-instance: a Poller over a durable competing-consumer source needs **no** coordination (the source
-self-serializes); coordination attaches only to the generating path — the in-process SPI seam lives in
-runtime, the durable impl in the DB adapter.
+self-serializes); coordination attaches only to the generating path — the SPI seam lives in
+**root**, the durable impl in the DB adapter's per-dialect submodules.
 
 ## 5. Implementation Plan
 
@@ -111,10 +134,11 @@ runtime, the durable impl in the DB adapter.
 1. Joint `Trigger` SPI spec + ADR (supersedes 0010 poller notes; amends 0016/0017). Adversarial audit.
 2. Extract `Poller` (behaviour-identical: adaptive `FixedDelay` = today), preserve poll-loop tests. — M
 3. Add `FixedRate`/`Once` + `WithTrigger`. — S
-4. Move `Elector`/`Locker` SPI to runtime; move SQL coordination to `adapter/database/sql` (dedup `Querier`);
-   express the grid constraint at the boundary. — M
-5. Extract `CronTrigger` (robfig) to package/module; re-express cron `Source` as `ScheduledSource`; deprecate
-   `adapter/cron`; supersede ADR 0016/0017. — M
+4. Move the `Elector`/`Locker` SPI to **root**; move SQL coordination into the **per-dialect submodules**
+   (`postgres`/`mysql`/`sqlite`), reusing `adapter/database/sql`'s `Querier` (removes the duplication);
+   express the grid constraint at the Trigger↔coordinator boundary. — M
+5. Extract `CronTrigger` (robfig) to the `trigger/cron` **subpackage**; re-express cron `Source` as
+   `endpoint.ScheduledSource`; dissolve `adapter/cron`; supersede **ADR 0017** (ADR 0016 stands — §7.1). — M
 
 ### Timeline
 
@@ -123,10 +147,16 @@ phases 4–5 move import paths (breaking).
 
 ### Success Metrics
 
-**Root module `go.mod` no longer requires `robfig`** (the operative metric — the *core package* already
-excludes it per `go list -deps .`, so "core package deps exclude robfig" was already true and is the wrong
-target; see the audit note in §4); default polling behaviour byte-identical (poll-loop tests unchanged); cron
-overrun-skip / timezone / seconds / unsatisfiable-schedule semantics preserved by the relocated tests.
+> **Metric deleted 2026-07-27.** The draft's operative metric was "root module `go.mod` no longer requires
+> `robfig`". The §7.1 decision keeps `robfig` in the root module deliberately, so that metric is now
+> unmeetable **by design** and is removed rather than quietly reworded — see the 2026-07-27 resolution in §4 for
+> why the benefit did not justify an eighth module.
+
+Default polling behaviour **byte-identical** (the existing poll-loop tests pass unchanged — this is the
+load-bearing metric, since adaptive `FixedDelay` must reproduce today's drain-fast/idle-slow exactly); cron
+overrun-skip / timezone / seconds / unsatisfiable-schedule semantics preserved by the relocated tests;
+`adapter/cron` fully dissolved with nothing left under that path but `trigger/cron`'s `CronTrigger`;
+`endpoint.Poller` carries godoc, an `Example` test, and hot-path branch coverage as a newly public type.
 
 ## 6. Risks & Mitigations
 
@@ -135,21 +165,45 @@ overrun-skip / timezone / seconds / unsatisfiable-schedule semantics preserved b
 | Regress default drain-fast | Throughput loss | Adaptive `FixedDelay` reproduces today; existing poll-loop tests guard it |
 | Break credit-at-fetch invariant | Flood / over-pull | Poller shares the *same* `creditGate`; keep credit-at-fetch untouched |
 | Lose grid↔Locker coupling in the move | Silent no-dedup | Express constraint at the Trigger boundary; conformance test |
-| robfig leaks into core | Dep-policy breach | `CronTrigger` isolated (own module/subpackage) |
+| robfig leaks into the core *package* | Dep-policy breach | `CronTrigger` isolated in the `trigger/cron` subpackage; `go list -deps .` on the core package must stay robfig-free. It remains in the root **module** by decision (§7.1), which ADR 0016 already ratifies |
+| `Poller` exported before its shape settles | Locked-in API churn | **Accepted risk (§7.2):** `Poller` is public, so its shape enters the SemVer contract at exactly the moment this RFC is reshaping it. Mitigation: land phase 2 (behaviour-identical extraction) and phase 3 (triggers) **before** exporting, so the type is exported in its final shape, not its transitional one |
 | Relocated SQL/cron semantics drift | Correctness | Relocate behaviour-identical; move tests, don't rewrite |
 
-## 7. Open Questions
+## 7. Decisions (settled 2026-07-27)
 
-1. `CronTrigger` — own module vs same-module subpackage. **(Load-bearing — see §4 audit note: only "own
-   module" removes `robfig` from the root `go.mod`; a subpackage delivers no dependency-policy benefit.)**
-2. Export `Poller` publicly, or only expose `WithTrigger`?
-3. Trigger set for v1 — `FixedDelay`+`FixedRate`+`Once`+`Cron`, or a subset?
-4. Block vs opt-in skip on credit exhaustion at a scheduled fire.
-5. Coordination SPI home (confirm it lands with the engine per RFC-0001).
+1. **`CronTrigger` → same-module `trigger/cron` subpackage.** `robfig` stays in the root `go.mod`; ADR 0016
+   stands; the robfig success metric is deleted. Full rationale and the deleted metric in §4 and §5.
+2. **`Poller` → exported publicly**, alongside `WithTrigger` and the `Trigger` SPI. Callers and adapter authors
+   can drive their own polling loops rather than only reaching one through a `Consumer`. Accepted cost and its
+   mitigation (export last, in final shape) are in the §6 risk table.
+3. **Trigger set → all four: `FixedDelay`, `FixedRate`, `Once`, `Cron`.** `Once(at)` ships despite having no
+   Spring equivalent; it is trivial (return the time, then the zero time) and covers one-shot scheduling without
+   forcing callers to write a `Trigger`. Its godoc should say plainly that it is a msgin addition, not a
+   Spring-parity name, so it does not read as drift.
+4. **Credit exhausted at a scheduled fire → block by default, opt-in skip.** The fire waits for credit, then
+   polls: late, but never over-pulls and never silently drops a cycle — the conservative default CLAUDE.md's
+   sensible-defaults rule requires. `WithSkipOnBackpressure()` opts into punctual cadence. **The trade-off must
+   be loud in the godoc:** under sustained backpressure a `FixedRate` or `Cron` poller drifts off the very
+   cadence its name promises, which is the property those triggers were chosen for.
+5. **Coordination SPI home → root**, not the engine package. RFC-0001's organising principle decides it:
+   `Elector` and `Locker` are interfaces, and root holds the vocabulary and SPI. (The draft's "lands with the
+   engine" phrasing predates C-full, under which the engine is no longer in root.)
+6. **SQL Locker/Elector dialects → the per-dialect submodules** (`adapter/database/sql/{postgres,mysql,sqlite}`),
+   following ADR 0011/0012 rather than staying monolithic. A consumer importing the `postgres` submodule gets
+   the `Dialect` and the `LockerDialect` from one place. Keeping them in the sql core would have put
+   engine-specific SQL back into the package ADR 0011 and 0012 exist to keep free of it. Cost: the import path
+   changes for every current cron-coordination consumer — record it in `MIGRATION.md`.
 
 ## 8. Appendix
 
-**Appendix A — `adapter/cron` four-way split.** Generic firing loop → runtime (`ScheduledSource`);
-`robfig.Schedule` → `CronTrigger` (isolated); `Elector`/`Locker` interfaces → runtime;
-`SQLElector`/`SQLLocker`/dialects/`Querier` → `adapter/database/sql`. What remains named "cron" is only the
-robfig `CronTrigger`.
+**Appendix A — `adapter/cron` four-way split** (destinations updated 2026-07-27):
+
+| Piece today | Destination |
+|---|---|
+| Generic firing loop (overrun-skip, coordinator gating) | `endpoint.ScheduledSource` |
+| `robfig.Schedule` binding | `trigger/cron.CronTrigger` (root module, §7.1) |
+| `Elector` / `Locker` interfaces | **root** (they are SPI — §7.5) |
+| `SQLElector` / `SQLLocker` / `LockerDialect` | `adapter/database/sql` core (the generic half), reusing its `Querier` |
+| `PostgresLocker` / `MySQLLocker` / `SQLiteLocker` + Electors | the **per-dialect submodules** (§7.6) |
+
+What remains named "cron" is only the robfig `CronTrigger`.
