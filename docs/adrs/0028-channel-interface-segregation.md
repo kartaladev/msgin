@@ -1,7 +1,17 @@
 # ADR 0028 — Segregate `MessageChannel` into send-only and subscribable contracts
 
-- **Status:** Accepted (2026-07-27) — pending the adversarial design audit on the bundle (Spec 014 +
-  ADR 0027 + this ADR + ADR 0029 + Plan 027).
+- **Status:** **NEEDS-REVISION (2026-07-27) — DO NOT IMPLEMENT.** All three auditors returned `NEEDS-REVISION` —
+  see **[Plan 027 audit round 1](../plans/027-audit-round-1.md)**. Unresolved in this ADR: **the narrowed
+  `MessageChannel` is byte-identical to the existing `OutboundAdapter`** (`spi.go:41`), which is exactly the
+  duplication §3 refuses to create for `PollableChannel` — and it **voids ADR 0013's F2 rationale**; **widening
+  the exchange reply channel silently voids `ChannelExchange`'s exclusivity invariant**, making two exchanges
+  over one `PublishSubscribeChannel` a valid program that cross-delivers replies; **`Close()` now leaks the
+  `Subscription` it discards**; **`DirectChannel`'s new `Subscription` has no defined semantics** (re-subscribe
+  after `Cancel`? `Send` in between? in-flight race?); and the "no call site subscribes through the interface"
+  claim in Context is contradicted four lines later by `exchange.go:247`.
+- **Must additionally cite:** [ADR 0013](0013-composition-endpoints.md) (which decided the `MessageChannel`
+  contract and the `To`/`OutboundAdapter` distinction this ADR voids) and
+  [ADR 0014](0014-publish-subscribe.md) (which decided the `Subscription`-handle lifecycle it adopts).
 - **RFC:** [0002](../rfcs/0002-eip-alignment.md) · **Spec:** [014 §5](../specs/014-core-package-layout.md)
   · **Plan:** [027](../plans/027-core-package-layout.md)
 - **Relates to:** [ADR 0027](0027-core-package-restructure.md) (same window, same `apidiff` pass),

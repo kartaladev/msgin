@@ -1,7 +1,15 @@
 # ADR 0029 — EIP lexical alignment, named behavior types, and the expr provider module
 
-- **Status:** Accepted (2026-07-27) — pending the adversarial design audit on the bundle (Spec 014 +
-  ADR 0027 + ADR 0028 + this ADR + Plan 027).
+- **Status:** **NEEDS-REVISION (2026-07-27) — DO NOT IMPLEMENT.** All three auditors returned `NEEDS-REVISION` —
+  see **[Plan 027 audit round 1](../plans/027-audit-round-1.md)**. Unresolved in this ADR: **§3's
+  `ReleaseStrategy func(g MessageGroup) bool` cannot express an evaluation error**, which makes the expr
+  provider's stated parity bar impossible and would strand messages silently — it must become
+  `(bool, error)`; and deleting the `*Expr` constructors **orphans two measured aggregator hot-path branches**
+  (`NewAggregator` 100%→93.8%, `Handle` 100%→94.7%) that no remaining public API can reach.
+  **§2's `RequestReplyExchanger` citation is VERIFIED and stands** — see the audit record §G; Plan 027 Task 3 is
+  unblocked.
+- **Must additionally cite:** [ADR 0002](0002-adapter-spi.md), which defined the `StreamingSource` name that §1
+  renames.
 - **Amends:** [ADR 0019 — Runtime expression evaluation](0019-runtime-expression-evaluation.md) — its decision
   to accept `expr-lang` as a core-module dependency is reversed; its fail-at-construction contract is preserved.
 - **RFC:** [0002](../rfcs/0002-eip-alignment.md), [0003](../rfcs/0003-endpoint-behavior-types.md) ·

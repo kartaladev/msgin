@@ -1,7 +1,14 @@
 # Spec 014 — Core package layout, channel segregation, and behavior types
 
-- **Status:** **Designed (2026-07-27)** — promoted from the accepted refactor RFCs. Awaiting the mandatory
-  adversarial design audit on the assembled bundle (this spec + ADRs 0027–0029 + Plan 027) before any code.
+- **Status:** **NEEDS-REVISION (2026-07-27) — DO NOT IMPLEMENT.** The mandatory adversarial design audit ran on
+  the assembled bundle (this spec + ADRs 0027–0029 + Plan 027) with three independent Opus auditors on distinct
+  lenses. **All three returned `NEEDS-REVISION`** (18 HIGH findings, three of them reached independently by two
+  or more auditors). See **[Plan 027 audit round 1](../plans/027-audit-round-1.md)**.
+  **§3's move-list is known to be non-executable** (a real import cycle on `Subscription`, four files needing a
+  split rather than two, 18 unexported identifiers crossing the new boundaries), **§6's `ReleaseStrategy`
+  signature cannot express an eval error**, **§8 (`SettleMembers`) is recommended for removal**, and **§9.1's
+  acceptance criterion is falsified by `handler.go`, which the spec keeps in root**. Several §1/§3 measurements
+  are corrected in the audit record's §E. Fold the findings in, then re-audit before any code.
 - **Promoted from:** [RFC-0001](../rfcs/0001-core-package-restructure.md) (package restructure),
   [RFC-0002](../rfcs/0002-eip-alignment.md) (lexical alignment + channel segregation),
   [RFC-0003](../rfcs/0003-endpoint-behavior-types.md) (behavior types + expr provider). All three were accepted

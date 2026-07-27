@@ -1,7 +1,13 @@
 # ADR 0027 — Restructure the core into EIP-chapter packages (C-full), with a clean break
 
-- **Status:** Accepted (2026-07-27) — pending the mandatory adversarial design audit on the bundle
-  (Spec 014 + this ADR + ADR 0028 + ADR 0029 + Plan 027) before any code is written.
+- **Status:** **NEEDS-REVISION (2026-07-27) — DO NOT IMPLEMENT.** The adversarial audit on the bundle
+  (Spec 014 + this ADR + ADR 0028 + ADR 0029 + Plan 027) returned `NEEDS-REVISION` from all three auditors —
+  see **[Plan 027 audit round 1](../plans/027-audit-round-1.md)**. Corrections this ADR needs: the
+  **"Amends ADR 0003 … its 'the core is one package' premise" claim is false** (that phrase appears nowhere in
+  ADR 0003 or anywhere in `docs/` except this bundle — the flat core is an undocumented status quo, which is a
+  *stronger* justification); the **`endpoint → channel` edge in Decision §2 is fabricated** (no endpoint-bound
+  file references any concrete channel type); **"~9 files" is arithmetically wrong** (the move-list yields 12);
+  and **"every reference is godoc prose, not code" is wrong** (`adapter/database/sql/source.go:175,235`).
 - **Amends:** [ADR 0003 — Multi-module repository layout](0003-multi-module-repository-layout.md), specifically
   its "the core is one package" premise. The multi-module decision itself is untouched.
 - **RFC:** [0001](../rfcs/0001-core-package-restructure.md) · **Spec:** [014](../specs/014-core-package-layout.md)

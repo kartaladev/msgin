@@ -1,108 +1,129 @@
 # Session handover — msgin
 
-> **READ FIRST, before doing anything.** Read `CLAUDE.md` (root), then the traceability pointers in §3. Trust
-> those files over this handover and over any memory. **Safepoint: on branch `claude/repo-structure-refactor-jt79t1`
-> @ `2463a4f`, NOT pushed.** No Go code changed this session — the diff is documentation only, `go build ./...`
-> is green, and the test suite is untouched from `main`'s last green state. **The next gate is the mandatory
-> adversarial design audit on the Plan 027 bundle; no implementation code may be written before it passes.**
+> **READ FIRST, before doing anything.** Read `CLAUDE.md` (root), then **`docs/plans/027-audit-round-1.md`**, then
+> the pointers in §3. Trust those files over this handover and over any memory.
+>
+> **⛔ DO NOT DELEGATE CODE WRITING YET.** The design bundle exists but **failed its round-1 adversarial audit —
+> all three auditors returned `NEEDS-REVISION`, 18 HIGH findings.** Plan 027 Task 4 cannot compile as written.
+> The next work is a **revision pass, then a round-2 audit** — not implementation. Spec 014, ADRs 0027–0029 and
+> Plan 027 all carry DO-NOT-IMPLEMENT banners; do not remove them until round 2 passes.
+>
+> **Safepoint:** branch `claude/repo-structure-refactor-jt79t1` @ `28dd9e4` + uncommitted docs (see §2). No Go code
+> has changed at any point — the entire branch is documentation. `go build ./...` green.
 
 ## 1. Objective & roadmap position
 
-`msgin` is a Go 1.25 Enterprise Integration Patterns library (`github.com/kartaladev/msgin`). The HTTP/SSE work
-is complete (Plans 025/026 merged). **The active effort is the pre-v1 refactor program** — five RFCs covering a
-core package restructure, EIP lexical alignment, endpoint behavior types, trigger-driven scheduling, and five
-missing EIP components.
+`msgin` is a Go 1.25 Enterprise Integration Patterns library (`github.com/kartaladev/msgin`). HTTP/SSE work is
+complete (Plans 025/026 merged). **The active effort is the pre-v1 refactor program.**
 
-**All five RFCs are now Accepted** (22 open questions settled 2026-07-27), and **the first slice is promoted**
-to Spec 014 + ADRs 0027–0029 + Plan 027. Nothing is implemented.
+All five RFCs in `docs/rfcs/` are **Accepted** — 22 open questions settled with the user, one at a time. The first
+slice (RFC-0001 + 0002 + 0003) was promoted to **Spec 014 + ADRs 0027/0028/0029 + Plan 027**, then audited. The
+audit failed it.
 
-**Sequencing decision: the breaking window runs FIRST, ahead of the feature roadmap.** The gin binding
-(previously slated as "Plan 027", now a later plan number) and any `pgx`/`redis`/`nats` adapter wait — every
-adapter landed before the window enlarges its blast radius, and the C-full decision removed the "land the
-non-breaking slices early" mitigation the RFC index had relied on.
+**Sequencing decision that still stands:** the breaking window runs **FIRST**, ahead of the feature roadmap. The
+gin binding is renumbered off 027 (it becomes Plan 028) — but `docs/specs/011-http-adapter.md:94,677` still says
+027, which is audit finding **D3** and must be fixed.
 
 ## 2. Exact state
 
-- Branch `claude/repo-structure-refactor-jt79t1`, two commits ahead of `main` (`6f44db6`), **not pushed**:
-  - `a54f023` — `docs(rfcs): settle all open questions; accept the refactor program`
-  - `2463a4f` — `docs: promote the first refactor slice to spec 014, ADRs 0027-0029, plan 027`
-- `git status --short`: ` M CLAUDE.md` only.
-- **`CLAUDE.md` is modified, uncommitted, and is NOT this session's change** — it was already dirty at session
-  start (a project-status refresh: greenfield → pre-v1, corrected adapter list, `go 1.25.0` wording). It was
-  deliberately kept out of both commits. Decide whether to commit it; it is unrelated to the RFC work.
-- No code changed. `GOTOOLCHAIN=go1.25.12 go build ./...` green.
+Branch `claude/repo-structure-refactor-jt79t1`, four commits ahead of `main` (`6f44db6`), **not pushed**:
 
-## 3. Traceability pointers (read first, in this order)
+- `a54f023` — `docs(rfcs): settle all open questions; accept the refactor program`
+- `2463a4f` — `docs: promote the first refactor slice to spec 014, ADRs 0027-0029, plan 027`
+- `145c26c` — `docs(handover): refactor program accepted; first slice promoted, audit pending`
+- `28dd9e4` — `docs(claude): refresh project status from greenfield to pre-v1`
 
-1. `CLAUDE.md` (root) — workflow, gates, conventions that OVERRIDE defaults.
-2. `docs/rfcs/README.md` — program index, **the decided package layout**, promotion status, sequencing.
-3. `docs/rfcs/0001`–`0005` — each RFC's **§7 Decisions** records what was settled and why. Read §7 *before* §3:
-   several §3 passages predate the decisions and carry dated resolution notes rather than being rewritten.
-4. `docs/specs/014-core-package-layout.md` — the contract for the first slice.
-5. `docs/adrs/0027` (layout, C-full, clean break), `0028` (channel segregation), `0029` (renames, behavior
-   types, expr module).
-6. `docs/plans/027-core-package-layout.md` — 13 tasks, green per increment.
+**Uncommitted in the worktree** (the audit record + the DO-NOT-IMPLEMENT banners + this handover):
 
-## 4. Decisions & deviations this session
+```
+?? docs/plans/027-audit-round-1.md
+ M docs/specs/014-core-package-layout.md
+ M docs/adrs/0027-core-package-restructure.md
+ M docs/adrs/0028-channel-interface-segregation.md
+ M docs/adrs/0029-eip-lexical-alignment.md
+ M docs/plans/027-core-package-layout.md
+ M docs/HANDOVER.md
+```
 
-All 22 RFC open questions were settled with the user, one decision at a time. The load-bearing ones:
+Commit these first — the audit record is the session's most valuable artifact and exists nowhere else. No code
+changed; `GOTOOLCHAIN=go1.25.12 go build ./...` green.
 
-- **C-full** — the engine leaves root in this window; C-full is *chosen*, not deferred, to avoid buying a second
-  breaking window for a change already known to be wanted.
-- **EIP-chapter packages** — `endpoint`/`routing`/`transform` (+ `channel`, `resilience`). This corrected a
-  fidelity bug in RFC-0001's draft, which filed five ch.7/ch.8 patterns under a package named `endpoint`.
-- **Channel segregation** — `MessageChannel` (send-only) + `SubscribableChannel`; `PollableChannel` deliberately
-  omitted (it would duplicate `PollingSource` with no caller); `DirectChannel.Subscribe` gains a `Subscription`
-  return so both subscribable channels satisfy one contract.
-- **Named func types with combinator methods**, not interfaces; names drop the qualifier the package already
-  carries (`routing.Predicate`, not `FilterPredicate` or Spring's `MessageSelector`).
-- **`expr-lang` leaves to its own module; `robfig/cron` stays in root.** Reconciled by a stated rule: *a
-  zero-transitive dependency is pushed to its own module when its weight is material to consumers who don't use
-  it* — 7.1 MB vs 144 KB.
-- **`DedupStore` two-phase Claim/Settle with a lease** (the RFC-0005 OQ6 blocker), complementing the existing
-  tx-coupled `InboxDeduper` path rather than replacing it; **`MessageGroupStore.SettleMembers`** pulled into
-  this window.
+## 3. Traceability pointers (read in this order)
 
-**Deviations from my recommendations, at the user's direction** — all recorded with their costs in the RFCs:
-`Poller` is exported publicly; `Once` ships in the v1 trigger set; Content Enricher is a full endpoint (S→M,
-re-opening a gate RFC-0005's risk table had set); `robfig` stays in-module, which **deleted** RFC-0004's own
-success metric rather than reworded it.
+1. `CLAUDE.md` — workflow, gates, conventions that OVERRIDE defaults.
+2. **`docs/plans/027-audit-round-1.md`** — the full round-1 findings, grouped by theme, with the decisions the
+   revision pass needs (§H) and what round 2 must re-audit (§I). **This is the working document.**
+3. `docs/rfcs/README.md` — program index, decided package layout, promotion status, sequencing.
+4. `docs/rfcs/0001`–`0005` — each RFC's **§7 Decisions**. Read §7 *before* §3; several §3 passages predate the
+   decisions and carry dated resolution notes rather than being rewritten.
+5. `docs/specs/014-core-package-layout.md`, `docs/adrs/0027`/`0028`/`0029`, `docs/plans/027-core-package-layout.md`
+   — the bundle under revision.
+
+## 4. Decisions, deviations, and what the audit overturned
+
+**Settled with the user this session** (all recorded in the RFCs' §7): C-full; EIP-chapter package names
+(`endpoint`/`routing`/`transform` + `channel`, `resilience`); `MessageChannel` split with `PollableChannel`
+omitted; named func types with combinator methods, names dropping the package's qualifier; `expr-lang` to its own
+module while `robfig/cron` stays (rule: *weight material to non-users*, 7.1 MB vs 144 KB); two-phase `DedupStore`
+Claim/Settle with a lease. **User overrode my recommendation on four:** `Poller` exported, `Once` ships, Enricher
+is a full endpoint (S→M), `robfig` in-module (which deleted RFC-0004's own success metric).
+
+**What the audit overturned — see the audit record for evidence.** Five structural claims I wrote into the bundle
+are verified **false**: the "ADR 0003 says the core is one package" quote (that phrase exists nowhere but my own
+files), the `endpoint → channel` import edge, "no call site subscribes through the interface", "root 32 → 9" (the
+table yields 12), and "every reference is godoc prose, not code". Four of these sat inside acceptance criteria.
+
+**Verified and settled for good:** Spring Integration does name its equivalent interface `RequestReplyExchanger`,
+so "keep `Exchange`, qualified" stands and Plan 027 Task 3's blocker is cleared.
 
 **Pending approvals / open questions:**
 
 - **Nothing is pushed.** Pushing needs explicit approval.
-- **The adversarial design audit has NOT run.** Hard CLAUDE.md gate before any implementation code.
-- **Two items are deliberately left for the audit to settle, not resolved:**
-  1. ADR 0029 §2 asserts *from recall* that Spring Integration names its equivalent interface
-     `RequestReplyExchanger`. This gates the "keep `Exchange`" decision and **must be verified**; if it is
-     false, that decision reverts to a rename and Plan 027 Task 3 changes shape.
-  2. `SettleMembers` ships with **no in-tree caller**, justified solely by breaking-window timing. Plan 027
-     Task 11 explicitly invites the audit to reject it.
+- **`SettleMembers` — cut Task 11?** Both auditors that examined it say yes, and Plan 027 pre-authorised the exit.
+  This is a **scope reduction, so it is the user's call** — do not decide it unilaterally.
+- **Four design decisions the revision pass needs** (audit record §H): `RetryPolicy.delayFor` (export vs move
+  `RetryPolicy`); `MessageChannel` vs `OutboundAdapter` (collapse vs deliberate synonyms); `Chain`/`To` (move to
+  `endpoint` vs restate §9.1); confirm `ReleaseStrategy` → `(bool, error)`.
+- **Unanswered, unrelated to the audit: rename `Permanent` → `Terminal`?** The user proposed it; I recommended
+  **keeping `Permanent`** and they have not replied. Reasons: `terminal` is already load-bearing in
+  `handler.go`/`activator.go` meaning "end of chain"; NATS `Term` is on the roadmap and would collide; and
+  `permanent`/`transient` is the established antonym pair across six files. `NonRetryable` offered as second
+  choice. **If a rename happens it must ride this window** — `Permanent` is exported, so afterwards it costs a
+  major bump.
 
 ## 5. Next actions
 
-1. **Run the adversarial design audit** on the complete bundle — Spec 014 + ADR 0027 + ADR 0028 + ADR 0029 +
-   Plan 027 handed to a fresh Opus subagent **together** (CLAUDE.md: auditing spec+ADR without the plan misses
-   plan-level flaws — task decomposition, coverage gaps, sequencing, test strategy, sizing). Fold every material
-   finding back; re-audit if the fixes destabilise the design (two rounds is this project's norm).
-2. Get the user's approval on the audited plan and confirm the execution mode (SDD is the default; direct
-   main-session implementation requires explicit per-task approval).
-3. Branch `refactor/core-package-layout` from a quiet `main` and start Plan 027 Task 0 (baseline + move-list).
+1. **Commit the uncommitted docs** (§2) — approval-gated, but do it before anything else.
+2. **Get the user's answers to audit record §H** (the `SettleMembers` cut and the four design decisions). The
+   revision pass cannot be done coherently without them.
+3. **Do the revision pass** across Spec 014 + ADRs 0027–0029 + Plan 027. The heavy items:
+   - Rewrite Spec 014 §3 with **four** file splits and add a **symbol-level table** (18 identifiers) plus a
+     **45-row test-file table**. Add a Task 3.5 for shared-helper resolution before any extraction.
+   - Fix the false claims (audit §E) and the missing ADR citations (audit §D).
+   - Replace the §9.1 acceptance criterion with the scriptable one (`go list -deps .` has no subpackage).
+   - Correct the plan header's non-existent "gopls Move"; make Task 1's tidy per-module.
+4. **Run round 2** — same three-lens parallel Opus audit on the revised bundle. Round 2 is required, not
+   optional: the fixes rewrite the normative move-list and change public signatures.
+5. **Only after round 2 passes**, ask the user for the go-ahead and delegate implementation via SDD, one fresh
+   implementer subagent per task.
 
 ## 6. Gotchas & environment
 
-- **`export GOTOOLCHAIN=go1.25.12`** always (bare `go1.25` is rejected — a language, not a toolchain, version).
+- **`export GOTOOLCHAIN=go1.25.12`** always (bare `go1.25` is rejected).
 - **`./...` is not the repo.** Seven modules today, eight once `expr` lands; the gate is the per-module
-  `GOWORK=off` loop in CLAUDE.md's Commands section, exactly as CI runs it.
-- Tooling paths: `govulncheck` at `$(go env GOPATH)/bin/govulncheck`; **`gofumpt` is NOT installed** — use
-  `test -z "$(gofmt -l .)"`; `golangci-lint` on PATH; `gopls`/`LSP` at `$(go env GOPATH)/bin/gopls`. **`gopls`
-  was NOT available inside SDD subagents in past sessions** — they read source directly. Plan 027 leans hard on
-  `gopls` for the moves, so **verify subagent `gopls` access before dispatching Tasks 4–8**, or run those moves
-  from the main session with per-task approval.
+  `GOWORK=off` loop in CLAUDE.md's Commands section. **Every satellite `go.mod` carries `expr-lang // indirect`
+  under a `replace` to the local root**, so dropping the dep makes six modules need `go mod tidy` at once.
+- **`gopls` has NO Move refactoring** (`api-json` v0.23.0 exposes rename options only), it is not on PATH (only
+  `$(go env GOPATH)/bin/gopls`), and it has been unavailable inside subagents in past sessions. Package moves are
+  `git mv` + package clause + `goimports -w`, with `go build ./...` as the authoritative reference-finder. Do not
+  write "use gopls Move" back into the plan.
+- Tooling: `govulncheck` at `$(go env GOPATH)/bin/govulncheck`; **`gofumpt` NOT installed** — use
+  `test -z "$(gofmt -l .)"`; `golangci-lint` on PATH. `.golangci.yml` sets `linters.default: none` and does not
+  enable ST1000, so a missing package doc will not be caught.
+- `.github/workflows/ci.yml` has a **pre-existing gap**: the `module` matrix and the `workspace` job both omit
+  `adapter/cron/crontest`. Fix it in the same edit that adds `expr`.
 - `dbtest` and `crontest` need a running Docker daemon.
-- **Plan 027 Task 1 leaves expression support absent from the branch** until Task 10 restores it via the `expr`
-  module. That is deliberate (Spec 014 §7) — do not "fix" it by reinstating the `*Expr` constructors.
-- `.claude/settings.json` has been permanently dirty in past sessions — never commit it. Stage explicit
-  pathspecs, never `git add .`. (It happened to be clean this session; only `CLAUDE.md` was dirty.)
-- Repo has **zero git tags** — do NOT propose tagging (unreleased, no consumers). This is what makes every break
-  in Spec 014 affordable.
+- Repo has **zero git tags** — do NOT propose tagging. This is what makes every break in Spec 014 affordable, and
+  it is also why the `SettleMembers` "must ride the window" argument fails.
+- `.claude/settings.json` has been permanently dirty in past sessions — never commit it; stage explicit pathspecs,
+  never `git add .`. (It is clean right now.)

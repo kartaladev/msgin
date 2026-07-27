@@ -1,5 +1,26 @@
 # Plan 027 — Core package layout, channel segregation, and behavior types
 
+> # ⛔ NEEDS-REVISION (2026-07-27) — DO NOT EXECUTE THIS PLAN
+>
+> The mandatory adversarial design audit ran with three independent Opus auditors on distinct lenses. **All three
+> returned `NEEDS-REVISION`** — 18 HIGH findings, three reached independently by two or more auditors. Read
+> **[Plan 027 audit round 1](027-audit-round-1.md)** before touching anything here.
+>
+> **Task 4 cannot compile as written.** The file-level move-list is blind to **18 unexported identifiers** that
+> cross the new package boundaries (`boxMessage`, `nilFuncStep`, `isPermanent`, `RetryPolicy.delayFor`, …), and
+> `pubsub.go`/`backoff.go` are a third and fourth file that must be **split**, not moved — the spec says there
+> are two. Moving `pubsub.go` whole creates a genuine **import cycle** on `Subscription`.
+>
+> Also blocking: **Task 1 leaves six of seven modules red in CI** (`go mod tidy` must run per-module, not just
+> root) and **orphans two measured aggregator hot-path branches**; **Task 2's listed exchange test case is
+> unwritable** and its RED cannot be evidenced; **Task 9's `ReleaseStrategy` signature makes Task 10's parity bar
+> impossible**; **Task 11 is recommended for removal** by both auditors that examined it, taking the exit this
+> plan pre-authorised; **Task 12's C-full invariant is falsified by `handler.go`**; and the header below mandates
+> a **`gopls` Move refactoring that does not exist**.
+>
+> Fold the findings in, settle the audit record's §H decisions, then re-audit. Round 2 is required, not optional:
+> the fixes rewrite the normative move-list and change public signatures.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: `superpowers:subagent-driven-development` (the project default) or
 > `superpowers:executing-plans`. Steps use checkbox (`- [ ]`) syntax.
 >
