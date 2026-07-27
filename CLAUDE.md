@@ -4,11 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-**Greenfield.** The repo is bootstrapped (git remote, `.claude/` skills) but has **no Go module or source yet**. Everything under "Architecture blueprint" below is the **target design**, not existing code — treat it as the brief to build toward, not something to reverse-engineer.
+**Active, pre-v1.** The module exists and is substantially implemented: the pattern core at the repo root plus `adapter/{memory,cron,http,http/stdlib,database/sql}`, delivered across 26 plans / 26 ADRs / 13 specs. **Nothing is tagged or released** — there are no consumers, so breaking API changes are still free. Read [`docs/HANDOVER.md`](docs/HANDOVER.md) first: it names the active increment and the last safepoint.
+
+"Architecture blueprint" below is a **mix of shipped and planned** — see the adapter list there for which is which. Treat shipped parts as code to read, not a brief to build.
 
 `msgin` is a Go **library** implementing the messaging patterns from Gregor Hohpe & Bobby Woolf's *Enterprise Integration Patterns* (EIP) — the same conceptual model as the Spring Integration project, reimplemented in idiomatic, minimal-dependency Go. The scope is a **focused subset**, not all of Spring Integration (see "What this is — and is not").
 
-**Do first, as ADRs** (before or with the first `feat` commit): ratify the module path `github.com/kartaladev/msgin` (matches the git remote), the top-level package/API naming, and the open design decisions listed under "Architecture blueprint → Open decisions". As the module takes shape, keep this file's architecture section in sync with the code and add concrete build commands to "Commands".
+Keep this file's architecture section and commands in sync as the module evolves. The design decisions once open here are now ratified — see "Design decisions — RESOLVED" below.
 
 ## Development workflow (mandatory)
 
@@ -70,6 +72,11 @@ Persist the workflow's written outputs under `docs/`, each **prefixed with an in
 - **Code and commits** must reference the driving artifact (e.g. `Implements spec 003 / plan 003; see ADR-0007`) so reviewers can follow the chain.
 - Do not merge or commit work whose governing spec/rfc/plan/ADR link is missing. A new artifact with no traceable parent (or a decision with no ADR) is incomplete.
 
+Two long-lived documents sit outside the numbered artifacts:
+
+- **[`MESSAGING.md`](MESSAGING.md)** (repo root) — the narrative EIP companion explaining *why* the design is what it is (settlement lifecycle, credit/flow-control diagrams). Explanatory; the spec and ADRs are normative — where they disagree, the spec wins.
+- **[`docs/RELEASE.md`](docs/RELEASE.md)** — the per-module tagging choreography for this multi-module monorepo. Consult it before any tag; "License & release" below is only a summary.
+
 ## Session handover
 
 To survive context limits without hallucinating, hand off through a written document rather than relying on a cluttered context.
@@ -127,7 +134,7 @@ This keeps the spec→plan→ADR→commit chain greppable (`git log --grep`), su
 
 ## Go conventions & skills
 
-**Go 1.25 — required.** This project targets **Go 1.25**: `go.mod` carries the `go 1.25` directive, and builds/tests run on a Go 1.25 toolchain. `GOTOOLCHAIN` needs a full patch version (bare `go1.25` is rejected — "a language version but not a toolchain version"), so when a newer Go is the local default (currently **1.26**), force 1.25 with `GOTOOLCHAIN=go1.25.12` (bump the patch as 1.25.x security releases land — bumped from `go1.25.0` in Plan 006 Task 6 after `govulncheck` flagged a stdlib CVE fixed by `go1.25.3`+). The module must not silently build on 1.26+. Do not use language/stdlib features newer than 1.25. CI pins 1.25.
+**Go 1.25 — required.** This project targets **Go 1.25**: every `go.mod` in the workspace carries `go 1.25.0`, and builds/tests run on a Go 1.25 toolchain. `GOTOOLCHAIN` needs a full patch version (bare `go1.25` is rejected — "a language version but not a toolchain version"), so when a newer Go is the local default (currently **1.26**), force 1.25 with `GOTOOLCHAIN=go1.25.12` (bump the patch as 1.25.x security releases land — bumped from `go1.25.0` in Plan 006 Task 6 after `govulncheck` flagged a stdlib CVE fixed by `go1.25.3`+). The module must not silently build on 1.26+. Do not use language/stdlib features newer than 1.25. CI pins 1.25.
 
 **Tooling — mandatory.** Use **`gopls`** (the Go language server) for all Go code navigation, diagnostics, and refactoring — go-to-definition, find-references, rename, extract/inline, package API, post-edit diagnostics — via the native `LSP` tool (or gopls' MCP/CLI). Prefer semantic gopls operations over text search/`grep` when reasoning about Go symbols. → See `cc-skills-golang:golang-gopls`.
 
@@ -151,7 +158,7 @@ Three **project-local skills override samber's testing guidance** where they con
 ## What this is — and is not
 
 - **Is:** an importable Go **library** providing Enterprise Integration Pattern building blocks — messages, channels, endpoints, and **channel adapters** to external systems — that an application composes into a message flow. Consumed via `go get` + import; the exported API is the product.
-- **Is:** deliberately **scoped**. The pattern core plus **six shipped adapters** — **in-memory**, **SQL** (`adapter/database/sql`, generic `database/sql`; v1 dialects PostgreSQL + MySQL), **pgx** (`adapter/database/pgx`, PostgreSQL-native incl. `LISTEN`/`NOTIFY`), **Redis**, **NATS**, and **HTTP** (`adapter/http`, sync request-reply / async / outbound webhook). Not a port of all of Spring Integration. See [`docs/specs/001-messaging-core.md`](docs/specs/001-messaging-core.md).
+- **Is:** deliberately **scoped**. **Shipped today:** **in-memory** (`adapter/memory`), **SQL** (`adapter/database/sql`; dialects **PostgreSQL, MySQL, SQLite** as separate modules), **cron** (`adapter/cron`), and **HTTP** (`adapter/http` + `adapter/http/stdlib`; sync request-reply, async, outbound webhook, SSE in/out). **Planned, not yet written:** **pgx**, **Redis**, **NATS** — the blueprint below describes their intended shape, not existing code. Not a port of all of Spring Integration. See [`docs/specs/001-messaging-core.md`](docs/specs/001-messaging-core.md).
 - **Is:** **open for extension.** The adapter contract is a first-class, public **SPI** (service-provider interface) so that new adapters — Kafka, RabbitMQ, NATS, SQS, … — can be added later by us or contributors **without changing the core**. New adapters live in their own subpackage and implement the same inbound/outbound interfaces; the core neither knows nor imports them.
 - **Is:** **production-grade.** Robustness is a requirement, not an afterthought — see "Production robustness (mandatory design constraints)" below.
 - **Is not:** a full ESB/BRMS, a workflow engine, or a message broker. It orchestrates flow *between* systems and brokers; it is not itself the broker. No UI, no config-authoring surface, no governance layer.
@@ -171,14 +178,20 @@ The vocabulary is EIP's; the shape mirrors Spring Integration but is pure, idiom
   - **Outbound channel adapter** — subscribes to a channel and writes messages out to the external system.
   - Both sides are defined by **narrow public interfaces (the adapter SPI)** in the core. A shipped adapter (memory/database/redis) is just an implementation; a future Kafka/RabbitMQ adapter is another implementation of the *same* interfaces. The core must never `import` an adapter package — dependency points inward only.
 
-**The six shipped adapters** (full detail in [`docs/specs/001-messaging-core.md`](docs/specs/001-messaging-core.md) §9):
+**The adapters** (full detail in [`docs/specs/001-messaging-core.md`](docs/specs/001-messaging-core.md) §9).
+
+***Shipped*** — real code; read it rather than redesigning it:
 
 - **In-memory** (`adapter/memory`, core module) — reference adapter and fast test double; Go channels, zero-copy, no codec. The model contributors copy for new adapters.
-- **SQL** (`adapter/database/sql`, core module) — generic `database/sql`; polling `SELECT … FOR UPDATE SKIP LOCKED` inbound + `INSERT` outbound; at-least-once. v1 ships **PostgreSQL + MySQL** dialects via a `Dialect` seam; driver injected by the caller.
+- **SQL** (`adapter/database/sql`, core module) — generic `database/sql`; polling `SELECT … FOR UPDATE SKIP LOCKED` inbound + `INSERT` outbound; at-least-once. Dialects ship as **separate modules** — **PostgreSQL, MySQL, SQLite** ([ADR 0011](docs/adrs/0011-sql-engine-dialect-module-split.md), [ADR 0012](docs/adrs/0012-sqlite-dialect.md)) behind a `Dialect` seam, with `harness` (shared dialect test kit) and `dbtest` (Docker-backed conformance runner, never published); driver injected by the caller.
+- **Cron** (`adapter/cron`, core module) — recurring/scheduled inbound source over `robfig/cron/v3` ([ADR 0017](docs/adrs/0017-cron-source.md)); `crontest` is its own Docker-backed test module.
+- **HTTP** (`adapter/http` + `adapter/http/stdlib`, core module) — `net/http`; inbound server (sync request-reply → `Ack`=2xx/`Nack`=5xx, or async 202) + outbound webhook `POST`, retried by the producer's `RetryPolicy` ([ADR 0025](docs/adrs/0025-producer-outbound-retry.md)); SSE server (S-out) and SSE client (S-in) shipped in plans 025/026.
+
+***Planned*** — design only, no code yet; the shape below is intent, not fact:
+
 - **pgx** (`adapter/database/pgx`, own module) — PostgreSQL-native (`jackc/pgx/v5`) + wire-compatible derivatives; adds **`LISTEN`/`NOTIFY` event-driven** (`StreamingSource`) alongside polling, `pgxpool`, `COPY` bulk outbound.
 - **Redis** (`adapter/redis`, own module) — list (`LPUSH`/`BRPOP`, at-most-once) or streams (`XADD`/`XREADGROUP`/`XACK`, consumer groups, at-least-once, native redelivery).
 - **NATS** (`adapter/nats`, own module) — core subject pub/sub (at-most-once) or JetStream (pull *and* push, at-least-once, `Ack`/`Nak`/`Term`).
-- **HTTP** (`adapter/http`, core module) — `net/http`; inbound server (sync request-reply → `Ack`=2xx/`Nack`=5xx, or async 202) + outbound webhook `POST`, retried by the producer's `RetryPolicy` (ADR 0025).
 
 Payload (de)serialization (`T`↔`[]byte`) lives in the typed **runtime** (a `PayloadCodec[T]`, which knows `T`); adapters do only type-agnostic **envelope framing** (headers+body↔storage) — see [ADR 0001](docs/adrs/0001-message-payload-typing.md). Heavy-client adapters (`pgx`, `redis`, `nats`) are separate modules importing their real client directly (ADR 0003).
 
@@ -254,17 +267,12 @@ Because the deliverable is a package other code imports, the exported surface *i
 - **Pure Go, no cgo:** `CGO_ENABLED=0 go build ./...` must succeed — keeps the library cross-compilable and debuggable (see debuggability criterion above).
 - **Runnable examples & coverage:** exported behavior is covered by `Example…` tests (they double as godoc) and table tests. The **Test-coverage gate** (Development workflow §5) applies: target ≥ 85% on changed packages and — the hard requirement — every hot-path logic branch and every typed-error branch has a covering test. Watch coverage on the public packages; don't just chase a number.
 - **Vulnerability scan:** `govulncheck ./...` is clean.
-- **Pinned Go version:** builds/tests on **Go 1.25** (the `go 1.25` directive), not whatever newer toolchain is installed locally. CI runs 1.25; verify locally with `GOTOOLCHAIN=go1.25.12`.
+- **Pinned Go version:** builds/tests on **Go 1.25** (the `go 1.25.0` directive), not whatever newer toolchain is installed locally. CI runs 1.25; verify locally with `GOTOOLCHAIN=go1.25.12`.
 
 ## Commands
 
-Standard Go tooling once the module is scaffolded (`go mod init github.com/kartaladev/msgin`):
-
 ```bash
-# One-time scaffold with the Go 1.25 pin (local default is newer, so force 1.25)
-go mod init github.com/kartaladev/msgin
-go mod edit -go=1.25                        # pin language version to 1.25
-export GOTOOLCHAIN=go1.25.12                # build/test on the 1.25 toolchain; CI sets this too
+export GOTOOLCHAIN=go1.25.12                # always — local default is newer; CI sets this too
 go install golang.org/x/tools/gopls@latest  # LSP server: code nav / diagnostics / refactor
 
 go build ./...
@@ -275,11 +283,26 @@ go test -run TestName/subtest ./path      # single subtest
 go test -run '^Example' ./...             # runnable example tests
 go vet ./...
 gofmt -l .                                # or: gofumpt -l .
-golangci-lint run ./...                   # once .golangci.yml is added (see cc-skills-golang:golang-lint)
+golangci-lint run ./...                   # config lives at the repo root (see cc-skills-golang:golang-lint)
 govulncheck ./...                         # vulnerability scan (library quality gate)
 
 # Release (library — the tag is the distribution; the workflow publishes a GitHub Release)
+# Tags are MODULE-PATH-PREFIXED in this monorepo — read docs/RELEASE.md before tagging.
 git tag -a v0.0.1 -m "v0.0.1" && git push origin v0.0.1
 ```
+
+**`./...` does NOT mean "the repo" — this is a 7-module workspace.** The root `go test ./...` covers **6 packages** (core + `adapter/{cron,database/sql,http,http/stdlib,memory}`). The other six modules — `adapter/database/sql/{harness,postgres,mysql,sqlite,dbtest}` and `adapter/cron/crontest` — are separate `go.mod`s joined only by the repo-root `go.work`, and a root-level `./...` never sees them. The pre-commit gate is only satisfied when every module you touched is green **standalone**, exactly as CI runs it ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
+
+```bash
+# per module, the way CI does it — GOWORK=off proves it builds without the workspace
+for d in . adapter/database/sql/{harness,postgres,mysql,sqlite,dbtest} adapter/cron/crontest; do
+  (cd "$d" && GOWORK=off go test ./... -race -shuffle=on) || echo "FAILED: $d"
+done
+
+# workspace coherence (the separate CI `workspace` job) — go.work auto-discovered
+go build ./... && (cd adapter/database/sql/postgres && go build ./...)
+```
+
+`dbtest` and `crontest` are Docker-backed (testcontainers-go) conformance runners — they need a running Docker daemon. `.golangci.yml` lives only at the repo root and is found by walking up, so `golangci-lint run ./...` works unchanged from inside any leaf module.
 
 Prefer runnable **Example tests** (`func Example...() { ... // Output: ... }`) for documenting behavior — they double as compilable docs.
