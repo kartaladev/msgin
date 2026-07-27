@@ -65,6 +65,19 @@ use it.** `expr-lang` (7.1 MB, propagates to all seven modules) is — so RFC-00
 (144 KB) is not — so RFC-0004 keeps it in the root module and ADR 0016 stands. Without this rule the two
 decisions read as arbitrary; it is recorded in [RFC-0003 §7](0003-endpoint-behavior-types.md).
 
+## Promotion status
+
+| RFC | Promoted to | State |
+|---|---|---|
+| 0001, 0002, 0003 | [Spec 014](../specs/014-core-package-layout.md), [ADR 0027](../adrs/0027-core-package-restructure.md) / [0028](../adrs/0028-channel-interface-segregation.md) / [0029](../adrs/0029-eip-lexical-alignment.md), [Plan 027](../plans/027-core-package-layout.md) | **Bundle written 2026-07-27; awaiting the adversarial design audit before any code** |
+| 0004 | — | Increment 2, not yet promoted |
+| 0005 | — | After the window; `SettleMembers` rides Plan 027 Task 11 |
+
+**RFC-0003 was folded into the first increment** rather than following it. Its six `*Expr` constructors return
+`Step`/`*Router`/`AggregatorOption` — types that move to `routing`/`transform` — so `expr.go` cannot remain in
+root once those move, and splitting it across two new packages only to delete it afterwards is throwaway work.
+Plan 027 therefore sequences the `*Expr` deletion **first**, before any extraction.
+
 ## Sequencing
 
 > **Revised 2026-07-27 — the "non-breaking slices first" strategy is gone.** The earlier plan was to land

@@ -3,6 +3,11 @@
 - **Author:** kartaladev/msgin maintainers
 - **Date:** 2026-07-22
 - **Status:** Accepted (open questions settled 2026-07-27 — see §7)
+- **Promoted to:** [Spec 014](../specs/014-core-package-layout.md) ·
+  [ADR 0029](../adrs/0029-eip-lexical-alignment.md) · [Plan 027](../plans/027-core-package-layout.md).
+  **Folded into the same increment as RFC-0001/0002** — all six `*Expr` constructors return types that move to
+  `routing`/`transform`, so `expr.go` cannot survive the restructure; splitting it across two new packages only
+  to delete it next increment would be throwaway work (Spec 014 §7).
 - **Reviewers:** TBD
 
 ## 1. Summary

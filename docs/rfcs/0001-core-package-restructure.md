@@ -3,6 +3,8 @@
 - **Author:** kartaladev/msgin maintainers
 - **Date:** 2026-07-22
 - **Status:** Accepted (open questions settled 2026-07-27 — see §7)
+- **Promoted to:** [Spec 014](../specs/014-core-package-layout.md) ·
+  [ADR 0027](../adrs/0027-core-package-restructure.md) · [Plan 027](../plans/027-core-package-layout.md)
 - **Reviewers:** TBD
 
 ## 1. Summary

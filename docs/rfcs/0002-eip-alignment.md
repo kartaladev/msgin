@@ -3,6 +3,9 @@
 - **Author:** kartaladev/msgin maintainers
 - **Date:** 2026-07-22
 - **Status:** Accepted (open questions settled 2026-07-27 — see §7)
+- **Promoted to:** [Spec 014](../specs/014-core-package-layout.md) ·
+  [ADR 0028](../adrs/0028-channel-interface-segregation.md) (channel segregation) ·
+  [ADR 0029](../adrs/0029-eip-lexical-alignment.md) (renames) · [Plan 027](../plans/027-core-package-layout.md)
 - **Reviewers:** TBD
 
 ## 1. Summary
