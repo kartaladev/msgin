@@ -79,33 +79,40 @@ so "keep `Exchange`, qualified" stands and Plan 027 Task 3's blocker is cleared.
 **Pending approvals / open questions:**
 
 - **Nothing is pushed.** Pushing needs explicit approval.
-- **`SettleMembers` — cut Task 11?** Both auditors that examined it say yes, and Plan 027 pre-authorised the exit.
-  This is a **scope reduction, so it is the user's call** — do not decide it unilaterally.
-- **Four design decisions the revision pass needs** (audit record §H): `RetryPolicy.delayFor` (export vs move
-  `RetryPolicy`); `MessageChannel` vs `OutboundAdapter` (collapse vs deliberate synonyms); `Chain`/`To` (move to
-  `endpoint` vs restate §9.1); confirm `ReleaseStrategy` → `(bool, error)`.
-- **Unanswered, unrelated to the audit: rename `Permanent` → `Terminal`?** The user proposed it; I recommended
-  **keeping `Permanent`** and they have not replied. Reasons: `terminal` is already load-bearing in
-  `handler.go`/`activator.go` meaning "end of chain"; NATS `Term` is on the roadmap and would collide; and
-  `permanent`/`transient` is the established antonym pair across six files. `NonRetryable` offered as second
-  choice. **If a rename happens it must ride this window** — `Permanent` is exported, so afterwards it costs a
-  major bump.
+- **All six §H decisions are SETTLED** (user, 2026-07-27) — see audit record §H, which now records each with its
+  rationale, and §J for the execution order. In brief: **cut `SettleMembers`** from Plan 027; **delete
+  `delayFor`** and inline it in `endpoint` (`RetryPolicy` stays in root as vocabulary); **keep both
+  `MessageChannel` and `OutboundAdapter`**; **keep `Chain`/`To` in root** and make §9.1 a scriptable check;
+  **`ReleaseStrategy` → `(bool, error)`** with the bool-only form kept as sugar; **keep `Permanent`** (no rename).
+- **Two standing criteria the user set, which govern the whole revision:**
+  1. *"Make the library as flexible as possible with sensible defaults / opinionated — higher quality, ready for
+     production use."* Where a choice is balanced, resolve toward **an easy default path plus a fully capable
+     escape hatch** (CLAUDE.md's *Sensible defaults*), never trading one away for the other.
+  2. **Consistency with Pipes and Filters.** `MessageChannel` is the EIP **Pipe**, `Step` is the **filter**, and
+     `Chain` assembles the pipeline — that is why the channel type is not collapsed into `OutboundAdapter` (a
+     Channel Adapter, a different pattern) and why the assembler stays in root with the vocabulary.
+     `doc_composition.go:4` already states this model and **Task 1 deletes that file**, so the revision must carry
+     the Pipes-and-Filters framing into the new package docs rather than parking it.
 
 ## 5. Next actions
 
-1. **Commit the uncommitted docs** (§2) — approval-gated, but do it before anything else.
-2. **Get the user's answers to audit record §H** (the `SettleMembers` cut and the four design decisions). The
-   revision pass cannot be done coherently without them.
-3. **Do the revision pass** across Spec 014 + ADRs 0027–0029 + Plan 027. The heavy items:
+1. **Do the revision pass** — this is the whole job, and it is a fresh-session-sized piece of work. All decisions
+   are settled (§4); **follow audit record §J's execution order** and do it as **one atomic pass**, because most
+   consistency findings are "document A now disagrees with document B" and partial integration manufactures
+   exactly that defect. Touches ~15 files across `docs/rfcs`, `docs/specs`, `docs/adrs`, `docs/plans`. The heavy
+   items:
    - Rewrite Spec 014 §3 with **four** file splits and add a **symbol-level table** (18 identifiers) plus a
      **45-row test-file table**. Add a Task 3.5 for shared-helper resolution before any extraction.
    - Fix the false claims (audit §E) and the missing ADR citations (audit §D).
    - Replace the §9.1 acceptance criterion with the scriptable one (`go list -deps .` has no subpackage).
    - Correct the plan header's non-existent "gopls Move"; make Task 1's tidy per-module.
-4. **Run round 2** — same three-lens parallel Opus audit on the revised bundle. Round 2 is required, not
-   optional: the fixes rewrite the normative move-list and change public signatures.
-5. **Only after round 2 passes**, ask the user for the go-ahead and delegate implementation via SDD, one fresh
-   implementer subagent per task.
+   - Carry the **Pipes-and-Filters framing** out of the deleted `doc_composition.go` into the new package docs.
+2. **Run round 2** — the same three-lens parallel Opus audit on the revised bundle (design/API correctness;
+   plan-level execution; cross-document consistency), each handed the complete bundle with an explicit
+   evidence-or-discarded output contract. Round 2 is required, not optional: the fixes rewrite the normative
+   move-list and change public signatures.
+3. **Only after round 2 passes**, ask the user for the go-ahead and delegate implementation via SDD — one fresh
+   implementer subagent per task, coordinator verifies green and commits, adversarial reviewer before delivery.
 
 ## 6. Gotchas & environment
 

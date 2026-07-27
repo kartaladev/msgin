@@ -299,18 +299,118 @@ verification, with sources, is the one that stands.)*
 
 ---
 
-## H. Decisions required before the revision pass
+## H. Decisions — ALL RESOLVED (user, 2026-07-27)
 
-1. **Cut Task 11 (`SettleMembers`)?** Two auditors say yes; the plan pre-authorised the exit. Scope reduction —
-   **user's call.**
-2. **`RetryPolicy.delayFor` (A3):** export `DelayFor`, or move `RetryPolicy` to `endpoint`? ADR-level.
-3. **`MessageChannel` vs `OutboundAdapter` (B4):** collapse into one, or keep both as deliberate synonyms?
-4. **`Chain`/`To` (A6):** move to `endpoint`, or keep in root and restate §9.1?
-5. **`ReleaseStrategy` → `(bool, error)` (B2):** confirm, since it widens the public surface beyond what
-   ADR 0029 recorded.
-6. **Open from the session, unrelated to the audit:** rename `Permanent` → `Terminal`/`NonRetryable`? Note
-   `terminal` is already load-bearing in `handler.go`/`activator.go` for "end of chain", and `permanent`/
-   `transient` is the established antonym pair across six files.
+> **Standing criterion the user set for this revision:** *"make the product library as flexible as possible with
+> sensible defaults / opinionated — a higher-quality library ready for production use."* Where a revision choice
+> is otherwise balanced, resolve it toward **an easy default path plus a fully capable escape hatch**, per
+> CLAUDE.md's *Sensible defaults (opinionated, but overridable)*. Do not trade the escape hatch away for surface
+> minimalism, and do not trade the simple default away for generality.
+
+**H1 — `SettleMembers`: CUT from Plan 027.** Delete Task 11 and Spec 014 §8; re-file the method into RFC-0005's
+Resequencer increment, where a real caller pins its four undecided semantics. The "must ride the breaking window"
+argument is void — nothing is tagged and every implementer is in this repo, so the Resequencer increment is
+equally free. RFC-0005 §7.3 and its §5 step 0 must be updated to say the method lands **with** the Resequencer,
+not ahead of it. *(Quality: semantics decided by a caller, not guessed and then frozen by conformance tests
+across five modules.)*
+
+**H2 — `RetryPolicy.delayFor`: DELETE the method; inline an unexported helper in `endpoint`.** Neither option the
+audit offered is needed. `delayFor` is a 5-line private convenience over **exported** fields
+(`Backoff BackoffStrategy`), so `endpoint` can compute it directly once `backoff.go` is split (A2) and
+`BackoffStrategy` stays in root. **`RetryPolicy` itself stays in root** — it is caller-facing vocabulary written
+as a literal (`msgin.WithRetryPolicy[string](msgin.RetryPolicy{MaxAttempts: 3, DeadLetter: dlq})` throughout
+`harness`), not an implementation. Do **not** export `DelayFor`: no public API for internal convenience.
+Update A3's table row accordingly.
+
+**H3 — `MessageChannel` and `OutboundAdapter`: KEEP BOTH, with the identity documented as deliberate.**
+
+> **Governing rationale (user, 2026-07-27): consistency with Pipes and Filters.** EIP ch.3's foundational pattern
+> is *filters* (processing steps) connected by *pipes* (channels). **`MessageChannel` IS the Pipe** — a
+> first-class concept in the pattern this library's composition model is built on. `OutboundAdapter` is a
+> **Channel Adapter** at the system boundary (EIP ch.4). They are **two different patterns that happen to share a
+> method signature**, not two names for one thing — so collapsing them, or aliasing them together, would erase
+> the Pipe from the type system of a pipes-and-filters library. This supersedes the weaker "different roles /
+> Spring draws the same line" argument, which pointed the same way for thinner reasons.
+>
+> This is not a retrofit: `doc_composition.go:4` already states the model — *"endpoints wired as pipes and
+> filters. A `MessageHandler` is one step"*. **That file is deleted by Plan 027 Task 1**, so the revision must
+> ensure the Pipes-and-Filters framing survives into the new package docs (root `doc.go` plus
+> `routing`/`transform`/`channel`), not just get "parked in the ledger". Losing the pattern's name from the
+> godoc while keeping its shape would be its own kind of drift.
+
+Spring draws the same line independently (its outbound adapters are `MessageHandler`s, distinct from
+`MessageChannel`), and Go's structural typing already makes the two interchangeable at call sites, so keeping
+both names costs nothing in flexibility. ADR 0028 must:
+- state the identity explicitly in **both** godocs, so it reads as intended rather than accidental;
+- record that ADR 0028 §3's "must earn its keep" rule **does not apply** here — that rule governs adding a *new*
+  interface with no consumer, whereas `MessageChannel` is existing surface with four call sites that narrowed
+  into coincidence;
+- **amend ADR 0013**, whose F2 rationale ("`To` takes `OutboundAdapter`, not `MessageChannel`, because a
+  `*memory.Broker` satisfies the former but not the latter") is now void;
+- extend Spec 014 §9.4's capability test to cover **`OutboundAdapter`-as-route-destination**, which is newly
+  reachable and currently untested. *(Flexibility: every shipped outbound adapter becomes a legal discard target,
+  default route, and exchange request channel.)*
+
+A type alias (`type MessageChannel = OutboundAdapter`) was considered and **declined**: it would prevent the two
+roles ever diverging, which is a constraint the design does not want to commit to.
+
+**H4 — `Chain`/`To`: KEEP in root; restate the acceptance criterion.** `Chain` is a pure combinator — it starts no
+goroutine, holds no state, owns no lifecycle — so "a constructor for a running component" was mis-specified, not
+mis-placed. Moving the composition entry point that appears in every example, to satisfy a badly-worded gate, is
+the worse trade.
+
+**Reinforced by the Pipes-and-Filters rationale (H3):** `Chain` *is* the pipeline assembler and `Step` is the
+filter — together with `MessageChannel` (the pipe) they are the pattern's vocabulary, and vocabulary is precisely
+what root holds. Pushing the assembler into `endpoint` while the pipe stays in root would split one pattern across
+two packages. Replace Spec 014 §9.1 and Plan 027 Task 12 with the scriptable check:
+
+```bash
+go list -deps . | grep -E 'msgin/(endpoint|routing|transform|channel|resilience)'   # must be empty
+```
+
+plus a **named allow-list** of root constructors deliberately kept — `New`, `NewMessage`, `NewHeaders`, `Chain`,
+`To`, `HandlerFunc`, `PayloadOf`, `WithPayload`, `Permanent`, `RetryAfter`, `JSONPayloadCodec`,
+`BytesPayloadCodec` — recorded in the Task 0 ledger. Reconcile Spec 014 §4 to that list so the root contract is
+**closed** (it currently enumerates none of them). Note the check must exclude `_test` packages: root's
+`package msgin_test` files legitimately import the new subpackages.
+
+**H5 — `ReleaseStrategy`: CONFIRMED as `func(MessageGroup) (bool, error)`.** This is the shape the internal field
+already has (`aggregator.go:15`); the bool-only form was the *sugar's* shape mistaken for the contract's.
+**Keep `WithReleaseStrategy(func(MessageGroup) bool)` as sugar** that wraps it — the easy default path — while the
+named type carries the error. Consistent with `CorrelationStrategy`, which already returns `(string, error)`.
+This also **resolves B3**: the two orphaned aggregator hot-path branches become reachable through a public API
+again, so no coverage is lost when the `*Expr` constructors go. Update Spec 014 §6, ADR 0029 §3, RFC-0003 §3 and
+its Appendix A. *(Flexible + sensible default, exactly the standing criterion.)*
+
+**H6 — `Permanent`: KEPT, not renamed.** `terminal` is already load-bearing in `handler.go`/`activator.go` for
+"end of chain"; the planned NATS adapter brings `Term` (stop redelivery) — three meanings for one root; and
+`permanent`/`transient` is the established antonym pair across six files, which `terminal` has no relationship
+with. `reliability.go:20` already records that the marker deliberately mirrors `cenkalti/backoff.Permanent`.
+Record in **RFC-0002's drift register** as *considered and kept, with rationale*, which its success metric
+requires. `NonRetryable` was the runner-up and is not adopted.
+
+---
+
+## J. Revision execution order
+
+Do the revision as **one atomic pass** — the consistency auditor's findings are largely "document A now disagrees
+with document B", so partial integration manufactures exactly that class of defect. Suggested order:
+
+1. **Decisions first** (§H above) into the four owning artifacts: RFC-0002 (H6), RFC-0003 (H5), RFC-0005 (H1),
+   ADR 0013 amendment note (H3).
+2. **Spec 014** — the heavy one. §1/§3 corrections (§E), the **four** file splits (A1, A2), the new
+   **symbol-level table** (A3, 18 identifiers, with H2 applied), the **45-row test-file table** (A4),
+   `OverflowPolicy`/`ProbeGate` placement (A5), delete §8 (H1), §6 `ReleaseStrategy` (H5) and the missing
+   godoc-alignment subsection (M5), §9.1 rewrite (H4), §9.6 eight modules (M4), §4 closed root contract (H4).
+3. **ADRs 0027/0028/0029** — the false claims (§E), the missing citations (D2), H3's decision section, B1's
+   exchange-exclusivity decision, B5's `DirectChannel` `Subscription` semantics.
+4. **Plan 027** — delete Task 11 (H1); add **Task 3.5** shared-helper resolution before any extraction (A3); fix
+   the `gopls` Move claim and state the real mechanics (F1); per-module `go mod tidy` (F2); root `doc.go` (F4);
+   Task 2's RED-evidence rule (F5) and its corrected branch list (B5); `breaker.toHalfOpen` case (F6); CI edits
+   incl. the pre-existing `crontest` gap (F3); traceability trailers per task (D5); size labels (F7).
+5. **Housekeeping** — Spec 011's Plan 027→028 renumber (D3), ADR 0019 supersession status (D6), ADR 0003 amended
+   note (D7), RFC-0004/0005 "Promoted to" lines (D4), RFC index layout annotations (L4).
+6. **Then round 2** — same three-lens parallel Opus audit on the revised bundle.
 
 ## I. What round 2 must re-audit
 
