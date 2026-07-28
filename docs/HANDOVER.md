@@ -5,12 +5,15 @@
 > `docs/plans/027-derivation-findings.md` (F0–F11, the evidence base). Trust those over this file and over
 > any memory.
 >
-> **STATE: the refactor is IMPLEMENTED and GREEN. The bundle is regenerated and all banners are cleared.**
-> What remains is the **round-3 adversarial audit** and the **pre-merge review gates**.
+> **STATE (2026-07-28, end of session): the refactor is IMPLEMENTED, GREEN, and fully COMMITTED.**
+> The working tree is **clean**. The round-3 audit has run (3/3 NEEDS-REVISION) and **all its findings are
+> resolved**; `/security-review` and an adversarial code review have both run and their findings are
+> resolved too.
 >
-> **⚠️ UNCOMMITTED WORK IN THE TREE.** The migration is committed (`c83dde9`); everything since — Task D's
-> code and Task E's whole documentation regeneration — is **uncommitted**. Do not `git checkout`,
-> `git stash`, `git reset`, or `git clean`. Do not commit without asking.
+> **What remains: the round-4 audit, Plan 027 Tasks 9–11, and two open decisions (§4.6).**
+>
+> **Nothing is pushed.** `main` is at `6f44db6`; this branch is 5 commits ahead, local only.
+> Do not commit or push without explicit approval.
 
 ## 1. Objective & position
 
@@ -26,21 +29,22 @@ rewritten from generated evidence.
 
 ## 2. Exact state
 
-Branch `claude/repo-structure-refactor-jt79t1`, **not pushed**. `main` is at `6f44db6`.
+Branch `claude/repo-structure-refactor-jt79t1`, **5 commits ahead of `main` (`6f44db6`), NOT pushed.
+Working tree CLEAN.**
 
 ```
+3d0b87a  docs(027): apply the round-3 audit corrections; commit the derivation tools
+1d7fc80  fix(core): restore the goleak net, cover the poll-backoff cap, reject a nil Subscription
+0e2dcf0  docs(027): regenerate the bundle from the verified tree; clear all round-2 banners
+b6ce7bb  refactor(core)!: segregate MessageChannel; add WithSingleSubscriber; rename StreamingSource
 c83dde9  refactor(core)!: extract the flat core into endpoint/routing/transform/channel/resilience
-ab233d9  docs(audit): settle all six round-1 decisions; record the governing criteria
 ```
 
-**Committed** (`c83dde9`): the whole mechanical migration. 105 files, +2040/−3145. Root 32 → **14** non-test
-files.
-
-**Uncommitted in the working tree** — two logical units, both green:
-- **Task D** — `MessageChannel` segregation + `SubscribableChannel`, `channel.WithSingleSubscriber()` (D-F),
-  `StreamingSource` → `EventDrivenSource`.
-- **Task E** — the regeneration of Spec 014, Plan 027, ADRs 0027/0028/0029, RFC-0002/0003,
-  `docs/specs/011-http-adapter.md`, plus `CLAUDE.md`/`MESSAGING.md` rename touch-ups.
+- `c83dde9` — the mechanical migration. 105 files, +2040/−3145. Root 32 → **14** non-test files.
+- `b6ce7bb` — Plan 027 Tasks 2/3 + decision D-F.
+- `0e2dcf0` — Spec 014 §3 + Plan 027 regenerated from the green tree; round-2 banners cleared.
+- `1d7fc80` — the round-3 **code** blockers and the code-review findings M1–M5.
+- `3d0b87a` — the round-3 **doc** corrections; derivation tools committed to `docs/plans/027-tools/`.
 
 **Verified green at handover:** all seven modules `build` + `vet`; `go test ./... -race -shuffle=on` across
 all 11 root packages; Docker-backed `dbtest` and `crontest` run for real. Coverage `-coverpkg=./...`
@@ -84,12 +88,41 @@ points at `c83dde9`. Safe to `git worktree remove`; left in place only because r
 > **Everything below this box is the audit as originally reported** — kept because the *reasoning* is what
 > matters for round 4, not the resolved status of each item.
 >
-> **NOT yet done:** a **round-4 audit** (rounds 1–3 each found defects the previous round's fixes
-> introduced, and this pass edited the same documents again), and **`/code-review` + `/security-review`**
-> over `main..HEAD`, which are user-triggered and have never run on this branch.
->
-> **Uncommitted at handover:** the code fixes, the doc corrections, `docs/plans/027-tools/`, the five
-> subpackage `doc.go` files, and this file. Nothing since `0e2dcf0` is committed.
+> **All of the above is now COMMITTED** in `1d7fc80` (code) and `3d0b87a` (docs). The review gates have
+> also run — see §4.5. **NOT yet done: the round-4 audit** (rounds 1–3 each found defects the previous
+> round's fixes introduced, and this pass edited the same documents again).
+
+### 4.5 Review gates — BOTH HAVE RUN (2026-07-28), findings resolved
+
+- **`/security-review`: no qualifying vulnerabilities.** Verified clean: `NewID` (`crypto/rand`, 128-bit),
+  header aliasing across the six rewritten `endpoint` sites (identical sharing to before, not more),
+  the widened `ServeAsync`/`NewInbound` target (chosen at wiring time, never derived from request data),
+  stale-handle eviction, and `Close()` failing *closed*. The `expr.go` deletion is a net **reduction** in
+  attack surface — a tree-wide grep found zero substitute eval paths.
+- **Adversarial code review: REQUEST CHANGES → all five findings fixed in `1d7fc80`.** It found **no
+  semantic drift** in the move itself; it blocked because the split had silently removed two of the
+  project's own mandatory gates (`goleak`, and coverage of the poll-backoff cap).
+- **NOT run: `/code-review ultra`** — the multi-agent cloud review. It is user-triggered and billed; an
+  assistant cannot launch it. What ran was an adversarial reviewer subagent, which is CLAUDE.md's
+  SDD-mandated reviewer but **not** the same gate. Consider running it before merge.
+
+### 4.6 TWO OPEN DECISIONS — both are the user's, neither should be assumed
+
+1. **Reply-channel exclusivity.** Narrowing `MessageChannel` demoted it from a compile-time guarantee (at
+   `main`, `DirectChannel` was the *only* type satisfying `MessageChannel`, so a pub-sub reply channel was
+   structurally impossible) to godoc plus the off-by-default `channel.WithSingleSubscriber()`. Two
+   exchanges sharing one pub-sub reply channel now compiles, and the non-owning one receives a full copy
+   of every reply into its `WithUnmatchedReplySink`.
+   **Three independent lenses converged here** — round-3 design (M6), the code reviewer's design residual,
+   and the security scan's only (sub-threshold, 0.75) finding. None individually blocked; together this is
+   the strongest signal of the whole review cycle. The question: *should `NewChannelExchange` reject a
+   non-exclusive reply channel at construction?* CLAUDE.md's sensible-defaults rule argues yes.
+2. **Plan 027 §9.5.0 — the orphaned sentinels.** `ErrInvalidExpression` and `ErrExprResultType` have no
+   producer since `expr.go` left. They were **kept and re-documented** (the reversible choice); removing
+   them is irreversible and still undecided. **Task 12's counts are contingent on it**, and `1d7fc80`
+   moved them again by adding `ErrNilSubscription`: **101→102 exported, 42→43 sentinels**, deliberately
+   NOT edited into the documents so they move once, together with this decision. Task 10 also consumes
+   whatever is decided (`RouteFunc`'s two construction validations wrap `ErrInvalidExpression`).
 
 #### The audit as originally reported
 
