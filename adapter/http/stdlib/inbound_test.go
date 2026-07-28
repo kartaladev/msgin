@@ -32,7 +32,7 @@ func mustSubscribe(t *testing.T, ch msgin.SubscribableChannel, h msgin.MessageHa
 
 func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 
-// acceptingTarget returns an msgin.MessageChannel with a single subscriber
+// acceptingTarget returns a msgin.MessageChannel with a single subscriber
 // that accepts every message (returns a nil error).
 func acceptingTarget(t *testing.T) msgin.MessageChannel {
 	t.Helper()
@@ -43,7 +43,7 @@ func acceptingTarget(t *testing.T) msgin.MessageChannel {
 	return ch
 }
 
-// echoExchange returns an msgin.RequestReplyExchange whose request channel
+// echoExchange returns a msgin.RequestReplyExchange whose request channel
 // forwards straight to its reply channel (an identity echo). It is closed via
 // t.Cleanup so no reply waiter lingers (goleak).
 func echoExchange(t *testing.T) msgin.RequestReplyExchange {

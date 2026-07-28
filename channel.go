@@ -26,6 +26,11 @@ type MessageChannel interface {
 // subscriber) and PublishSubscribeChannel (fan-out) implement it; a pollable
 // QueueChannel deliberately does not — it is drained through PollingSource.
 //
+// CONTRACT FOR IMPLEMENTERS. Subscribe must return either a non-nil Subscription
+// and a nil error, or a nil Subscription and a non-nil error — never a nil-nil
+// pair, which hands the caller a subscription it cannot Cancel. Callers that
+// retain the Subscription reject a nil-nil return with [ErrNilSubscription].
+//
 // TOPOLOGY — IN-PROCESS ONLY. A subscriber is a Go func in this process's
 // memory, so nothing reached through this interface crosses a process boundary:
 // under N horizontally-scaled instances, a message published on instance A is

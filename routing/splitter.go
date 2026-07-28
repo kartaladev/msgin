@@ -48,8 +48,8 @@ func Split[A, B any](fn func(ctx context.Context, m msgin.Message[A]) ([]msgin.M
 
 // forwardSplit stamps each child for reassembly (see stampSequence) and forwards
 // it to next IN ORDER, aborting on the first error (remaining children not sent).
-// An empty children slice forwards nothing and returns nil. Shared by Split and
-// SplitExpr.
+// An empty children slice forwards nothing and returns nil. It is the shared
+// forwarding core every Split constructor delegates to.
 func forwardSplit[B any](ctx context.Context, next msgin.MessageHandler, parent msgin.Message[any], children []msgin.Message[B]) error {
 	n := len(children)
 	for i, child := range children {

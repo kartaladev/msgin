@@ -1272,9 +1272,9 @@ func TestAggregator_ReleaseErrorReaperFallThrough(t *testing.T) {
 }
 
 // TestAggregator_ReleaseErrorDrainCheckError covers release's drain-loop
-// residual release-check error branch (H-2), newly reachable now that
-// WithReleaseExpr can itself error at eval (WithReleaseStrategy's bool-only
-// wrapper never can): the main group {m1,m2} releases normally, but a
+// residual release-check error branch (H-2), reachable because the release
+// decision itself can error (unlike WithReleaseStrategy's bool-only wrapper,
+// which never can): the main group {m1,m2} releases normally, but a
 // residual {m3,m4} formed during its lease has no "qty" header on its first
 // member, so the residual's release check errors. Handle must still return
 // nil (the main member already settled) and the residual must be left live

@@ -167,7 +167,7 @@
 // # Consuming SSE (SSEClient)
 //
 // NewSSEClient is the S-in half of the SSE pair (the mirror of NewSSEServer
-// above): an msgin.EventDrivenSource that connects to a caller-configured
+// above): a msgin.EventDrivenSource that connects to a caller-configured
 // remote text/event-stream endpoint, parses it with SSEParser, and emits each
 // event as a msgin.Delivery — the wiring NewConsumer needs to run it as a
 // flow, over endpoint.WithConsumerCodec[[]byte](msgin.BytesPayloadCodec{}) since

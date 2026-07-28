@@ -219,7 +219,9 @@ var _ msgin.RequestReplyExchange = (*ChannelExchange)(nil)
 // (ADR 0028 §6).
 //
 // A nil channel is ErrNilChannel; an explicit non-positive WithReplyTimeout is
-// ErrInvalidReplyTimeout.
+// ErrInvalidReplyTimeout. A reply channel whose Subscribe breaks its contract by
+// returning a nil Subscription alongside a nil error is ErrNilSubscription — the
+// exchange owns that subscription until Close, so it must be usable now.
 func NewChannelExchange(request msgin.MessageChannel, reply msgin.SubscribableChannel, opts ...ExchangeOption) (*ChannelExchange, error) {
 	if request == nil || reply == nil {
 		return nil, msgin.ErrNilChannel
@@ -246,6 +248,13 @@ func NewChannelExchange(request msgin.MessageChannel, reply msgin.SubscribableCh
 	sub, err := reply.Subscribe(e.receiver())
 	if err != nil {
 		return nil, err
+	}
+	if sub == nil {
+		// reply is caller-supplied SPI: a third-party SubscribableChannel that
+		// returns (nil, nil) breaks Subscribe's contract. Reject it here, where the
+		// offending input is still named, instead of letting Close nil-deref on
+		// e.replySub.Cancel() much later (CLAUDE.md: never panic on caller input).
+		return nil, msgin.ErrNilSubscription
 	}
 	e.replySub = sub
 	return e, nil

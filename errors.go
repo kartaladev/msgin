@@ -135,6 +135,18 @@ var (
 	ErrNoSubscriber = errors.New("msgin: channel has no subscriber")
 	// ErrNilHandler is returned when a nil MessageHandler is subscribed.
 	ErrNilHandler = errors.New("msgin: nil message handler")
+	// ErrNilSubscription is returned when a SubscribableChannel breaks its
+	// Subscribe contract by returning a nil Subscription together with a nil
+	// error. Subscribe must return either a usable Subscription or a non-nil
+	// error; a nil-nil pair leaves the caller holding a handle it cannot Cancel.
+	//
+	// SubscribableChannel is public SPI that third-party adapters implement, so a
+	// faulty implementation is caller input: it is rejected at CONSTRUCTION with
+	// this typed error — naming the contract that was broken — rather than
+	// deferred into a nil-pointer panic when the owner later cancels the
+	// subscription. Constructors that own a subscription for their lifetime (e.g.
+	// NewChannelExchange) return it.
+	ErrNilSubscription = errors.New("msgin: channel returned a nil subscription")
 	// ErrNilSink is returned by To when its OutboundAdapter sink is nil.
 	ErrNilSink = errors.New("msgin: nil outbound sink")
 	// ErrNilFunc is returned by an endpoint (Transform/Filter/Activate/Consume/
@@ -153,11 +165,18 @@ var (
 	// ErrInvalidCapacity is returned by a bounded store constructor (e.g.
 	// memory.NewQueueStore) when an explicit capacity is <= 0.
 	ErrInvalidCapacity = errors.New("msgin: capacity must be > 0")
-	// ErrInvalidExpression is returned by FilterExpr/RouterExpr when an
-	// expression is empty, unparseable, or fails type-checking against the
-	// payload type at construction. The wrapped error names the offending
-	// expression. Runtime evaluation errors are NOT this — they propagate as the
-	// endpoint's handler error into the runtime's retry/DLQ path.
+	// ErrInvalidExpression is the root error contract's construction-time fault
+	// for a runtime-authored expression: the expression is empty, unparseable, or
+	// fails type-checking against the payload type. The wrapped error names the
+	// offending expression. Runtime evaluation errors are NOT this — they
+	// propagate as the endpoint's handler error into the runtime's retry/DLQ path
+	// (see ErrExprResultType for the evaluation-time counterpart).
+	//
+	// It has no producer in this module. Expression-backed endpoints are supplied
+	// by the forthcoming separate msgin/expr provider module, which returns this
+	// sentinel so callers have a single, errors.Is-able construction-fault
+	// contract regardless of which package builds the endpoint. It is exported
+	// here, not in the provider, to keep that contract in one place.
 	ErrInvalidExpression = errors.New("msgin: invalid expression")
 	// ErrNoCorrelation is returned when an Aggregator's correlation strategy
 	// yields no key for a message. It is always wrapped with Permanent (a
@@ -171,15 +190,19 @@ var (
 	// WithGroupTimeout is set without WithExpiredGroupChannel — an expired
 	// partial group must have a visible sink, never a silent drop.
 	ErrExpiryChannelRequired = errors.New("msgin: group timeout requires an expired-group channel")
-	// ErrExprResultType is returned (as the endpoint's handler error) by
-	// TransformExpr/SplitExpr when a compiled expression evaluates to a value that
-	// is not the asserted output type — a non-B TransformExpr result, or a
-	// non-slice SplitExpr result / non-B SplitExpr element. It is an EVALUATION
-	// (not construction) error: ErrInvalidExpression covers compile-time faults,
-	// this covers a well-typed-at-compile expression whose runtime value is the
-	// wrong Go type (possible when A/B is an interface, so expr cannot type-check
-	// the result). It propagates into the runtime's retry/DLQ path like any eval
-	// error.
+	// ErrExprResultType is the root error contract's EVALUATION-time fault for a
+	// runtime-authored expression: a compiled expression evaluated to a value
+	// that is not the asserted output type. ErrInvalidExpression covers
+	// compile-time faults; this covers a well-typed-at-compile expression whose
+	// runtime value is the wrong Go type (possible when the payload type is an
+	// interface, so the compiler cannot type-check the result). It surfaces as
+	// the endpoint's handler error and propagates into the runtime's retry/DLQ
+	// path like any eval error.
+	//
+	// It has no producer in this module, for the same reason as
+	// ErrInvalidExpression: the expression-backed endpoints that return it live
+	// in the forthcoming separate msgin/expr provider module, while the sentinel
+	// stays here so the error contract has one home.
 	ErrExprResultType = errors.New("msgin: expression result type mismatch")
 
 	// ErrGatewayClosed is returned by ChannelExchange.Exchange (and any Gateway

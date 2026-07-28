@@ -58,13 +58,3 @@ func To(sink OutboundAdapter) Step {
 		})
 	}
 }
-
-// nilFuncStep returns a Step whose handler always fails with ErrNilFunc — the
-// shared "constructed with a nil function" degradation. It was declared in
-// transformer.go until that file moved to the transform package; an unexported
-// copy lives in each package that needs one (Spec 014 §3.3).
-func nilFuncStep() Step {
-	return func(MessageHandler) MessageHandler {
-		return HandlerFunc(func(context.Context, Message[any]) error { return ErrNilFunc })
-	}
-}

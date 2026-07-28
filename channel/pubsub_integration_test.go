@@ -48,7 +48,7 @@ func TestPubSub_DrivesOffConsumer(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("consumer did not shut down")
 	}
-	// goleak (root TestMain) verifies no goroutine leak.
+	// goleak (this package's TestMain, main_test.go) verifies no goroutine leak.
 }
 
 // Subscribe/Cancel racing a Publish must be race-clean and never panic.

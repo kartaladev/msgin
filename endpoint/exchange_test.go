@@ -112,6 +112,19 @@ func mustSubscribe(t *testing.T, ch msgin.SubscribableChannel, h msgin.MessageHa
 	require.NoError(t, err)
 }
 
+// nilSubChannel is a minimal third-party SubscribableChannel that breaks the
+// Subscribe contract: it returns a nil Subscription alongside a nil error.
+// SubscribableChannel is public SPI, so this is caller input — the exchange must
+// reject it with a typed error at construction rather than nil-deref later in
+// Close (which unconditionally calls replySub.Cancel()).
+type nilSubChannel struct{}
+
+func (nilSubChannel) Send(context.Context, msgin.Message[any]) error { return nil }
+
+func (nilSubChannel) Subscribe(msgin.MessageHandler) (msgin.Subscription, error) {
+	return nil, nil //nolint:nilnil // deliberately contract-breaking test double
+}
+
 func TestNewChannelExchange_validation(t *testing.T) {
 	direct := channel.NewDirectChannel()
 	tests := []struct {
@@ -143,6 +156,19 @@ func TestNewChannelExchange_validation(t *testing.T) {
 			assert: func(t *testing.T, ex *endpoint.ChannelExchange, err error) {
 				if !errors.Is(err, msgin.ErrInvalidReplyTimeout) {
 					t.Fatalf("want ErrInvalidReplyTimeout, got %v", err)
+				}
+			},
+		},
+		{
+			// A reply channel whose Subscribe returns (nil, nil). Before the guard
+			// this constructed successfully and panicked on Close.
+			name: "reply channel returns a nil subscription", request: direct, reply: nilSubChannel{},
+			assert: func(t *testing.T, ex *endpoint.ChannelExchange, err error) {
+				if !errors.Is(err, msgin.ErrNilSubscription) {
+					t.Fatalf("want ErrNilSubscription, got %v", err)
+				}
+				if ex != nil {
+					t.Fatal("want a nil exchange when construction fails")
 				}
 			},
 		},

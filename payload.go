@@ -24,9 +24,3 @@ func PayloadOf[T any](m Message[any]) (Message[T], error) {
 func WithPayload[A, B any](m Message[A], payload B) Message[B] {
 	return NewMessage[B](payload, m.Headers())
 }
-
-// boxMessage lifts a typed Message[T] into Message[any], preserving headers
-// verbatim. Inverse of PayloadOf; backs the typed endpoint constructors.
-func boxMessage[T any](m Message[T]) Message[any] {
-	return NewMessage[any](m.Payload(), m.Headers())
-}

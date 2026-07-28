@@ -76,9 +76,10 @@
 // # Runtime-defined rules
 //
 // Predicates and routing keys that must be defined at runtime — operator- or
-// config-authored rules that change without a rebuild — are provided by the
-// separate msgin/expr module, which supplies expression-backed counterparts to
-// the Go-func forms. The Go-func forms remain the compile-time default: prefer
-// them whenever the rule is known at build time, for their type safety and
-// debuggability.
+// config-authored rules that change without a rebuild — are NOT part of this
+// module. They will be supplied by a separate msgin/expr provider module, not
+// yet written, offering expression-backed counterparts to the Go-func forms.
+// Until it ships, the Go-func forms are the only forms; they remain the
+// compile-time default regardless, so prefer them whenever the rule is known at
+// build time, for their type safety and debuggability.
 package msgin

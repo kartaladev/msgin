@@ -230,59 +230,119 @@ func TestPoller_EmptyPollIdlesAndPinsNoCredit(t *testing.T) {
 	assert.ErrorIs(t, <-runDone, context.Canceled)
 }
 
-// TestPoller_ErrorBackoffAndReset proves the built-in error backoff:
-// pollInterval*2^(errN-1) growth (1s, 2s, 4s), a reset to zero on the first
-// successful poll (so the next error backs off from 1s again), and that every
-// held credit is released between attempts.
-func TestPoller_ErrorBackoffAndReset(t *testing.T) {
-	clk := clockwork.NewFakeClock()
-	var polls atomic.Int64
-	// Fail polls 1-3, empty-succeed on 4 (reset), fail on 5, empty thereafter.
-	src := &fakePolling{pollFn: func(context.Context, int) ([]msgin.Delivery, error) {
-		switch polls.Add(1) {
-		case 1, 2, 3, 5:
-			return nil, errPoll
-		default:
-			return nil, nil
-		}
-	}}
-	h := func(context.Context, msgin.Message[order]) error { return nil }
+// backoffStep is one observation of the poll-error backoff schedule: block
+// until the loop is idle, assert how many polls have happened, then advance the
+// fake clock by exactly the delay the loop is expected to be waiting for.
+//
+// Advancing by exactly the expected delay is what makes the schedule
+// falsifiable. If the implementation waited LONGER than advance, its timer does
+// not fire, the next step's BlockUntilContext returns immediately with the poll
+// count unchanged, and that step's assertion fails. A final step with advance==0
+// only asserts.
+type backoffStep struct {
+	wantPolls int64
+	advance   time.Duration
+}
 
-	c, err := endpoint.NewConsumer[order](src, h,
-		endpoint.WithConsumerClock[order](clk),
-		endpoint.WithMaxInFlight[order](4),
-		endpoint.WithPollMaxBatch[order](4),
-		endpoint.WithPollInterval[order](time.Second))
-	require.NoError(t, err)
-
-	ctx, cancel := context.WithCancel(t.Context())
-	runDone := make(chan error, 1)
-	go func() { runDone <- c.Run(ctx) }()
-
-	// backoff after the nth consecutive error = pollInterval * 2^(n-1).
-	want := int64(1)
-	for _, d := range []time.Duration{time.Second, 2 * time.Second, 4 * time.Second} {
-		require.NoError(t, clk.BlockUntilContext(ctx, 2))
-		assert.Equal(t, want, polls.Load())
-		clk.Advance(d)
-		want++
+// TestPoller_ErrorBackoff proves the built-in poll-error backoff schedule,
+// min(maxPollErrorBackoff, pollInterval*2^(n-1)) after the nth consecutive
+// error: the doubling growth, the reset to zero on the first successful poll,
+// the 30s hard cap (both the clamp and the loop's early-exit guard), and that
+// every held credit is released between attempts.
+func TestPoller_ErrorBackoff(t *testing.T) {
+	type testCase struct {
+		name         string
+		pollInterval time.Duration
+		// failPoll reports whether the nth (1-based) poll returns errPoll.
+		failPoll func(n int64) bool
+		steps    []backoffStep
+		assert   func(t *testing.T, polls int64, maxK int)
 	}
-	// poll 4 empty-succeeds → idle pollInterval and reset errN to 0.
-	require.NoError(t, clk.BlockUntilContext(ctx, 2))
-	assert.Equal(t, int64(4), polls.Load())
-	clk.Advance(time.Second)
-	// poll 5 fails → because errN reset, it backs off 1s (not 8s): 1s reaches poll 6.
-	require.NoError(t, clk.BlockUntilContext(ctx, 2))
-	assert.Equal(t, int64(5), polls.Load())
-	clk.Advance(time.Second)
-	require.NoError(t, clk.BlockUntilContext(ctx, 2))
-	assert.Equal(t, int64(6), polls.Load(), "errN reset on success: the post-success error backs off from 1s")
 
-	_, maxK := src.stats()
-	assert.Equal(t, 4, maxK, "every poll (error or success) acquired and released full credit")
+	cases := []testCase{
+		{
+			// pollInterval 1s, well under the cap: pure doubling, then a reset.
+			// Fail polls 1-3, empty-succeed on 4 (reset), fail on 5, empty after.
+			name:         "doubles below the cap and resets on a successful poll",
+			pollInterval: time.Second,
+			failPoll:     func(n int64) bool { return n == 1 || n == 2 || n == 3 || n == 5 },
+			steps: []backoffStep{
+				{wantPolls: 1, advance: time.Second},     // err 1 → 1s
+				{wantPolls: 2, advance: 2 * time.Second}, // err 2 → 2s
+				{wantPolls: 3, advance: 4 * time.Second}, // err 3 → 4s
+				{wantPolls: 4, advance: time.Second},     // poll 4 succeeds → idle pollInterval, errN reset
+				{wantPolls: 5, advance: time.Second},     // err 1 again (NOT 8s) because errN reset
+				{wantPolls: 6},
+			},
+			assert: func(t *testing.T, polls int64, maxK int) {
+				assert.Equal(t, int64(6), polls, "errN reset on success: the post-success error backs off from 1s")
+				assert.Equal(t, 4, maxK, "every poll (error or success) acquired and released full credit")
+			},
+		},
+		{
+			// pollInterval 20s, chosen so the doubling overshoots the 30s cap on
+			// the SECOND consecutive error and stays pinned there afterwards.
+			// This is the only case that reaches either cap arm of
+			// pollErrorBackoff:
+			//   err 1 → d=20s, loop body never runs,        min(20s,30s) = 20s
+			//   err 2 → d=20s→40s (one doubling),           min(40s,30s) = 30s  ← clamp arm
+			//   err 3 → d=20s→40s, then 40s<30s is FALSE,   min(40s,30s) = 30s  ← loop guard
+			// Every poll fails, so errN never resets and the wait stays at 30s.
+			name:         "clamps at the 30s cap and stays pinned there",
+			pollInterval: 20 * time.Second,
+			failPoll:     func(int64) bool { return true },
+			steps: []backoffStep{
+				{wantPolls: 1, advance: 20 * time.Second}, // err 1 → 20s (uncapped)
+				{wantPolls: 2, advance: 30 * time.Second}, // err 2 → capped at 30s, not 40s
+				{wantPolls: 3, advance: 30 * time.Second}, // err 3 → still 30s, not 80s
+				{wantPolls: 4},
+			},
+			assert: func(t *testing.T, polls int64, maxK int) {
+				assert.Equal(t, int64(4), polls, "the wait stays pinned at the 30s cap while errors continue")
+				assert.Equal(t, 4, maxK, "every failed poll acquired and released full credit")
+			},
+		},
+	}
 
-	cancel()
-	assert.ErrorIs(t, <-runDone, context.Canceled)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clk := clockwork.NewFakeClock()
+			var polls atomic.Int64
+			src := &fakePolling{pollFn: func(context.Context, int) ([]msgin.Delivery, error) {
+				if tc.failPoll(polls.Add(1)) {
+					return nil, errPoll
+				}
+				return nil, nil
+			}}
+			h := func(context.Context, msgin.Message[order]) error { return nil }
+
+			c, err := endpoint.NewConsumer[order](src, h,
+				endpoint.WithConsumerClock[order](clk),
+				endpoint.WithMaxInFlight[order](4),
+				endpoint.WithPollMaxBatch[order](4),
+				endpoint.WithPollInterval[order](tc.pollInterval))
+			require.NoError(t, err)
+
+			ctx, cancel := context.WithCancel(t.Context())
+			runDone := make(chan error, 1)
+			go func() { runDone <- c.Run(ctx) }()
+
+			for i, s := range tc.steps {
+				// Two fake-clock waiters: the always-on sweep ticker + the idle timer.
+				require.NoError(t, clk.BlockUntilContext(ctx, 2))
+				assert.Equal(t, s.wantPolls, polls.Load(), "poll count at step %d", i)
+				if s.advance > 0 {
+					clk.Advance(s.advance)
+				}
+			}
+
+			_, maxK := src.stats()
+			tc.assert(t, polls.Load(), maxK)
+
+			cancel()
+			assert.ErrorIs(t, <-runDone, context.Canceled)
+		})
+	}
 }
 
 // TestPoller_ClampsExcessDeliveries proves the defensive clamp (a buggy dialect

@@ -114,12 +114,12 @@ func TestDirectChannel_Errors(t *testing.T) {
 func TestDirectChannel_SubscriptionLifecycle(t *testing.T) {
 	tests := []struct {
 		name   string
-		run    func(t *testing.T, dc *channel.DirectChannel, first msgin.Subscription) (err error, delivered int)
+		run    func(t *testing.T, dc *channel.DirectChannel, first msgin.Subscription) (delivered int, err error)
 		assert func(t *testing.T, err error, delivered int)
 	}{
 		{
 			name: "subscribe after cancel succeeds and the new handler receives",
-			run: func(t *testing.T, dc *channel.DirectChannel, first msgin.Subscription) (error, int) {
+			run: func(t *testing.T, dc *channel.DirectChannel, first msgin.Subscription) (int, error) {
 				first.Cancel()
 				delivered := 0
 				sub, err := dc.Subscribe(msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error {
@@ -128,7 +128,8 @@ func TestDirectChannel_SubscriptionLifecycle(t *testing.T) {
 				}))
 				require.NoError(t, err)
 				require.NotNil(t, sub)
-				return dc.Send(t.Context(), msgin.New[any]("after-cancel")), delivered
+				sendErr := dc.Send(t.Context(), msgin.New[any]("after-cancel"))
+				return delivered, sendErr
 			},
 			assert: func(t *testing.T, err error, delivered int) {
 				require.NoError(t, err)
@@ -137,9 +138,9 @@ func TestDirectChannel_SubscriptionLifecycle(t *testing.T) {
 		},
 		{
 			name: "send between cancel and the next subscribe is ErrNoSubscriber",
-			run: func(t *testing.T, dc *channel.DirectChannel, first msgin.Subscription) (error, int) {
+			run: func(t *testing.T, dc *channel.DirectChannel, first msgin.Subscription) (int, error) {
 				first.Cancel()
-				return dc.Send(t.Context(), msgin.New[any]("orphan")), 0
+				return 0, dc.Send(t.Context(), msgin.New[any]("orphan"))
 			},
 			assert: func(t *testing.T, err error, _ int) {
 				assert.ErrorIs(t, err, msgin.ErrNoSubscriber)
@@ -147,12 +148,12 @@ func TestDirectChannel_SubscriptionLifecycle(t *testing.T) {
 		},
 		{
 			name: "cancel twice is idempotent and never panics",
-			run: func(t *testing.T, dc *channel.DirectChannel, first msgin.Subscription) (error, int) {
+			run: func(t *testing.T, dc *channel.DirectChannel, first msgin.Subscription) (int, error) {
 				assert.NotPanics(t, func() {
 					first.Cancel()
 					first.Cancel()
 				})
-				return dc.Send(t.Context(), msgin.New[any]("orphan")), 0
+				return 0, dc.Send(t.Context(), msgin.New[any]("orphan"))
 			},
 			assert: func(t *testing.T, err error, _ int) {
 				assert.ErrorIs(t, err, msgin.ErrNoSubscriber, "the slot stays released after a repeated Cancel")
@@ -160,7 +161,7 @@ func TestDirectChannel_SubscriptionLifecycle(t *testing.T) {
 		},
 		{
 			name: "a stale handle's cancel does not evict the current subscriber",
-			run: func(t *testing.T, dc *channel.DirectChannel, first msgin.Subscription) (error, int) {
+			run: func(t *testing.T, dc *channel.DirectChannel, first msgin.Subscription) (int, error) {
 				first.Cancel()
 				delivered := 0
 				_, err := dc.Subscribe(msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error {
@@ -169,7 +170,8 @@ func TestDirectChannel_SubscriptionLifecycle(t *testing.T) {
 				}))
 				require.NoError(t, err)
 				first.Cancel() // stale: must not touch the new subscription
-				return dc.Send(t.Context(), msgin.New[any]("still-live")), delivered
+				sendErr := dc.Send(t.Context(), msgin.New[any]("still-live"))
+				return delivered, sendErr
 			},
 			assert: func(t *testing.T, err error, delivered int) {
 				require.NoError(t, err)
@@ -183,7 +185,7 @@ func TestDirectChannel_SubscriptionLifecycle(t *testing.T) {
 			var got []msgin.Message[any]
 			first, err := dc.Subscribe(recordingHandler(&got, nil))
 			require.NoError(t, err)
-			sendErr, delivered := tc.run(t, dc, first)
+			delivered, sendErr := tc.run(t, dc, first)
 			tc.assert(t, sendErr, delivered)
 		})
 	}

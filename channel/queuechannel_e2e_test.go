@@ -16,7 +16,8 @@ import (
 // TestQueueChannel_EndToEnd proves the full round-trip: a Producer sends typed
 // messages into a memory.QueueStore-backed QueueChannel, and a Consumer (via the
 // runtime's Poller and worker pool) drains and handles every one, with
-// goleak-clean shutdown on ctx cancel.
+// goleak-clean shutdown on ctx cancel (verified by this package's TestMain in
+// main_test.go).
 func TestQueueChannel_EndToEnd(t *testing.T) {
 	store, err := memory.NewQueueStore()
 	require.NoError(t, err)
