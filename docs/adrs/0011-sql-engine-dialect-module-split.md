@@ -1,6 +1,10 @@
 # ADR 0011 — Split the `sql` adapter into a driver-free engine + per-dialect modules
 
-- **Status:** Proposed (2026-07-17) — **audit rounds 1 AND 2 folded; reconciled to Structure Z; ready to
+- **Status:** **Accepted (2026-07-18) — implemented in [Plan 006](../plans/006-sql-engine-dialect-split.md),
+  commits `27b5ab6`…`0d4024d`.** *(Status corrected 2026-07-28, audit round 6 finding M-3; the line read
+  "Proposed (2026-07-17)" long after the split shipped. Evidence: `adapter/database/sql/{harness,postgres,mysql,
+  sqlite,dbtest}/go.mod` all exist on disk and are `use`d by the repo-root `go.work`.)* Pre-implementation
+  record, retained: **audit rounds 1 AND 2 folded; reconciled to Structure Z; ready to
   implement.** The authoritative post-audit design is **spec 002 §4–§8** + the audit records
   `.superpowers/sdd/plan-006-audit-round-{1,2}.md`; this ADR matches it (leaf-test modules; exported
   `BeginLockTx`/`SettleLockTx`/`ValidateIdent`; the `harness` module + per-dialect `TestKit`; `GOWORK=off` CI +

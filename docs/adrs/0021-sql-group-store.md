@@ -1,6 +1,11 @@
 # ADR 0021 — `sql.GroupStore`: durable, multi-process aggregation (lease-claim, `GroupDialect`)
 
-- **Status:** Proposed (2026-07-21) — records the Phase-3 decisions of
+- **Status:** **Accepted (2026-07-21) — implemented in [Plan 017](../plans/017-sql-group-store.md),
+  merged as `c7eb673`.** *(Status corrected 2026-07-28, audit round 6 finding M-3; the line read
+  "Proposed (2026-07-21)" long after the store shipped. Evidence in non-test code today: the segregated
+  `GroupDialect` SPI at `adapter/database/sql/groupdialect.go:107` and `NewGroupStore` at
+  `adapter/database/sql/groupstore.go:203`, with per-engine dialects under `postgres`/`mysql`/`sqlite`.)*
+  Records the Phase-3 decisions of
   [Spec 009 §3.4](../specs/009-splitter-aggregator-endpoints.md), settled with the user in brainstorming (full
   **multi-process** durability; uniform store-level lease-claim; `memory` reworked to the same shape; new segregated
   `GroupDialect`). **Depends on the ADR 0020 §8 revision** (the `ClaimGroup`/`SettleGroup`/`AbandonGroup` SPI + the

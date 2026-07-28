@@ -8,7 +8,10 @@
   fails **at construction**, not at first message — the compile error simply moves to the provider call
   (Spec 014 §7). The expression semantics, `header()` form, and error taxonomy decided here all stand.
   *(The status also read "Proposed" long after the code shipped; corrected to Accepted, since the decision was
-  implemented and is in `expr.go` today.)*
+  implemented — in `expr.go`, merged as `c53ea09` from [Plan 014](../plans/014-expr-endpoints.md).)*
+  *(Re-corrected 2026-07-28, audit round 6 finding M-3: **`expr.go` no longer exists** — Plan 027's `c83dde9`
+  deleted it, so the earlier phrase "is in `expr.go` today" is false at HEAD. The historical file is still
+  readable at `git show ab233d9:expr.go`.)*
 - **Original status line, retained for the record:** Proposed (2026-07-20) — **both adversarial audit rounds
   complete; bundle SOUND.** Round 1 (Opus,
   verified via a real expr v1.17.8 compile+run spike: all 6 API assumptions TRUE, no blockers) folded H1/M1/M2/L1-L3;
@@ -153,8 +156,14 @@ returned `error` — exactly like a Go predicate's error today — into the runt
 
 ## Addendum (2026-07-21) — expr on the transformation-group endpoints (Spec 009 Phase 4)
 
-- **Status:** Proposed (2026-07-21) — Phase-4 design settled with the user; pending the adversarial audit + Plan 018
-  + implementation go-ahead. Realizes the "future `Splitter`/`Aggregator`/`Transformer` expr support reusing §3" that
+- **Status:** **Accepted (2026-07-21) — implemented in [Plan 018](../plans/018-expr-sugar.md), merged as
+  `e7ef491`; then REMOVED FROM THE CORE by Plan 027 (`c83dde9`), like the rest of this ADR's `*Expr` surface.**
+  All four Phase-4 constructors (`TransformExpr`, `SplitExpr`, `WithCorrelationExpr`, `WithReleaseExpr`) are
+  absent from the tree today — `grep -rn --include='*.go' 'TransformExpr|SplitExpr|WithCorrelationExpr|WithReleaseExpr'`
+  returns nothing — and are to be reborn as providers in the separate `expr` module (Plan 027 Task 10,
+  [ADR 0029](0029-eip-lexical-alignment.md)). *(Status corrected 2026-07-28, audit round 6 finding M-3; it read
+  "Proposed (2026-07-21) — … pending the adversarial audit + Plan 018 + implementation go-ahead".)*
+  Realizes the "future `Splitter`/`Aggregator`/`Transformer` expr support reusing §3" that
   the base ADR named as deferred, non-breaking work (Consequences → Neutral). **Adds no new dependency** (`expr`
   already in-core); **no exported signature change** to any shipped symbol → **minor SemVer**.
 - **Spec:** [Spec 009 §3.5 (D12–D14)](../specs/009-splitter-aggregator-endpoints.md). **Plan:** Plan 018.

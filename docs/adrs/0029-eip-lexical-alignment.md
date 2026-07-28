@@ -22,7 +22,13 @@
 - **Decisions folded in 2026-07-28:** **D-D** (delete `cfg.optErr` and its `NewAggregator` guard — §3a) and
   **D-E** (`WithReleaseStrategy(ReleaseStrategy)` + `WithReleaseWhen` — §3), both settled 2026-07-27
   ([audit round 2 §G.1](../plans/027-audit-round-2.md)); **D-I** (the two expr sentinels leave root — §5.0a)
-  and **D-K** (`ErrExprResultType` is wrapped in `msgin.Permanent` — §5.0b), both settled 2026-07-28.
+  and **D-K**, both settled 2026-07-28.
+- **Decisions folded in 2026-07-28 (round 6):** **D-K is REVISED** — the `expr` providers wrap
+  **`msgin.ErrPayloadType`** and `expr.ErrExprResultType` is **not declared at all**, superseding the
+  *"declare it, then wrap it in `msgin.Permanent`"* form recorded earlier the same day (§5.0b/§5.0c); and
+  **D-M** — a **deterministic endpoint fault carries its own retry classification**, generalizing D-K from one
+  sentinel to the class and making `ErrNilFunc` `Permanent` at all five producers (§5.0b). Both from
+  [round 6 §1](../plans/027-audit-round-6.md).
 - **Cites:** [ADR 0002 — Adapter SPI](0002-adapter-spi.md), which defined the `StreamingSource` name that §1
   renames and the `PollingSource`/`Delivery` contracts that stay put.
 - **Amends:** [ADR 0019 — Runtime expression evaluation](0019-runtime-expression-evaluation.md) — its decision
@@ -247,12 +253,14 @@ it. A `use` line in `go.work` is necessary but not sufficient (round-2 §C2).
 #### 5.0a The module owns its two error sentinels — decision D-I (2026-07-28)
 
 > **STATUS: DECIDED, NOT YET IMPLEMENTED.** Both sentinels still exist in root at `dadc775`
-> (`errors.go:180`, `:206`). Plan 027 Task 9.5 deletes them; Task 10 declares the replacements. Every
+> (`errors.go:180`, `:206`). Plan 027 Task 9.5 deletes them; Task 10 declares the **one** replacement. Every
 > present-tense sentence below describes the decided end state, not the tree.
 
 The `*Expr` deletion left `msgin.ErrInvalidExpression` and `msgin.ErrExprResultType` with **zero producers
-anywhere in the workspace** — the only two root sentinels in that position. **They leave root**, and this
-module declares `expr.ErrInvalidExpression` / `expr.ErrExprResultType` (prefix `msgin/expr:`) instead.
+anywhere in the workspace** — the only two root sentinels in that position. **Both leave root.** This module
+declares `expr.ErrInvalidExpression` (prefix `msgin/expr:`); it declares **no** replacement for
+`ErrExprResultType`, which under **revised D-K** (§5.0b) is expressed by wrapping root's existing
+`msgin.ErrPayloadType`. So the `expr` module mints **one** sentinel, not two.
 
 This **narrows an earlier reading of §5 in this ADR**. §5 says providers keep "the compile error at the
 provider call", and Plan 027 §9.5.0 originally read that as an argument for keeping the *sentinel* in root so
@@ -264,11 +272,19 @@ contract-level faults (27 file→sentinel pairs). Root has no notion of an expre
 that could produce one; the fault is the provider's. Spec 014 §3.2 carries the measured evidence, §7 the
 declaration.
 
-**Consequence:** `errors.Is(err, msgin.ErrInvalidExpression)` becomes `errors.Is(err, expr.ErrInvalidExpression)`.
-The caller already imports `expr` to construct the endpoint, so no new import appears; `MIGRATION.md` carries
-both lines. No alias is provided — an alias would have to reference the root var this decision deletes.
+**Consequence:** `errors.Is(err, msgin.ErrInvalidExpression)` becomes `errors.Is(err, expr.ErrInvalidExpression)`,
+and `errors.Is(err, msgin.ErrExprResultType)` becomes **`errors.Is(err, msgin.ErrPayloadType)`** (revised D-K,
+§5.0b) — the second stays a root target, so that caller keeps the import they already had. The first caller
+already imports `expr` to construct the endpoint, so no new import appears there either; `MIGRATION.md` carries
+both lines. No alias is provided — an alias would have to reference the root vars this decision deletes.
 
-#### 5.0b The two sentinels are NOT symmetric, and `ErrExprResultType` needs a retry classification — decision D-K
+#### 5.0b The two sentinels are NOT symmetric, and a deterministic fault needs a retry classification — decisions D-K (revised) and D-M
+
+> **STATUS: DECIDED, NOT YET IMPLEMENTED.** At `dadc775` no `expr` module exists, `IsPermanent` enumerates
+> three sentinels (`reliability.go:38-49`), and all five `ErrNilFunc` producers return the **bare** sentinel.
+> Every present-tense sentence below describes the decided end state, not the tree. **D-M is a behavior change
+> to shipped code** (four existing producers) and is listed among the exceptions Spec 014 §2.1 enumerates;
+> Plan 027 Task 9 (combinators + producers) and Task 10 (the provider) own the edits.
 
 **§5.0a's argument applies cleanly to `ErrInvalidExpression` and does NOT transfer to `ErrExprResultType`.**
 The first is a **construction-time** fault raised at the provider call; ADR 0019's contract is untouched by
@@ -289,36 +305,189 @@ never wrapped it in `Permanent` either. So today it would be classified **transi
 times — and, per Spec 014 §10's per-instance attempt tracking, **`N × MaxAttempts` across N instances** — for
 a deterministic fault that yields the identical wrong type every time.
 
-That gap predates D-I. What D-I does is **close the only door that could have fixed it in one place**: while
-the sentinel lived in root, `IsPermanent` could be amended to name it; afterwards root cannot reference
-`expr.ErrExprResultType` without re-creating the import edge D-I exists to remove.
+That gap predates D-I. What D-I does is **close one door**: while the sentinel lived in root, `IsPermanent`
+could be amended to name it; afterwards root cannot reference a provider-declared sentinel without re-creating
+the import edge D-I exists to remove. An earlier draft called it *"the only door that could have fixed it in
+one place"*, and **that was the false step** — the other door was always open and was never tried: **use a root
+sentinel that `IsPermanent` already names.** Revised D-K walks through it.
 
-**Decision D-K: the `expr` providers wrap it in `msgin.Permanent`.**
+**Decision D-K (REVISED, round 6 — supersedes the form settled earlier on 2026-07-28): the `expr` providers
+wrap root's `msgin.ErrPayloadType`, and `expr.ErrExprResultType` is NOT declared at all.**
 
 ```go
-return Message[B]{}, fmt.Errorf("%w: result %T is not %T",
-	msgin.Permanent(ErrExprResultType), out, *new(B))
+return Message[B]{}, fmt.Errorf("%w: expr result %T is not %T", msgin.ErrPayloadType, out, *new(B))
 ```
 
-`msgin.Permanent` is exported (`reliability.go`) and the provider already imports root, so this costs one
-wrap and no new dependency. It restores the classification `IsPermanent` would have given the fault had the
-sentinel stayed. CLAUDE.md is explicit that delivery guarantees are contracts and *"never leave them
-implied"* — so the alternative (leave it transient) would have been acceptable only if stated, and it is not
-the better behavior. Plan 027 Task 10's hot-path list owns the branch.
-*(Round-4 design audit, BLOCKER 3.)*
+> **What the earlier form was, and why it is withdrawn.** D-K as first recorded had the provider declare its
+> own `expr.ErrExprResultType` and then wrap it —
+> `fmt.Errorf("%w: result %T is not %T", msgin.Permanent(ErrExprResultType), out, *new(B))`. The paragraph
+> above calls a result-type mismatch *"the expression-domain **twin** of `ErrPayloadType`"* and then mints a
+> second sentinel for it anyway; §5.0c records the cost (every future CEL/starlark provider mints another, and
+> callers get no shared `errors.Is` target) and offers two escapes, **neither of which was "wrap the twin"**.
+> The obvious alternative was never weighed — the gap was the silence, not the reasoning.
+> *(Round-6 design M4.)*
 
-#### 5.0c A second expression provider would mint a third sentinel — recorded, not solved
+**Why the revised form is better on every axis that decided the original.**
+
+- **One shared `errors.Is` target** for every present and future expression provider, which is exactly what
+  §5.0c was written to lament.
+- **The correct retry classification for free.** `ErrPayloadType` is already enumerated by `IsPermanent`
+  (`reliability.go:38-49`), so **no `msgin.Permanent` wrap is needed** and D-K's whole classification concern
+  dissolves rather than being paid for:
+
+  ```
+  IsPermanent(msgin: payload is not of the expected type   ) = true
+  ```
+- **No root change and no new import edge.** The provider already imports root for `msgin.Message`;
+  `ErrPayloadType`'s own godoc (`errors.go`) is domain-generic — *a `Message[any]` payload cannot be asserted
+  to `T`* — and a result-type mismatch is that same statement about the expression's output.
+
+**D-I is unaffected.** `ErrInvalidExpression` still leaves root and the `expr` module still mints its own with
+the `msgin/expr:` prefix: it is a **construction-time** fault with no root twin. What changes is the count —
+root loses both sentinels, the `expr` module declares **one**, so Task 12's projected root arithmetic
+`43 − 2 + 1 = 42` is **unchanged** (the `+1` is D-J's `ErrSharedReplyChannel`, not an expr sentinel) while the
+projected `expr`-module sentinel count drops from 2 to **1**.
+
+---
+
+**Decision D-M (round 6): a deterministic endpoint fault carries its own retry classification, and
+`ErrNilFunc` is `Permanent`.**
+
+**The reasoning above is not specific to a result-type mismatch.** `IsPermanent` is a **closed enumeration**,
+so *any* deterministic fault outside it is classified transient and retried. Measured at `aae6160` (root code
+byte-identical to the `dadc775` pin — `git diff --name-only dadc775..aae6160 | grep -v '^docs/'` → `CLAUDE.md`
+only):
+
+```
+IsPermanent(msgin: nil endpoint function                 ) = false
+IsPermanent(msgin: no route for message                  ) = false
+IsPermanent(msgin: payload is not of the expected type   ) = true
+IsPermanent(msgin: message has no correlation key        ) = false
+```
+
+End-to-end, a `transform.Transform(nil)` step over a `memory` broker with `RetryPolicy{MaxAttempts: 3}`:
+
+```
+nil-func step: OnRetry=2  OnDeadLetter=1  OnInvalidMessage=0  (IsPermanent=false)
+```
+
+A nil endpoint function — **the most deterministic fault the library can produce**, identical on every
+redelivery for the process's lifetime — consumes the full retry budget, lands in the **dead-letter** sink
+instead of the **invalid-message** sink, and, via
+`endpoint/consumer.go:614` (`c.safeRecord(md.Msg.ID(), err == nil || msgin.IsPermanent(err))`) and
+`endpoint/consumer.go:733`, **records an unhealthy signal that trips the circuit breaker**. One mis-wired
+`Filter(nil)` opens the circuit for the whole consumer.
+
+**The tree already contains the correct precedent, with D-K's exact rationale, written before this window.**
+`routing/aggregator.go:151-160` wraps `ErrNoCorrelation`:
+
+```go
+// defaultCorrelate reads HeaderCorrelationID as the group key. A missing or
+// empty header is Permanent(ErrNoCorrelation): the runtime's IsPermanent does
+// not match a bare ErrNoCorrelation, so without the wrap the message would be
+// retried to the dead-letter sink instead of diverted to the invalid-message
+// channel.
+```
+
+**The discriminator — this is the rule, not the list.** Classify by **when the fault's inputs are fixed**:
+
+- **Fixed at construction, or by the message itself → `Permanent`.** It cannot change on redelivery.
+- **Evaluated per message against caller-supplied, possibly-mutable state → transient.** It may legitimately
+  resolve on redelivery.
+
+Applied to every in-tree instance:
+
+| Sentinel | Inputs fixed | Classification | Rationale |
+|---|---|---|---|
+| `ErrNilFunc` (all producers) | at construction — the nil is captured in the closure | **`Permanent`** | `nilFuncStep` closes over nothing; `Router.pick` is set once in `NewRouter`. Nothing can make it non-nil later |
+| result-type mismatch (`expr`) | at construction (the expression) + by `T` | **`Permanent`** | Revised D-K above — inherited from `ErrPayloadType`, no wrap needed |
+| `ErrNoCorrelation` | by the message's headers | **`Permanent`** (already) | `routing/aggregator.go:160` — the precedent quoted above |
+| **`ErrNoRoute`** | **per message, by caller-supplied `pick`** | **transient — UNCHANGED** | `routing/router.go:48-56`: `pick` is a caller function evaluated per message; it may consult a routing table, feature flag, or lookup service that changes. A message unroutable now may be routable after a config reload. `WithDefaultChannel` is the documented way to make the outcome deterministic |
+
+`ErrNoRoute` staying transient is the load-bearing half of the rule: it shows the discriminator **excludes**
+as well as includes, so this reads as a classification rule rather than a sweep of everything unenumerated.
+
+**Scope — five producers become `msgin.Permanent(msgin.ErrNilFunc)`** (verified at the `dadc775` code pin):
+
+| Site | Declaration |
+|---|---|
+| `endpoint/helpers.go:21` | `nilFuncStep` |
+| `routing/helpers.go:23` | `nilFuncStep` (package-local copy) |
+| `transform/transformer.go:38` | `nilFuncStep` (package-local copy) |
+| `routing/router.go:48` | `Router.Handle`, `r.pick == nil` |
+| Plan 027 Task 9's `Predicate.And` / `Or` / `Not` | new in this window — see below |
+
+**A sixth `ErrNilFunc` producer exists and is deliberately EXCLUDED:** `routing/aggregator.go:251`
+(`NewAggregator`, `if fn == nil { return nil, msgin.ErrNilFunc }`). It is **construction-time** — returned to
+the caller from a constructor, never carried through `Handle` — so it never reaches a `RetryPolicy` and a
+retry classification would be meaningless on it. The five in the table are the **flow-path** producers, the
+ones whose error a consumer classifies. Stated so the next re-derivation of this list does not read the
+exclusion as an omission:
+
+```
+# scope: root module, at the dadc775 code pin (verified byte-identical at aae6160)
+$ grep -rn 'msgin\.ErrNilFunc' --include='*.go' . | grep -v _test | grep -v '//'
+endpoint/helpers.go:21:		return msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { return msgin.ErrNilFunc })
+routing/aggregator.go:251:		return nil, msgin.ErrNilFunc
+routing/router.go:48:		return msgin.ErrNilFunc
+routing/helpers.go:23:		return msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { return msgin.ErrNilFunc })
+transform/transformer.go:38:		return msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { return msgin.ErrNilFunc })
+```
+
+**Five hits, four of which are flow-path** — the `nil, msgin.ErrNilFunc` shape is the constructor return and
+is the one excluded; the fifth flow-path producer (`Predicate.And`/`Or`/`Not`) does not exist yet. The
+invariant to re-derive against, not the count: **every `ErrNilFunc` returned from a `MessageHandler` body is
+`Permanent`; every one returned from a constructor is bare.**
+
+**Task 9's combinators are amended by this decision.** They were decided to degrade to
+`(false, msgin.ErrNilFunc)` **at evaluation, per message** — three *new* producers of a bare, deterministic
+`ErrNilFunc` on the retry hot path, authored after D-K had already identified the class. They now return
+**`(false, msgin.Permanent(msgin.ErrNilFunc))`**, and Task 9's hot-path branch list gains a case asserting
+`msgin.IsPermanent(err)` on a combinator's nil result.
+
+**Debuggability.** `errors.Is` is preserved by the wrap, but the bare sentinel collapses six distinct nil
+positions into the single string `msgin: nil endpoint function` — no indication of `And` vs `Or` vs `Not`,
+receiver vs argument, or which link of `p.And(q).Or(r)`. CLAUDE.md requires *"typed, wrapping errors that name
+the offending field/input"*, so each combinator wraps with positional context:
+
+```go
+fmt.Errorf("%w: routing.Predicate.And: nil argument", msgin.Permanent(msgin.ErrNilFunc))
+```
+
+and each combinator's godoc states that `errors.Is(err, msgin.ErrNilFunc)` still matches.
+
+**This is a class, not a case.** The instances above are the complete in-tree list *at this window*, and the
+list is not the contract — **the discriminator is**. Any endpoint that returns a typed error whose inputs are
+fixed at construction, or determined by the message itself, must classify it `Permanent` at the producer,
+because `IsPermanent`'s enumeration is closed and root cannot be amended for every subpackage and provider
+fault (that is exactly the door D-I closes for `expr`). Recording only `ErrExprResultType` was the original
+defect: it fixed the named instance while the same defect stayed live in four shipped producers and was about
+to be re-authored in three new ones. *(Round-4 design audit BLOCKER 3 opened this; round-6 design B4 and M4
+generalized and corrected it.)*
+
+#### 5.0c A second expression provider would mint a third `ErrInvalidExpression` — recorded, not solved
+
+> **NARROWED by revised D-K (round 6).** This section was written when the `expr` module declared **two**
+> sentinels, and it applied to both. Under revised D-K the evaluation-time fault is expressed by wrapping
+> root's `msgin.ErrPayloadType`, which **is** the shared `errors.Is` target this section wanted — so the
+> problem below, and both escapes offered for it, are **moot for that half** and are retained **only for
+> `ErrInvalidExpression`**.
 
 A future CEL or starlark provider mints `cel.ErrInvalidExpression` / `starlark.ErrInvalidExpression` for the
 same conceptual fault, so a caller with generic handling ("the user's expression was bad → HTTP 400") must
 enumerate every provider, with no shared `errors.Is` target — exactly what root's sentinel gave for free.
+**The evaluation-time counterpart no longer has this shape**: every provider's result-type mismatch is
+`msgin.ErrPayloadType`, one target, forever.
 
 **This does not reverse D-I.** Nothing is released, the fault genuinely is the provider's, and the repo
 precedent (51 adapter-minted sentinels alongside 27 root-sentinel returns) supports it. But it is a
 foreseeable consequence with two known escapes, and it is recorded here so a future increment does not
 rediscover it as a surprise: every provider can wrap with `msgin.Permanent` (giving a shared *classification*
 even without a shared sentinel), or root can later add an `ErrInvalidConfig`-class sentinel that providers
-wrap. *(Round-4 design audit, MINOR 6.)*
+wrap. **Read both escapes as scoped to `ErrInvalidExpression` alone.** The second escape is, in effect, what
+revised D-K already did for the other sentinel — wrap an existing root target instead of minting a new one —
+and it is worth noting that the general fix and the specific one are the same move.
+*(Round-4 design audit MINOR 6; narrowed by round-6 design M4.)*
 
 ### 5a. The provider shape is NOT uniform, and it is NOT non-generic
 
@@ -389,16 +558,47 @@ parallel `*Expr` constructors collapse into one base constructor per endpoint. P
   `expr-lang` as one of three accepted core exceptions **and names `FilterExpr`/`RouterExpr` at `CLAUDE.md:235`
   as its justification** (both deleted), its architecture blueprint named `StreamingSource`, and `MESSAGING.md`
   carries three more rename sites. Leaving any of them stale is a traceability breach.
-- **Two error sentinels are orphaned in root and need a decision, not a default.** `ErrInvalidExpression`
-  (`errors.go:161`) and `ErrExprResultType` (`errors.go:183`) have **zero users** after the `*Expr` deletion,
-  and their godoc names constructors that no longer exist (F11.7). Either the `expr` module imports them from
-  root — keeping one error contract, consistent with §5's provider-side wrapping — or they leave root's closed
-  contract. Task 10 decides and records it; leaving two unreferenced sentinels inside a *closed* root contract
-  is not neutral.
-- **The `*Expr` deletion leaves godoc mentions no compiler can see.** Seven survive today in `errors.go`,
-  `routing/splitter.go`, and `routing/aggregator.go`. Spec 014 §8.1's staleness sweep needs a **second arm**
-  for deleted symbols: the moved-symbol arm greps `msgin.<sym>` and structurally cannot find a mention of a
-  symbol that no longer exists.
+- **Two error sentinels are orphaned in root — DECIDED, not open.** `ErrInvalidExpression` (declared
+  `errors.go:180`) and `ErrExprResultType` (declared `errors.go:206`) have **zero producers** after the `*Expr`
+  deletion, and their godoc names constructors that no longer exist (F11.7). **Decision D-I (§5.0a): both leave
+  root.** The `expr` module declares `expr.ErrInvalidExpression`; the evaluation-time fault is expressed by
+  wrapping root's existing `msgin.ErrPayloadType` (**revised D-K**, §5.0b), so no second `expr` sentinel is
+  minted. **Plan 027 Task 9.5 deletes them; Task 10 declares the one replacement** — it is not Task 10's
+  decision to make. **NOT YET IMPLEMENTED:** both vars still exist in the tree at the `dadc775` code pin.
+
+  > *Corrected (round 6, C-B1 + C-B3).* This bullet survived the D-I pass unamended and was the worst kind of
+  > stale: it presented a **settled** decision as open, framed both options as live, and assigned it to the
+  > **wrong task** — an implementer reading only the Consequences would defer a Task 9.5 checkbox and re-open
+  > D-I. It also carried a **third** distinct line-number pair for the same two declarations (`:161`/`:183`,
+  > after `:156`-era and other variants); both cited lines hold unrelated godoc. Verified:
+  > `grep -n 'ErrInvalidExpression\|ErrExprResultType' errors.go` → `180:	ErrInvalidExpression = errors.New("msgin: invalid expression")`
+  > and `206:	ErrExprResultType = errors.New("msgin: expression result type mismatch")`. §5.0a and this ADR's
+  > header record the settlement; **this section is where a reader looks for it and is the surface a decision
+  > must be swept into** ([round 6 §0](../plans/027-audit-round-6.md), counter-rule 1).
+- **The `*Expr` deletion leaves godoc mentions no compiler can see**, and Spec 014 §8.1's staleness sweep needs
+  a **second arm** for deleted symbols: the moved-symbol arm greps `msgin.<sym>` and structurally cannot find a
+  mention of a symbol that no longer exists. **Arm 2 returns exactly ONE survivor at the `dadc775` code pin**
+  — `WithRelease`, at `routing/aggregator.go:316` (`// release-decision error (the WithRelease strategy
+  failed)`; the option is `WithReleaseStrategy`). `errors.go` and `routing/splitter.go` contribute **zero**.
+  Re-derived by running [Spec 014 §8.1](../specs/014-core-package-layout.md)'s arm-2 `comm -23` pipeline
+  **unmodified** (it is 12 lines and lives there; this ADR deliberately does not fork a copy that can drift).
+  Its complete stdout, observed at `aae6160`:
+
+  ```
+  WithRelease
+  ```
+
+  and the site: `grep -rn 'WithRelease strategy' routing/aggregator.go` →
+  `routing/aggregator.go:316:		return err // release-decision error (the WithRelease strategy failed) → retry/DLQ;`
+
+  > *Corrected (round 6, C-B2).* This bullet read *"Seven survive today in `errors.go`, `routing/splitter.go`,
+  > and `routing/aggregator.go`"*. That figure is **fiction** — it came from the pre-round-4 arm 2, a hardcoded
+  > list of the six `*Expr` names that returned **zero hits at every frame it was ever run against**, published
+  > alongside a survivor list at named lines that hold unrelated text. Rounds 4 and 5 established this and wrote
+  > `ROUND-4 CORRECTION` blocks into **Spec §8.1 and Plan §9.5.1**; the ADR that both cite was never opened.
+  > Arm 2's reach is also narrower than "seven godoc mentions" implies: it matches only `With|Err|New` names, so
+  > it covers 2 of the 6 `*Expr` names and misses `StreamingSource` entirely — see Spec §8.1's stated blind
+  > spots.
 - `apidiff` **will** report the parameter-type change on every typed constructor. Call sites are
   source-compatible (a bare closure stays assignable), so this is expected and benign — the plan records it as a
   *reviewed, source-compatible* entry rather than claiming zero output, so the "only intended changes" gate

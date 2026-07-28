@@ -1,6 +1,11 @@
 # ADR 0022 — Messaging Gateway & the `RequestReplyExchange` model (in-process request-reply, shared reply correlator)
 
-- **Status:** Proposed (2026-07-21) — records the architectural decisions of
+- **Status:** **Accepted (2026-07-21) — implemented in [Plan 019](../plans/019-messaging-gateway.md),
+  merged as `9ae2275`.** *(Status corrected 2026-07-28, audit round 6 finding M-3; the line read
+  "Proposed (2026-07-21)" long after the gateway shipped. Evidence in non-test code today: the
+  `RequestReplyExchange` SPI at `spi.go:118`, `endpoint/gateway.go:14` `Gateway[Req, Rep]`,
+  `endpoint/gateway.go:45` `OutboundGateway`, and `endpoint/exchange.go:191` `ChannelExchange` — the last two
+  relocated by Plan 027's `c83dde9`.)* Records the architectural decisions of
   [Spec 010](../specs/010-messaging-gateway.md), settled with the user in brainstorming (request-reply only; inbound +
   outbound; in-process channel-pair + pluggable SPI; reuse `HeaderCorrelationID` + outbound save/restore; 30s reply
   timeout; warn-log+drop / opt-in sink for unmatched replies). **Adversarial design audit round 1 folded** (Opus,

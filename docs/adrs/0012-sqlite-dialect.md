@@ -1,9 +1,12 @@
 # ADR 0012 — SQLite dialect for the `sql` adapter (lease-only, INTEGER-µs clock)
 
-- **Status:** Proposed (2026-07-18) — brainstorm folded; user-approved the design (INTEGER unix-micros
-  timestamps, driver-free `sqlite.DSN` builder, `RunTestSQLite` with WAL-file default + shared-memory option,
-  conditional-lock harness fix). Pending the **adversarial audit** of the spec+ADR+plan bundle before
-  implementation (CLAUDE.md design-time gate).
+- **Status:** **Accepted (2026-07-18) — implemented in [Plan 007](../plans/007-sqlite-dialect.md),
+  commits `5119117`…`65f53cc`.** *(Status corrected 2026-07-28, audit round 6 finding M-3; the line read
+  "Proposed (2026-07-18) — … Pending the adversarial audit … before implementation" long after the dialect
+  shipped. Evidence: the `adapter/database/sql/sqlite` module exists with `dialect.go` + `groupdialect.go` in
+  non-test code, and `65f53cc` added it to the CI matrix.)* Pre-implementation record, retained: brainstorm
+  folded; user-approved the design (INTEGER unix-micros timestamps, driver-free `sqlite.DSN` builder,
+  `RunTestSQLite` with WAL-file default + shared-memory option, conditional-lock harness fix).
 - **Context source:** [Spec 002 — sql multi-module split + SQLite](../specs/002-sql-multi-module-and-sqlite.md)
   §7 (SQLite dialect) and §9 (sequencing, increment B).
 - **Predecessor:** [ADR 0011 — sql engine/dialect module split](0011-sql-engine-dialect-module-split.md)

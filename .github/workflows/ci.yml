@@ -1,11 +1,16 @@
 name: CI
 
-# msgin is a multi-module monorepo (ADR 0003 / ADR 0011): the engine (repo
-# root) plus five sql-adapter modules (harness, postgres, mysql, sqlite,
-# dbtest). Each
-# module MUST build and test standalone against its own go.mod, so the
-# per-module jobs below force GOWORK=off (audit F5, spec 002 §8) -- the local
-# go.work workspace is exercised only by the separate `workspace` job.
+# msgin is a multi-module monorepo (ADR 0003 / ADR 0011). go.work `use`s SEVEN
+# modules: the engine (repo root), five sql-adapter modules (harness, postgres,
+# mysql, sqlite, dbtest) and adapter/cron/crontest. Each module MUST build and
+# test standalone against its own go.mod, so the per-module jobs below force
+# GOWORK=off (audit F5, spec 002 §8) -- the local go.work workspace is
+# exercised only by the separate `workspace` job.
+#
+# KNOWN GAP: both jobs below cover only SIX of those seven --
+# adapter/cron/crontest is absent from the `module` matrix and from the
+# `workspace` job's loop. Pre-existing; Plan 027 Task 10 adds it to both.
+# Until then CLAUDE.md's seven-directory local loop is a superset of this file.
 
 on:
   push:
@@ -106,8 +111,10 @@ jobs:
     runs-on: ubuntu-latest
     # No GOWORK=off here: this job deliberately lets `go` auto-discover the
     # committed repo-root go.work, proving the workspace itself still resolves
-    # coherently across all 6 modules (spec 002 §8 "one separate
-    # workspace-build job for the aggregate").
+    # coherently across the 6 modules enumerated below (spec 002 §8 "one
+    # separate workspace-build job for the aggregate"). go.work `use`s 7 --
+    # adapter/cron/crontest is the missing one; see the KNOWN GAP note at the
+    # top of this file.
     steps:
       - uses: actions/checkout@v6
 

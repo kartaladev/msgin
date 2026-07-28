@@ -3,6 +3,13 @@
 - **Status:** **ACCEPTED (2026-07-28) — NOT YET IMPLEMENTED.** Decision **D-J**, settled with the user after
   the round-3 review cycle. Realized by [Plan 027 §9.6](../plans/027-core-package-layout.md); this ADR is
   written **before** the code, so every "is" below is a specification, not a description of the tree.
+- **Decisions folded in 2026-07-28 (round 6):** **D-L** — `SingleSubscriber()` is an **end-to-end policy
+  predicate** and is **lifetime-invariant**, superseding §1's original handle-local definition
+  ([round 6 §1](../plans/027-audit-round-6.md), prompted by design blockers B2/B3, both **compile-proven** in a
+  throwaway worktree at `aae6160`); and **D-M2** — the `cfg.allowShared` opt-out is evaluated **before** the
+  probe, so it suppresses the probe rather than only the rejection (§3). D-L rewrites §1's godoc, restates §4's
+  cheapness argument, adds the embedding/wrapper hazards to §5, deletes a Consequences bullet that D-L
+  falsifies, and **reverses §Topology's conclusion about Topology 2**.
 - **Amends** [ADR 0028 §6.2](0028-channel-interface-segregation.md) (decision D-F). It does **not** supersede
   ADR 0028: §6.2's channel-local `channel.WithSingleSubscriber()` is the mechanism this ADR makes
   load-bearing, and §6.2's rejection of a cross-exchange **registry** stands unchanged and unweakened. What
@@ -54,24 +61,89 @@ channel/pubsub.go:112:	_ msgin.SubscribableChannel = (*PublishSubscribeChannel)(
 ```
 
 **Every in-tree `SubscribableChannel` is one of two types, both in `channel`.** A probe that those two
-implement therefore covers 100% of what ships; only a third-party implementation can be unknown to it. That
-ratio is what makes the "accept the unknown" arm below cheap rather than a loophole.
+implement therefore covers 100% of what ships.
+
+> **The sentence that used to follow is FALSE and is withdrawn — decision D-L (round 6, compile-proven).** It
+> read: *"only a third-party implementation can be unknown to it. That ratio is what makes the 'accept the
+> unknown' arm below cheap rather than a loophole."* **That counts declarations; the arm is reached by the
+> value a caller passes.** `struct{ msgin.SubscribableChannel }` — the one-line decorator — wraps an in-tree
+> fan-out channel and is **accepted** where the bare channel is **rejected**, with no third party anywhere.
+> The corrected cheapness argument, and the godoc that carries the mitigation, are in **§4**.
 
 ## Decision
 
 ### 1. Root gains an optional capability interface
 
+> **SUPERSEDED IN PLACE by decision D-L (round 6).** The original definition — *"reports whether `Subscribe`
+> rejects a second concurrent subscriber … a report about THIS channel in THIS process"* — was **handle-local**,
+> and three defeats were **compile-proven** against it by implementing D-J in a throwaway worktree at `aae6160`
+> and running this ADR's own guard:
+>
+> ```
+> bare plain pub-sub                      -> REJECTED ErrSharedReplyChannel
+> A: struct{ msgin.SubscribableChannel }  -> ACCEPTED (probe absent)
+> B: struct{ *PublishSubscribeChannel }   -> ACCEPTED (probe reports exclusive)
+>    ...after 2 Subscribes: len(subs)=2, SingleSubscriber()=true
+> C: state-reading probe (0 subscribers)  -> ACCEPTED (probe reports exclusive)
+>    ...after 2 Subscribes: n=2, SingleSubscriber()=false (both accepted, no error)
+> ```
+>
+> - **B** — a wrapper embedding a `*PublishSubscribeChannel` that was itself built with
+>   `WithSingleSubscriber()` (so the *embedded* channel answers honestly) and **overriding `Subscribe` with its
+>   own multi-subscriber dispatch**. It **inherits `SingleSubscriber` by method promotion**, so it reports
+>   `true` about the embedded object while its own subscriber list grows to two. §5 below presented
+>   embed-and-shadow as the *remedy* and never said promotion is also the *hazard*.
+> - **C** — a third-party probe that reads its own live subscriber count is exactly what the old *"while one is
+>   registered"* phrasing invited. It answers `true` at construction and then admits N with **no error at all**
+>   (both `Subscribe` calls returned a nil error).
+> - **A** — `struct{ msgin.SubscribableChannel }`, the idiomatic one-line decorator for logging/metrics/tracing,
+>   promotes `Send` and `Subscribe` but **not** `SingleSubscriber` (the type assertion to the capability simply
+>   fails). The *same* fan-out channel that is rejected bare is accepted when wrapped.
+>
+> *Independently re-derived in the round-6 fix pass* against the tree at `aae6160`, by declaring the D-J
+> capability and §3's guard in a throwaway `msgin_test` file over the real `channel` package, and deleted
+> afterwards — the four lines above reproduce **exactly**, including B's `len(subs)=2, SingleSubscriber()=true`
+> and C's two nil errors.
+>
+> The definition below is the decided one. The three changes are all to the **contract**, not the
+> implementation: an end-to-end predicate, a lifetime-invariance requirement *alongside* (not replacing)
+> concurrency-safety, and both embedding directions documented.
+
 ```go
 // ExclusiveSubscribable is the optional capability a SubscribableChannel
-// implements to report whether it admits at most one subscriber at a time.
+// implements to report whether every message sent to it reaches exactly one
+// recipient.
 type ExclusiveSubscribable interface {
 	SubscribableChannel
-	// SingleSubscriber reports whether Subscribe rejects a second concurrent
-	// subscriber (with ErrChannelSubscribed) while one is registered. It is a
-	// report about THIS channel in THIS process, never a distributed guarantee.
+	// SingleSubscriber reports whether THIS exchange will be the sole recipient of
+	// every message sent to this channel. It is a statement about the channel's
+	// POLICY, not about how many subscribers it currently has: an implementation
+	// MUST NOT compute it from a live subscriber count. A channel whose deliveries
+	// reach other processes (a broker subject, a Redis pub/sub channel, an SSE
+	// stream) MUST return false even when its local handle admits one subscriber —
+	// the core has no other way to learn that replies fan out beyond this process.
+	//
+	// The value MUST be constant for the lifetime of the channel. msgin calls it
+	// once, at construction, and treats the answer as an invariant; a value that can
+	// change afterwards makes the check a TOCTOU race the core cannot detect.
+	// Implementations must also be safe for concurrent use.
+	//
+	// EMBEDDING CUTS BOTH WAYS. A type that embeds a *channel.DirectChannel or a
+	// *channel.PublishSubscribeChannel inherits SingleSubscriber by method
+	// promotion, so it reports on the EMBEDDED channel even when it overrides
+	// Subscribe with its own multi-subscriber dispatch. A wrapper that changes
+	// subscription behavior MUST declare its own SingleSubscriber.
 	SingleSubscriber() bool
 }
 ```
+
+**That godoc text is normative**, not illustrative: Plan 027 Task 9.6 writes it verbatim and Task 11b gates it
+with `go doc`-extracted property assertions (a `grep -A`/`-B` gate on a doc comment reads the wrong lines —
+[round 6 §0](../plans/027-audit-round-6.md), counter-rule 3).
+
+**Invariance and concurrency-safety are two requirements, and neither replaces the other.** Concurrency-safety
+is the *weaker* property: a race-free `atomic.Load(&n) == 0` is concurrency-safe and still lies, because the
+failure mode is TOCTOU, not a data race.
 
 It is **optional**, in the established sense of `NativeReliability` / `ScheduledSender` / `LiveValueSource`
 (ADR 0002): the core type-asserts for it and behaves correctly when the assertion fails. It is **not** added
@@ -83,6 +155,11 @@ to `SubscribableChannel`, which would break every third-party implementation.
   `ErrChannelSubscribed`; the method makes an existing property machine-readable.
 - `channel.PublishSubscribeChannel.SingleSubscriber() bool` → **`c.cfg.single`**, i.e. exactly whether D-F's
   `WithSingleSubscriber()` was passed.
+
+**Both satisfy D-L's two new requirements without any extra work, which is the point of it.** Each answer is a
+**policy** fixed at construction (`DirectChannel`'s by type, `PublishSubscribeChannel`'s by option), so each is
+constant for the channel's lifetime and trivially safe for concurrent use; neither reads a live subscriber
+count. D-L constrains third-party implementations, not these two.
 
 > **`PubSub`'s topic channels are OUT OF SCOPE, and an earlier draft of this section got that wrong.** It read
 > *"Topic channels created by `PubSub` inherit it through `withConfig`, so `NewPubSub(WithSingleSubscriber())`
@@ -104,19 +181,31 @@ to `SubscribableChannel`, which would break every third-party implementation.
 ### 3. `NewChannelExchange` rejects a channel that reports non-exclusive
 
 ```go
-if ex, ok := reply.(msgin.ExclusiveSubscribable); ok && !ex.SingleSubscriber() && !cfg.allowShared {
-	return nil, msgin.ErrSharedReplyChannel
+if !cfg.allowShared {
+	if ex, ok := reply.(msgin.ExclusiveSubscribable); ok && !ex.SingleSubscriber() {
+		return nil, msgin.ErrSharedReplyChannel
+	}
 }
 ```
+
+> **The opt-out is tested FIRST, and the order is decided — decision D-M2 (round 6).** An earlier draft wrote
+> the conjunction as `ok && !ex.SingleSubscriber() && !cfg.allowShared`, which calls `SingleSubscriber()`
+> **before** consulting the opt-out. `WithSharedReplyChannel()` would then suppress the *rejection* but not the
+> *probe* — contradicting Plan 027's requirement that the option's godoc say it **suppresses the probe**, and
+> making a caller who has explicitly opted out still pay for a third-party implementation that locks or does
+> work in the method. Under D-L the method is a constant-returning accessor for both in-tree types, so the cost
+> is nil there; the ordering matters for the implementations the core cannot see, which is the same population
+> §4 is written for.
 
 with a new root sentinel:
 
 ```go
 // ErrSharedReplyChannel is returned by endpoint.NewChannelExchange when the
-// reply channel reports (via ExclusiveSubscribable) that its policy PERMITS
-// more than one subscriber — not that a second subscriber exists. Such a channel
-// delivers a full copy of every reply to every other subscriber that later
-// attaches. Pass channel.WithSingleSubscriber() to the channel, or
+// reply channel reports (via ExclusiveSubscribable) that its POLICY permits
+// recipients other than this exchange — not that another subscriber exists.
+// That covers a local fan-out channel and a channel whose deliveries reach
+// other processes alike. Such a channel delivers a full copy of every reply to
+// every other recipient. Pass channel.WithSingleSubscriber() to the channel, or
 // endpoint.WithSharedReplyChannel() to accept the fan-out deliberately.
 ErrSharedReplyChannel = errors.New("msgin: reply channel permits multiple subscribers; it is not exclusive to this exchange")
 ```
@@ -127,6 +216,14 @@ ErrSharedReplyChannel = errors.New("msgin: reply channel permits multiple subscr
 > exchange"`, which contradicts this ADR's own Consequences (*"`ErrSharedReplyChannel` means this channel's
 > policy permits sharing"*) and, under CLAUDE.md's debuggability criterion, sends the reader hunting for a
 > second subscriber that does not exist. *(Round-4 design audit, MINOR 1.)*
+>
+> **D-L widens the predicate; the string is kept, and the godoc carries the width.** Under D-L a broker-backed
+> channel answers `false` because its deliveries leave the process, not because a second *local* `Subscribe`
+> would succeed — so *"permits multiple subscribers"* names the commonest instance rather than the whole
+> condition. The message is retained as decided (round-4 MINOR 1 settled it, and it is right for every in-tree
+> case), and the **godoc above** is what states the general condition; a caller who lands on the cross-process
+> case reaches it through `SingleSubscriber()`'s own contract. Recorded here so the narrowness is a known,
+> accepted limit of one error string rather than a contradiction found by the next audit.
 
 **The check runs before `reply.Subscribe`**, so a rejected exchange leaves no subscription behind.
 
@@ -137,6 +234,34 @@ consumer's own implementation — keeps working unchanged. **The core rejects wh
 accepts what it cannot see**, rather than closing the SPI to everything that predates this interface. The
 godoc on `NewChannelExchange` must say so plainly, because a caller reading "rejects a shared reply channel"
 would otherwise assume a guarantee that does not extend to their own type.
+
+> **The cheapness argument is RESTATED — decision D-L (round 6, design B3, compile-proven.)** The Context's
+> *"What the tree can actually see"* section used to conclude, from a grep of `var _ msgin.SubscribableChannel`
+> **declarations**, that *"only a third-party implementation can be unknown to it"* and therefore that the
+> accept-unknown arm is cheap. That sentence is withdrawn there and its replacement points here, because
+> **it counts the wrong thing.** The arm is reached by the **value a caller passes**, and an in-tree channel
+> reaches it through one line of ordinary Go:
+>
+> ```go
+> type logged struct{ msgin.SubscribableChannel }   // the idiomatic logging/metrics/tracing decorator
+> // promotes Send and Subscribe; does NOT promote SingleSubscriber
+> ```
+>
+> `logged{plainPubSub}` is **accepted** where `plainPubSub` is **rejected**, with no third party involved
+> (case **A** of §1's transcript). Embedding an *interface* forwards only that interface's method set, so every
+> such decorator silently opts out of the probe.
+>
+> **The arm is still the right design, on a corrected and narrower claim.** What it buys is unchanged — the SPI
+> stays open, and closing it would break every third-party reply channel for a guarantee the core cannot verify
+> anyway (see the Alternatives table). What it costs is **larger than stated**: the accept-unknown arm is
+> reachable **from in-tree types via wrapping**, not only from outside the repo. The mitigation is
+> documentation, and it is normative: §1's godoc carries the EMBEDDING CUTS BOTH WAYS paragraph, and
+> `NewChannelExchange`'s godoc gains, as part of the accepted-no-probe arm —
+>
+> > A reply channel that WRAPS another channel by embedding the `msgin.SubscribableChannel` interface does not
+> > inherit `SingleSubscriber`, so it is accepted under this arm even when the channel it wraps would be
+> > rejected. A decorator over a fan-out channel must forward `SingleSubscriber` explicitly (or embed the
+> > concrete type) if it wants the check applied.
 
 ### 5. `endpoint.WithSharedReplyChannel()` is the opt-out
 
@@ -159,6 +284,22 @@ type that is exclusive by other means can embed `*channel.PublishSubscribeChanne
 method with `SingleSubscriber() bool { return true }` — worth one sentence on `ExclusiveSubscribable`, since
 it is the correct remedy for the wrapper case. *(Round-4 design audit, MINOR 3.)*
 
+> **METHOD PROMOTION IS ALSO THE HAZARD — decision D-L (round 6, design B2, compile-proven).** The paragraph
+> above presents embed-and-shadow as the *remedy* and stops there. The **unshadowed** case is the defect, and
+> it is the more likely one to be written by accident (case **B** of §1's transcript): a type that embeds
+> `*channel.PublishSubscribeChannel` and overrides only `Subscribe` with its own multi-subscriber dispatch
+> **inherits `SingleSubscriber` by promotion** and reports on the *embedded* channel. Measured, it reported
+> `true` while its own `Subscribe` had fanned out to two handlers, and `NewChannelExchange` accepted it.
+>
+> Both directions are therefore normative on `ExclusiveSubscribable`'s godoc — see §1's EMBEDDING CUTS BOTH
+> WAYS paragraph:
+>
+> - **Embed the concrete type and shadow** → the intended remedy, when the wrapper really is exclusive.
+> - **Embed the concrete type and forget to shadow** → an inherited answer about the wrong object. *A wrapper
+>   that changes subscription behavior MUST declare its own `SingleSubscriber`.*
+> - **Embed the `msgin.SubscribableChannel` interface** → no promotion at all, so the probe is silently absent
+>   and the accept-unknown arm (§4) takes the channel.
+
 ## Alternatives rejected
 
 | Alternative | Why not |
@@ -177,23 +318,47 @@ it is the correct remedy for the wrapper case. *(Round-4 design audit, MINOR 3.)
   Spec 014 §4, and note **those are projections until Task 12 measures them**.
 - **A behavior change, and it has a known caller in the tree.**
   `TestChannelExchange_sharedPubSubReplyChannel` (`endpoint/exchange_test.go:413`) builds **both** its exchanges
-  over a plain `NewPublishSubscribeChannel()` and asserts `require.NoError`. Under this ADR that construction
-  fails. **The test must pass `endpoint.WithSharedReplyChannel()` for its default-fan-out case** — it is
-  precisely the test that pins the fan-out trade-off ADR 0028 §6.3 requires, so it must keep asserting the
-  fan-out, now via the explicit opt-out. Its second case (`WithSingleSubscriber` → `ErrChannelSubscribed`)
-  is unaffected: that channel reports exclusive, passes the probe, and is rejected later by `Subscribe`.
+  in the **shared `t.Run` body** (`exA` at `:446`, `exB` at `:453`) over the channel constructed at `:444` from
+  the per-case `opts []channel.PubSubOption` field (`:416`). Under this ADR the default-fan-out case's `exB`
+  no longer constructs, so **`exB` must be passed `endpoint.WithSharedReplyChannel()`** — it is precisely the
+  test that pins the fan-out trade-off ADR 0028 §6.3 requires, so it must keep asserting the fan-out, now via
+  the explicit opt-out. Its second case (`WithSingleSubscriber` → `ErrChannelSubscribed`) is unaffected: that
+  channel reports exclusive, passes the probe, and is rejected later by `Subscribe`.
+
+  > *Corrected (round 6, C-M7 / E-M6 — propagating the round-4 correction Spec §5.1 and Plan Task 9.6 already
+  > carry, into the ADR that Task 9.6 orders read **first**.)* Two claims here were **inexpressible as
+  > written**. (1) *"The test must pass `endpoint.WithSharedReplyChannel()` **for its default-fan-out case**"*
+  > cannot be done through the per-case field: that field is `opts []channel.PubSubOption`, consumed by
+  > `channel.NewPublishSubscribeChannel(tc.opts...)` at `:444`, while `exA`/`exB` are built unconditionally in
+  > the shared body — an `endpoint.ExchangeOption` has nowhere per-case to go. The edit is to `exB`'s call
+  > site, made safe by the fact that the `WithSingleSubscriber` case returns early at `:455` on `secondErr`.
+  > (2) *"builds both its exchanges … and asserts `require.NoError`"* — only `exA` does (`:447`); `exB`'s error
+  > is **captured** into `secondErr` (`:453`) and handed to the case's `assert` closure.
 - **Two typed errors now describe adjacent conditions, and the distinction is deliberate.**
   `ErrSharedReplyChannel` means *this channel's policy permits sharing* (raised at construction, before
   subscribing, by the probe). `ErrChannelSubscribed` means *this channel is exclusive and the slot is taken*
   (raised by `Subscribe`). A caller wiring two exchanges to one `WithSingleSubscriber` channel gets the
   second; a caller wiring two to a plain one gets the first, on both. Reusing `ErrChannelSubscribed` for both
   was considered and rejected: it would report "already subscribed" for a channel that has no subscriber.
-- **Hot-path branches this adds** (each needs a case, per CLAUDE.md's coverage gate): probe absent → accepted;
-  probe present and `true` → accepted; probe present and `false` → `ErrSharedReplyChannel`; probe present and
-  `false` **with** `WithSharedReplyChannel()` → accepted. The four are a truth table, not a list.
-- The probe is a **report, not a proof**. A channel may answer `true` and still be shared by a caller who
-  subscribes something else first — that path already yields `ErrChannelSubscribed`. The core's claim is
-  bounded to: *it will not silently accept a channel that has told it sharing is permitted*.
+- **Hot-path branches this adds** (each needs a case, per CLAUDE.md's coverage gate), in the order §3's guard
+  evaluates them under **D-M2**: `WithSharedReplyChannel()` set → accepted, **probe not consulted**; otherwise
+  probe absent → accepted; probe present and `true` → accepted; probe present and `false` →
+  `ErrSharedReplyChannel`. The four are a truth table, not a list.
+- The probe is a **report, not a proof**, and D-L narrows what it reports on rather than widening it. The core's
+  claim is bounded to: *it will not silently accept a channel that has told it sharing is permitted*. A channel
+  can still be shared in ways the probe never sees — an interface-embedding decorator strips it (§4), a caller
+  may subscribe something else to an exclusive channel first, and no local answer binds another process
+  (§Topology).
+
+  > *Deleted (round 6, D-L, compile-proven.)* This bullet used to close on *"— that path already yields
+  > `ErrChannelSubscribed`"*, offered as the mitigation for a channel that answers `true` and is shared anyway.
+  > **It is false for the two cases that matter.** In §1's transcript, case **B** (embedded concrete type,
+  > unshadowed) and case **C** (state-reading probe) each accept **two** `Subscribe` calls with **no error at
+  > all** — nothing yields `ErrChannelSubscribed`. Under D-L, case C is now a contract violation
+  > (*MUST NOT compute it from a live subscriber count*) and case B is named as a hazard on the godoc; neither
+  > is repaired by a sentinel the channel never returns. A withdrawn argument must be swept where it is used as
+  > a live **mitigation**, not only where it is stated as a fact
+  > ([round 6 §0](../plans/027-audit-round-6.md), counter-rule 2).
 
 ## Topology (CLAUDE.md multi-instance review — mandatory)
 
@@ -211,30 +376,51 @@ each hold their **own** `PublishSubscribeChannel`, each reports `SingleSubscribe
 each accepts its exchange — correctly, because each *is* exclusive within its process. No cross-instance state,
 no cross-instance claim.
 
-**Topology 2 — a reply channel backed by shared external state (the case the probe CANNOT see).** A future or
-third-party adapter wraps a broker subscription as a `SubscribableChannel` — a NATS subject, a Redis pub/sub
-channel, an SSE stream — and implements `ExclusiveSubscribable` **honestly**: this local handle admits one
-local subscriber, so `SingleSubscriber()` returns `true`. Every instance constructs its exchange; every probe
-passes. The broker then fans each reply out to all N instances, and the N−1 non-owners each find no waiter for
-the correlation id and hand **a full copy of another instance's reply** to their `WithUnmatchedReplySink`.
+**Topology 2 — a reply channel backed by shared external state.** A future or third-party adapter wraps a
+broker subscription as a `SubscribableChannel` — a NATS subject, a Redis pub/sub channel, an SSE stream. The
+broker fans each reply out to all N instances, and the N−1 non-owners each find no waiter for the correlation
+id and hand **a full copy of another instance's reply** to their `WithUnmatchedReplySink`. That is bit-for-bit
+the failure in this ADR's own Context, now cross-process.
 
-That is bit-for-bit the failure in this ADR's own Context — now cross-process, and now **endorsed by a passing
-probe**. The design has no way to detect it: `ExclusiveSubscribable` is **root SPI**, i.e. precisely the
-contract third-party adapters implement, and a truthful local answer is indistinguishable from a safe one.
+> **THIS SECTION'S CONCLUSION IS REVERSED BY D-L (round 6), and the reversal is the reason D-L is strictly
+> better rather than merely safer.** Under §1's original **handle-local** definition, such an adapter's
+> *honest* answer was `true` — this local handle does admit one local subscriber — so every instance's probe
+> passed, the failure was **endorsed by a passing probe**, and this section concluded: *"The design has no way
+> to detect it … a truthful local answer is indistinguishable from a safe one."*
+>
+> **Under the end-to-end definition that conclusion no longer holds.** `SingleSubscriber()` now reports whether
+> *this exchange will be the sole recipient of every message sent to this channel*, and the godoc says outright
+> that a channel whose deliveries reach other processes **MUST return `false`**. A broker-backed adapter's
+> honest answer is therefore `false`, `NewChannelExchange` returns `ErrSharedReplyChannel`, and **Topology 2
+> becomes detectable by the very design this section said could not detect it** — at no added cost, with the
+> same two in-tree implementations answering the same way (`DirectChannel` → `true`;
+> `PublishSubscribeChannel` + `WithSingleSubscriber` → `true`).
+>
+> **What is detected is honesty, not topology.** The core still cannot observe another instance; it relies on
+> the adapter answering its own contract truthfully, exactly as `NativeReliability` and `ScheduledSender` do.
+> A broker adapter that returns `true` is now **violating a stated MUST** rather than giving a defensible local
+> answer — which is the whole difference, because a contract violation is reviewable and a truthful-but-useless
+> answer is not.
 
 **Consequences for the contract, all normative:**
 
-1. `SingleSubscriber()`'s godoc states it reports **this channel, in this process** — a *report*, never a
-   distributed guarantee — in the same terms ADR 0028 §6.2 uses for `WithSingleSubscriber`. Same for
-   `ErrSharedReplyChannel`.
+1. `SingleSubscriber()`'s godoc states the **end-to-end policy** predicate of §1 — sole recipient of every
+   message sent to this channel, `false` whenever deliveries reach another process — and that the value is
+   **constant for the channel's lifetime**. It is a *report*, never a distributed guarantee that the core
+   verified; the core's guarantee is bounded to *"it will not silently accept a channel that has told it
+   sharing is permitted"*. `ErrSharedReplyChannel`'s godoc is worded in the same terms.
 2. **`NewChannelExchange`'s godoc must state FOUR outcomes, not three**: rejected (probe reports
-   non-exclusive) · accepted (probe reports exclusive) · accepted (no probe implemented) · **accepted, but
-   exclusive only within this process** — the fourth is the one a caller will otherwise assume away, because
-   "the core rejects a shared reply channel" reads as a guarantee. This is a Spec §8 godoc obligation, owned
-   by Task 11.
-3. `SingleSubscriber()` must be documented as **safe for concurrent use**. Nothing said so, and a third-party
-   implementer computing exclusivity from a mutable subscriber count would introduce a data race that
-   msgin's own `-race` suite can never observe, because msgin never calls it concurrently.
+   non-exclusive) · accepted (probe reports exclusive) · accepted (no probe implemented — including the
+   interface-embedding decorator of §4, which strips it) · **accepted, but exclusive only within this
+   process** — the fourth is the one a caller will otherwise assume away, because "the core rejects a shared
+   reply channel" reads as a guarantee. This is a Spec §8 godoc obligation, owned by Task 11.
+3. `SingleSubscriber()` must be documented as **both lifetime-invariant and safe for concurrent use** — two
+   requirements, neither replacing the other (§1). Concurrency-safety alone was the earlier requirement and is
+   insufficient: a third-party implementer computing exclusivity from a mutable subscriber count introduces a
+   data race msgin's own `-race` suite can never observe (msgin never calls it concurrently), *and* — even
+   made race-free with an atomic — a TOCTOU lie the core cannot detect, because msgin calls the method once,
+   at construction, and treats the answer as an invariant. This is case **C** of §1's transcript, where a
+   state-reading probe answered `true` at construction and then admitted two subscribers with no error.
 
 **The Return Address seam is unaffected — verified, not assumed.** `msgin.RequestReplyExchange` (`spi.go:118`)
 is a one-method interface an external adapter implements **directly**, bypassing `NewChannelExchange`
@@ -246,5 +432,7 @@ way. The leak is in the probe's **semantics**, not in the seam. *(Round-4 design
 request, carried in the message rather than resolved through a shared in-memory channel. The SPI seam for it
 is the external `RequestReplyExchange` adapter named in Spec 010 §8.1 — unchanged by this ADR, and
 deliberately not approximated by it. **A probe that returned `true` for a distributed channel would be a lie
-of exactly the kind the registry alternative was rejected for**, which is why `SingleSubscriber`'s contract is
-worded as a report about *this channel in this process*.
+of exactly the kind the registry alternative was rejected for** — which, under **D-L**, is no longer a
+defensible reading of the contract but a violation of a stated MUST: `SingleSubscriber()` is worded as an
+**end-to-end policy** predicate precisely so that answer has no honest defence. Detecting the lie is still
+beyond the core; naming it is not, and that is the whole of what D-L buys here.

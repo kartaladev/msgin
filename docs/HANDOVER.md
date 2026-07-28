@@ -4,13 +4,28 @@
 > `docs/plans/027-core-package-layout.md`, then `docs/adrs/0030-reply-channel-exclusivity-probe.md` (new).
 > Trust those over this file and over any memory.
 >
-> **STATE (2026-07-28, third session): all three open decisions are CLOSED. ROUND 4 (3/3 NEEDS-REVISION) and
-> ROUND 5 (NEEDS-REVISION) have both RUN, and BOTH FIX PASSES ARE FULLY APPLIED, RE-VERIFIED, AND
-> COMMITTED.** The working tree is **clean**; the whole window is docs-only.
+> **STATE (2026-07-28, fourth session): ROUND 6 has RUN — 4/4 lenses `NEEDS-REVISION`, 25 blockers / 34 minors —
+> and ITS FIX PASS IS FULLY APPLIED AND RE-VERIFIED.** Round 6 produced three new decisions: **D-L**, **D-M**,
+> and a **revision of D-K**. Record: [`docs/plans/027-audit-round-6.md`](plans/027-audit-round-6.md); read its
+> **§6 (corrections to that record, found while applying it)** before trusting §1–§4 of the same file.
+>
+> **ROUND 7 IS THE NEXT AUDIT and has NOT run.** Every round so far has found defects in the previous round's
+> fixes, and round 6's fix pass is the largest yet (+1686/−317 across 24 files).
 >
 > **No `.go` file has been touched since `3d0b87a`.** The code is green and unchanged; every edit in this
 > window is documentation. That means the tree is a safepoint, and it also means **every count in the bundle is a
 > claim about `dadc775`'s code**, which is why the fix pass pins them to that SHA.
+>
+> **Round 6's three decisions, all DECIDED but NOT YET IMPLEMENTED:**
+>
+> | | Decision | Effect |
+> |---|---|---|
+> | **D-L** | `SingleSubscriber()` is an **end-to-end policy predicate**, not a report about the local handle, and is **lifetime-invariant** | Supersedes ADR 0030 §1 in place and **reverses §Topology's conclusion** — the broker-backed topology becomes *detectable*. Fixes three compile-proven defeats (method promotion, a live-count probe, and `struct{ msgin.SubscribableChannel }` silently dropping the probe) |
+> | **D-M** | A deterministic endpoint fault carries its own retry classification; **`ErrNilFunc` is `Permanent`** at all producers | A behavior change to **shipped** code — `ErrNilFunc` was burning the full retry budget and **tripping the circuit breaker**. New **Task 9.7**. `ErrNoRoute` stays **transient** (its `pick` is evaluated per message against caller state) |
+> | **D-K (revised)** | The `expr` providers wrap **`msgin.ErrPayloadType`**; `expr.ErrExprResultType` is **not declared at all** | One shared `errors.Is` target for every future expression provider, and correct permanence for free |
+>
+> Spec §2.1's behavior-change table therefore holds **six** rows, not four — D-J is row 5, D-M row 6. That is
+> what unblocks Task 9.6, which previously instructed an implementer to **stop and report** on hitting it.
 >
 > **PARTLY PUSHED — the previous handovers said otherwise, and they were wrong three ways.**
 >
@@ -43,13 +58,24 @@
 `msgin` is a Go 1.25 Enterprise Integration Patterns library. The active effort is the **pre-v1 core
 refactor** (Plan 027): flatten-to-packages, channel interface segregation, EIP lexical alignment.
 
-Tasks 0–8 are **implemented, green and committed**. Tasks 9, 9.5, **9.6 (new)**, 10, 11, 12 remain.
+Tasks 0–8 are **implemented, green and committed**. Tasks 9, 9.5, 9.6, **9.7 (new — D-M)**, 10, 11, 12 remain.
 **No implementation code for them has been written.**
+
+Sizes were revised in round 6: **9.5 is `M`** (was `S`) and **10 is `L`** (was `M`) — re-sized rather than split,
+because the task *number* is a cross-document link (`CLAUDE.md`, ADR 0029, Spec §8.1 all cite `9.5`/`9.5.1` by
+number). Both tasks record the clean split that stays available. **Task 9.6 is still `S` and is arguably `M`** after
+gaining two checkboxes — an open call, flagged rather than changed unilaterally.
 
 ## 2. Exact state
 
-Branch `claude/repo-structure-refactor-jt79t1`: **16 commits ahead of `main` (`0de54e9`)**, and
-**13 ahead of `origin/<branch>` (`6f44db6`)** — i.e. partly pushed, with all refactor work unpushed.
+Branch `claude/repo-structure-refactor-jt79t1`: **17 commits ahead of `main` (`0de54e9`)**, and
+**14 ahead of `origin/<branch>` (`6f44db6`)** — i.e. partly pushed, with all refactor work unpushed.
+**Verify these, never copy them** (see the banner) — they were wrong three ways in three consecutive handovers.
+
+The round-6 fix pass landed as **24 modified files + `docs/plans/027-audit-round-6.md` (new)**, `+1686/−317`,
+**zero `.go` files changed**. Verified at that state: `gofmt -l .` empty · `go build ./...` clean · root
+`go test ./...` **11/11 ok** · **all seven modules GREEN standalone** under
+`GOWORK=off go test ./... -race -shuffle=on` (including the Docker-backed `dbtest` and `crontest`).
 
 > ### This file CANNOT name its own commit's SHA — do not try to read one here
 >
@@ -300,19 +326,18 @@ decomposition is an exact partition. All cross-links resolve both ways.
 
 ## 6. Next actions
 
-1. **DONE — the design bundle is committed.** Rounds 4 and 5 both ran, both fix passes are applied,
-   re-verified and committed. **A round 6 is a judgement call, not an obligation**: round 5's blockers were
-   all in *pre-existing* prose or in the round-4 pass's own edits, and the round-5 fixes were smaller and
-   command-verified — but every round so far has found something in the previous round's fixes, so the base
-   rate is not zero. If you run one, brief it on **the handover's own git facts too** — that is the gap that
-   let a false `main` SHA survive five lenses.
-2. **Then implementation**, Task 9 → 9.5 → 9.6 → 10 → 11 → 12. **Task 11 must run AFTER Task 9.6** (Spec §8
-   obligations 10–13 document symbols 9.6 creates).
-4. **Then implementation**, in plan order: Task 9 → 9.5 → 9.6 → 10 → 11 → 12. **Ask before writing any
+1. **The design bundle is committed as `aae6160`; round 6 HAS run** (record:
+   [`docs/plans/027-audit-round-6.md`](plans/027-audit-round-6.md) — four Opus lenses, all four
+   `NEEDS-REVISION`, 25 blockers / 34 minors, producing decisions **D-L**, **D-M** and a **revision of D-K**).
+   Its fix pass is partitioned into four groups in §5 of that record. **Round 7 is the next audit** — brief it
+   on the §0 counter-rules, on the round-6 record itself, and on **the handover's own git facts**, which is the
+   gap that let a false `main` SHA survive five lenses.
+2. **Then implementation**, in plan order: Task 9 → 9.5 → 9.6 → 10 → 11 → 12. **Task 11 must run AFTER
+   Task 9.6** (Spec §8 obligations 10–13 document symbols 9.6 creates). **Ask before writing any
    implementation code, and default to SDD** (fresh implementer subagent per task, coordinator verifies green
    and commits, adversarial reviewer before delivery). Plan approval does **not** authorize the execution
    mode.
-5. **Before merge:** `/code-review` and `/security-review` over `main..HEAD` (both have run per-increment;
+3. **Before merge:** `/code-review` and `/security-review` over `main..HEAD` (both have run per-increment;
    the whole-branch pass has not). Consider `/code-review ultra` — it is user-triggered and billed, and an
    assistant cannot launch it.
 
@@ -320,7 +345,9 @@ decomposition is an exact partition. All cross-links resolve both ways.
 
 - **`export GOTOOLCHAIN=go1.25.12`** always; **`export PATH="$(go env GOPATH)/bin:$PATH"`** — `apidiff`,
   `gopls`, `govulncheck`, `gofumpt`, `gorelease` live there and none are on `PATH`.
-- **`./...` is not the repo** — seven modules; CI runs each standalone with `GOWORK=off`.
+- **`./...` is not the repo** — seven modules (`go.work` `use`s all seven). CI runs each standalone with
+  `GOWORK=off`, but **only six of them**: `adapter/cron/crontest` is missing from both CI jobs (see below), so
+  CLAUDE.md's seven-directory loop is a **superset** of CI, not a copy of it.
 - **`go build ./...` does not compile tests**; `go vet` does but stops after one type-error batch — use
   `go test -c` for a full transcript.
 - **Measured at `dadc775`** (all re-run this session): root **14** source files · **102** exported non-method
@@ -332,4 +359,24 @@ decomposition is an exact partition. All cross-links resolve both ways.
 - `.github/workflows/ci.yml` omits `adapter/cron/crontest` from both jobs — pre-existing; Task 10 fixes it.
 - Repo has **zero git tags** — do NOT propose tagging.
 - Never commit `.claude/settings.json`; stage explicit pathspecs.
-- The `../msgin-derive` worktree is merged and redundant; safe to `git worktree remove`.
+- **The `../msgin-derive` worktree is GONE — do not try to remove it.** (Bullet corrected 2026-07-28, audit
+  round 6 finding M-8; it previously said the worktree was "merged and redundant; safe to
+  `git worktree remove`". `ls ../msgin-derive` → *No such file or directory*, and `git worktree list` shows
+  only `/Users/zakyalvan/Documents/RND/msgin`. Running the old instruction errors.)
+
+## 8. Triaged, not fixed
+
+- **Commit trailers on `6f44db6` and `28dd9e4` — TRIAGED, will not be fixed** (audit round 6 finding M-9).
+  Over the 16 commits in `main..HEAD`, every `refactor`/`fix` commit carries the required
+  `Spec:`/`Plan:`/`ADR:` trailers, but two carry none at all: `6f44db6` (`docs(rfcs): fold audit findings into
+  RFCs with elaborated caveats`) and `28dd9e4` (`docs(claude): refresh project status from greenfield to
+  pre-v1`). **Rationale for accepting them:** both are `docs:` commits authored *before* the traceability-trailer
+  convention was extended from code commits to non-code artifacts — `6f44db6` edits only draft RFC markdown, at
+  a point when `docs/rfcs/` was itself a brand-new artifact type with no promoted spec/plan/ADR to cite, and
+  `28dd9e4` edits only CLAUDE.md, which is not governed by any numbered artifact. CLAUDE.md's own trailer rule
+  is scoped to *"every `feat`/`fix`/`refactor` commit"*; neither of these is one. The only way to add trailers
+  now is an interactive rebase rewriting all 16 commits — and `6f44db6` **is** `origin/claude/repo-structure-refactor-jt79t1`'s
+  head (`git rev-parse @{u}` → `6f44db6`; 13 unpushed, 0 behind), so the rewrite would additionally require a
+  **force-push over an already-published commit**. Disproportionate risk to correct two docs commits, and it would invalidate
+  every SHA cited across Spec 014, Plan 027, ADRs 0027–0030 and this handover. **Do not rebase.** Every future
+  commit on this branch carries its trailers.

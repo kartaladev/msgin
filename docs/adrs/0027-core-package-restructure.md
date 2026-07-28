@@ -182,7 +182,7 @@ Not two, and not five. Each mixes a root-contract declaration with its implement
 | File | Root keeps | Where root keeps it | Why it cannot move whole |
 |---|---|---|---|
 | `channel.go` | `MessageChannel`, `SubscribableChannel` | `channel.go` | Interface/implementation split (ADR 0028) |
-| `pubsub.go` | `Subscription` | **`channel.go:49`** (decision D-C) | It is the return type of root's `SubscribableChannel.Subscribe` — moving it makes **root import `channel`** |
+| `pubsub.go` | `Subscription` | **`channel.go:54`** (decision D-C) | It is the return type of root's `SubscribableChannel.Subscribe` — moving it makes **root import `channel`** |
 | `backoff.go` | `BackoffStrategy` | `backoff.go:10` | `retry.go`'s `RetryPolicy.Backoff` field is typed with it, and `retry.go` stays |
 | `exchange.go` | `RequestReplyExchange` | `spi.go:118` | Root keeps the seam a future **external** exchange adapter implements (Return Address — Spec 014 §10) |
 | `flowcontrol.go` | `RateLimiter`, `CircuitBreaker`, `ProbeGate`, `OverflowPolicy` (+ 4 consts + `String()`) | `flowcontrol.go` | Decision §5 |

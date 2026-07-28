@@ -15,9 +15,15 @@ publishes a GitHub Release with auto-generated notes, nothing is compiled or upl
 | mysql | `github.com/kartaladev/msgin/adapter/database/sql/mysql` | `adapter/database/sql/mysql/go.mod` |
 | sqlite | `github.com/kartaladev/msgin/adapter/database/sql/sqlite` | `adapter/database/sql/sqlite/go.mod` |
 | dbtest (runner, never published/tagged — nobody imports it) | `github.com/kartaladev/msgin/adapter/database/sql/dbtest` | `adapter/database/sql/dbtest/go.mod` |
+| crontest (runner, never published/tagged — nobody imports it) | `github.com/kartaladev/msgin/adapter/cron/crontest` | `adapter/cron/crontest/go.mod` |
 
-`dbtest` is a leaf test-only runner (spec 002 §4, "Structure Z") that a real consumer never imports, so it is
-never tagged or released independently — it only needs to stay green in CI.
+**Seven modules** — `go.work`'s `use` block lists all seven, and
+`find . -name go.mod -not -path './.git/*' | wc -l` → `7` confirms them on disk.
+
+`dbtest` and `crontest` are leaf test-only runners (spec 002 §4, "Structure Z"; ADR 0017 for `crontest`) that a
+real consumer never imports, so neither is ever tagged or released independently — they only need to stay green
+in CI. **`crontest` is not yet in `.github/workflows/ci.yml`** (neither the `module` matrix nor the `workspace`
+job lists it) — pre-existing, closed by Plan 027 Task 10; run it locally per CLAUDE.md's seven-directory loop.
 
 ## Tag order — root FIRST, then dialect/harness modules
 
@@ -55,15 +61,16 @@ convenience of the local `go.work` workspace.
 ## `go.work`
 
 The repo-root `go.work` is **committed** (unlike the historical default of gitignoring it) — it ties the
-6 modules (root + harness + postgres + mysql + sqlite + dbtest) together for local development, so a contributor gets
+7 modules (root + harness + postgres + mysql + sqlite + dbtest + crontest) together for local development, so a contributor gets
 one coherent workspace with `go build ./...` resolving across all of them without hand-editing `replace`
 directives. `go.work.sum` is deliberately **not** committed (still gitignored): it accumulates whatever the
 workspace happens to have built locally (including `dbtest`'s heavy testcontainers/Docker/OTel closure) and is
 not a stable, reproducible artifact across machines — each module's own `go.sum` remains the source of truth.
 
 CI never relies on `go.work` for the per-module correctness jobs (`GOWORK=off`, see above); a separate
-`workspace` job in `ci.yml` builds every module with the workspace active (`GOWORK` unset/default) purely to
-prove the workspace itself stays coherent.
+`workspace` job in `ci.yml` builds the modules with the workspace active (`GOWORK` unset/default) purely to
+prove the workspace itself stays coherent. That job currently enumerates **six** of the seven `use` entries —
+`adapter/cron/crontest` is missing from it, as it is from the `module` matrix (see the table above).
 
 ## A known, temporary go.sum artifact of the dev-time local `replace`
 

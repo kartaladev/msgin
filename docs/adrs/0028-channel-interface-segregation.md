@@ -143,10 +143,15 @@ Eight positions take `MessageChannel`; one takes `SubscribableChannel`.
 | 3 | `routing.NewRouter`'s `pick` return (`RouteFunc`) | `routing/router.go:29,37` | `MessageChannel` |
 | 4 | `routing.WithOutputChannel` | `routing/aggregator.go:55` | `MessageChannel` |
 | 5 | `routing.WithExpiredGroupChannel` | `routing/aggregator.go:133` | `MessageChannel` |
-| 6 | `endpoint.NewChannelExchange`'s `request` | `endpoint/exchange.go:223` | `MessageChannel` |
+| 6 | `endpoint.NewChannelExchange`'s `request` | `endpoint/exchange.go:225` | `MessageChannel` |
 | 7 | **`msghttp.ServeAsync`'s `target`** | `adapter/http/inbound.go:116` | `MessageChannel` |
 | 8 | **`stdlib.NewInbound`'s `target`** | `adapter/http/stdlib/inbound.go:33` | `MessageChannel` |
-| 9 | `endpoint.NewChannelExchange`'s `reply` | `endpoint/exchange.go:223` | **`SubscribableChannel`** |
+| 9 | `endpoint.NewChannelExchange`'s `reply` | `endpoint/exchange.go:225` | **`SubscribableChannel`** |
+
+> *Corrected (round 6, M-4).* Both rows cited `endpoint/exchange.go:223`, which is a **godoc tail**
+> (*"…so it must be usable now."*). The declaration is `:225`:
+> `grep -n 'func NewChannelExchange' endpoint/exchange.go` → `225:func NewChannelExchange(request msgin.MessageChannel, reply msgin.SubscribableChannel, opts ...ExchangeOption) (*ChannelExchange, error)`.
+> Round-4 B7 swept the Spec's echo of this citation and not the ADR's.
 
 **Rows 4–5 and 7–8 are what the two failed censuses missed, and each is a real capability the narrowing
 unlocks:**
@@ -226,7 +231,9 @@ This is not a leak fix with no downside. A caller who wired `WithUnmatchedReplyS
 sink specifically to catch late replies will stop seeing them there, and the reply *sender* will start seeing
 an error it previously never got. **That is the better behavior** — a late reply to a closed exchange is a
 sender-side problem and should surface as one — but it is an **observable behavior change inside an increment
-declared behavior-preserving**, so it is listed among Spec 014 §2.1's four exceptions, stated on `Close`'s
+declared behavior-preserving**, so it is listed among the exceptions Spec 014 §2.1 **enumerates** — cite the
+table, never a count: it grew with D-J (ADR 0030) and again with D-M (ADR 0029 §5.0b), and every prior
+statement of its cardinality has gone stale within one increment. It is stated on `Close`'s
 godoc, recorded in `MIGRATION.md`, and pinned by `TestChannelExchange_closeCancelsReplySubscription`
 (round-2 §D5; F10.3).
 2. **Exclusivity is documented by default, and enforceable by opting in (decision D-F).**
@@ -333,15 +340,34 @@ The interfaces state what each call site actually requires, which is both better
 Aggregator **output/expired-group** sink (rows 4–5) — so a distributed deployment gains options rather than
 losing them. `ChannelExchange.Close` — which **already existed** — now releases its reply subscription.
 
+> **AMENDED by [ADR 0030](0030-reply-channel-exclusivity-probe.md) (decision D-J, 2026-07-28) — this
+> paragraph's residual is CLOSED, and this window is the one that closes it.** *(Round-6 C-B6: the `AMENDED`
+> banners were placed at the header and at §6.2 and stopped before the Consequences, so the three sentences
+> below asserted the exact opposite of the decision this same bundle had already taken. This block is the
+> amendment surface the counter-rule in [round 6 §0](../plans/027-audit-round-6.md) exists to reach.)*
+>
 > **Say the limit of §6's D-F plainly, because the Consequences above overstate it.** `WithSingleSubscriber`
-> is **off by default and nothing in this library turns it on**. So the *default wiring is unchanged*: two
-> exchanges sharing one `PublishSubscribeChannel` still compiles, still runs, and **still silently hands every
-> correlated reply to the second exchange's unmatched-reply sink**. D-F does not fix the mis-routing; it gives
-> a caller who already suspects the problem a way to make it a typed error. Framing D-F as *"improving
-> exclusivity"* reads as though the failure mode were addressed by default. It is not, and
-> `NewChannelExchange` does **not** opt its reply channel in — deliberately, because the exchange does not own
-> the channel it is handed and cannot know whether the caller wants fan-out. A future increment may add an
-> exchange-side option that opts in; that is not this window.
+> is **off by default and nothing in this library turns it on**, so **D-F alone** does not fix the
+> mis-routing; it gives a caller who already suspects the problem a way to make it a typed error. Framing D-F
+> as *"improving exclusivity"* reads as though the failure mode were addressed by default. It was not.
+>
+> **What is no longer true.** An earlier form of this paragraph continued: *"the default wiring is unchanged:
+> two exchanges sharing one `PublishSubscribeChannel` still compiles, still runs, and still silently hands
+> every correlated reply to the second exchange's unmatched-reply sink"*, and that *"`NewChannelExchange` does
+> **not** opt its reply channel in — deliberately … A future increment may add an exchange-side option that
+> opts in; that is not this window."* **ADR 0030 makes it this window.** `NewChannelExchange` **probes** the
+> reply channel through the optional `msgin.ExclusiveSubscribable` capability and **rejects** one that reports
+> non-exclusive with `msgin.ErrSharedReplyChannel`; `endpoint.WithSharedReplyChannel()` is the opt-out. The
+> default wiring **is** changed: that two-exchange program no longer constructs. See ADR 0030 §3/§5,
+> [Spec 014 §5.1](../specs/014-core-package-layout.md), and Plan 027 Task 9.6.
+>
+> **NOT YET IMPLEMENTED.** ADR 0030 is written before its code (its own status block says so); at `dadc775`
+> the probe does not exist and the default wiring above still holds in the tree. Task 9.6 is what makes this
+> paragraph's replacement true.
+>
+> **What survives unchanged.** The reasoning: the exchange does not own the channel it is handed and cannot
+> know whether the caller wants fan-out — which is exactly why ADR 0030 rejects rather than silently opts in,
+> and why the fan-out case stays expressible through an explicit option rather than being removed.
 
 **Corroborating evidence the segregation was right, from the migration itself.** Five test fakes —
 `fakeAggChannel`, `failNthChannel`, `idsAggChannel`, `collector`, `scriptedChannel` — each carried a no-op
@@ -364,8 +390,15 @@ interface. **All five of those stubs are gone; all five fakes remain**, migrated
 - Two interfaces where there was one, **and** one of them is method-identical to a third (`OutboundAdapter`).
   Justified by §5's pattern argument, at the cost of a reader having to learn why two names share a shape.
 - **Reply-channel exclusivity degrades from compile-enforced to documented** for pub-sub reply channels, and
-  from documented to **opt-in-enforceable** with D-F. That is the real price of the widening, mitigated by
+  from documented to **opt-in-enforceable** with D-F. That was the real price of the widening — mitigated by
   §6's godoc, its test, and `WithSingleSubscriber()` rather than eliminated.
+  > **AMENDED by ADR 0030 (D-J) — the residual is no longer "mitigated rather than eliminated" for the case
+  > the core can see.** `NewChannelExchange` rejects a reply channel that reports non-exclusive, so the
+  > degradation is repaired by default for both in-tree `SubscribableChannel` types. What remains is
+  > **bounded and stated**: a channel that does not implement `msgin.ExclusiveSubscribable` is accepted
+  > (ADR 0030 §4), a decorator that embeds the `msgin.SubscribableChannel` *interface* does not inherit the
+  > probe (ADR 0030 §1/§4, decision **D-L**), and no local answer can speak for another process (ADR 0030
+  > §Topology). **NOT YET IMPLEMENTED** — Plan 027 Task 9.6.
 - **`Close`'s post-close reply behavior changes** (§6.1a) — a late reply now errors at the sender instead of
   landing in `WithUnmatchedReplySink`.
 - **Call-form churn at every `Subscribe` site, including two satellite-module files** (§8).
