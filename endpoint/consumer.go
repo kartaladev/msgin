@@ -102,7 +102,7 @@ type consumer[T any] struct {
 	// Exactly one of streamSrc / pollSrc is non-nil (resolved by NewConsumer).
 	// streamSrc drives today's push path (Stream + ingest); pollSrc drives the
 	// pull path (pollLoop, credit-at-fetch). Run branches on which is set.
-	streamSrc       msgin.StreamingSource
+	streamSrc       msgin.EventDrivenSource
 	pollSrc         msgin.PollingSource
 	handler         Handler[T]
 	codec           msgin.PayloadCodec[T]
@@ -172,7 +172,7 @@ func NewConsumer[T any](src any, h Handler[T], opts ...ConsumerOption[T]) (Consu
 	}
 	// C2: unset → default; explicitly set → must be > 0 (so WithPollInterval(0)
 	// is a rejected caller error, not silently defaulted). Poll fields are
-	// validated for both source kinds (a StreamingSource simply ignores them; the
+	// validated for both source kinds (a EventDrivenSource simply ignores them; the
 	// pull path consumes them in pollLoop — ADR 0010 D1).
 	if !cfg.pollIntervalSet {
 		cfg.pollInterval = defaultPollInterval
@@ -191,15 +191,15 @@ func NewConsumer[T any](src any, h Handler[T], opts ...ConsumerOption[T]) (Consu
 		return nil, err
 	}
 
-	// Resolve the source kind once (ADR 0010 D1). StreamingSource wins the
+	// Resolve the source kind once (ADR 0010 D1). EventDrivenSource wins the
 	// precedence when a value implements both (the lower-latency event-driven
 	// path); a value implementing only PollingSource takes the pull path; anything
 	// else is unsupported. Exactly one of streamSrc/pollSrc is non-nil.
 	var (
-		streamSrc msgin.StreamingSource
+		streamSrc msgin.EventDrivenSource
 		pollSrc   msgin.PollingSource
 	)
-	if s, ok := src.(msgin.StreamingSource); ok {
+	if s, ok := src.(msgin.EventDrivenSource); ok {
 		streamSrc = s
 	} else if p, ok := src.(msgin.PollingSource); ok {
 		pollSrc = p

@@ -36,13 +36,13 @@ import (
 // newLoopExchange builds a ChannelExchange over two fresh DirectChannels and
 // subscribes a synchronous echo flow onto request (request -> reply), so
 // Exchange returns the echoed request as its reply.
-func newLoopExchange(t *testing.T, opts ...endpoint.ExchangeOption) (ex *endpoint.ChannelExchange, request, reply msgin.MessageChannel) {
+func newLoopExchange(t *testing.T, opts ...endpoint.ExchangeOption) (ex *endpoint.ChannelExchange, request, reply msgin.SubscribableChannel) {
 	t.Helper()
 	request = channel.NewDirectChannel()
 	reply = channel.NewDirectChannel()
 	ex, err := endpoint.NewChannelExchange(request, reply, opts...)
 	require.NoError(t, err)
-	require.NoError(t, request.Subscribe(msgin.Chain(msgin.To(reply))))
+	mustSubscribe(t, request, msgin.Chain(msgin.To(reply)))
 	return ex, request, reply
 }
 
@@ -51,28 +51,28 @@ func newLoopExchange(t *testing.T, opts ...endpoint.ExchangeOption) (ex *endpoin
 // DirectChannel runs the flow synchronously inside request.Send, receiving on
 // sinkHit proves the waiter is registered and Exchange has reached (or is
 // about to reach) its select before the test fires a timeout/cancel/Close.
-func newBlockingExchange(t *testing.T, opts ...endpoint.ExchangeOption) (ex *endpoint.ChannelExchange, reply msgin.MessageChannel, sinkHit chan struct{}) {
+func newBlockingExchange(t *testing.T, opts ...endpoint.ExchangeOption) (ex *endpoint.ChannelExchange, reply msgin.SubscribableChannel, sinkHit chan struct{}) {
 	t.Helper()
 	request := channel.NewDirectChannel()
 	reply = channel.NewDirectChannel()
 	ex, err := endpoint.NewChannelExchange(request, reply, opts...)
 	require.NoError(t, err)
 	hit := make(chan struct{}, 1)
-	require.NoError(t, request.Subscribe(msgin.Chain(endpoint.Consume(func(_ context.Context, _ msgin.Message[any]) error {
+	mustSubscribe(t, request, msgin.Chain(endpoint.Consume(func(_ context.Context, _ msgin.Message[any]) error {
 		hit <- struct{}{}
 		return nil
-	}))))
+	})))
 	return ex, reply, hit
 }
 
 // asyncEcho wires request -> a worker goroutine that echoes each request to reply.
 // stop() drains and joins the worker (goleak-clean). Because reply.Send runs on
 // the worker goroutine, the waiter's select genuinely races deliver.
-func asyncEcho(t *testing.T, request, reply msgin.MessageChannel) (stop func()) {
+func asyncEcho(t *testing.T, request msgin.SubscribableChannel, reply msgin.MessageChannel) (stop func()) {
 	t.Helper()
 	work := make(chan msgin.Message[any], 64)
 	done := make(chan struct{})
-	if err := request.Subscribe(msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
+	if _, err := request.Subscribe(msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
 		work <- m
 		return nil
 	})); err != nil {
@@ -103,12 +103,21 @@ func (s *stubOutbound) Send(_ context.Context, m msgin.Message[any]) error {
 	return s.err
 }
 
+// mustSubscribe registers h on ch and fails the test if Subscribe errors. Since
+// ADR 0028 Subscribe returns (Subscription, error); these call sites do not need
+// the handle, and this keeps the original require.NoError assertion intact.
+func mustSubscribe(t *testing.T, ch msgin.SubscribableChannel, h msgin.MessageHandler) {
+	t.Helper()
+	_, err := ch.Subscribe(h)
+	require.NoError(t, err)
+}
+
 func TestNewChannelExchange_validation(t *testing.T) {
 	direct := channel.NewDirectChannel()
 	tests := []struct {
 		name    string
 		request msgin.MessageChannel
-		reply   msgin.MessageChannel
+		reply   msgin.SubscribableChannel
 		opts    []endpoint.ExchangeOption
 		assert  func(t *testing.T, ex *endpoint.ChannelExchange, err error)
 	}{
@@ -216,10 +225,10 @@ func TestChannelExchange_sendError(t *testing.T) {
 	// removed the slot before any deliver, not just that Send didn't error.
 	sink := channel.NewDirectChannel()
 	received := make(chan msgin.Message[any], 1)
-	require.NoError(t, sink.Subscribe(msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
+	mustSubscribe(t, sink, msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
 		received <- m
 		return nil
-	})))
+	}))
 	request := channel.NewDirectChannel() // no subscriber -> Send fails with ErrNoSubscriber
 	reply := channel.NewDirectChannel()
 	ex, err := endpoint.NewChannelExchange(request, reply, endpoint.WithUnmatchedReplySink(sink))
@@ -284,10 +293,10 @@ func TestChannelExchange_unmatchedReply_drop(t *testing.T) {
 func TestChannelExchange_unmatchedReply_sink(t *testing.T) {
 	sink := channel.NewDirectChannel()
 	received := make(chan msgin.Message[any], 1)
-	require.NoError(t, sink.Subscribe(msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
+	mustSubscribe(t, sink, msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
 		received <- m
 		return nil
-	})))
+	}))
 	_, _, reply := newLoopExchange(t, endpoint.WithUnmatchedReplySink(sink))
 	orphan := msgin.New[any]("orphan", msgin.WithHeaders(map[string]any{msgin.HeaderCorrelationID: "no-such-id-2"}))
 
@@ -326,7 +335,7 @@ func TestNewChannelExchange_replySubscribeError(t *testing.T) {
 	request := channel.NewDirectChannel()
 	reply := channel.NewDirectChannel()
 	// Pre-subscribe reply so NewChannelExchange's own Subscribe collides.
-	require.NoError(t, reply.Subscribe(msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { return nil })))
+	mustSubscribe(t, reply, msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { return nil }))
 
 	ex, err := endpoint.NewChannelExchange(request, reply)
 
@@ -341,6 +350,93 @@ func TestChannelExchange_closeIdempotent(t *testing.T) {
 	err := ex.Close()
 
 	assert.NoError(t, err)
+}
+
+// TestChannelExchange_closeCancelsReplySubscription pins ADR 0028 §6.1: the
+// exchange OWNS the reply subscription it created, so Close releases it. Without
+// this the widened reply contract would leak a subscription that did not exist
+// while Subscribe returned only an error.
+func TestChannelExchange_closeCancelsReplySubscription(t *testing.T) {
+	request := channel.NewDirectChannel()
+	reply := channel.NewDirectChannel()
+	ex, err := endpoint.NewChannelExchange(request, reply)
+	require.NoError(t, err)
+
+	// While open the exchange holds the channel's single subscriber slot.
+	_, err = reply.Subscribe(msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { return nil }))
+	require.ErrorIs(t, err, msgin.ErrChannelSubscribed)
+	orphan := msgin.New[any]("x", msgin.WithHeaders(map[string]any{msgin.HeaderCorrelationID: "corr-close-sub"}))
+	require.NoError(t, reply.Send(t.Context(), orphan), "the receiver is subscribed and absorbs an unmatched reply")
+
+	require.NoError(t, ex.Close())
+
+	// Cancelled: the slot is free and the channel reports no subscriber. A reply
+	// arriving after Close is the channel's concern, not the exchange's — it is
+	// NOT routed to WithUnmatchedReplySink.
+	assert.ErrorIs(t, reply.Send(t.Context(), orphan), msgin.ErrNoSubscriber)
+	sub, err := reply.Subscribe(msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { return nil }))
+	require.NoError(t, err)
+	assert.NotNil(t, sub, "Close must release the reply channel for reuse")
+}
+
+// TestChannelExchange_sharedPubSubReplyChannel pins the trade-off ADR 0028 §6
+// accepts: widening reply to SubscribableChannel makes "two exchanges over one
+// pub-sub reply channel" a legal program, and every reply then fans out to BOTH
+// receivers — the non-owner handing a full copy to its unmatched-reply sink.
+// channel.WithSingleSubscriber is the opt-in that turns that into a typed error.
+func TestChannelExchange_sharedPubSubReplyChannel(t *testing.T) {
+	tests := []struct {
+		name   string
+		opts   []channel.PubSubOption
+		assert func(t *testing.T, secondErr error, ownReply msgin.Message[any], ownErr error, crossDelivered chan msgin.Message[any])
+	}{
+		{
+			name: "default fan-out: the second exchange is built and sees the first's reply",
+			assert: func(t *testing.T, secondErr error, ownReply msgin.Message[any], ownErr error, crossDelivered chan msgin.Message[any]) {
+				require.NoError(t, secondErr, "sharing a plain pub-sub reply channel is NOT rejected")
+				require.NoError(t, ownErr)
+				assert.Equal(t, "shared", ownReply.Payload(), "the owning exchange still gets its reply")
+				select {
+				case leaked := <-crossDelivered:
+					assert.Equal(t, "shared", leaked.Payload(),
+						"the documented consequence: a full copy reaches the other exchange's sink")
+				default:
+					t.Fatal("expected the reply to fan out to the second exchange's unmatched sink")
+				}
+			},
+		},
+		{
+			name: "WithSingleSubscriber: the second exchange is rejected at construction",
+			opts: []channel.PubSubOption{channel.WithSingleSubscriber()},
+			assert: func(t *testing.T, secondErr error, _ msgin.Message[any], _ error, _ chan msgin.Message[any]) {
+				assert.ErrorIs(t, secondErr, msgin.ErrChannelSubscribed)
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reply := channel.NewPublishSubscribeChannel(tc.opts...)
+			requestA := channel.NewDirectChannel()
+			exA, err := endpoint.NewChannelExchange(requestA, reply)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, exA.Close()) })
+			mustSubscribe(t, requestA, msgin.Chain(msgin.To(reply)))
+
+			crossDelivered := make(chan msgin.Message[any], 1)
+			sink := &stubOutbound{recv: crossDelivered}
+			exB, secondErr := endpoint.NewChannelExchange(
+				channel.NewDirectChannel(), reply, endpoint.WithUnmatchedReplySink(sink))
+			if secondErr != nil {
+				tc.assert(t, secondErr, msgin.Message[any]{}, nil, crossDelivered)
+				return
+			}
+			t.Cleanup(func() { require.NoError(t, exB.Close()) })
+
+			req := msgin.New[any]("shared", msgin.WithHeaders(map[string]any{msgin.HeaderCorrelationID: "corr-shared"}))
+			ownReply, ownErr := exA.Exchange(t.Context(), req)
+			tc.assert(t, secondErr, ownReply, ownErr, crossDelivered)
+		})
+	}
 }
 
 func TestChannelExchange_emptyCorrelation(t *testing.T) {
@@ -448,10 +544,10 @@ func TestChannelExchange_timeoutRacesDelivery(t *testing.T) {
 		fakeClock := clockwork.NewFakeClock()
 		sinkRecv := make(chan msgin.Message[any], 1)
 		sink := channel.NewDirectChannel()
-		require.NoError(t, sink.Subscribe(msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
+		mustSubscribe(t, sink, msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
 			sinkRecv <- m
 			return nil
-		})))
+		}))
 
 		request := channel.NewDirectChannel()
 		reply := channel.NewDirectChannel()
@@ -462,10 +558,10 @@ func TestChannelExchange_timeoutRacesDelivery(t *testing.T) {
 		require.NoError(t, err)
 
 		work := make(chan msgin.Message[any], 1)
-		require.NoError(t, request.Subscribe(msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
+		mustSubscribe(t, request, msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
 			work <- m
 			return nil
-		})))
+		}))
 
 		id := "race-" + strconv.Itoa(i)
 		req := msgin.New[any]("race-payload", msgin.WithHeaders(map[string]any{msgin.HeaderCorrelationID: id}))
@@ -531,10 +627,10 @@ func TestChannelExchange_closeRacesGiveUp(t *testing.T) {
 	fakeClock := clockwork.NewFakeClock()
 	sinkRecv := make(chan msgin.Message[any], 1)
 	sink := channel.NewDirectChannel()
-	require.NoError(t, sink.Subscribe(msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
+	mustSubscribe(t, sink, msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
 		sinkRecv <- m
 		return nil
-	})))
+	}))
 
 	ex, _, sinkHit := newBlockingExchange(t, endpoint.WithExchangeClock(fakeClock), endpoint.WithUnmatchedReplySink(sink))
 	req := msgin.New[any]("payload", msgin.WithHeaders(map[string]any{msgin.HeaderCorrelationID: "close-race"}))
@@ -607,7 +703,7 @@ func TestChannelExchange_reusedIDConcurrentAbandon_neverHangs(t *testing.T) {
 		for i := 0; i < iterations; i++ {
 			var sunk atomic.Int64
 			sink := channel.NewDirectChannel()
-			if err := sink.Subscribe(msgin.HandlerFunc(func(_ context.Context, _ msgin.Message[any]) error {
+			if _, err := sink.Subscribe(msgin.HandlerFunc(func(_ context.Context, _ msgin.Message[any]) error {
 				sunk.Add(1)
 				return nil
 			})); err != nil {
@@ -629,7 +725,7 @@ func TestChannelExchange_reusedIDConcurrentAbandon_neverHangs(t *testing.T) {
 				workers sync.WaitGroup
 				sent    atomic.Int64
 			)
-			if err := request.Subscribe(msgin.Chain(endpoint.Consume(func(_ context.Context, m msgin.Message[any]) error {
+			if _, err := request.Subscribe(msgin.Chain(endpoint.Consume(func(_ context.Context, m msgin.Message[any]) error {
 				workers.Add(1)
 				go func() {
 					defer workers.Done()
@@ -720,8 +816,6 @@ func (c *scriptedChannel) Send(ctx context.Context, msg msgin.Message[any]) erro
 	return c.send(ctx, msg)
 }
 
-func (c *scriptedChannel) Subscribe(_ msgin.MessageHandler) error { return nil }
-
 // Spec 012 §5.1 / ADR 0022 Addendum A2, deterministic counterpart to
 // TestChannelExchange_reusedIDConcurrentAbandon_neverHangs: it forces
 // deregister's `ok && s != slot` arm through the exported API alone, with no
@@ -753,10 +847,10 @@ func TestChannelExchange_reusedIDAbandon_drainsOwnReply(t *testing.T) {
 
 	var sunk atomic.Int64
 	sink := channel.NewDirectChannel()
-	require.NoError(t, sink.Subscribe(msgin.HandlerFunc(func(_ context.Context, _ msgin.Message[any]) error {
+	mustSubscribe(t, sink, msgin.HandlerFunc(func(_ context.Context, _ msgin.Message[any]) error {
 		sunk.Add(1)
 		return nil
-	})))
+	}))
 
 	reply := channel.NewDirectChannel()
 	request := &scriptedChannel{}
@@ -862,9 +956,9 @@ func panicExchange(t *testing.T, panicVal any, opts ...endpoint.ExchangeOption) 
 	reply := channel.NewDirectChannel()
 	ex, err := endpoint.NewChannelExchange(request, reply, opts...)
 	require.NoError(t, err)
-	require.NoError(t, request.Subscribe(msgin.Chain(endpoint.Consume(func(_ context.Context, _ msgin.Message[any]) error {
+	mustSubscribe(t, request, msgin.Chain(endpoint.Consume(func(_ context.Context, _ msgin.Message[any]) error {
 		panic(panicVal)
-	}))))
+	})))
 	return ex
 }
 
@@ -1018,10 +1112,10 @@ func TestChannelExchange_panickingFlowAfterReply_drainsToUnmatchedSink(t *testin
 
 	sink := channel.NewDirectChannel()
 	received := make(chan msgin.Message[any], 1)
-	require.NoError(t, sink.Subscribe(msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
+	mustSubscribe(t, sink, msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
 		received <- m
 		return nil
-	})))
+	}))
 
 	request := channel.NewDirectChannel()
 	reply := channel.NewDirectChannel()
@@ -1030,12 +1124,12 @@ func TestChannelExchange_panickingFlowAfterReply_drainsToUnmatchedSink(t *testin
 
 	const id = "corr-reply-then-panic"
 	// The flow replies (delivering into the waiter's slot) and only then panics.
-	require.NoError(t, request.Subscribe(msgin.Chain(endpoint.Consume(func(ctx context.Context, m msgin.Message[any]) error {
+	mustSubscribe(t, request, msgin.Chain(endpoint.Consume(func(ctx context.Context, m msgin.Message[any]) error {
 		if sendErr := reply.Send(ctx, msgin.WithPayload(m, any("echo"))); sendErr != nil {
 			return sendErr
 		}
 		panic("boom after reply")
-	}))))
+	})))
 
 	req := msgin.New[any]("payload", msgin.WithHeaders(map[string]any{msgin.HeaderCorrelationID: id}))
 	recovered, _ := exchangeRecoveringPanic(t, ex, req)
@@ -1094,7 +1188,7 @@ func TestChannelExchange_panicRacesDelivery(t *testing.T) {
 			// it), so up to two replies can land on the unmatched path.
 			received := make(chan msgin.Message[any], 2)
 			sink := channel.NewDirectChannel()
-			if err := sink.Subscribe(msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
+			if _, err := sink.Subscribe(msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
 				received <- m
 				return nil
 			})); err != nil {
@@ -1111,7 +1205,7 @@ func TestChannelExchange_panicRacesDelivery(t *testing.T) {
 			}
 
 			var workers sync.WaitGroup
-			if err := request.Subscribe(msgin.Chain(endpoint.Consume(func(_ context.Context, m msgin.Message[any]) error {
+			if _, err := request.Subscribe(msgin.Chain(endpoint.Consume(func(_ context.Context, m msgin.Message[any]) error {
 				// ready is per-INVOCATION, not per-iteration: this handler runs
 				// TWICE per iteration (the probe re-enters it), and an
 				// iteration-scoped channel would be closed twice — a "close of

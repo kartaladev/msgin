@@ -33,8 +33,6 @@ func (c *idsAggChannel) Send(_ context.Context, m msgin.Message[any]) error {
 	return nil
 }
 
-func (c *idsAggChannel) Subscribe(msgin.MessageHandler) error { return nil }
-
 func (c *idsAggChannel) snapshot() [][]string {
 	c.mu.Lock()
 	defer c.mu.Unlock()

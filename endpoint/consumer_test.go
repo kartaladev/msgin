@@ -31,10 +31,10 @@ type stubPolling struct{}
 
 func (stubPolling) Poll(_ context.Context, _ int) ([]msgin.Delivery, error) { return nil, nil }
 
-// stubNeither implements neither PollingSource nor StreamingSource.
+// stubNeither implements neither PollingSource nor EventDrivenSource.
 type stubNeither struct{}
 
-// fakeStream is a StreamingSource test double that is NOT a LiveValueSource
+// fakeStream is a EventDrivenSource test double that is NOT a LiveValueSource
 // (a "wire" source): it emits a fixed set of deliveries once, then blocks
 // until ctx is cancelled and returns ctx.Err() — mirroring the memory
 // adapter's cancellable Stream shape so it never leaks a goroutine.
@@ -164,7 +164,7 @@ func TestConsumer_StreamingDeliversToHandler(t *testing.T) {
 	assert.ErrorIs(t, <-done, context.Canceled)
 }
 
-// fakeLiveStream is a StreamingSource test double that IS a LiveValueSource
+// fakeLiveStream is a EventDrivenSource test double that IS a LiveValueSource
 // (EmitsLiveValue() == true, so NewConsumer treats it as a live-value source
 // needing no codec). It emits exactly one Delivery carrying a mistyped live
 // payload, then blocks until ctx is cancelled and returns ctx.Err() —
@@ -2217,7 +2217,7 @@ func TestConsumer_AttemptTracker_NF2_ActiveIdNotSwept(t *testing.T) {
 // 0009 D5): an over-size wire payload is settled as a PERMANENT invalid message
 // (ErrPayloadTooLarge) and diverted to the invalid sink BEFORE the codec runs,
 // while an under-size payload decodes and dispatches normally, and a disabled cap
-// (n<=0) never rejects. Driven over a real []byte StreamingSource.
+// (n<=0) never rejects. Driven over a real []byte EventDrivenSource.
 func TestConsumer_MaxPayloadBytes_CapsWirePayload(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -2330,7 +2330,7 @@ func TestConsumer_WithAttemptTTL_UsesConfiguredTTL(t *testing.T) {
 // safeDecode's panic recovery (ADR 0010 D6, fold-in #4): a codec whose Decode
 // panics on a WIRE ([]byte) payload must be classified EXACTLY like a real
 // decode error — ErrPayloadDecode, permanent → invalid sink — never crash the
-// process. byteStreamSource is a genuine wire StreamingSource (not a
+// process. byteStreamSource is a genuine wire EventDrivenSource (not a
 // LiveValueSource), so the codec-decode branch of c.decode (not the
 // live-value type assert) is the one exercised.
 func TestConsumer_SafeDecode_CodecPanicRoutesToInvalidWithErrPayloadDecode(t *testing.T) {

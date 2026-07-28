@@ -190,6 +190,7 @@ func WithExchangeLogger(l *slog.Logger) ExchangeOption {
 // owns as the sole subscriber). Construct it with NewChannelExchange.
 type ChannelExchange struct {
 	request   msgin.MessageChannel
+	replySub  msgin.Subscription
 	corr      *replyCorrelator
 	timeout   time.Duration
 	clock     clockwork.Clock
@@ -199,11 +200,27 @@ type ChannelExchange struct {
 
 var _ msgin.RequestReplyExchange = (*ChannelExchange)(nil)
 
-// NewChannelExchange builds a ChannelExchange over request/reply channels. It
-// subscribes its reply receiver onto reply, so reply must be dedicated to this
-// exchange (a second subscriber is ErrChannelSubscribed). A nil channel is
-// ErrNilChannel; an explicit non-positive WithReplyTimeout is ErrInvalidReplyTimeout.
-func NewChannelExchange(request, reply msgin.MessageChannel, opts ...ExchangeOption) (*ChannelExchange, error) {
+// NewChannelExchange builds a ChannelExchange over a send-only request channel
+// and a subscribable reply channel. request may be any MessageChannel — a
+// DirectChannel, a pollable QueueChannel, a PublishSubscribeChannel, or any
+// OutboundAdapter.
+//
+// REPLY MUST BE DEDICATED TO THIS EXCHANGE. The exchange subscribes its reply
+// receiver onto reply and owns that subscription until Close. A DirectChannel
+// enforces the exclusivity itself (a second subscriber is ErrChannelSubscribed),
+// and so does a PublishSubscribeChannel built with channel.WithSingleSubscriber.
+// A plain PublishSubscribeChannel does NOT: sharing one between two exchanges
+// compiles and runs, and every reply then fans out to BOTH receivers — the
+// non-owner finds no waiter for the correlation id and hands a full copy of the
+// other exchange's reply to its WithUnmatchedReplySink (typically a dead-letter
+// or audit sink). Exclusivity is documented rather than enforced here because
+// the core cannot see other exchanges; a registry that could would be exactly
+// the in-process global state a multi-instance deployment must not depend on
+// (ADR 0028 §6).
+//
+// A nil channel is ErrNilChannel; an explicit non-positive WithReplyTimeout is
+// ErrInvalidReplyTimeout.
+func NewChannelExchange(request msgin.MessageChannel, reply msgin.SubscribableChannel, opts ...ExchangeOption) (*ChannelExchange, error) {
 	if request == nil || reply == nil {
 		return nil, msgin.ErrNilChannel
 	}
@@ -226,9 +243,11 @@ func NewChannelExchange(request, reply msgin.MessageChannel, opts ...ExchangeOpt
 		logger:    cfg.logger,
 		unmatched: cfg.unmatched,
 	}
-	if err := reply.Subscribe(e.receiver()); err != nil {
+	sub, err := reply.Subscribe(e.receiver())
+	if err != nil {
 		return nil, err
 	}
+	e.replySub = sub
 	return e, nil
 }
 
@@ -330,12 +349,29 @@ func (e *ChannelExchange) giveUp(ctx context.Context, slot chan msgin.Message[an
 	}
 }
 
-// Close stops the exchange: subsequent Exchange calls return ErrGatewayClosed and
-// every waiter pending at Close time is failed with it. Idempotent. The reply
-// receiver remains subscribed (channels have no unsubscribe); it simply finds no
-// waiters after Close. Close returns nil today; the signature allows a future
-// adapter-backed exchange to report a teardown error.
+// Close stops the exchange: subsequent Exchange calls return ErrGatewayClosed,
+// every waiter pending at Close time is failed with it, and the reply
+// subscription this exchange owns is cancelled, releasing the reply channel.
+// Idempotent — both the correlator shutdown and Subscription.Cancel are.
+//
+// Cancelling the subscription is what keeps the widened reply contract
+// leak-free: the receiver closure holds the exchange (and its correlator) alive
+// for as long as it stays registered, and on a DirectChannel it also holds the
+// channel's single subscriber slot, so the channel could never be reused
+// (ADR 0028 §6.1).
+//
+// BEHAVIOR AFTER CLOSE. Because the receiver is unsubscribed, a reply arriving
+// later is the CHANNEL's problem, not the exchange's: a DirectChannel reports
+// ErrNoSubscriber to its sender, and a PublishSubscribeChannel delivers to
+// whoever else is subscribed. It is no longer routed to WithUnmatchedReplySink —
+// that sink covers replies with no pending WAITER on a live exchange. Close
+// after the last in-flight request settles, or accept that late replies surface
+// at the sender.
+//
+// Close returns nil today; the signature allows a future adapter-backed exchange
+// to report a teardown error.
 func (e *ChannelExchange) Close() error {
 	e.corr.closeAll()
+	e.replySub.Cancel()
 	return nil
 }

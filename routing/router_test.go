@@ -63,9 +63,11 @@ func TestRouter(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var routed, def bool
 			target := channel.NewDirectChannel()
-			_ = target.Subscribe(msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { routed = true; return nil }))
+			_, subErr := target.Subscribe(msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { routed = true; return nil }))
+			require.NoError(t, subErr)
 			defCh := channel.NewDirectChannel()
-			_ = defCh.Subscribe(msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { def = true; return nil }))
+			_, subErr = defCh.Subscribe(msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { def = true; return nil }))
+			require.NoError(t, subErr)
 			var opts []routing.RouterOption
 			if tc.useDef {
 				opts = append(opts, routing.WithDefaultChannel(defCh))

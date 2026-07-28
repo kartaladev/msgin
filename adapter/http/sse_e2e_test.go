@@ -253,7 +253,7 @@ func TestSSEClient_resumesFromSSEServerAcrossReconnect(t *testing.T) {
 
 // =============================================================================
 // Consumer.Run integration smoke: NewConsumer over an SSEClient — the first
-// NETWORKED/untrusted-remote StreamingSource wired to the runtime (audit
+// NETWORKED/untrusted-remote EventDrivenSource wired to the runtime (audit
 // MINOR-4; adapter/cron's Source is the earlier in-process one). SSEClient
 // emits []byte payloads (a WIRE source, not a LiveValueSource), so it is
 // paired with msgin.BytesPayloadCodec explicitly (mirrors outbound_test.go's

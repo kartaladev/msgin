@@ -37,6 +37,7 @@ const (
 type pubSubConfig struct {
 	policy FanOutPolicy
 	logger *slog.Logger
+	single bool
 }
 
 func defaultPubSubConfig() pubSubConfig {
@@ -61,6 +62,25 @@ func WithPubSubLogger(l *slog.Logger) PubSubOption {
 		}
 	}
 }
+
+// WithSingleSubscriber restricts the channel to one subscriber at a time: while
+// a subscriber is registered, a second Subscribe is ErrChannelSubscribed —
+// the same typed error DirectChannel returns — and the slot frees again on that
+// subscriber's Cancel.
+//
+// OFF BY DEFAULT, and deliberately so: fan-out to every subscriber IS the
+// Publish-Subscribe Channel pattern, so restricting it must be the caller's
+// explicit choice and existing flows are unaffected. Opt in when the channel is
+// used where exclusivity is part of the contract — most importantly as an
+// endpoint.NewChannelExchange REPLY channel, where a second subscriber does not
+// fail loudly but silently hands a copy of every correlated reply to the other
+// subscriber (typically another exchange's unmatched-reply sink). This turns
+// that mis-wiring into a typed error at Subscribe time instead of a godoc
+// warning nobody reads (ADR 0028 §6.2).
+//
+// Passed to NewPubSub it applies to every topic channel the registry creates,
+// making each topic single-subscriber.
+func WithSingleSubscriber() PubSubOption { return func(c *pubSubConfig) { c.single = true } }
 
 // withConfig seeds a channel with an already-built config (used by PubSub so all
 // topic channels inherit the registry's fan-out policy and logger).
@@ -87,7 +107,10 @@ type PublishSubscribeChannel struct {
 	cfg  pubSubConfig
 }
 
-var _ msgin.OutboundAdapter = (*PublishSubscribeChannel)(nil)
+var (
+	_ msgin.OutboundAdapter     = (*PublishSubscribeChannel)(nil)
+	_ msgin.SubscribableChannel = (*PublishSubscribeChannel)(nil)
+)
 
 // NewPublishSubscribeChannel returns an empty channel; Subscribe handlers, then Send.
 func NewPublishSubscribeChannel(opts ...PubSubOption) *PublishSubscribeChannel {
@@ -98,15 +121,21 @@ func NewPublishSubscribeChannel(opts ...PubSubOption) *PublishSubscribeChannel {
 	return c
 }
 
-// Subscribe registers h and returns a Subscription. A nil handler is ErrNilHandler.
+// Subscribe registers h and returns a Subscription. A nil handler is
+// ErrNilHandler. Under WithSingleSubscriber a second concurrent subscriber is
+// ErrChannelSubscribed; without it (the default) any number of subscribers is
+// accepted and every one receives every message.
 func (c *PublishSubscribeChannel) Subscribe(h msgin.MessageHandler) (msgin.Subscription, error) {
 	if h == nil {
 		return nil, msgin.ErrNilHandler
 	}
 	s := &subscription{ch: c, handler: h}
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cfg.single && len(c.subs) > 0 {
+		return nil, msgin.ErrChannelSubscribed
+	}
 	c.subs = append(c.subs, s)
-	c.mu.Unlock()
 	return s, nil
 }
 

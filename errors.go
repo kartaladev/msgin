@@ -19,7 +19,7 @@ var (
 	// ErrInvalidConcurrency is returned when WithConcurrency is < 1.
 	ErrInvalidConcurrency = errors.New("msgin: concurrency must be >= 1")
 	// ErrUnsupportedSource is returned when a Source is neither Polling nor Streaming.
-	ErrUnsupportedSource = errors.New("msgin: source implements neither PollingSource nor StreamingSource")
+	ErrUnsupportedSource = errors.New("msgin: source implements neither PollingSource nor EventDrivenSource")
 	// ErrHandlerPanic wraps a value recovered from a panicking handler. It is a
 	// TRANSIENT failure (retried per the RetryPolicy), not permanent.
 	ErrHandlerPanic = errors.New("msgin: handler panicked")

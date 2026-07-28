@@ -16,6 +16,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// mustSubscribe registers h on ch and fails the test if Subscribe errors. Since
+// ADR 0028 Subscribe returns (Subscription, error); these call sites do not need
+// the handle, and this keeps the original require.NoError assertion intact.
+func mustSubscribe(t *testing.T, ch msgin.SubscribableChannel, h msgin.MessageHandler) {
+	t.Helper()
+	_, err := ch.Subscribe(h)
+	require.NoError(t, err)
+}
+
 // RunGroupStore certifies the msginsql.GroupStore facade + kit.Group
 // (GroupDialect) against a real database on the already-open db: the full
 // msgin.MessageGroupStore contract (idempotent Add, growing snapshot, exclusive
@@ -399,18 +408,18 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 			outCount     int
 			expiredCount int
 		)
-		require.NoError(t, out.Subscribe(msgin.HandlerFunc(func(_ context.Context, _ msgin.Message[any]) error {
+		mustSubscribe(t, out, msgin.HandlerFunc(func(_ context.Context, _ msgin.Message[any]) error {
 			mu.Lock()
 			outCount++
 			mu.Unlock()
 			return nil
-		})))
-		require.NoError(t, expiredCh.Subscribe(msgin.HandlerFunc(func(_ context.Context, _ msgin.Message[any]) error {
+		}))
+		mustSubscribe(t, expiredCh, msgin.HandlerFunc(func(_ context.Context, _ msgin.Message[any]) error {
 			mu.Lock()
 			expiredCount++
 			mu.Unlock()
 			return nil
-		})))
+		}))
 
 		recoverStore := newStore(t, table, msginsql.WithGroupLeaseTTL(ttl), msginsql.WithGroupLockedBy("recoverer"))
 		agg, err := routing.NewAggregator[[]byte, []byte](recoverStore,

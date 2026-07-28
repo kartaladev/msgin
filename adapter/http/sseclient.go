@@ -10,7 +10,7 @@ import (
 	"github.com/kartaladev/msgin"
 )
 
-// SSEClient is the S-in msgin.StreamingSource (Spec 011 §3.5, ADR 0023
+// SSEClient is the S-in msgin.EventDrivenSource (Spec 011 §3.5, ADR 0023
 // Addendum C): it connects to a caller-configured text/event-stream
 // endpoint, emits each parsed event as a msgin.Delivery, and auto-reconnects
 // under a clamped exponential backoff (WithReconnectBackoff), carrying
@@ -45,7 +45,7 @@ type SSEClient struct {
 
 var (
 	_ msgin.NativeReliability = (*SSEClient)(nil)
-	_ msgin.StreamingSource   = (*SSEClient)(nil)
+	_ msgin.EventDrivenSource = (*SSEClient)(nil)
 )
 
 // NewSSEClient builds an SSEClient targeting url. It validates the options
@@ -125,7 +125,7 @@ func resolveSSEClient(cfg *Config) *http.Client {
 }
 
 // Stream connects to c.url and streams Server-Sent Events onto out
-// (msgin.StreamingSource), reconnecting under a clamped exponential backoff
+// (msgin.EventDrivenSource), reconnecting under a clamped exponential backoff
 // (WithReconnectBackoff) until ctx is cancelled or a TERMINAL condition is
 // reached.
 //

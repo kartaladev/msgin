@@ -64,7 +64,12 @@ func (p *PubSub) Subscribe(topic string, h msgin.MessageHandler) (msgin.Subscrip
 	// runs no handler code, so holding p.mu across it cannot re-enter the registry.
 	inner, err := ch.Subscribe(h)
 	p.mu.Unlock()
-	if err != nil { // defensive: ch.Subscribe only errors on a nil handler, already guarded above
+	if err != nil {
+		// Reachable since decision D-F: under WithSingleSubscriber a second
+		// subscriber to an EXISTING topic is ErrChannelSubscribed. (The nil
+		// handler case is guarded above; a topic this call just created is empty,
+		// so the guard cannot reject the subscriber that created it — no empty
+		// topic can be stranded here.)
 		return nil, err
 	}
 	return &topicSubscription{ps: p, topic: topic, ch: ch, inner: inner}, nil

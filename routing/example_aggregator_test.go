@@ -27,7 +27,7 @@ func ExampleAggregator() {
 	}
 
 	out := channel.NewDirectChannel()
-	if err := out.Subscribe(msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
+	if _, err := out.Subscribe(msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
 		fmt.Printf("order total: %v\n", m.Payload())
 		return nil
 	})); err != nil {

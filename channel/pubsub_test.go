@@ -92,6 +92,106 @@ func TestPublishSubscribeChannel_SubscribeAndCancel(t *testing.T) {
 	})
 }
 
+// TestPublishSubscribeChannel_SingleSubscriber pins decision D-F: the opt-in
+// exclusivity guard, which is OFF by default so fan-out stays the pattern's
+// default behavior.
+func TestPublishSubscribeChannel_SingleSubscriber(t *testing.T) {
+	tests := []struct {
+		name   string
+		opts   []channel.PubSubOption
+		run    func(t *testing.T, ps *channel.PublishSubscribeChannel) (msgin.Subscription, error)
+		assert func(t *testing.T, sub msgin.Subscription, err error)
+	}{
+		{
+			name: "option off: a second subscriber is accepted (fan-out is the default)",
+			run: func(t *testing.T, ps *channel.PublishSubscribeChannel) (msgin.Subscription, error) {
+				_, err := ps.Subscribe(noopHandler())
+				require.NoError(t, err)
+				return ps.Subscribe(noopHandler())
+			},
+			assert: func(t *testing.T, sub msgin.Subscription, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, sub)
+			},
+		},
+		{
+			name: "option on: the first subscriber is accepted",
+			opts: []channel.PubSubOption{channel.WithSingleSubscriber()},
+			run: func(t *testing.T, ps *channel.PublishSubscribeChannel) (msgin.Subscription, error) {
+				return ps.Subscribe(noopHandler())
+			},
+			assert: func(t *testing.T, sub msgin.Subscription, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, sub)
+			},
+		},
+		{
+			name: "option on: a second subscriber is ErrChannelSubscribed",
+			opts: []channel.PubSubOption{channel.WithSingleSubscriber()},
+			run: func(t *testing.T, ps *channel.PublishSubscribeChannel) (msgin.Subscription, error) {
+				_, err := ps.Subscribe(noopHandler())
+				require.NoError(t, err)
+				return ps.Subscribe(noopHandler())
+			},
+			assert: func(t *testing.T, sub msgin.Subscription, err error) {
+				assert.ErrorIs(t, err, msgin.ErrChannelSubscribed)
+				assert.Nil(t, sub, "the error path must return no handle")
+			},
+		},
+		{
+			name: "option on: cancelling frees the slot for a new subscriber",
+			opts: []channel.PubSubOption{channel.WithSingleSubscriber()},
+			run: func(t *testing.T, ps *channel.PublishSubscribeChannel) (msgin.Subscription, error) {
+				first, err := ps.Subscribe(noopHandler())
+				require.NoError(t, err)
+				first.Cancel()
+				return ps.Subscribe(noopHandler())
+			},
+			assert: func(t *testing.T, sub msgin.Subscription, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, sub)
+			},
+		},
+		{
+			name: "option on: a nil handler is still ErrNilHandler",
+			opts: []channel.PubSubOption{channel.WithSingleSubscriber()},
+			run: func(t *testing.T, ps *channel.PublishSubscribeChannel) (msgin.Subscription, error) {
+				return ps.Subscribe(nil)
+			},
+			assert: func(t *testing.T, sub msgin.Subscription, err error) {
+				assert.ErrorIs(t, err, msgin.ErrNilHandler)
+				assert.Nil(t, sub)
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sub, err := tc.run(t, channel.NewPublishSubscribeChannel(tc.opts...))
+			tc.assert(t, sub, err)
+		})
+	}
+}
+
+// TestPubSub_SingleSubscriberPropagatesToTopics proves the registry inherits the
+// option, so its per-topic channels reject a second subscriber — and that the
+// now-reachable error return leaves the live topic untouched.
+func TestPubSub_SingleSubscriberPropagatesToTopics(t *testing.T) {
+	ps := channel.NewPubSub(channel.WithSingleSubscriber())
+
+	first, err := ps.Subscribe("orders", noopHandler())
+	require.NoError(t, err)
+	require.NotNil(t, first)
+	assert.Equal(t, 1, ps.TopicCount())
+
+	second, err := ps.Subscribe("orders", noopHandler())
+	assert.ErrorIs(t, err, msgin.ErrChannelSubscribed)
+	assert.Nil(t, second)
+	assert.Equal(t, 1, ps.TopicCount(), "the rejected subscribe must not disturb the live topic")
+
+	first.Cancel()
+	assert.Equal(t, 0, ps.TopicCount(), "drop-on-empty still applies")
+}
+
 func TestPublishSubscribeChannel_SubscriberPanicIsIsolated(t *testing.T) {
 	tests := []struct {
 		name   string

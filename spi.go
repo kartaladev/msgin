@@ -33,12 +33,26 @@ type PollingSource interface {
 	Poll(ctx context.Context, max int) ([]Delivery, error)
 }
 
-// StreamingSource is a pushed inbound adapter that owns a blocking, cancellable loop.
-type StreamingSource interface {
+// EventDrivenSource is a pushed inbound adapter that owns a blocking,
+// cancellable loop. The name follows EIP's Event-Driven Consumer (Spring
+// Integration: EventDrivenConsumer); the Stream method keeps its name because it
+// describes the mechanism and has no Spring counterpart to align with
+// (ADR 0029 §1).
+type EventDrivenSource interface {
 	Stream(ctx context.Context, out chan<- Delivery) error
 }
 
-// OutboundAdapter writes a message to the external system.
+// OutboundAdapter writes a message to the external system — the EIP Channel
+// Adapter at a system boundary (EIP ch.4).
+//
+// METHOD-IDENTICAL TO [MessageChannel] BY DESIGN. Since ADR 0028 narrowed
+// MessageChannel to Send, the two interfaces declare the same single method and
+// are interchangeable under Go's structural typing. Both are kept because they
+// name two different patterns: MessageChannel is the Pipe of Pipes and Filters
+// (EIP ch.3), OutboundAdapter is the Channel Adapter here. A consequence worth
+// stating plainly: every shipped OutboundAdapter is now also a legal filter
+// discard target, router default channel, router destination, and exchange
+// request channel.
 type OutboundAdapter interface {
 	Send(ctx context.Context, msg Message[any]) error
 }

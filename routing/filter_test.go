@@ -69,7 +69,8 @@ func TestFilter(t *testing.T) {
 			var opts []routing.FilterOption
 			if tc.withDiscard {
 				discard := channel.NewDirectChannel()
-				_ = discard.Subscribe(msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { discarded = true; return tc.discardErr }))
+				_, subErr := discard.Subscribe(msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { discarded = true; return tc.discardErr }))
+				require.NoError(t, subErr)
 				opts = append(opts, routing.WithDiscardChannel(discard))
 			}
 			step := routing.Filter(tc.pred, opts...)

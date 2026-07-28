@@ -21,6 +21,15 @@ import (
 	"github.com/kartaladev/msgin/endpoint"
 )
 
+// mustSubscribe registers h on ch and fails the test if Subscribe errors. Since
+// ADR 0028 Subscribe returns (Subscription, error); these call sites do not need
+// the handle, and this keeps the original require.NoError assertion intact.
+func mustSubscribe(t *testing.T, ch msgin.SubscribableChannel, h msgin.MessageHandler) {
+	t.Helper()
+	_, err := ch.Subscribe(h)
+	require.NoError(t, err)
+}
+
 func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 
 // acceptingTarget returns an msgin.MessageChannel with a single subscriber
@@ -28,9 +37,9 @@ func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 func acceptingTarget(t *testing.T) msgin.MessageChannel {
 	t.Helper()
 	ch := channel.NewDirectChannel()
-	require.NoError(t, ch.Subscribe(msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error {
+	mustSubscribe(t, ch, msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error {
 		return nil
-	})))
+	}))
 	return ch
 }
 
@@ -41,7 +50,7 @@ func echoExchange(t *testing.T) msgin.RequestReplyExchange {
 	t.Helper()
 	request := channel.NewDirectChannel()
 	reply := channel.NewDirectChannel()
-	require.NoError(t, request.Subscribe(msgin.Chain(msgin.To(reply))))
+	mustSubscribe(t, request, msgin.Chain(msgin.To(reply)))
 	x, err := endpoint.NewChannelExchange(request, reply)
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, x.Close()) })
@@ -261,7 +270,7 @@ func TestNewInboundGateway_clientCannotChooseTheResponseContentType(t *testing.T
 // is the whole observable outcome.
 func ExampleNewInbound() {
 	target := channel.NewDirectChannel()
-	if err := target.Subscribe(msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error {
+	if _, err := target.Subscribe(msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error {
 		return nil // accept every message
 	})); err != nil {
 		panic(err)
@@ -301,7 +310,7 @@ func ExampleNewInboundGateway() {
 		}),
 		msgin.To(reply),
 	)
-	if err := request.Subscribe(flow); err != nil {
+	if _, err := request.Subscribe(flow); err != nil {
 		panic(err)
 	}
 

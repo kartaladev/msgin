@@ -17,7 +17,7 @@ import (
 	"github.com/kartaladev/msgin"
 )
 
-// Source is a msgin.StreamingSource that emits a caller-defined message on each
+// Source is a msgin.EventDrivenSource that emits a caller-defined message on each
 // fire of a cron / recurring schedule. It carries LIVE Go values (no codec),
 // like the memory adapter, so NewConsumer[T] pairs it with no codec.
 //
@@ -40,8 +40,8 @@ type Source[T any] struct {
 }
 
 var (
-	_ msgin.StreamingSource = (*Source[any])(nil)
-	_ msgin.LiveValueSource = (*Source[any])(nil)
+	_ msgin.EventDrivenSource = (*Source[any])(nil)
+	_ msgin.LiveValueSource   = (*Source[any])(nil)
 )
 
 // secondsParser parses a REQUIRED 6-field schedule (leading seconds field),
@@ -225,7 +225,7 @@ func NewSource[T any](spec string, factory func(fire time.Time) T, opts ...Optio
 	return s, nil
 }
 
-// Stream drives the firing loop until ctx is cancelled (msgin.StreamingSource).
+// Stream drives the firing loop until ctx is cancelled (msgin.EventDrivenSource).
 // It starts NO goroutine — the loop runs on the caller's (runtime Run) goroutine
 // — so it is goleak-clean.
 //

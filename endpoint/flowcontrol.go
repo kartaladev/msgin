@@ -111,7 +111,7 @@ func WithMaxPayloadBytes[T any](n int) ConsumerOption[T] {
 
 // WithPollInterval sets how long the Poller idles after an EMPTY poll of a
 // PollingSource before polling again (default defaultPollInterval, 1s). It
-// has no effect on a StreamingSource. Setting the flag lets NewConsumer tell
+// has no effect on a EventDrivenSource. Setting the flag lets NewConsumer tell
 // an explicit WithPollInterval(0) (a caller error → ErrInvalidPollInterval)
 // apart from "unset" (→ default), mirroring WithAttemptTTL (C2).
 //
@@ -122,7 +122,7 @@ func WithPollInterval[T any](d time.Duration) ConsumerOption[T] {
 
 // WithPollMaxBatch caps the number of rows/messages the Poller fetches per
 // poll of a PollingSource (default defaultPollMaxBatch, 100). It has no
-// effect on a StreamingSource. Setting the flag lets NewConsumer tell an
+// effect on a EventDrivenSource. Setting the flag lets NewConsumer tell an
 // explicit WithPollMaxBatch(0) (a caller error → ErrInvalidPollMaxBatch)
 // apart from "unset" (→ default), mirroring WithAttemptTTL (C2).
 //

@@ -23,8 +23,6 @@ func (c *collector) Send(_ context.Context, m msgin.Message[any]) error {
 	return nil
 }
 
-func (c *collector) Subscribe(msgin.MessageHandler) error { return nil }
-
 var _ msgin.MessageChannel = (*collector)(nil)
 
 // fakeExchange is a lightweight RequestReplyExchange double for the one-method
@@ -128,12 +126,12 @@ func TestGateway_Request_freshCorrelationIDPerRequest(t *testing.T) {
 func TestGateway_channelExchangeRoundTrip(t *testing.T) {
 	request := channel.NewDirectChannel()
 	reply := channel.NewDirectChannel()
-	require.NoError(t, request.Subscribe(msgin.Chain(
+	mustSubscribe(t, request, msgin.Chain(
 		endpoint.Activate(func(_ context.Context, m msgin.Message[string]) (msgin.Message[string], error) {
 			return msgin.WithPayload(m, strings.ToUpper(m.Payload())), nil
 		}),
 		msgin.To(reply),
-	)))
+	))
 	ex, err := endpoint.NewChannelExchange(request, reply)
 	require.NoError(t, err)
 	gw, err := endpoint.NewGateway[string, string](ex)
@@ -316,7 +314,7 @@ func ExampleGateway_Request() {
 		}),
 		msgin.To(reply),
 	)
-	if err := request.Subscribe(flow); err != nil {
+	if _, err := request.Subscribe(flow); err != nil {
 		panic(err)
 	}
 

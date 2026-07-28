@@ -35,8 +35,6 @@ func (c *fakeAggChannel) Send(_ context.Context, m msgin.Message[any]) error {
 	return nil
 }
 
-func (c *fakeAggChannel) Subscribe(msgin.MessageHandler) error { return nil }
-
 func (c *fakeAggChannel) count() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -174,8 +172,6 @@ func (c *failNthChannel) Send(_ context.Context, m msgin.Message[any]) error {
 	c.sent = append(c.sent, m)
 	return nil
 }
-
-func (c *failNthChannel) Subscribe(msgin.MessageHandler) error { return nil }
 
 func (c *failNthChannel) sentCount() int {
 	c.mu.Lock()

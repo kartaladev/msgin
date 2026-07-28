@@ -79,7 +79,7 @@ func (s *settle) snapshot() (acks, nacks int, delays []time.Duration) {
 	return s.acks, s.nacks, append([]time.Duration(nil), s.delays...)
 }
 
-// scriptedSource is a StreamingSource that emits preset deliveries once, then
+// scriptedSource is a EventDrivenSource that emits preset deliveries once, then
 // blocks until ctx is done. It declares EmitsLiveValue so the live-value path
 // is used and no codec is required. Nack-requeue does not re-emit here; the
 // settle recorder simply records the settlement outcome.
@@ -149,7 +149,7 @@ func (s *reemittingSource) Stream(ctx context.Context, out chan<- msgin.Delivery
 	}
 }
 
-// controllableSource is a StreamingSource the test drives one delivery at a
+// controllableSource is a EventDrivenSource the test drives one delivery at a
 // time: deliver blocks until Stream has forwarded the delivery downstream, so a
 // test can withhold an id across a TTL sweep and then re-deliver it, making the
 // sweep-vs-redeliver ordering deterministic (used by the Task 7 sweep tests).
@@ -185,7 +185,7 @@ func (s *controllableSource) deliver(ctx context.Context, d msgin.Delivery) {
 	}
 }
 
-// byteStreamSource is a WIRE StreamingSource: it emits a single []byte payload
+// byteStreamSource is a WIRE EventDrivenSource: it emits a single []byte payload
 // (it does NOT implement LiveValueSource, so the runtime takes the codec-decode
 // path) then blocks until ctx is done. Used to exercise WithMaxPayloadBytes and
 // other decode-boundary behavior against real []byte payloads (ADR 0009 D5).
@@ -288,7 +288,7 @@ func (b *scriptedBreaker) recorded() []bool {
 	return append([]bool(nil), b.records...)
 }
 
-// countingSource is a StreamingSource backed by a real memory.Broker, used by
+// countingSource is a EventDrivenSource backed by a real memory.Broker, used by
 // the credit-gate tests to catch over-pull: it forwards the broker's live
 // deliveries (whose Nack-requeue synchronously re-injects via Send) unchanged,
 // so the runtime's credit accounting is exercised against a real re-injecting
@@ -389,7 +389,7 @@ func (*panicHalfOpenBreaker) Record(bool) {}
 
 func (*panicHalfOpenBreaker) HalfOpen() <-chan struct{} { panic("panicHalfOpenBreaker.HalfOpen boom") }
 
-// signalingSource is a StreamingSource that closes ready as soon as Stream is
+// signalingSource is a EventDrivenSource that closes ready as soon as Stream is
 // entered, then blocks until ctx is done. Run performs its synchronous
 // pre-loop setup (e.g. the one-time gobreaker-cliff ProbeGate WARN, ADR 0009
 // D2) strictly before ever calling Stream, so receiving from ready gives the
