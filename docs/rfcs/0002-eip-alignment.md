@@ -5,7 +5,9 @@
 - **Status:** Accepted (open questions settled 2026-07-27 — see §7)
 - **Promoted to:** [Spec 014](../specs/014-core-package-layout.md) ·
   [ADR 0028](../adrs/0028-channel-interface-segregation.md) (channel segregation) ·
-  [ADR 0029](../adrs/0029-eip-lexical-alignment.md) (renames) · [Plan 027](../plans/027-core-package-layout.md)
+  [ADR 0029](../adrs/0029-eip-lexical-alignment.md) (renames) ·
+  [ADR 0030](../adrs/0030-reply-channel-exclusivity-probe.md) (reply-channel exclusivity probe — decision
+  D-J, 2026-07-28; amends ADR 0028 §6.2) · [Plan 027](../plans/027-core-package-layout.md)
 - **Reviewers:** TBD
 
 ## 1. Summary

@@ -3,7 +3,7 @@
 - **Status:** **ACCEPTED — REGENERATED FROM A GREEN TREE (2026-07-28); round-3 audit returned
   `NEEDS-REVISION` 3/3 and its findings are folded in below.** Its decisions are **implemented** across
   commits `c83dde9` (the extraction) and **`b6ce7bb`** (channel segregation + the `EventDrivenSource` rename),
-  plus an uncommitted round-3 fix pass (F12/F13). Every claim below is measured.
+  plus the round-3 fix pass (F12/F13), committed as `1d7fc80` + `3d0b87a`. Every claim below is measured.
   > *Round-3 status correction.* This line previously read *"commit `c83dde9` plus the **uncommitted** channel
   > work"* — pinned to the tree as it stood when written and never requoted. `git log --oneline -3` shows
   > `0e2dcf0` / `b6ce7bb` / `c83dde9`; the channel work is committed. Plan 027's Progress table carried the
@@ -72,11 +72,17 @@ that cost were wrong in the same direction, and the third is measured rather tha
 > presented as the whole-window cost. Measured over the actual window, with the range **in** the command:
 >
 > ```
-> $ git diff --stat c83dde9~1..HEAD -- adapter/ | tail -1
->  31 files changed, 239 insertions(+), 191 deletions(-)
+> # scope: adapter/ subtree, range c83dde9~1..dadc775 (BOTH ends fixed — see below)
+> $ git diff --stat c83dde9~1..dadc775 -- adapter/ | tail -1
+>  43 files changed, 244 insertions(+), 220 deletions(-)
 > ```
 >
-> **31 files, ±239/−191.** Of the requalification pass specifically, `adaptscan` classified **115 CODE
+> **43 files, +244/−220.** *(Round-4 correction, B6: this read **31 / +239 / −191** with the range written as
+> `c83dde9~1..HEAD`. That was correct at `0e2dcf0` and went stale the moment `1d7fc80` re-tidied six satellite
+> `go.mod`/`go.sum` pairs. **A range ending in `HEAD` is not a pin** — it re-evaluates silently on every
+> commit, which is how this figure has now gone stale three times. The twelve newly-counted files are all
+> module files; no additional source file was touched.)* Of the requalification pass specifically,
+> `adaptscan` classified **115 CODE
 > selectors + 39 COMMENT mentions + 0 STRING**, of which **69 non-test selectors are in
 > `adapter/database/sql/harness`, a separate module in the CI matrix that root's `go build ./...` cannot
 > see**. The full per-file and per-module inventory is Spec 014 §3.6 (evidence: F9.2, F9.3, F9.9, F13).
@@ -385,15 +391,18 @@ a chapter (round-2 §D15). The honest statement of the principle is therefore:
 `resilience` as the exception — a self-contradiction inside the bundle.)*
 
 Root becomes a small, stable contract of
-**14 source files** and **101 exported non-method symbols**. Package names carry EIP meaning, so RFC-0005's
+**14 source files** and **102 exported non-method symbols** (measured at `dadc775`; it was **101** when this
+paragraph was written, before `1d7fc80` added `ErrNilSubscription`, and D-I/D-J each move it again — Spec 014
+§4 holds the arithmetic and Task 12 measures the end state). Package names carry EIP meaning, so RFC-0005's
 five components each have an obvious, non-arbitrary home. The dependency graph is a single fan-in to root —
 **zero inter-subpackage edges**, verified by `go list`, not asserted. Only one breaking window is ever spent.
 
 ```
+# scope: root module, at dadc775
 $ ls *.go | grep -v _test.go | wc -l
       14
-$ decls . | grep -v _test.go | awk -F'\t' '$5=="exported" && $3!="method" {print $4}' | sort -u | wc -l
-     101
+$ go run docs/plans/027-tools/decls.go . | grep -v _test.go | awk -F'\t' '$5=="exported" && $3!="method" {print $4}' | sort -u | wc -l
+     102
 ```
 
 > *Corrected (audit finding E1, then D8).* Earlier drafts said "~9 files". The enumerated move-list yields
@@ -404,8 +413,8 @@ $ decls . | grep -v _test.go | awk -F'\t' '$5=="exported" && $3!="method" {print
 > acceptance criterion, which is now the explicit 14-file list plus a scriptable import check (Spec 014 §9.1).
 
 **Adapters do NOT compile against root unchanged, and that estimate was wrong three times.** Measured over
-the whole window (`git diff --stat c83dde9~1..HEAD -- adapter/`), the cost is **31 files, ±239/−191 lines,
-across `adapter/` and two satellite modules** — of which the requalification pass alone is 115 code selectors
+the whole window (`git diff --stat c83dde9~1..dadc775 -- adapter/`), the cost is **43 files, +244/−220 lines,
+across `adapter/` and six satellite modules** — of which the requalification pass alone is 115 code selectors
 plus 39 godoc mentions no compiler will ever flag (Spec 014 §3.6; F9.9, F13). It is entirely mechanical, and
 **no `go.mod` needed an edit for the requalification**, but it is not zero and it is not two sites.
 
@@ -425,9 +434,12 @@ plus 39 godoc mentions no compiler will ever flag (Spec 014 §3.6; F9.9, F13). I
 - Import churn across the adapter tree's test and example files, and a `MIGRATION.md` to maintain.
 - **Coverage attribution shifts across the split, and the naive comparison reports a false regression.**
   Blackbox tests move to sibling packages, so credit follows the *test binary*: default per-package coverage
-  puts root at **81.8%** (was 99.3%), below CLAUDE.md's 85% gate, while `-coverpkg=./...` shows the workspace
-  at **93.3%** against a 93.23% baseline. Every comparison in this window uses `-coverpkg=./...` on both
-  sides (Spec 014 §3.4e; round-2 §A8).
+  put root at **81.8%** (from 99.3%) at `b6ce7bb`, while `-coverpkg=./...` showed the workspace at 93.3%.
+  Every comparison in this window uses `-coverpkg=./...` on both sides (Spec 014 §3.4e; round-2 §A8).
+  *(Round-4 correction, B2: the 81.8% is historical and this sentence used to add "below CLAUDE.md's 85%
+  gate" in the present tense. At `dadc775` root reads **95.3%** on the default profile — above the gate — and
+  the workspace reads **93.4%** with `-coverpkg`. The attribution effect is real; the gate-failure claim is
+  not, and Spec §3.4e now carries the corrected rationale.)*
 - **Cycle risk during the move.** Mitigated by construction (interfaces live in root), by the declaration-level
   move-list (§4), and by **`go vet ./...`** — not `go build` — after each individual move, with the engine
   extracted **last** so the cycle check is meaningful. `go build` does not compile test binaries and cannot
@@ -437,5 +449,5 @@ plus 39 godoc mentions no compiler will ever flag (Spec 014 §3.6; F9.9, F13). I
 vocabulary; the movers are enumerated in Spec 014 §3 and the `apidiff` review is read against §4.1's
 decomposition of the **95** removals (87 relocated + 6 `*Expr` deleted + 1 rename + 1
 `MessageChannel.Subscribe`). *(Corrected round 3: this line said **93**, repeating a hand-typed figure from
-Spec 014 §4.1's prose that its own generated table contradicted. Re-derived at HEAD with
+Spec 014 §4.1's prose that its own generated table contradicted. Re-derived at `dadc775` with
 `apidiff docs/plans/027-root-api-baseline.txt . | grep -c ': removed'` → 95.)*

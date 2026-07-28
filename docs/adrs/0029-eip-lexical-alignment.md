@@ -21,7 +21,8 @@
   **[audit round 1](../plans/027-audit-round-1.md)** §K.)*
 - **Decisions folded in 2026-07-28:** **D-D** (delete `cfg.optErr` and its `NewAggregator` guard — §3a) and
   **D-E** (`WithReleaseStrategy(ReleaseStrategy)` + `WithReleaseWhen` — §3), both settled 2026-07-27
-  ([audit round 2 §G.1](../plans/027-audit-round-2.md)).
+  ([audit round 2 §G.1](../plans/027-audit-round-2.md)); **D-I** (the two expr sentinels leave root — §5.0a)
+  and **D-K** (`ErrExprResultType` is wrapped in `msgin.Permanent` — §5.0b), both settled 2026-07-28.
 - **Cites:** [ADR 0002 — Adapter SPI](0002-adapter-spi.md), which defined the `StreamingSource` name that §1
   renames and the `PollingSource`/`Delivery` contracts that stay put.
 - **Amends:** [ADR 0019 — Runtime expression evaluation](0019-runtime-expression-evaluation.md) — its decision
@@ -55,14 +56,14 @@ unrelated streaming-data vocabulary. This was the clearest drift in the register
 
 **Scope, measured:** `StreamingSource` appeared **30 times across 12 `.go` files, all inside the root
 module** — no satellite module referenced it. *(Corrected 2026-07-27, audit finding F7: the plan had sized
-this as a seven-module rename.)* **That figure is exactly right, and it is `.go`-only** — the rename is
-`35 occurrences across 14 files`:
+this as a seven-module rename.)* The rename **as it stands at `dadc775`** is `36 occurrences across 15 files`:
 
 ```
+# REGENERATED at dadc775 (round-4 fix pass); was 30/12/35/14, taken before 1d7fc80 added endpoint/doc.go
 $ grep -rn 'EventDrivenSource' --include='*.go' . | wc -l ; grep -rl 'EventDrivenSource' --include='*.go' . | wc -l
-      30      12
+      31      13
 $ grep -rn 'EventDrivenSource' . --exclude-dir=.git --exclude-dir=docs | wc -l
-      35                          # +2 in CLAUDE.md, +3 in MESSAGING.md
+      36                          # +2 in CLAUDE.md, +3 in MESSAGING.md
 $ grep -rn 'StreamingSource' . --exclude-dir=.git --exclude-dir=docs
 (no output, exit 1)
 ```
@@ -242,6 +243,82 @@ func Predicate[A any](s string) (routing.Predicate[A], error)
 `replace … => ..`, exactly as every satellite module carries**: `git tag | wc -l` → 0, so without the
 `replace` the module cannot resolve the root module under `GOWORK=off` — which is how CI's `module` job runs
 it. A `use` line in `go.work` is necessary but not sufficient (round-2 §C2).
+
+#### 5.0a The module owns its two error sentinels — decision D-I (2026-07-28)
+
+> **STATUS: DECIDED, NOT YET IMPLEMENTED.** Both sentinels still exist in root at `dadc775`
+> (`errors.go:180`, `:206`). Plan 027 Task 9.5 deletes them; Task 10 declares the replacements. Every
+> present-tense sentence below describes the decided end state, not the tree.
+
+The `*Expr` deletion left `msgin.ErrInvalidExpression` and `msgin.ErrExprResultType` with **zero producers
+anywhere in the workspace** — the only two root sentinels in that position. **They leave root**, and this
+module declares `expr.ErrInvalidExpression` / `expr.ErrExprResultType` (prefix `msgin/expr:`) instead.
+
+This **narrows an earlier reading of §5 in this ADR**. §5 says providers keep "the compile error at the
+provider call", and Plan 027 §9.5.0 originally read that as an argument for keeping the *sentinel* in root so
+the fail-at-construction contract had one home. The two are separable: what §5 protects is **where the error
+is raised** (at the provider call, not at first message), which is untouched. **Which package declares the
+`error` value** is a different question, and the tree already answers it — `adapter/http`, `adapter/database/sql`
+and `adapter/cron` each mint their own sentinels for their own faults (51 of them) while returning root's for
+contract-level faults (27 file→sentinel pairs). Root has no notion of an expression and, after Task 1, no code
+that could produce one; the fault is the provider's. Spec 014 §3.2 carries the measured evidence, §7 the
+declaration.
+
+**Consequence:** `errors.Is(err, msgin.ErrInvalidExpression)` becomes `errors.Is(err, expr.ErrInvalidExpression)`.
+The caller already imports `expr` to construct the endpoint, so no new import appears; `MIGRATION.md` carries
+both lines. No alias is provided — an alias would have to reference the root var this decision deletes.
+
+#### 5.0b The two sentinels are NOT symmetric, and `ErrExprResultType` needs a retry classification — decision D-K
+
+**§5.0a's argument applies cleanly to `ErrInvalidExpression` and does NOT transfer to `ErrExprResultType`.**
+The first is a **construction-time** fault raised at the provider call; ADR 0019's contract is untouched by
+who declares it. The second is an **evaluation-time** fault that fires **per message, inside the flow**, and
+therefore lands on the runtime's retry/dead-letter path:
+
+```
+$ git show ab233d9:expr.go | grep -n ErrExprResultType
+179:  return Message[B]{}, fmt.Errorf("%w: result %T is not %T", ErrExprResultType, out, *new(B))
+421:  return nil, fmt.Errorf("%w: SplitExpr result %T is not a slice", ErrExprResultType, out)
+428:  return nil, fmt.Errorf("%w: SplitExpr element %d %T is not %T", ErrExprResultType, i, elem, *new(B))
+```
+
+Root's `IsPermanent` (`reliability.go:38`) enumerates `ErrPayloadType`, `ErrPayloadDecode` and
+`ErrPayloadTooLarge` — faults that cannot fix themselves on redelivery. **A result-type mismatch is that same
+class**, the expression-domain twin of `ErrPayloadType`, yet it is not in the list and the deleted originals
+never wrapped it in `Permanent` either. So today it would be classified **transient**: retried `MaxAttempts`
+times — and, per Spec 014 §10's per-instance attempt tracking, **`N × MaxAttempts` across N instances** — for
+a deterministic fault that yields the identical wrong type every time.
+
+That gap predates D-I. What D-I does is **close the only door that could have fixed it in one place**: while
+the sentinel lived in root, `IsPermanent` could be amended to name it; afterwards root cannot reference
+`expr.ErrExprResultType` without re-creating the import edge D-I exists to remove.
+
+**Decision D-K: the `expr` providers wrap it in `msgin.Permanent`.**
+
+```go
+return Message[B]{}, fmt.Errorf("%w: result %T is not %T",
+	msgin.Permanent(ErrExprResultType), out, *new(B))
+```
+
+`msgin.Permanent` is exported (`reliability.go`) and the provider already imports root, so this costs one
+wrap and no new dependency. It restores the classification `IsPermanent` would have given the fault had the
+sentinel stayed. CLAUDE.md is explicit that delivery guarantees are contracts and *"never leave them
+implied"* — so the alternative (leave it transient) would have been acceptable only if stated, and it is not
+the better behavior. Plan 027 Task 10's hot-path list owns the branch.
+*(Round-4 design audit, BLOCKER 3.)*
+
+#### 5.0c A second expression provider would mint a third sentinel — recorded, not solved
+
+A future CEL or starlark provider mints `cel.ErrInvalidExpression` / `starlark.ErrInvalidExpression` for the
+same conceptual fault, so a caller with generic handling ("the user's expression was bad → HTTP 400") must
+enumerate every provider, with no shared `errors.Is` target — exactly what root's sentinel gave for free.
+
+**This does not reverse D-I.** Nothing is released, the fault genuinely is the provider's, and the repo
+precedent (51 adapter-minted sentinels alongside 27 root-sentinel returns) supports it. But it is a
+foreseeable consequence with two known escapes, and it is recorded here so a future increment does not
+rediscover it as a surprise: every provider can wrap with `msgin.Permanent` (giving a shared *classification*
+even without a shared sentinel), or root can later add an `ErrInvalidConfig`-class sentinel that providers
+wrap. *(Round-4 design audit, MINOR 6.)*
 
 ### 5a. The provider shape is NOT uniform, and it is NOT non-generic
 

@@ -23,6 +23,10 @@
   **[audit round 1](../plans/027-audit-round-1.md)** §K.)*
 - **Decision folded in 2026-07-28:** **D-F** (`channel.WithSingleSubscriber()`), settled with the user
   2026-07-27 ([audit round 2 §G.1](../plans/027-audit-round-2.md)).
+- **AMENDED by [ADR 0030](0030-reply-channel-exclusivity-probe.md)** (decision **D-J**, 2026-07-28), which
+  changes **§6.2's default posture only** — from "documented, opt-in" to "probed and rejected by default". The
+  rest of this ADR, including §6.2's rejection of a cross-exchange registry, stands unchanged. See the banner
+  in §6.2.
 - **Cites and amends:** [ADR 0013 — In-process composition](0013-composition-endpoints.md), which decided the
   bundled `MessageChannel` contract and the `To`/`OutboundAdapter` distinction. Its **audit-F2 rationale is
   voided** by Decision §2 and is annotated in place there; the *decision* it justified survives on the new
@@ -158,7 +162,7 @@ unlocks:**
 
 ### 5. `MessageChannel` and `OutboundAdapter` are both kept, and the identity is documented as deliberate
 
-The narrowed `MessageChannel` is **method-identical** to the existing `OutboundAdapter` (`spi.go:42`) — exactly
+The narrowed `MessageChannel` is **method-identical** to the existing `OutboundAdapter` (`spi.go:56`) — exactly
 the duplication §3 refuses to create for `PollableChannel`. Two auditors caught this independently
 (finding B4). Three options were weighed: collapse them, alias them, or keep both.
 
@@ -226,6 +230,17 @@ declared behavior-preserving**, so it is listed among Spec 014 §2.1's four exce
 godoc, recorded in `MIGRATION.md`, and pinned by `TestChannelExchange_closeCancelsReplySubscription`
 (round-2 §D5; F10.3).
 2. **Exclusivity is documented by default, and enforceable by opting in (decision D-F).**
+
+   > **AMENDED by [ADR 0030](0030-reply-channel-exclusivity-probe.md) (decision D-J, 2026-07-28).** The
+   > *default posture* below — documented, opt-in — was reviewed by three independent lenses (this ADR's
+   > round-3 design audit, the adversarial code review, and `/security-review`) and **all three flagged the
+   > same residual**: the default wiring still silently mis-routes. ADR 0030 keeps everything in this section
+   > and changes only the default: `NewChannelExchange` now **probes** the reply channel through a new
+   > optional `msgin.ExclusiveSubscribable` capability and **rejects** one that reports non-exclusive
+   > (`msgin.ErrSharedReplyChannel`), with `endpoint.WithSharedReplyChannel()` as the opt-out. **The
+   > registry rebuttal immediately below is unchanged and is cited by ADR 0030 as still binding**;
+   > `WithSingleSubscriber()` is unchanged and becomes the mechanism a `PublishSubscribeChannel` uses to pass
+   > the probe. Read this section as the *reasoning*, and ADR 0030 as the *current default*.
 
    The `reply` godoc states that the channel must be dedicated to one exchange and names the cross-delivery
    consequence of sharing it. That much is unchanged. What an earlier draft of this section got wrong was the
@@ -338,7 +353,7 @@ interface. **All five of those stubs are gone; all five fakes remain**, migrated
 > *Corrected (round 3).* This paragraph previously said the five **fakes** were *"deleted, not migrated"*.
 > They were not — only their `Subscribe` stubs were. Two greps settle it:
 > `git grep -n 'func (.*) Subscribe(.*msgin.MessageHandler) error' ab233d9 -- '*_test.go'` lists exactly those
-> five stubs; `grep -rn --include='*_test.go' 'Subscribe(.*MessageHandler) error' .` at HEAD returns nothing,
+> five stubs; `grep -rn --include='*_test.go' 'Subscribe(.*MessageHandler) error' .` at `dadc775` returns nothing,
 > while all five type declarations are still present. The stub deletion is the **better** evidence, since it
 > isolates the unwanted method rather than confounding it with the fake's disposal.
 

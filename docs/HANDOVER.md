@@ -1,290 +1,335 @@
 # Session handover — msgin
 
 > **READ FIRST.** Read `CLAUDE.md`, then `docs/specs/014-core-package-layout.md` and
-> `docs/plans/027-core-package-layout.md` (both **regenerated** 2026-07-28), then
-> `docs/plans/027-derivation-findings.md` (F0–F11, the evidence base). Trust those over this file and over
-> any memory.
+> `docs/plans/027-core-package-layout.md`, then `docs/adrs/0030-reply-channel-exclusivity-probe.md` (new).
+> Trust those over this file and over any memory.
 >
-> **STATE (2026-07-28, end of session): the refactor is IMPLEMENTED, GREEN, and fully COMMITTED.**
-> The working tree is **clean**. The round-3 audit has run (3/3 NEEDS-REVISION) and **all its findings are
-> resolved**; `/security-review` and an adversarial code review have both run and their findings are
-> resolved too.
+> **STATE (2026-07-28, third session): all three open decisions are CLOSED. ROUND 4 (3/3 NEEDS-REVISION) and
+> ROUND 5 (NEEDS-REVISION) have both RUN, and BOTH FIX PASSES ARE FULLY APPLIED, RE-VERIFIED, AND
+> COMMITTED.** The working tree is **clean**; the whole window is docs-only.
 >
-> **What remains: the round-4 audit, Plan 027 Tasks 9–11, and two open decisions (§4.6).**
+> **No `.go` file has been touched since `3d0b87a`.** The code is green and unchanged; every edit in this
+> window is documentation. That means the tree is a safepoint, and it also means **every count in the bundle is a
+> claim about `dadc775`'s code**, which is why the fix pass pins them to that SHA.
 >
-> **Nothing is pushed.** `main` is at `6f44db6`; this branch is 5 commits ahead, local only.
-> Do not commit or push without explicit approval.
+> **PARTLY PUSHED — the previous handovers said otherwise, and they were wrong three ways.**
+>
+> ```
+> $ git rev-parse --short main                     0de54e9
+> $ git rev-parse --short @{u}                     6f44db6      # origin/claude/repo-structure-refactor-jt79t1
+> $ git rev-parse --short HEAD                     <this file's own commit — see the note below>
+> $ git rev-list --count main..HEAD                16
+> $ git rev-list --count @{u}..HEAD                13           (behind: 0)
+> ```
+>
+> **`6f44db6` is `origin/<branch>` — the REMOTE TRACKING HEAD — not `main`.** Every prior handover read it as
+> `main` and concluded *"main is at 6f44db6; the branch is 6 commits ahead; nothing is pushed"*. All three
+> halves were false: `main` is `0de54e9`, the branch is **16** ahead of it, and the branch **has been pushed**
+> up to `6f44db6`, leaving **13 unpushed commits** — every one of the refactor commits among them.
+>
+> **Why this is operational, not cosmetic.** `main..HEAD` is the exact range CLAUDE.md's whole-branch
+> `/code-review` and `/security-review` gate runs over. The stale figure would have scoped that gate to 6 of
+> 16 commits — silently skipping the entire extraction (`c83dde9`), the segregation (`b6ce7bb`), and the
+> round-3 fixes (`1d7fc80`). **Five audit lenses missed it** because all five were briefed on the bundle
+> documents; nobody's brief covered the handover's own git facts.
+>
+> **Verify, never copy:** `git rev-parse --short main`, `git rev-parse --short @{u}`,
+> `git rev-list --left-right --count @{u}...HEAD`.
+>
+> **Do not commit or push without explicit approval.** Nothing has been pushed in this session.
 
 ## 1. Objective & position
 
 `msgin` is a Go 1.25 Enterprise Integration Patterns library. The active effort is the **pre-v1 core
-refactor**: flatten-to-packages, channel interface segregation, and EIP lexical alignment.
+refactor** (Plan 027): flatten-to-packages, channel interface segregation, EIP lexical alignment.
 
-Spec 014 + ADRs 0027/0028/0029 + Plan 027 **failed two adversarial audits** (3/3 auditors each), both times
-because the move-list was hand-typed and asserted as verified. Round 2 §F changed the method: **migrate
-first, let the compiler prove it, generate the move-list from the green tree, then write the documents.**
-
-**That method has now been executed end to end.** The migration is done and green; the bundle has been
-rewritten from generated evidence.
+Tasks 0–8 are **implemented, green and committed**. Tasks 9, 9.5, **9.6 (new)**, 10, 11, 12 remain.
+**No implementation code for them has been written.**
 
 ## 2. Exact state
 
-Branch `claude/repo-structure-refactor-jt79t1`, **5 commits ahead of `main` (`6f44db6`), NOT pushed.
-Working tree CLEAN.**
+Branch `claude/repo-structure-refactor-jt79t1`: **16 commits ahead of `main` (`0de54e9`)**, and
+**13 ahead of `origin/<branch>` (`6f44db6`)** — i.e. partly pushed, with all refactor work unpushed.
 
-```
-3d0b87a  docs(027): apply the round-3 audit corrections; commit the derivation tools
-1d7fc80  fix(core): restore the goleak net, cover the poll-backoff cap, reject a nil Subscription
-0e2dcf0  docs(027): regenerate the bundle from the verified tree; clear all round-2 banners
-b6ce7bb  refactor(core)!: segregate MessageChannel; add WithSingleSubscriber; rename StreamingSource
-c83dde9  refactor(core)!: extract the flat core into endpoint/routing/transform/channel/resilience
-```
+> ### This file CANNOT name its own commit's SHA — do not try to read one here
+>
+> This handover is committed **inside** the commit it describes, so any SHA written here for `HEAD` is
+> invalidated the moment that commit is amended. It was, twice, and the SHA went stale both times within
+> minutes. **`HEAD` is identified by subject, not hash:**
+>
+> ```
+> $ git log --oneline -4
+> <sha> docs(027): close D-I/D-J/D-K, add ADR 0030 and Task 9.6, apply rounds 4-5   <- this file's commit
+> <sha> docs(handover): record the committed state, both review gates, and the two open decisions
+> <sha> docs(027): apply the round-3 audit corrections; commit the derivation tools
+> <sha> fix(core): restore the goleak net, cover the poll-backoff cap, reject a nil Subscription
+>
+> $ git status --short
+> (clean)
+> ```
+>
+> Ancestor SHAs (`3d0b87a`, `1d7fc80`, `b6ce7bb`, `c83dde9`, `ab233d9`, `0e2dcf0`, `dadc775`) are stable and
+> **are** safe to cite — only `HEAD`'s own hash is self-referential. Every measurement in the bundle is pinned
+> to **`dadc775`**, which is `HEAD~1` and unaffected by amends.
 
-- `c83dde9` — the mechanical migration. 105 files, +2040/−3145. Root 32 → **14** non-test files.
-- `b6ce7bb` — Plan 027 Tasks 2/3 + decision D-F.
-- `0e2dcf0` — Spec 014 §3 + Plan 027 regenerated from the green tree; round-2 banners cleared.
-- `1d7fc80` — the round-3 **code** blockers and the code-review findings M1–M5.
-- `3d0b87a` — the round-3 **doc** corrections; derivation tools committed to `docs/plans/027-tools/`.
+**Zero `.go` files modified**, so `3d0b87a`'s verification still holds: seven modules build + vet, `go test
+./... -race -shuffle=on` green across 11 root packages, `-coverpkg=./...` **93.4%**.
 
-**Verified green at handover:** all seven modules `build` + `vet`; `go test ./... -race -shuffle=on` across
-all 11 root packages; Docker-backed `dbtest` and `crontest` run for real. Coverage `-coverpkg=./...`
-**93.26%** (baseline 93.23%).
-
-The `../msgin-derive` worktree is **merged and redundant** — its branch `refactor/mechanical-derivation`
-points at `c83dde9`. Safe to `git worktree remove`; left in place only because removal was not requested.
-
-## 3. Traceability pointers (read in this order)
+## 3. Read in this order
 
 1. `CLAUDE.md` — hard rules. **SDD is the default execution mode; direct main-session implementation needs
-   explicit per-task approval.**
-2. `docs/specs/014-core-package-layout.md` + `docs/plans/027-core-package-layout.md` — regenerated; every
-   table transcribes a pasted command.
-3. **`docs/plans/027-derivation-findings.md`** — F0–F11, the evidence base. Treat as evidence, not
-   scripture: it contains two self-corrections.
-4. `docs/plans/027-derivation-brief.md` — env, tooling, the green gate, the coverage rule. Written for
-   subagent consumption; hand it to every implementer.
-5. `docs/plans/027-audit-round-2.md` — §E what is verified-sound (**do not re-open**), §G.1 the eight
-   settled decisions. Historical record; its banner stays.
-6. `docs/adrs/0027`, `0028`, `0029`.
+   explicit per-task approval, and NO implementation code may be written without asking first.**
+2. `docs/specs/014-core-package-layout.md` · `docs/plans/027-core-package-layout.md`
+3. `docs/adrs/0030-reply-channel-exclusivity-probe.md` (**new**, amends ADR 0028 §6.2), `0027`, `0028`, `0029`.
+4. `docs/plans/027-derivation-findings.md` — F0–F13, the evidence base.
+5. `docs/plans/027-audit-round-2.md` §E (verified-sound, do not re-open) and §G.1 (decisions D-A…D-H).
 
-## 4. Next actions
+## 4. The three decisions closed this session
 
-### 4.0 ROUND-3 AUDIT — 3/3 NEEDS-REVISION, **and the findings have now been WORKED** (2026-07-28)
+| | Decision | Chosen | Status |
+|---|---|---|---|
+| **D-I** | The two orphaned expr sentinels (`ErrInvalidExpression`, `ErrExprResultType`) | **LEAVE root**; the `expr` module mints its own with the `msgin/expr:` prefix, **not aliases** | Recorded (ADR 0029 §5.0a, Spec §3.2/§7). **Code not written** — Task 9.5 deletes, Task 10 declares |
+| **D-J** | Reply-channel exclusivity | **PROBE and reject by default** — `msgin.ExclusiveSubscribable{SubscribableChannel; SingleSubscriber() bool}`, `msgin.ErrSharedReplyChannel`, opt-out `endpoint.WithSharedReplyChannel()`. A channel that does **not** implement the probe is **accepted**, keeping the SPI open | Recorded (**ADR 0030**, Spec §5.1, **Plan Task 9.6**). **Code not written** |
+| **D-K** | `ErrExprResultType`'s retry classification | **Wrap in `msgin.Permanent`** — it is `ErrPayloadType`'s expression-domain twin and is deterministic | Recorded (**ADR 0029 §5.0b**, Plan Task 10). **Code not written** |
 
-> **STATUS: all six blockers resolved; every CI gate green.** Verified after the fixes:
->
-> ```
-> go mod tidy -diff        TIDY-CLEAN in all 7 modules (expr-lang gone from go.mod AND go.sum)
-> golangci-lint run ./...  0 issues
-> gofmt -l .               empty (whole tree)
-> seven-module GOWORK=off  GREEN ×7 (build + vet)
-> go test ./... -race -shuffle=on   11 packages, 0 failures
-> coverage -coverpkg=./...          93.4%   (pre-refactor baseline 91.9%)
-> acyclicity gate (corrected form)  EMPTY — the gate now actually works
-> one `// Package` per package      1,1,1,1,1,1  (five subpackage doc.go files added)
-> ```
->
-> Code fixes are recorded in the findings file as **F12**, doc corrections as **F13**.
-> **Everything below this box is the audit as originally reported** — kept because the *reasoning* is what
-> matters for round 4, not the resolved status of each item.
->
-> **All of the above is now COMMITTED** in `1d7fc80` (code) and `3d0b87a` (docs). The review gates have
-> also run — see §4.5. **NOT yet done: the round-4 audit** (rounds 1–3 each found defects the previous
-> round's fixes introduced, and this pass edited the same documents again).
+**D-I's plan-recommendation was wrong and the correction matters.** Plan §9.5.0 had recommended keeping the
+sentinels in root, arguing §3.2's rule "cuts the other way only for packages a consumer imports instead of
+root". Measured, the rule is symmetric: the three shipped adapters mint 51 sentinels of their own **and**
+return root's at 27 file→sentinel pairs. The discriminator is *whose fault it is*.
 
-### 4.5 Review gates — BOTH HAVE RUN (2026-07-28), findings resolved
+## 5. ROUND-4 AUDIT — 3/3 NEEDS-REVISION (2026-07-28)
 
-- **`/security-review`: no qualifying vulnerabilities.** Verified clean: `NewID` (`crypto/rand`, 128-bit),
-  header aliasing across the six rewritten `endpoint` sites (identical sharing to before, not more),
-  the widened `ServeAsync`/`NewInbound` target (chosen at wiring time, never derived from request data),
-  stale-handle eviction, and `Close()` failing *closed*. The `expr.go` deletion is a net **reduction** in
-  attack surface — a tree-wide grep found zero substitute eval paths.
-- **Adversarial code review: REQUEST CHANGES → all five findings fixed in `1d7fc80`.** It found **no
-  semantic drift** in the move itself; it blocked because the split had silently removed two of the
-  project's own mandatory gates (`goleak`, and coverage of the poll-backoff cap).
-- **NOT run: `/code-review ultra`** — the multi-agent cloud review. It is user-triggered and billed; an
-  assistant cannot launch it. What ran was an adversarial reviewer subagent, which is CLAUDE.md's
-  SDD-mandated reviewer but **not** the same gate. Consider running it before merge.
+Three fresh Opus subagents, three lenses, run against the bundle **after** D-I/D-J were recorded. The design
+lens implemented D-J in a worktree and compile-proved its findings.
 
-### 4.6 TWO OPEN DECISIONS — both are the user's, neither should be assumed
+**All three confirmed the generated artifacts and found every defect in hand-written prose** — the same split
+round 3 found. The consistency lens named the root cause, and it is a *class*:
 
-1. **Reply-channel exclusivity.** Narrowing `MessageChannel` demoted it from a compile-time guarantee (at
-   `main`, `DirectChannel` was the *only* type satisfying `MessageChannel`, so a pub-sub reply channel was
-   structurally impossible) to godoc plus the off-by-default `channel.WithSingleSubscriber()`. Two
-   exchanges sharing one pub-sub reply channel now compiles, and the non-owning one receives a full copy
-   of every reply into its `WithUnmatchedReplySink`.
-   **Three independent lenses converged here** — round-3 design (M6), the code reviewer's design residual,
-   and the security scan's only (sub-threshold, 0.75) finding. None individually blocked; together this is
-   the strongest signal of the whole review cycle. The question: *should `NewChannelExchange` reject a
-   non-exclusive reply channel at construction?* CLAUDE.md's sensible-defaults rule argues yes.
-2. **Plan 027 §9.5.0 — the orphaned sentinels.** `ErrInvalidExpression` and `ErrExprResultType` have no
-   producer since `expr.go` left. They were **kept and re-documented** (the reversible choice); removing
-   them is irreversible and still undecided. **Task 12's counts are contingent on it**, and `1d7fc80`
-   moved them again by adding `ErrNilSubscription`: **101→102 exported, 42→43 sentinels**, deliberately
-   NOT edited into the documents so they move once, together with this decision. Task 10 also consumes
-   whatever is decided (`RouteFunc`'s two construction validations wrap `ErrInvalidExpression`).
+> **`1d7fc80`** (5 × `doc.go`, 6 × `go.mod`/`go.sum`, root `main_test.go`, the dead-helper deletion,
+> `ErrNilSubscription`) **moved a dozen measurements. The round-3 pass swept only the two it had flagged
+> (101→102, 42→43) and left the rest.**
 
-#### The audit as originally reported
+The counter-rule adopted for the fix pass: **every generated block names the commit it was derived at, and a
+range ending in `HEAD` is not a pin** — it re-evaluates silently on every commit, which is how §3.6's blast
+radius went stale three times.
 
-Run 2026-07-28 against `0e2dcf0`, three Opus lenses (consistency · design · executability). **The method
-worked where it was applied** — all three independently confirmed the *generated* artifacts:
+### 5.1 Fixes APPLIED this session
 
-- **All 80 §3.2 declaration rows verify exactly** (source, destination, visibility), checked against an
-  independently rebuilt AST dumper. **Zero defects.** This is the artifact that sank rounds 1 and 2.
-- `apidiff` 95/5 reproduces and partitions as claimed (87+6+1+1) with an **empty residual**.
-- Root 14 files · 101 exported symbols · 42 sentinels · the `MessageChannel` census · the dependency graph ·
-  every coverage figure · every traceability link — all reproduced.
+| Block | Was | Now | Finding |
+|---|---|---|---|
+| Spec §3.1 package file inventory | 11/5/1/4/3, no `doc.go` | **12/6/2/5/4**, all five `doc.go` counted; contradicted §3.5 | B1 |
+| Spec §3.2 destination lines | 7 wrong | `channel.go:43`/`:54`, `exchange.go:225/266/279/301/352/382` (11 refs) | B7 |
+| Spec §3.4a test-file frames | 45 "today" | **50**, + a `TestMain` block and the `endpoint` caveat | B8 |
+| Spec §3.4e coverage | root **81.8%** | root **95.3%**; the "fails the 85% gate" rationale replaced with the attribution one | B2 |
+| Spec §3.6 blast radius | 31 files, +239/−191, `..HEAD` | **43 files, +244/−220**, pinned `c83dde9~1..dadc775`, per-module table rebuilt | B6 |
+| Spec §3.6 `go.mod` proof | `git status --short` (**cannot fail**) | committed-range diff; claim re-scoped to "for the requalification" | B5 |
+| Spec §6 rename census | 30/12/35/14 | **31/13/36/15** (the 13th file is `endpoint/doc.go`) | B9 |
+| ADR 0027 | 101, bare `decls`, stale status, stale blast radius | 102, `go run …/decls.go`, committed status, 43/+244/−220 | B11 + B6 echo |
+| Plan Task 2 / 3 / 11a headers | "**DONE (uncommitted)**" | `b6ce7bb` / `b6ce7bb` / `1d7fc80` | B11 |
 
-**Every surviving defect is in hand-written prose, or in a command that was pasted but never run.**
+### 5.2 Fixes — ALL APPLIED (2026-07-28, same session)
 
-#### The two code blockers — the branch is NOT green in the sense CI means
+**All four groups below are DONE.** They are kept in full because the *reasoning* is what a re-audit needs,
+not the tick. Each was worked as a class, not as a list of instances — that is what failed in rounds 1–3.
 
-| # | Defect | Evidence |
+| Group | What | Status |
 |---|---|---|
-| **B1** | **`expr-lang` was never dropped from the satellites.** 6 of 7 `go.mod`s still require it; `go mod tidy` is **dirty in all 6**. CI runs per-module `go mod tidy` + `git diff --exit-code` → **5 of 6 matrix jobs red today.** Spec §9 AC-3/AC-6 both fail, and Spec §1.3's motivating defect ("a consumer using nothing but the SQL adapter still pulls `expr-lang`") is unfixed for exactly the consumer it names. | `grep -rn expr-lang --include='go.mod' .` |
-| **B2** | **`golangci-lint` regressed 0 → 3** (ST1008 in `channel/channel_test.go:122,140,150`, introduced by `b6ce7bb`). CI's lint job is red. The plan defers lint to Task 12, so it went unseen across two committed tasks. | `golangci-lint run ./...` |
+| **A** | Arm-2 staleness sweep — redesigned from a hardcoded name list into an **invariant** | ✅ verified running; yields exactly `WithRelease` |
+| **B** | The Task 9.6 / ADR 0030 defects introduced earlier this session | ✅ all applied |
+| **C** | Three design gaps: ADR 0030 §Topology's second topology, Task 9.6's `channel` coverage arm, **D-K** | ✅ all applied |
+| **D** | Number/godoc/traceability sweeps, incl. Spec §8 obligations 10–13 → Plan Task 11b | ✅ all applied |
 
-**Fix B1 with `GOWORK=off go mod tidy` in all seven modules; B2 by reordering the closure to `(int, error)`.**
+**Plus one class the round-5 auditor flagged before dying, found and fixed by self-check:** the bundle was
+citing **three different pins** for the same measurements (`3d0b87a`, `dadc775`, and bare "at HEAD"). No
+number was wrong — code is byte-identical across all three — but a bare "at HEAD" is unfalsifiable and a
+split pin is a cross-document contradiction in form. **Normalized: every measurement claim in the bundle now
+names `dadc775`.** Verify with `grep -rn "at HEAD" docs/specs/014* docs/plans/027-core* docs/adrs/002[789]* docs/adrs/0030*`
+→ must be empty.
 
-#### The four route blockers — the plan is not executable as written
+#### A · The arm-2 staleness sweep is VACUOUS — redesign it (consistency B3/B4, executability B1)
 
-- **B3 · the acyclicity gate can never pass** (found by all three auditors). `go list -deps` includes its
-  argument packages, so the command published in **four** documents as `# must be EMPTY` prints five lines on
-  a correct tree — and would print six on a broken one, so it cannot even distinguish the cases. The
-  invariant itself **holds**. Fix: append
-  `| grep -vE '^github.com/kartaladev/msgin/(endpoint|routing|transform|channel|resilience)$'`.
-- **B4 · Task 10's provider signatures do not compile** (compile-proven). The plan and Spec §7 specify
-  non-generic `Correlation`/`Release`/`RouteFunc`, but the deleted originals were all `[A any]`, and `A` is
-  load-bearing twice: `compile[A]` type-checks `payload.Field`, and `PayloadOf[A]` **is** the M-6
-  `ErrPayloadType` branch Task 10 mandates. Must be `Correlation[A any]` etc. in plan **and** spec.
-- **B5 · Task 10's acceptance material does not exist.** The plan says to reinstate the deleted `*Expr` test
-  cases "from the ledger, all present today". The ledger holds **two table rows**; none of the 12 deleted
-  test functions are recorded anywhere in `docs/`. Only `git show ab233d9:expr_test.go` has them — name it.
-- **B6 · three mandatory gates depend on untracked `/tmp` artifacts.** Task 12 invokes `decls` (a compiled
-  binary at `/tmp/msgin-derive/decls`) and Spec §8.1 ARM 1 reads `symmap.tsv`. Neither is in the repo; a
-  fresh clone or a `/tmp` reap makes them unrunnable, with no rebuild instructions. **Commit `decls`' source
-  under `docs/plans/027-tools/` and commit `symmap.tsv`.**
+Verified: the published pattern `\b(FilterExpr|RouterExpr|TransformExpr|SplitExpr|WithCorrelationExpr|WithReleaseExpr)\b`
+returns **0 hits workspace-wide** — at `dadc775`, at `3d0b87a`, and at `0e2dcf0`. So:
 
-#### False claims to correct (each convergent across ≥2 auditors)
+- Plan §9.5.1's and Spec §8.1's "**ARM 2: 7 survivors**" lists are **entirely stale**. Every cited line now
+  holds unrelated text (`errors.go:156` is a `WithDefaultChannel` comment; `routing/splitter.go:52` says
+  "Split constructor"; `routing/aggregator_test.go:1276` says `WithReleaseStrategy`).
+- **Plan §9.5.0's new D-I bullet (written by me this session) asserts "3 of arm 2's 7 survivors live in
+  `errors.go:175,176,177`". That is false** — those lines are the sentinel godoc and contain no matched
+  token. An implementer deleting the blocks and re-running the sweep sees no delta and concludes the gate is
+  broken. **Delete that clause.**
+- The **one genuine survivor** the published pattern cannot see is `routing/aggregator.go:316`'s
+  `// (the WithRelease strategy failed)` — `WithRelease` never existed; it is `WithReleaseStrategy`.
+- **Fix:** either broaden arm 2 to the real deleted-name class and re-derive the list by *running* it, or
+  declare arm 2 empty and reduce the checkbox to arm 1's two genuine survivors (`codec.go:33`,
+  `routing/aggregator_test.go:21` — both reproduce exactly). Do not ship a list and a command that disagree.
+  Note `boxMessage`/`nilFuncStep` (11 hits each) are **legitimate package-local copies**, not stale refs, and
+  `endpoint/consumer.go:945`'s `delayFor` is a deliberate historical note.
 
-- **"Five test fakes were deleted, not migrated"** — all five survive; what was deleted is their vestigial
-  `Subscribe` **stubs**. The conclusion holds; the evidence cited to justify a ratified decision does not.
-- **"No `Err*` var elsewhere in the workspace"** — there are **51**, in three shipped adapter packages. The
-  paragraph's design rationale rests on this, and the repo's precedent argues the opposite way.
-- **§4.1's prose** says "the 93" and "the 86" while its own table sums to **95/87**.
-- **"A duplicate package comment is a `go vet` failure"** — *proven false by execution*: vet, build, gofmt
-  and golangci-lint all pass on a duplicate. Task 11's only mechanical check is blind to the defect it names.
-- **§3.6's adapter inventory** is a `c83dde9`-only snapshot presented as the whole-window figure; 5 of 7 rows
-  are stale at HEAD. **Recurrence of round-2 §A2.**
-- **The coverage "baseline" (93.23%) is the post-extraction tree**, not pre-split. True `ab233d9` → HEAD is
-  93.5% → 93.3%, a real −0.26pp, entirely explained by the newly-dead root helpers.
-- **F10.8 lists 6 uncovered blocks; there are 11.** The one that matters: `reliability.go:39`, the `err==nil`
-  arm of the **newly exported** `IsPermanent`. `IsPermanent` and `RetryAfterOf` have **zero direct tests**,
-  and Task 3.5 enumerates no hot-path branches at all — a CLAUDE.md delivery blocker.
-- **Spec §8/§10's godoc obligations have no owning task** — five unmet, two asserted as already done.
-- Plan §Progress says Tasks 2/3 are "DONE, UNCOMMITTED" and tells the next session to commit first; they
-  landed in `b6ce7bb`, one commit *before* the regeneration wrote that they hadn't.
+#### B · My own Task 9.6 / ADR 0030 defects (consistency B10, M10–M13; executability B3, M12; design MINOR 4/5)
 
-#### The rule that would have caught most of this
+- **Plan Task 9.6's blast-radius block is presented as `grep` output and is not.** It opens with a `$` prompt
+  and shows 11 annotated lines; the real command emits **25**. Fourteen `endpoint/exchange_test.go` sites are
+  dropped (all verified `channel.NewDirectChannel()`, so the conclusion holds). **Paste the real output, or
+  relabel it a derived summary with the command that produced it.**
+- **"it is exactly one site" is wrong.** It is one *test* with **two** constructions: `exA` at
+  `exchange_test.go:446` and `exB` at `:453`, both over the same plain pub-sub reply. Spec §5.1 and ADR 0030
+  say "its **first** exchange" — both understate it. Plan Task 9.6 says "exA **and** exB" correctly.
+- **Task 9.6's "add the opt-out **in the default-fan-out case**" is not expressible.** The table's per-case
+  field is `opts []channel.PubSubOption` (channel options, applied at `:444`); both constructions sit in the
+  shared `t.Run` body. **Restate as:** add `endpoint.WithSharedReplyChannel()` **unconditionally** to both;
+  case 2 is unaffected because its channel passes the probe and is rejected later by `Subscribe` with
+  `ErrChannelSubscribed`.
+- **Task 9.6's justification for the test fake is false.** It says "no in-tree type can produce" the
+  probe-absent arm; `nilSubChannel` (`exchange_test.go:120`) **is** exactly that. The conclusion survives —
+  it returns `(nil, nil)` and is rejected by the `ErrNilSubscription` guard — so restate as "no in-tree type
+  can produce an **accepted** probe-absent arm".
+- **ADR 0030 §2's `PubSub` sentence is unreachable AND destructive.** `*channel.PubSub` has no `Send`, so it
+  can never be a reply channel (`vet` confirms). Worse, following the advice makes every topic
+  single-subscriber registry-wide. **Delete the sentence.**
+- **ADR 0030's "`DirectChannel` was the only type satisfying `MessageChannel`" drops Spec §1's caveat** —
+  `aggregator_test.go:222`'s `failNthChannel` also did. Add "outside a test fake".
+- **Task 9.6's "`apidiff` reports exactly two additions" contradicts §9.5.0's table** (8 total). Say "two
+  **beyond** the 6 measured at `3d0b87a`, for 8 total".
+- **Plan line ~402's `**97 / 8** once D-I and D-J land.` lost its `> ` blockquote prefix** and renders outside
+  the quote.
+- Spec §3.2/§7 cite `errors.go:168`/`:193` for the sentinels; `decls.go` reports **180**/**206** (168/193 are
+  godoc-block starts). Task 10 deliberately uses the range form — **state that convention**, since every
+  other citation in the bundle is a declaration line.
 
-The consistency lens named the shared signature, and it is the right frame for round 4:
+#### C · Three design gaps — real specification work (design B1, B2, B3)
 
-> **Every surviving defect is a number or command pinned to an intermediate state** — Task 7a, the derivation
-> working tree, the root module — **and then presented as a property of the finished branch.**
+- **D1 · ADR 0030 §Topology enumerates ONE topology and claims completeness.** It reasons only about N
+  instances each holding their **own in-memory** pub-sub channel. A **local handle onto shared external
+  state** — a broker-backed reply channel (NATS subject, Redis pub/sub, SSE stream) — can implement the probe
+  *honestly* (one local subscriber), report `true`, and still fan every reply to all N instances, so N−1
+  non-owners each write a full copy of another instance's reply to their `WithUnmatchedReplySink`. That is
+  ADR 0030's own Context, cross-process, now *endorsed* by a passing probe. `ExclusiveSubscribable` is **root
+  SPI** — third-party adapters are exactly the population that will implement it. **The Return Address seam
+  is unaffected** (verified: `adapter/http/exchange.go:58` implements `msgin.RequestReplyExchange` directly
+  and never touches `NewChannelExchange`). Fixes: add the second topology to ADR 0030 §Topology **and**
+  Spec §10's D-J bullet; make `NewChannelExchange`'s godoc state **four** arms, not three (the fourth being
+  "accepted-exclusive-but-only-within-this-process"); require `SingleSubscriber()` to be **safe for concurrent
+  use** in its godoc.
+- **D2 · Task 9.6 adds two exported methods to a 100%-covered package, enumerates zero tests for them, and
+  prescribes the one measurement that cannot see it.** Compile-proven by the auditor: with D-J implemented,
+  `channel` falls 100.0% → **98.3%** (`direct.go` and `pubsub.go` `SingleSubscriber` both 0.0%), while
+  `-coverpkg=./...` reports both at **100%** because the exercising tests live in `endpoint`. Nothing in
+  `channel` pins `PublishSubscribeChannel.SingleSubscriber() == cfg.single`, which is the entire load-bearing
+  link between D-F and D-J. **Fix:** add a `channel`-package table test for both types (option present and
+  absent), and require **both** coverage arms in Verify — per-package (`channel` stays 100.0%) **and**
+  `-coverpkg`. Per-package is the only arm that can see this class.
+- **D3 · Record D-K.** `ErrExprResultType` is an **evaluation-time** error on the retry hot path.
+  Verified: `IsPermanent` (`reliability.go:38`) covers only `ErrPayloadType`/`ErrPayloadDecode`/
+  `ErrPayloadTooLarge`, and the deleted originals never wrapped it — so a deterministic result-type mismatch
+  is classified **transient** and retried `MaxAttempts` times (`N × MaxAttempts` across N instances per
+  Spec §10). D-I closes the only door that could fix this in root. **Decision D-K: the expr providers wrap it
+  in `msgin.Permanent`.** Record in Plan Task 10's hot-path list and ADR 0029 §5.0a, and **split §5.0a's
+  treatment of the two sentinels** — its "§5 protects *where* the error is raised, not *which* package
+  declares it" argument holds for `ErrInvalidExpression` (construction-time) and does **not** transfer to
+  `ErrExprResultType`.
 
-**Adopt one rule: every pasted command carries its explicit commit range and module scope.** That single
-change catches B1, B3, §3.6, the coverage baseline, and the 93/86 arithmetic in one pass. Do **not** work
-round 4 as "fix these ~20 items" — that is what has failed three times.
+#### D · Sweeps and small corrections
 
-### 4.1 (superseded — the round-3 audit above has run)
+- **Number sweep** (all one class, all `1d7fc80` drift): Spec §422's census block prints `42` → **43**;
+  Plan line ~544 "`apidiff` still reports 95/**5**" → **95/6**; Plan lines ~871/~946 "reconciled against
+  §4.1's **four** classes" → **five** classes / 97; this file's own §7 below.
+- **Godoc obligations with no owning bullet** (design MINOR 7 — add to Spec §8's list, owned by Task 11):
+  `SubscribableChannel`'s godoc must cross-reference `ExclusiveSubscribable` (otherwise the optional
+  capability is undiscoverable from its supertype, and the accept-unknown arm becomes permanent for exactly
+  the channels most likely to fan out); **`WithSharedReplyChannel()` has no godoc bullet at all**, though
+  CLAUDE.md's sensible-defaults rule names option godoc specifically.
+- **`ErrSharedReplyChannel`'s message contradicts its decided meaning** (design MINOR 1). The commonest
+  trigger is a **sole** exchange over a plain pub-sub channel with no other subscriber — where the channel
+  *is* exclusive in fact. `"reply channel is not exclusive to this exchange"` sends the reader hunting for a
+  second subscriber that does not exist. Use `"msgin: reply channel permits multiple subscribers; it is not
+  exclusive to this exchange"`.
+- **`NewChannelExchange`'s godoc must enumerate `ErrChannelSubscribed`** (design MINOR 2) — it is returned
+  unwrapped from `reply.Subscribe` at `exchange.go:250` and is not in the doc's error list. Also state that
+  an unknown third-party fan-out channel is **accepted by design**.
+- **`WithSharedReplyChannel()` does not confer shareability** (design MINOR 3) — on a `DirectChannel` the
+  second exchange still gets `ErrChannelSubscribed`. Its godoc must say it *suppresses the probe*. (A wrapper
+  type embedding `*PublishSubscribeChannel` can shadow the method to report `true` — worth one sentence on
+  `ExclusiveSubscribable`.)
+- **Traceability:** ADR 0029's header decision list must add **D-I** (Spec §47 and Plan §107 already say it
+  carries it); ADR 0029 §5.0a needs the **NOT-YET-IMPLEMENTED** marker ADR 0030's status line uses (it says
+  "They are deleted from root" in the present tense; `errors.go:180,206` still declare both);
+  `docs/rfcs/0002-eip-alignment.md` needs a **backlink to ADR 0030** (ADR 0030 cites it; CLAUDE.md requires
+  both directions); ADR 0028:165 cites `OutboundAdapter` at `spi.go:42` → **`spi.go:56`**.
+- **CLAUDE.md's D-I paragraph is in the wrong tense** — it says the sentinels "leave root" and "Root keeps a
+  producer for every sentinel it declares", both false until Task 9.5 runs. CLAUDE.md is read first by every
+  session. Mark it "decided; lands in Plan 027 Task 9.5".
+- **Plan task hygiene** (executability M4/M5/M6/M10/M11/M13): Task 9.5's Verify demands the **eight**-module
+  loop but `expr` does not exist until Task 10 → Tasks 9/9.5/9.6 verify **seven**. Task 9's branch list names
+  `Or`-with-nil-when-left-is-true but omits the mirror **`And`-with-nil-when-left-is-false**. Task 9's
+  `apidiff` step has no baseline (`routing`/`transform` were never snapshotted; root's delta is genuinely
+  zero). Task 9.5's HTTP capability cases need the three target builders (`newQueueTarget` etc., unexported
+  in root's `msgin_test`) **reimplemented** in two other packages — ~6 subtests of unbudgeted scaffolding.
+  Task 10 has no checkbox for `go.work`'s `use ./expr` or for `expr-lang/expr` as its `require`. Sizing:
+  consider re-marking 9.5 as **M** and splitting Task 10 into 10a (module + CI + providers + `errors.go`) /
+  10b (12-function parity).
 
-CLAUDE.md mandates an independent adversarial audit of the **complete bundle together** (spec + ADRs + plan)
-before implementation. Implementation has in this case *preceded* the audit by design (that was the whole
-method change), so the round-3 audit is now checking a bundle that describes **code that actually exists** —
-tell the auditors that explicitly, and that they may verify any claim against the tree.
+### 5.3 ROUND 5 — NEEDS-REVISION (3 blockers, 8 minors) — ALL APPLIED
 
-Use fresh Opus subagents, three lenses as in rounds 1–2. **The consistency lens should have little to find**
-— that is the test of whether the method worked. Prime them with:
-- Every number should be reproducible by the command printed beside it. Re-run a sample.
-- §E of round 2 lists what is settled; re-opening it is out of scope.
-- The eight decisions D-A…D-H are **user decisions**, not open questions.
+A first attempt died on an API session limit; the retry at 20:31 WIB completed. It verified the round-4 fix
+pass claim-group by claim-group, **planted probe comments to test the new arm-2 invariant**, and independently
+confirmed the tree green. Verdict **NEEDS-REVISION**. Everything below is now fixed.
 
-### 4.2 Pre-merge gates — NOT YET RUN
+| # | Finding | Fix |
+|---|---|---|
+| **B1** | Spec §3.4a: the round-4 pass **relabelled** a test-file count from "today" to the pin `c83dde9` **without re-running it**. True value at `c83dde9` is **44** (`capability_test.go` arrived at `b6ce7bb`), making the row false *and* identical to the frame above it | Frame corrected to `b6ce7bb`; Global Constraint 0 gained **"a relabel is not a re-measurement"** |
+| **B2** | The extraction's behavior-preservation *proof* — *"211 `Test*`/`Example*` before, 211 after, identical name sets"* — **reproduces in no frame**. Measured: `ab233d9` 224 · `c83dde9` 211 · `dadc775` 221 unique. Sets differ by 17 out / 14 in | Name-set argument **withdrawn, not repaired**; the normalised per-file diff is now the sole claim. Corrected in Spec §2, Spec AC-5, Plan Task 4–8 |
+| **B3** | §3.6's blast radius was swept in ADR 0027's *Context* and **left stale in its Consequences and in Plan §20** — the diagnosed class recurring inside the pass that diagnosed it | Both re-pinned to `c83dde9~1..dadc775` → 43 files, +244/−220 |
+| M4 | **Global Constraint 0 published `c83dde9~1..HEAD` as its own example** — the rule mandated the anti-pattern Spec §3.6/B6 blocks | Rewritten: both ends must be SHAs; `HEAD` is a cursor, not a name |
+| M5 | Arm 2's stated scope was overclaimed. Probe comments proved it is **shape-blind** (only `With\|Err\|New`, so 4 of the 6 `*Expr` names and the `StreamingSource` rename are invisible) and **block-comment-blind** | Blind spots now stated **in the command block**; the "asserts the property" wording narrowed |
+| M6 | `WithInstanceID`'s allow-list justification was false — `adapter/cron` **is** scanned, and the mention is a deliberate reference to a deleted symbol | Moved to the "deliberate negative" row with `ErrNoPayloadCodec` |
+| M7 | §8: *"four unmet, one half-met"* vs a table showing **3 UNMET + 1 HALF** | Corrected to 3 + 1 + the four D-J obligations = 8 Task 11 checkboxes |
+| M8 | Spec §3.2 sentinel block: `dadc775` header, `3d0b87a` figure beside it | Unified |
+| M9 | The workspace error census was **hand-patched, not re-run** — published descending by count when `sort \| uniq -c` emits path order | Regenerated verbatim, with a note on the sort order |
+| M10 | My B9 insertion left a space-indented line after a blockquote; CommonMark **lazy continuation** absorbed it and the following sentence, orphaning a bullet list | Blank line restored, sentence returned to body text |
+| M11 | **`CLAUDE.md` said root `go test ./...` covers 6 packages; it is 11** — restructure-induced staleness in the file every session reads first | Corrected, with the `go list` command inline |
 
-**`/code-review` and `/security-review` over `main..HEAD` have never run on this branch.** CLAUDE.md makes
-both hard preconditions before merging, and the branch carries a large breaking refactor plus new public API
-(`SubscribableChannel`, `WithSingleSubscriber`, `IsPermanent`, `RetryAfterOf`, `NewID`, `EventDrivenSource`).
-The round-3 design audit does **not** substitute for either. `c83dde9`'s commit body records that it was
-committed without them, at the user's explicit direction.
+**Verified clean by round 5:** claim group **(c)** (round-4 defects in new material) and **(d)** (the three
+design fixes) — including that the `channel` 100.0% → 98.3% coverage claim is *arithmetically exact*
+(118 statements → 118/120 = 98.33%). All 80 §3.2 declaration rows re-verified mechanically. §4's group
+decomposition is an exact partition. All cross-links resolve both ways.
 
-### 4.3 Open items the regeneration surfaced (F11) — small, real
+**Re-verified after these fixes:** `go list ./...` = 11 · test files at `b6ce7bb` = 45 · blast radius
+43/+244/−220 · 102 exported / 43 sentinels · arm 2 yields exactly `WithRelease` · seven modules green ·
+`go test ./... -race -shuffle=on` green.
 
-- **F11.6** root's `boxMessage` and `nilFuncStep` are now **dead code**. `unused` is disabled, so nothing
-  reports it. Delete them.
-- **F11.7** the staleness sweep needs a **second arm for deleted symbols**: 7 `*Expr` godoc mentions survive
-  that a moved-symbol grep structurally cannot see. Related: `ErrInvalidExpression` and `ErrExprResultType`
-  are **orphaned in root** — a decision Task 10 (the `expr` module) owes.
-- **F11.8** **none of the five subpackages has a `doc.go`**, though Spec 014 §3.5 makes them normative.
-  `ST1000` is off, so the gate is blind to it.
-- **F11.5** the capability test covers 3 targets × **3** sites; Spec §9.4 requires **8**. The four missing
-  are exactly the sites both `MessageChannel` censuses missed.
-- Spec 011 §6 Phases 3/4 carry no ✅ DELIVERED marker although SSE shipped in Plans 025/026. Deliberately
-  left — marking a phase delivered is a claim needing its own verification.
+## 6. Next actions
 
-### 4.4 Then
+1. **DONE — the design bundle is committed.** Rounds 4 and 5 both ran, both fix passes are applied,
+   re-verified and committed. **A round 6 is a judgement call, not an obligation**: round 5's blockers were
+   all in *pre-existing* prose or in the round-4 pass's own edits, and the round-5 fixes were smaller and
+   command-verified — but every round so far has found something in the previous round's fixes, so the base
+   rate is not zero. If you run one, brief it on **the handover's own git facts too** — that is the gap that
+   let a false `main` SHA survive five lenses.
+2. **Then implementation**, Task 9 → 9.5 → 9.6 → 10 → 11 → 12. **Task 11 must run AFTER Task 9.6** (Spec §8
+   obligations 10–13 document symbols 9.6 creates).
+4. **Then implementation**, in plan order: Task 9 → 9.5 → 9.6 → 10 → 11 → 12. **Ask before writing any
+   implementation code, and default to SDD** (fresh implementer subagent per task, coordinator verifies green
+   and commits, adversarial reviewer before delivery). Plan approval does **not** authorize the execution
+   mode.
+5. **Before merge:** `/code-review` and `/security-review` over `main..HEAD` (both have run per-increment;
+   the whole-branch pass has not). Consider `/code-review ultra` — it is user-triggered and billed, and an
+   assistant cannot launch it.
 
-Plan 027's remaining tasks: **Task 9** (named behavior types/combinators — note D-E already landed early),
-**Task 10** (the `expr` provider module, which must adopt the orphaned sentinels), **Task 11** (migration
-guide, doc sync, whole-branch gate).
+## 7. Gotchas & environment
 
-## 5. What this method proved (the point of the exercise)
-
-Hand-derivation failed twice; mechanical derivation caught all of the following, each compiler- or
-command-verified. Full detail in the findings file.
-
-- **`apidiff`: 95 removals, 5 additions.** Decomposition verified as a partition by set arithmetic
-  (87 relocated + 6 `*Expr` deleted + 1 rename + 1 `MessageChannel.Subscribe`), empty residual.
-- **§3.2 splits: 80 declarations across six files, zero unlocated.** Round-2 §B3 charged the hand-written
-  table with omitting five declarations — **it omitted thirty-one**.
-- **The `MessageChannel` census is NINE**, not ADR 0028's "four of five" nor round-2's corrected "six of
-  seven". The two both missed — `adapter/http/inbound.go:116` and `adapter/http/stdlib/inbound.go:33` — are
-  in the HTTP adapter; both censuses searched only the pattern core. **Now written as an invariant with a
-  check command, not a count** — round 2 corrected the number and the number broke again.
-- **42 error sentinels**, not 89.
-- **ADR 0028 §7's semantics table was missing a row**: a stale handle's `Cancel` after a resubscribe would
-  have silently evicted the *new* subscriber — a latent bug the "decided" table would have shipped.
-- **`endpoint` read `Message`'s unexported fields at 6 sites, not the 4 the compiler printed** — Go's
-  10-error cap hid `producer.go:423`. **Never enumerate a change set from build stderr.** Likewise `go vet`
-  showed only 1 of 3 capability failures; `go test -c` showed all three.
-- **Coverage attribution:** default per-package coverage shows root falling 99.3% → 81.8%, *below* the 85%
-  gate, purely because blackbox tests moved to sibling packages. `-coverpkg=./...` shows 93.2%+ against a
-  91.9% baseline. **Every extraction task must verify with `-coverpkg`** or the gate fails falsely.
-- **Task ordering (F3):** Task 1 destroys the only driver for three *core* aggregator branches; their sole
-  fallible release strategy was `WithReleaseExpr`. **D-E is a Task 1 prerequisite, not Task 9 work.**
-- **Test identifiers cross package boundaries** (F2): deleting `expr_test.go` left the root test binary red.
-  `go build` cannot see it. §3.4 must inventory test *identifiers*, not only test *files*.
-- **Placement cannot be reference-counted:** `queuechannel_e2e_test.go` has 3 `endpoint` refs vs 1 `channel`
-  ref and belongs to `channel` — the endpoint symbols are the harness, not the SUT.
-- **`retry_test.go` does not split** (confirms §A7); zero case-level splits.
-- **Adapter blast radius: 28 files, 154 occurrences = 115 code + 39 godoc-comment-only.** The comment-only
-  ones break nothing, so a task that stops at "green" leaves them silently wrong. Zero new module edges.
-
-## 6. Gotchas & environment
-
-- **`export GOTOOLCHAIN=go1.25.12`** always; **`export PATH="$(go env GOPATH)/bin:$PATH"`** — `goimports`,
-  `gofumpt`, `gopls`, `govulncheck`, `apidiff`, `gorelease` all live there and none are on `PATH`.
-- **`./...` is not the repo** — seven modules. Use the per-module `GOWORK=off` loop in the brief.
-- **`go build ./...` does not compile tests**; `go vet` does, but stops after one type-error batch — use
+- **`export GOTOOLCHAIN=go1.25.12`** always; **`export PATH="$(go env GOPATH)/bin:$PATH"`** — `apidiff`,
+  `gopls`, `govulncheck`, `gofumpt`, `gorelease` live there and none are on `PATH`.
+- **`./...` is not the repo** — seven modules; CI runs each standalone with `GOWORK=off`.
+- **`go build ./...` does not compile tests**; `go vet` does but stops after one type-error batch — use
   `go test -c` for a full transcript.
-- **The `apidiff` baseline is at `/tmp/msgin-derive/root.api`** (NOT in `msgin-derive-artifacts/`, which an
-  earlier brief claimed). `/tmp` is not durable — **re-capture it into the repo or a durable path before
-  relying on it again.**
-- Reusable tooling from the derivation run: `decls` (AST decl dump) and `qualify` (AST-based
-  requalification; **a regex version corrupted EIP pattern names in godoc — never go back to regex**).
-  Sources in the session scratchpad; rebuild if `/tmp` was cleared.
+- **Measured at `dadc775`** (all re-run this session): root **14** source files · **102** exported non-method
+  symbols · **43** sentinels · `apidiff` **95 removals / 6 additions** · `-coverpkg=./...` **93.4%** ·
+  default-profile root **95.3%**. Projected after D-I + D-J: **102 / 42 / 97 / 8**. Task 12 **measures**.
 - `.golangci.yml` sets `linters.default: none` — **`ST1000` and `unused` are both off**, so missing package
   docs and dead code after a move are reported by nothing.
 - `gopls` has **no Move refactoring**.
-- `.github/workflows/ci.yml` omits `adapter/cron/crontest` from both jobs — pre-existing gap.
+- `.github/workflows/ci.yml` omits `adapter/cron/crontest` from both jobs — pre-existing; Task 10 fixes it.
 - Repo has **zero git tags** — do NOT propose tagging.
 - Never commit `.claude/settings.json`; stage explicit pathspecs.
+- The `../msgin-derive` worktree is merged and redundant; safe to `git worktree remove`.
