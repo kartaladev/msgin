@@ -159,9 +159,26 @@ returned `error` — exactly like a Go predicate's error today — into the runt
 - **Status:** **Accepted (2026-07-21) — implemented in [Plan 018](../plans/018-expr-sugar.md), merged as
   `e7ef491`; then REMOVED FROM THE CORE by Plan 027 (`c83dde9`), like the rest of this ADR's `*Expr` surface.**
   All four Phase-4 constructors (`TransformExpr`, `SplitExpr`, `WithCorrelationExpr`, `WithReleaseExpr`) are
-  absent from the tree today — `grep -rn --include='*.go' 'TransformExpr|SplitExpr|WithCorrelationExpr|WithReleaseExpr'`
-  returns nothing — and are to be reborn as providers in the separate `expr` module (Plan 027 Task 10,
-  [ADR 0029](0029-eip-lexical-alignment.md)). *(Status corrected 2026-07-28, audit round 6 finding M-3; it read
+  absent from the tree today:
+
+  ```
+  $ grep -rEn --include='*.go' 'TransformExpr|SplitExpr|WithCorrelationExpr|WithReleaseExpr' .
+  $ echo $?
+  1
+  ```
+
+  — and are to be reborn as providers in the separate `expr` module (Plan 027 Task 10,
+  [ADR 0029](0029-eip-lexical-alignment.md)).
+
+  > *Evidence corrected 2026-07-28, audit round 7 finding M-M4.* **The conclusion was true and the evidence was
+  > vacuous.** This bullet published the command **without `-E` and without a path operand**, so `grep` searched
+  > for the **literal string** `TransformExpr|SplitExpr|WithCorrelationExpr|WithReleaseExpr` — which cannot
+  > match anything, in any tree, ever. A "returns nothing" that is guaranteed by construction proves nothing
+  > (round 4's counter-rule: *a proof that cannot fail is not a proof*). Negative control for the corrected
+  > form: `grep -rEn --include='*.go' 'TransformExpr|SplitExpr|Transform\(' .` → **4** hits, so the `-E` form
+  > does match when there is something to match.
+
+  *(Status corrected 2026-07-28, audit round 6 finding M-3; it read
   "Proposed (2026-07-21) — … pending the adversarial audit + Plan 018 + implementation go-ahead".)*
   Realizes the "future `Splitter`/`Aggregator`/`Transformer` expr support reusing §3" that
   the base ADR named as deferred, non-breaking work (Consequences → Neutral). **Adds no new dependency** (`expr`

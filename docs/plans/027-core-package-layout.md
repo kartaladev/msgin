@@ -819,8 +819,24 @@ green (not eight — `expr` does not exist until Task 10);
 `gopls` for navigation; `table-test` for the branch table; blackbox `_test` packages only.
 
 - [ ] **Root — `channel.go`:** add `ExclusiveSubscribable` (embedding `SubscribableChannel`, one method
-      `SingleSubscriber() bool`). Godoc must state it is a report about **this channel in this process**, not
-      a distributed guarantee, and cross-reference `channel.WithSingleSubscriber`.
+      `SingleSubscriber() bool`). **Its godoc is the VERBATIM normative text of
+      [ADR 0030 §1](../adrs/0030-reply-channel-exclusivity-probe.md) — copy it, do not paraphrase.** Add the
+      `channel.WithSingleSubscriber` cross-reference.
+
+      > **ROUND-7 CORRECTION (R-B1 / D-B5 / X-B1).** This checkbox previously read *"Godoc must state it is a
+      > report about **this channel in this process**, not a distributed guarantee"*. That is D-L's
+      > **superseded handle-local** wording, and it was the last live use of it in the bundle — ADR 0030 §1
+      > carries the same phrase only inside a labelled `SUPERSEDED IN PLACE` block. The round-6 pass rewrote
+      > the ADR and the spec and never opened **the one checkbox that actually writes the text**.
+      >
+      > It is not a paraphrase difference. Under **D-L as revised in round 7** the predicate counts
+      > **recipients reached, not processes traversed**: a per-instance NATS `_INBOX` reply subject — the
+      > canonical Return Address channel — answers `true`, while a broadcast subject answers `false`. The
+      > withdrawn wording ("this channel in this process") answers `true` for **both**.
+      >
+      > **Task 11b's obligation-11 gate is a phrase match against ADR 0030 §1's exact lines** (Spec §8.0b),
+      > so a paraphrase fails it with no diagnosis. `go doc` reproduces the comment's own line breaks —
+      > preserve them.
 - [ ] **Root — `errors.go`:** add `ErrSharedReplyChannel`. Godoc names both remedies
       (`channel.WithSingleSubscriber()` on the channel, or `endpoint.WithSharedReplyChannel()` on the
       exchange) and states the consequence being prevented — a full copy of every reply reaching another
@@ -1450,44 +1466,101 @@ ledger, and only then start editing.**
 g() { if eval "$2" >/dev/null 2>&1; then echo "GREEN(bad, no work needed): $1"; else echo "RED: $1"; fi; }
 M=github.com/kartaladev/msgin
 g 8.10 "go doc \$M.SubscribableChannel | grep -q ExclusiveSubscribable"
-g 8.11 "go doc \$M.ExclusiveSubscribable | grep -Eq 'safe for concurrent use' && \
-        go doc \$M.ExclusiveSubscribable | grep -Eq 'constant for the lifetime'"
-g 8.12 "[ \"\$(go doc \$M/endpoint.NewChannelExchange | grep -c 'ErrSharedReplyChannel\|ErrChannelSubscribed\|does not implement\|within this process')\" -ge 4 ]"
-g 8.13 "go doc \$M/endpoint.WithSharedReplyChannel | grep -qi suppress"
+g 8.11 "go doc \$M.ExclusiveSubscribable | grep -q 'MUST NOT compute it from a live subscriber count' && \
+        go doc \$M.ExclusiveSubscribable | grep -q 'reaches at most one recipient' && \
+        go doc \$M.ExclusiveSubscribable | grep -q 'any recipient other than the single subscriber registered on it' && \
+        go doc \$M.ExclusiveSubscribable | grep -q 'recipient in another process' && \
+        go doc \$M.ExclusiveSubscribable | grep -Eq 'constant for the lifetime' && \
+        go doc \$M.ExclusiveSubscribable | grep -Eq 'safe for concurrent use' && \
+        go doc \$M.ExclusiveSubscribable | grep -q 'MUST NOT block and MUST NOT panic'"
+g 8.11a "go doc \$M.ExclusiveSubscribable | grep -Eq 'promotion'"
+g 8.12 "go doc \$M/endpoint.NewChannelExchange | grep -q ErrSharedReplyChannel && \
+        go doc \$M/endpoint.NewChannelExchange | grep -q ErrChannelSubscribed && \
+        go doc \$M/endpoint.NewChannelExchange | grep -q 'does not implement' && \
+        go doc \$M/endpoint.NewChannelExchange | grep -q 'within this process'"
+g 8.13 "go doc \$M/endpoint.WithSharedReplyChannel | grep -qi suppress && \
+        go doc \$M/endpoint.WithSharedReplyChannel | grep -q ErrChannelSubscribed"
 g 8.1  "grep -rn -i 'correlation identifier' --include='*.go' ."
 g 8.3  "grep -rn -i 'amqp' --include='*.go' . | grep -q 'spi.go'"
 g 8.4a "go doc \$M/routing.CorrelationStrategy | grep -qi spring"
 g 8.4b "go doc \$M/routing.ReleaseStrategy | grep -qi spring"
+g 8.4c "go doc \$M/routing.Predicate  | grep -qi spring"
+g 8.4d "go doc \$M/routing.RouteFunc  | grep -qi spring"
+g 8.4e "go doc \$M/routing.SplitFunc  | grep -qi spring"
+g 8.4f "go doc \$M/transform.Transformer | grep -qi spring"
 g 8.7  "grep -q -i QueueChannel adapter/http/inbound.go && grep -q -i QueueChannel adapter/http/stdlib/inbound.go"
 g 11c1 "go doc \$M/channel.WithSingleSubscriber | grep -Eqi 'single-process|per-process'"
-g 11c2 "go doc \$M.RetryPolicy | grep -qi instance"
+g 11c2 "go doc \$M.RetryPolicy | grep -Eq 'per instance|N × MaxAttempts'"
 ```
 
-**Pasted output of exactly that block, run on the untouched tree at `aae6160`:**
+**Pasted output of exactly that block, run on the tree at `c4582ba`:**
 
 ```
 RED: 8.10
 RED: 8.11
+RED: 8.11a
 RED: 8.12
 RED: 8.13
 RED: 8.1
 RED: 8.3
 RED: 8.4a
 RED: 8.4b
+RED: 8.4c
+RED: 8.4d
+RED: 8.4e
+RED: 8.4f
 RED: 8.7
 RED: 11c1
 RED: 11c2
 ```
 
-Two of them are RED for the *"symbol does not exist yet"* reason, which `go doc` reports explicitly —
-`doc: no symbol ExclusiveSubscribable in package github.com/kartaladev/msgin` (8.11) and
-`doc: no symbol WithSharedReplyChannel in package …/endpoint` (8.13). 8.12 is RED on the **threshold**: the
-raw `grep -c` is **1** today, matching pre-existing prose at `endpoint/exchange.go:210-211`, which is exactly
-why the bar is `>= 4` and not `>= 1`.
+Most are RED for the *"symbol does not exist yet"* reason, which `go doc` reports explicitly —
+`doc: no symbol ExclusiveSubscribable in package github.com/kartaladev/msgin` (8.11, 8.11a),
+`doc: no symbol WithSharedReplyChannel in package …/endpoint` (8.13), and the same for the four Task 9 types
+(8.4c–8.4f). 8.12 is RED because `does not implement` and `within this process` are absent from
+`NewChannelExchange`'s godoc today; the pre-existing `ErrChannelSubscribed` prose at
+`endpoint/exchange.go:210-211` satisfies only one conjunct.
 
-*(§8.12's threshold is `>= 4`, not `>= 1`, because the obligation is a **four-item error/outcome list**; a
-`>= 1` count was already satisfied by unrelated prose. §8.11 is an **AND of two** property phrases, because a
-single word can be matched incidentally.)*
+> **ROUND-7 CORRECTION (R-B3 / X-B8 / D-M1 / X-M7).** This block is now **diff-identical in coverage to Spec
+> §8.0b**, which is the normative set. Four defects were fixed:
+>
+> - **8.11 had two conjuncts where the spec has seven**, and the two it dropped were *precisely D-L's
+>   substance* — the end-to-end predicate and the cross-process MUST. An implementer could have written the
+>   **superseded handle-local godoc**, added "constant for the lifetime" and "safe for concurrent use", and
+>   turned every gate they actually ran GREEN while shipping a contract that contradicts D-L. Combined with
+>   Task 9.6's stale checkbox (R-B1, corrected above), that was a complete green-but-wrong path.
+> - **8.11a did not exist here at all** while the Risks table claimed Task 11b/11c owned all thirteen
+>   obligations — §8's founding failure mode (an obligation with no owning gate) reproduced inside the fix
+>   for it.
+> - **8.12 counted LINES, not matches.** `grep -c 'A\|B\|C\|D' … -ge 4` yields a **false RED** whenever two of
+>   the four phrases wrap onto one `go doc` line, and a **false GREEN** if one phrase appears on four lines.
+>   It is now an AND of four independent `grep -q`s, the shape 8.11 already used. **Spec §8.0b is corrected to
+>   match.**
+> - **11c2 matched a single incidental word** — `grep -qi instance` is satisfied by *"for instance"* or *"this
+>   instance"*. That is the exact class round 6 rejected for the old §8.11 ("concurrent" matching
+>   incidentally). Tightened to `per instance|N × MaxAttempts`, the phrase Spec §8.0a(d) already uses.
+>
+> **Standing check, now a Global Constraint:** this block and Spec §8.0b must stay **diff-identical in
+> coverage**. They diverged silently because both sets were RED, so nothing caught it until an auditor built
+> the comparison table by hand.
+
+> **ROUND-7 CORRECTION (X-B8) — this baseline is pinned to the wrong tree for some of its gates.** The block
+> above is RED at `c4582ba`, the **untouched** tree. But Task 11 runs **after Task 9.6** (stated at the head of
+> this task), and Task 9.6 writes the very godoc that 8.10, 8.11, 8.11a, 8.12 and 8.13 check. **At Task 11's
+> actual start those five are expected to be GREEN**, and a worker following *"every line must print RED"*
+> literally cannot proceed.
+>
+> **The rule (round-7 counter-rule 8): a RED baseline is pinned to the tree at ITS OWN task's start, not to
+> the untouched tree.** Split accordingly:
+>
+> | Gate | RED at | Turned GREEN by |
+> |---|---|---|
+> | 8.10 · 8.11 · 8.11a · 8.12 · 8.13 | **Task 9.6's** start | Task 9.6 (it writes the godoc; §8 obligations 10–13 are its acceptance criteria) |
+> | 8.4c · 8.4d · 8.4e · 8.4f | **Task 9's** start | Task 9 (the four named behavior types do not exist before it) |
+> | 8.1 · 8.3 · 8.4a · 8.4b · 8.7 · 11c1 · 11c2 | **Task 11's** start | Task 11 — these are the only gates Task 11 itself turns green |
+>
+> Task 11's own Verify asserts the **first two groups are already GREEN on arrival** (a regression check on
+> Tasks 9 and 9.6) and the **third group goes RED → GREEN** within Task 11.
 
 - [ ] **§8.10 — `SubscribableChannel`'s godoc cross-references `ExclusiveSubscribable`** (D-J). Without it the
       optional capability is undiscoverable from its own supertype, and a third-party channel author never

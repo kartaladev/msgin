@@ -26,6 +26,17 @@
   ([audit round 2 §G.1](../plans/027-audit-round-2.md)). **D-C** (`Subscription` → root `channel.go`) and
   **D-H** (`Message` field access — §6a) are recorded here too; **D-D**/**D-E** belong to ADR 0029 and
   **D-F** to ADR 0028.
+- **Rounds 6 and 7 — NO DECISION TOUCHES THIS ADR** *(acknowledged 2026-07-28, round 7 finding M-M3; this ADR
+  was the only one in the bundle carrying no round-6 acknowledgment, which reads as "unswept" rather than
+  "swept and unchanged").* Round 6's decisions **D-L**/**D-M** and its revision of **D-K** land in
+  [ADR 0030](0030-reply-channel-exclusivity-probe.md) and [ADR 0029](0029-eip-lexical-alignment.md); round 7's
+  **D-L (revised)**, **D-N** and **D-O** land in ADR 0030, ADR 0029 and
+  [ADR 0007](0007-reliability-settlement-api.md). The single round-6 edit to this file was a **citation
+  correction** (finding C-M3): §4's root-keeps table cited `channel.go:49` for `Subscription`; the declaration
+  is at **`channel.go:54`** (`sed -n '54p' channel.go` → `type Subscription interface{ Cancel() }`), which is
+  what [Spec 014 §3.2](../specs/014-core-package-layout.md)'s generated declaration table already said
+  (`grep -n 'channel.go:54' docs/specs/014-core-package-layout.md` → 2 hits). Records:
+  [round 6](../plans/027-audit-round-6.md) · [round 7](../plans/027-audit-round-7.md).
 - **Amends:** nothing. *(An earlier draft claimed to amend [ADR 0003](0003-multi-module-repository-layout.md)'s
   "the core is one package" premise. **That premise does not exist** — see Context. ADR 0003's multi-module
   decision is untouched.)*

@@ -269,6 +269,29 @@ Because the deliverable is a package other code imports, the exported surface *i
 - **Runnable examples & coverage:** exported behavior is covered by `Example…` tests (they double as godoc) and table tests. The **Test-coverage gate** (Development workflow §5) applies: target ≥ 85% on changed packages and — the hard requirement — every hot-path logic branch and every typed-error branch has a covering test. Watch coverage on the public packages; don't just chase a number.
 - **Vulnerability scan:** `govulncheck ./...` is clean.
 - **Pinned Go version:** builds/tests on **Go 1.25** (the `go 1.25.0` directive), not whatever newer toolchain is installed locally. CI runs 1.25; verify locally with `GOTOOLCHAIN=go1.25.12`.
+- **Docs links resolve — repo-wide, as a PRE-MERGE gate.** Traceability (see "Documentation artifacts") is only real if the links work, and the recurring break is mechanical: a `docs/plans/*` or `docs/specs/*` file citing an ADR by **bare filename** (`[0003](0003-multi-module-repository-layout.md)`), which resolves relative to the *citing* file's directory and silently 404s. Fix the **class**, not the instance — run this over every tracked Markdown file before merging, and treat any output as a blocker:
+
+  ```bash
+  # ARM 1 — every relative link resolves to a file that exists.
+  for f in $(git ls-files '*.md'); do d=$(dirname "$f")
+    awk '/^[ \t]*```/{fence=!fence; next} !fence' "$f" | sed 's/`[^`]*`//g' \
+    | grep -oE '\]\(([^)#[:space:]]+)(#[^)]*)?\)' | sed -E 's/^\]\(//; s/\)$//; s/#.*$//' \
+    | while read -r l; do case "$l" in http*|mailto*) continue;; esac
+        [ -e "$d/$l" ] || echo "BROKEN  $f -> $d/$l"; done
+  done
+
+  # ARM 2 — every #anchor names a real heading in the target file (GitHub slug rules).
+  for f in $(git ls-files '*.md'); do d=$(dirname "$f")
+    awk '/^[ \t]*```/{fence=!fence; next} !fence' "$f" | sed 's/`[^`]*`//g' \
+    | grep -oE '\]\([^)[:space:]]*#[^)[:space:]]+\)' | sed -E 's/^\]\(//; s/\)$//' \
+    | while read -r l; do case "$l" in http*) continue;; esac
+        p="${l%%#*}"; a="${l#*#}"; t="$d/$p"; [ -z "$p" ] && t="$f"; [ -e "$t" ] || continue
+        grep -hE '^#{1,6} ' "$t" | sed -E 's/^#+ //' | tr 'A-Z' 'a-z' \
+          | sed -E 's/[^a-z0-9 _-]//g; s/ /-/g' | grep -qx "$a" || echo "ANCHOR  $f -> $l"; done
+  done
+  ```
+
+  **Known limitation — read before trusting a hit.** This is `grep`, not a Markdown parser. It strips fenced code blocks and single-line inline code spans **only**, so an inline code span that *wraps across a line* (a Go signature like `Foo[A](x string)` split over two lines) or a code fence nested inside a blockquote (a fence line prefixed with a `>` marker) leaks Go generics into arm 1 as false positives of the shape `-> docs/plans/m`. Two such exist today; both are code, not links. **A hit that names a plausible `.md` path is real; a hit that names a Go identifier or contains a space is the parser limitation.** Arm 2 is exact (34 anchor links today, all resolving) — verify it is not vacuous by planting a bad anchor and re-running.
 
 ## Commands
 
@@ -292,7 +315,14 @@ govulncheck ./...                         # vulnerability scan (library quality 
 git tag -a v0.0.1 -m "v0.0.1" && git push origin v0.0.1
 ```
 
-**`./...` does NOT mean "the repo" — this is a 7-module workspace.** The root `go test ./...` covers **11 packages** (`go list ./... | wc -l` → 11): the core, its five subpackages `endpoint`/`routing`/`transform`/`channel`/`resilience` (added by the Plan 027 restructure), and `adapter/{cron,database/sql,http,http/stdlib,memory}`. The other six modules — `adapter/database/sql/{harness,postgres,mysql,sqlite,dbtest}` and `adapter/cron/crontest` — are separate `go.mod`s joined only by the repo-root `go.work`, and a root-level `./...` never sees them. The pre-commit gate is only satisfied when every module you touched is green **standalone**. The two loops below are a **superset of** CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), not a copy of it: CI's `module` matrix and its `workspace` job each cover **6** directories and **both omit `adapter/cron/crontest`** (`grep -c 'dir:' .github/workflows/ci.yml` → `6`; `grep -v '^\s*#' .github/workflows/ci.yml | grep -c crontest` → `0` — strip the comments first, since the file's own comments *name* the gap), even though `go.work` `use`s all seven. That gap is pre-existing; **Plan 027 Task 10 adds `crontest` to both CI jobs.** Until then, run seven locally:
+**`./...` does NOT mean "the repo" — this is a 7-module workspace.** The root `go test ./...` covers **11 packages** (`go list ./... | wc -l` → 11): the core, its five subpackages `endpoint`/`routing`/`transform`/`channel`/`resilience` (added by the Plan 027 restructure), and `adapter/{cron,database/sql,http,http/stdlib,memory}`. The other six modules — `adapter/database/sql/{harness,postgres,mysql,sqlite,dbtest}` and `adapter/cron/crontest` — are separate `go.mod`s joined only by the repo-root `go.work`, and a root-level `./...` never sees them. The pre-commit gate is only satisfied when every module you touched is green **standalone**.
+
+**The two loops below are a superset of CI in MODULE COVERAGE — 7 directories to CI's 6 — and a SUBSET of CI IN STEPS. Passing them locally does NOT mean CI passes.** Both halves matter:
+
+- **Modules (local wins).** CI's `module` matrix and its `workspace` job each cover **6** directories and **both omit `adapter/cron/crontest`** (`grep -c 'dir:' .github/workflows/ci.yml` → `6`; `grep -v '^\s*#' .github/workflows/ci.yml | grep -c crontest` → `0` — strip the comments first, since the file's own comments *name* the gap; unstripped it is `3`), even though `go.work` `use`s all seven. That gap is pre-existing; **Plan 027 Task 10 adds `crontest` to both CI jobs.**
+- **Steps (CI wins).** CI's `module` job runs **eight** steps per module — `go build ./...`, `go vet ./...`, `gofmt -l .` (fail on diff), `CGO_ENABLED=0 go build ./...`, `go mod tidy` + `git diff --exit-code -- go.mod go.sum`, `govulncheck`, `golangci-lint`, `go test ./... -race -shuffle=on` (`grep -n '^      - name:' .github/workflows/ci.yml` → 9 named steps, of which `Set up Go` is setup). The loops below run **two** of those eight. The other six live in **Library quality gates** above — run them per touched module before you claim the gate is met.
+
+Until Task 10 lands, run seven locally:
 
 ```bash
 # per module, the way CI's `module` matrix does it, PLUS crontest —

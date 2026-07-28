@@ -9,8 +9,31 @@
 > and a **revision of D-K**. Record: [`docs/plans/027-audit-round-6.md`](plans/027-audit-round-6.md); read its
 > **§6 (corrections to that record, found while applying it)** before trusting §1–§4 of the same file.
 >
-> **ROUND 7 IS THE NEXT AUDIT and has NOT run.** Every round so far has found defects in the previous round's
-> fixes, and round 6's fix pass is the largest yet (+1686/−317 across 24 files).
+> **ROUND 7 HAS RUN** — record: [`docs/plans/027-audit-round-7.md`](plans/027-audit-round-7.md) (four Opus
+> lenses, 4/4 `NEEDS-REVISION`, 26 blockers / 37 minors, producing **D-L (revised)**, **D-N**, **D-O** and a
+> scope correction to **D-M**). Every round so far has found defects in the previous round's fixes, and round
+> 6's fix pass is the largest yet: **25 files, `+2397/−323`** (`git diff --shortstat aae6160..c4582ba` →
+> `25 files changed, 2397 insertions(+), 323 deletions(-)`). **That figure is pinned to `c4582ba`, not to
+> `HEAD`** — a commit cannot state its own final diffstat, the same self-reference the box in §2 documents for
+> `HEAD`'s SHA.
+>
+> ### ⚠ THE ROUND-7 FIX PASS IS PARTIAL AND THE WORKING TREE IS DIRTY — READ `027-audit-round-7.md` §5 FIRST
+>
+> **Do not start implementation, and do not assume the bundle is coherent.** Owner 1's subagent died mid-edit
+> on an API session limit; the coordinator finished its two highest-value items by hand. **Owners 2, 3 and 4b
+> never ran, and the mandatory join check has not been run.** `docs/plans/027-audit-round-7.md` **§5** is the
+> authoritative APPLIED / REMAINING ledger — it names every finding in each bucket.
+>
+> Applied: owner 4a in full (7 files); D-L (revised) + D-O in ADR 0030; Spec obligation 11's five parts; the
+> Spec obligation-11 **gate**, which owner 1 left grepping `'reach other processes'` — D-L's *superseded*
+> wording, making it **unsatisfiable by any correct godoc**; Task 9.6's stale checkbox (R-B1); and the Plan's
+> gate block (R-B3), raised from 11 gates to **16** and made diff-identical in coverage to Spec §8.0b.
+>
+> Not started: **D-M / `ErrNilSink` / D-N** (owner 2), **revised D-K** (owner 3), **Plan-027 hygiene**
+> (owner 4b), and the **join check**.
+>
+> **State is green, not finished:** zero `.go` changed, `gofmt -l .` empty, `go build ./...` clean,
+> `go test ./...` 11/11 ok. It is a safe place to stop, not a place to build on.
 >
 > **No `.go` file has been touched since `3d0b87a`.** The code is green and unchanged; every edit in this
 > window is documentation. That means the tree is a safepoint, and it also means **every count in the bundle is a
@@ -29,22 +52,27 @@
 >
 > **PARTLY PUSHED — the previous handovers said otherwise, and they were wrong three ways.**
 >
+> **Measured at `c4582ba`** — the parent of this file's own commit. **The counts are self-referential exactly
+> as `HEAD`'s SHA is** (see the box in §2): committing this handover increments both by one, so the numbers
+> below are `+1` short the moment they are committed. Re-run them; never copy them.
+>
 > ```
 > $ git rev-parse --short main                     0de54e9
 > $ git rev-parse --short @{u}                     6f44db6      # origin/claude/repo-structure-refactor-jt79t1
-> $ git rev-parse --short HEAD                     <this file's own commit — see the note below>
-> $ git rev-list --count main..HEAD                16
-> $ git rev-list --count @{u}..HEAD                13           (behind: 0)
+> $ git rev-parse --short HEAD                     c4582ba      # = this file's commit MINUS ONE; see the box in §2
+> $ git rev-list --count main..HEAD                17           (18 once this file is committed)
+> $ git rev-list --count @{u}..HEAD                14           (15 once this file is committed)
+> $ git rev-list --left-right --count @{u}...HEAD  0    14      (behind: 0)
 > ```
 >
 > **`6f44db6` is `origin/<branch>` — the REMOTE TRACKING HEAD — not `main`.** Every prior handover read it as
 > `main` and concluded *"main is at 6f44db6; the branch is 6 commits ahead; nothing is pushed"*. All three
-> halves were false: `main` is `0de54e9`, the branch is **16** ahead of it, and the branch **has been pushed**
-> up to `6f44db6`, leaving **13 unpushed commits** — every one of the refactor commits among them.
+> halves were false: `main` is `0de54e9`, the branch is **17** ahead of it, and the branch **has been pushed**
+> up to `6f44db6`, leaving **14 unpushed commits** — every one of the refactor commits among them.
 >
 > **Why this is operational, not cosmetic.** `main..HEAD` is the exact range CLAUDE.md's whole-branch
 > `/code-review` and `/security-review` gate runs over. The stale figure would have scoped that gate to 6 of
-> 16 commits — silently skipping the entire extraction (`c83dde9`), the segregation (`b6ce7bb`), and the
+> the 17 commits — silently skipping the entire extraction (`c83dde9`), the segregation (`b6ce7bb`), and the
 > round-3 fixes (`1d7fc80`). **Five audit lenses missed it** because all five were briefed on the bundle
 > documents; nobody's brief covered the handover's own git facts.
 >
@@ -68,35 +96,49 @@ gaining two checkboxes — an open call, flagged rather than changed unilaterall
 
 ## 2. Exact state
 
-Branch `claude/repo-structure-refactor-jt79t1`: **17 commits ahead of `main` (`0de54e9`)**, and
-**14 ahead of `origin/<branch>` (`6f44db6`)** — i.e. partly pushed, with all refactor work unpushed.
-**Verify these, never copy them** (see the banner) — they were wrong three ways in three consecutive handovers.
+Branch `claude/repo-structure-refactor-jt79t1`, measured at `c4582ba` (this file's commit **minus one** — see
+the box below): **17 commits ahead of `main` (`0de54e9`)**, and **14 ahead of `origin/<branch>` (`6f44db6`)** —
+i.e. partly pushed, with all refactor work unpushed. Committing this handover makes them **18 / 15**.
+**Verify these, never copy them** — they were wrong three ways in three consecutive handovers, and then wrong
+again in the fourth because nobody re-ran them after the round-6 fix pass was committed.
 
-The round-6 fix pass landed as **24 modified files + `docs/plans/027-audit-round-6.md` (new)**, `+1686/−317`,
-**zero `.go` files changed**. Verified at that state: `gofmt -l .` empty · `go build ./...` clean · root
+The round-6 fix pass landed as `c4582ba`: **25 files changed, `+2397/−323`** (24 modified +
+`docs/plans/027-audit-round-6.md` new), **zero `.go` files changed** —
+`git diff --shortstat aae6160..c4582ba` → `25 files changed, 2397 insertions(+), 323 deletions(-)`.
+Verified at that state: `gofmt -l .` empty · `go build ./...` clean · root
 `go test ./...` **11/11 ok** · **all seven modules GREEN standalone** under
 `GOWORK=off go test ./... -race -shuffle=on` (including the Docker-backed `dbtest` and `crontest`).
 
-> ### This file CANNOT name its own commit's SHA — do not try to read one here
+> ### This file CANNOT state any measurement of its own commit — SHA, ahead/behind count, or diffstat
 >
-> This handover is committed **inside** the commit it describes, so any SHA written here for `HEAD` is
-> invalidated the moment that commit is amended. It was, twice, and the SHA went stale both times within
-> minutes. **`HEAD` is identified by subject, not hash:**
+> This handover is committed **inside** the commit it describes, so **every figure derived from `HEAD`** is
+> invalidated by the act of committing it — and again by every amend. Three figures have this shape and all
+> three have gone stale in this file at least once:
+>
+> | Self-referential figure | Why | Convention used here |
+> |---|---|---|
+> | `HEAD`'s SHA | Changes on every amend (it did, twice, within minutes) | **Never written.** `HEAD` is identified by *subject*, below |
+> | `git rev-list --count main..HEAD` / `@{u}..HEAD` | Committing this file adds 1 to each | **Pinned to `c4582ba`** (= this file's commit minus one), with the post-commit value stated beside it |
+> | The fix pass's own diffstat | A commit cannot report the diff it is still accumulating | **Pinned to a closed range** (`aae6160..c4582ba`), never `..HEAD` |
+>
+> **`HEAD` is identified by subject, not hash — run the command and read the TOP line:**
 >
 > ```
-> $ git log --oneline -4
-> <sha> docs(027): close D-I/D-J/D-K, add ADR 0030 and Task 9.6, apply rounds 4-5   <- this file's commit
-> <sha> docs(handover): record the committed state, both review gates, and the two open decisions
-> <sha> docs(027): apply the round-3 audit corrections; commit the derivation tools
-> <sha> fix(core): restore the goleak net, cover the poll-backoff cap, reject a nil Subscription
+> $ git log --oneline -5
+> <sha> <-- THIS FILE'S OWN COMMIT, whatever its subject; it did not exist when this block was typed
+> c4582ba docs(027): apply the round-6 audit; record D-L, D-M and revised D-K
+> aae6160 docs(027): close D-I/D-J/D-K, add ADR 0030 and Task 9.6, apply rounds 4-5
+> dadc775 docs(handover): record the committed state, both review gates, and the two open decisions
+> 3d0b87a docs(027): apply the round-3 audit corrections; commit the derivation tools
 >
 > $ git status --short
 > (clean)
 > ```
 >
-> Ancestor SHAs (`3d0b87a`, `1d7fc80`, `b6ce7bb`, `c83dde9`, `ab233d9`, `0e2dcf0`, `dadc775`) are stable and
-> **are** safe to cite — only `HEAD`'s own hash is self-referential. Every measurement in the bundle is pinned
-> to **`dadc775`**, which is `HEAD~1` and unaffected by amends.
+> The rule that makes this self-correcting: **the top line is by definition this file's own commit; every line
+> below it is stable and citable.** Ancestor SHAs (`3d0b87a`, `1d7fc80`, `b6ce7bb`, `c83dde9`, `ab233d9`,
+> `0e2dcf0`, `dadc775`, `aae6160`, `c4582ba`) are safe to cite. Every measurement in the bundle is pinned to
+> **`dadc775`**, which is unaffected by amends.
 
 **Zero `.go` files modified**, so `3d0b87a`'s verification still holds: seven modules build + vet, `go test
 ./... -race -shuffle=on` green across 11 root packages, `-coverpkg=./...` **93.4%**.
@@ -326,12 +368,13 @@ decomposition is an exact partition. All cross-links resolve both ways.
 
 ## 6. Next actions
 
-1. **The design bundle is committed as `aae6160`; round 6 HAS run** (record:
-   [`docs/plans/027-audit-round-6.md`](plans/027-audit-round-6.md) — four Opus lenses, all four
-   `NEEDS-REVISION`, 25 blockers / 34 minors, producing decisions **D-L**, **D-M** and a **revision of D-K**).
-   Its fix pass is partitioned into four groups in §5 of that record. **Round 7 is the next audit** — brief it
-   on the §0 counter-rules, on the round-6 record itself, and on **the handover's own git facts**, which is the
-   gap that let a false `main` SHA survive five lenses.
+1. **The design bundle is committed as `aae6160`; round 6's fix pass is `c4582ba`; ROUND 7 HAS RUN** (records:
+   [round 6](plans/027-audit-round-6.md) — 25 blockers / 34 minors, decisions **D-L**, **D-M**, revised **D-K**;
+   [round 7](plans/027-audit-round-7.md) — four Opus lenses, all four `NEEDS-REVISION`, **26 blockers / 37
+   minors**, producing **D-L (revised)**, **D-N**, **D-O** and a scope correction to **D-M**). Round 7's fix pass
+   is partitioned **by decision, not by file** (its §4, counter-rule 6) into four owners, and **ends with a
+   mandatory join check**. **Next after the fix pass: a bounded round 8**, scoped only to the joins and the gate
+   sets — not a fresh full-bundle audit.
 2. **Then implementation**, in plan order: Task 9 → 9.5 → 9.6 → 10 → 11 → 12. **Task 11 must run AFTER
    Task 9.6** (Spec §8 obligations 10–13 document symbols 9.6 creates). **Ask before writing any
    implementation code, and default to SDD** (fresh implementer subagent per task, coordinator verifies green
@@ -347,7 +390,11 @@ decomposition is an exact partition. All cross-links resolve both ways.
   `gopls`, `govulncheck`, `gofumpt`, `gorelease` live there and none are on `PATH`.
 - **`./...` is not the repo** — seven modules (`go.work` `use`s all seven). CI runs each standalone with
   `GOWORK=off`, but **only six of them**: `adapter/cron/crontest` is missing from both CI jobs (see below), so
-  CLAUDE.md's seven-directory loop is a **superset** of CI, not a copy of it.
+  CLAUDE.md's seven-directory loop is a superset of CI **in module coverage (7 to CI's 6) and a SUBSET in
+  steps** — CI's `module` job runs **eight** steps per module (`go build`, `go vet`, `gofmt`,
+  `CGO_ENABLED=0 go build`, `go mod tidy` + `git diff --exit-code`, `govulncheck`, `golangci-lint`,
+  `go test -race -shuffle=on`); the local loops run **two**. Passing them locally does **not** mean CI passes
+  (round 7 finding M-M1).
 - **`go build ./...` does not compile tests**; `go vet` does but stops after one type-error batch — use
   `go test -c` for a full transcript.
 - **Measured at `dadc775`** (all re-run this session): root **14** source files · **102** exported non-method
@@ -366,17 +413,44 @@ decomposition is an exact partition. All cross-links resolve both ways.
 
 ## 8. Triaged, not fixed
 
-- **Commit trailers on `6f44db6` and `28dd9e4` — TRIAGED, will not be fixed** (audit round 6 finding M-9).
-  Over the 16 commits in `main..HEAD`, every `refactor`/`fix` commit carries the required
-  `Spec:`/`Plan:`/`ADR:` trailers, but two carry none at all: `6f44db6` (`docs(rfcs): fold audit findings into
-  RFCs with elaborated caveats`) and `28dd9e4` (`docs(claude): refresh project status from greenfield to
-  pre-v1`). **Rationale for accepting them:** both are `docs:` commits authored *before* the traceability-trailer
-  convention was extended from code commits to non-code artifacts — `6f44db6` edits only draft RFC markdown, at
-  a point when `docs/rfcs/` was itself a brand-new artifact type with no promoted spec/plan/ADR to cite, and
-  `28dd9e4` edits only CLAUDE.md, which is not governed by any numbered artifact. CLAUDE.md's own trailer rule
-  is scoped to *"every `feat`/`fix`/`refactor` commit"*; neither of these is one. The only way to add trailers
-  now is an interactive rebase rewriting all 16 commits — and `6f44db6` **is** `origin/claude/repo-structure-refactor-jt79t1`'s
-  head (`git rev-parse @{u}` → `6f44db6`; 13 unpushed, 0 behind), so the rewrite would additionally require a
-  **force-push over an already-published commit**. Disproportionate risk to correct two docs commits, and it would invalidate
-  every SHA cited across Spec 014, Plan 027, ADRs 0027–0030 and this handover. **Do not rebase.** Every future
-  commit on this branch carries its trailers.
+- **Trailer-less commits on this branch — TRIAGED, will not be fixed** (opened as audit round 6 finding M-9;
+  **enumeration corrected in round 7, finding M-B5** — the triage named *two* commits out of *sixteen*, and
+  both figures were stale).
+
+  **Do not copy the list; re-derive it.** The disposition below is a *rule*, so it survives new commits; the
+  names do not.
+
+  ```
+  $ for c in $(git rev-list main..HEAD); do
+  >   git log -1 --format='%B' $c | grep -qE '^(Spec|Plan|ADR|RFC):' || git log -1 --format='%h %s' $c
+  > done
+  28dd9e4 docs(claude): refresh project status from greenfield to pre-v1
+  6f44db6 docs(rfcs): fold audit findings into RFCs with elaborated caveats
+  4d29958 docs(rfcs): add RFC-0005 — fill the EIP scope gaps
+  0e376fa docs: add pre-v1 refactor RFC program
+  ```
+
+  **Four** of the **17** commits in `main..HEAD` (measured at `c4582ba`) carry no `Spec:`/`Plan:`/`ADR:`/`RFC:`
+  trailer.
+
+  **The accepting rule (this, not the four names, is the disposition).** A trailer-less commit on this branch is
+  accepted **iff** it satisfies all three:
+  1. its type is `docs:` (or `spec:`) — CLAUDE.md's trailer rule is scoped to *"every `feat`/`fix`/`refactor`
+     commit"*, and a `docs:` commit is none of those;
+  2. it touches **zero `.go` files** — verified for all four:
+     `git show --name-only --format='' <sha> | grep -c '\.go$'` → `0` each (paths: `docs/rfcs/` ×3,
+     `CLAUDE.md` ×1);
+  3. it predates the extension of the traceability-trailer convention from code commits to non-code artifacts —
+     the three `docs/rfcs/` commits land while `docs/rfcs/` is itself a brand-new artifact type with no promoted
+     spec/plan/ADR to cite, and `28dd9e4` edits only `CLAUDE.md`, which is governed by no numbered artifact.
+
+  **Every trailer-less commit in the range satisfies the rule** — mechanically:
+  `… | grep -vE '^\w+ docs'` → *(none — every trailer-less commit is a `docs:` commit)*. A `feat`/`fix`/`refactor`
+  commit appearing in that list would be a **gate failure**, not a triage candidate.
+
+  **Why it is not fixed. Do not rebase.** The only way to add trailers now is an interactive rebase rewriting all
+  17 commits — and `6f44db6` **is** `origin/claude/repo-structure-refactor-jt79t1`'s head
+  (`git rev-parse --short @{u}` → `6f44db6`; 14 unpushed, 0 behind — independently re-verified in round 7), so the
+  rewrite additionally requires a **force-push over an already-published commit**. Disproportionate risk to correct
+  four docs commits, and it would invalidate every SHA cited across Spec 014, Plan 027, ADRs 0027–0030 and this
+  handover. Every future commit on this branch carries its trailers.
