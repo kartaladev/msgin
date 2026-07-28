@@ -43,7 +43,7 @@ type Predicate[A any]      func(ctx context.Context, m Message[A]) (bool, error)
 type RouteFunc             func(ctx context.Context, m Message[any]) (MessageChannel, error)
 type SplitFunc[A, B any]   func(ctx context.Context, m Message[A]) ([]Message[B], error)
 type CorrelationStrategy   func(m Message[any]) (string, error)   // already implicit
-type ReleaseStrategy       func(g MessageGroup) bool              // already implicit
+type ReleaseStrategy       func(g MessageGroup) (bool, error)     // already implicit
 
 // package transform  (EIP ch.8)
 type Transformer[A, B any] func(ctx context.Context, m Message[A]) (Message[B], error)
@@ -52,6 +52,39 @@ type Transformer[A, B any] func(ctx context.Context, m Message[A]) (Message[B], 
 Base constructors just get typed (`func Filter[A any](p Predicate[A], opts ...FilterOption) Step`).
 **Naming a func type is backward-compatible** — a bare closure stays assignable — so introducing the types is
 non-breaking.
+
+> **`ReleaseStrategy` is fallible — corrected 2026-07-27 (audit round 1, findings B2/B3; decision §H5).** An
+> earlier draft wrote `func(g MessageGroup) bool`. That was **the sugar's shape mistaken for the contract's**:
+> the aggregator's internal field is already `release func(MessageGroup) (bool, error)` (`aggregator.go:15`),
+> and the error arm is load-bearing behavior with two existing tests asserting it
+> (`TestAggregator_ReleaseExprReaperFallThrough` — the error propagates from `Handle`;
+> `TestAggregator_ReleaseExprDrainCheckError` — the drain loop swallows it).
+>
+> A bool-only named type would force `expr.Release` to either **swallow** a runtime evaluation error (silently
+> returning `false`, stranding the group forever) or **panic** on caller input, which CLAUDE.md forbids. It
+> would also **orphan two measured hot-path branches** once the `*Expr` constructors are deleted:
+> `NewAggregator` 100%→93.8% and `Handle` 100%→94.7%, the newly-uncovered blocks being
+> `if cfg.optErr != nil { return nil, cfg.optErr }` and the release-decision error return — branches no
+> remaining public API could reach, which CLAUDE.md's hot-path rule makes a delivery blocker.
+>
+> **Both problems are solved by the fallible type, plus sugar for the easy path** (CLAUDE.md's *sensible
+> defaults, opinionated but overridable*):
+>
+> ```go
+> type ReleaseStrategy func(g MessageGroup) (bool, error)          // the contract — carries the error
+>
+> func WithReleaseStrategy(fn ReleaseStrategy) AggregatorOption            // the named, fallible type
+> func WithReleaseWhen(fn func(MessageGroup) bool) AggregatorOption        // sugar — wraps to (bool, nil)
+> ```
+>
+> Consistent with `CorrelationStrategy`, which already returns `(string, error)`.
+>
+> > **Naming corrected 2026-07-28 (decision D-E, audit round 2 §D1/§G.1).** The shape above originally kept
+> > `WithReleaseStrategy(func(MessageGroup) bool)` while naming the type `ReleaseStrategy`, so
+> > `agg.WithReleaseStrategy(myReleaseStrategy)` **did not compile** and `expr.Release`'s return value had to
+> > go to a differently-named `WithRelease`. The option now takes its own named type — exactly as
+> > `WithCorrelationStrategy` already does — and the bool-only sugar is `WithReleaseWhen`. Shipped at
+> > `routing/aggregator.go:82,89`. See [ADR 0029 §3](../adrs/0029-eip-lexical-alignment.md).
 
 **Combinators are methods on the named types** (this is the payoff that distinguishes naming them from not):
 
@@ -168,6 +201,16 @@ combinators (`And`/`Or`/`Not`) available.
    even for a consumer using only the SQL adapter.
 4. **`*Expr` → removed outright, no deprecated shims.** Consistent with RFC-0001's clean-break decision;
    nothing is tagged, so there is no consumer a shim would protect.
+5. **`ReleaseStrategy` → `func(MessageGroup) (bool, error)`** (settled 2026-07-27; audit round 1 §H5,
+   naming settled 2026-07-27 as **decision D-E**). The named type carries the error — matching the internal
+   field it names and `CorrelationStrategy`'s existing shape — and
+   **`WithReleaseStrategy` takes that named type**, with **`WithReleaseWhen(func(MessageGroup) bool)`** as the
+   sugar for the common infallible case. Full rationale in §3.
+   *Easy default path plus a fully capable escape hatch, per CLAUDE.md's sensible-defaults rule.*
+   **Sequencing note:** this lands in Plan 027 **Task 1**, not Task 9 — deleting the `*Expr` constructors
+   removes the only driver for three core aggregator hot-path branches, so a fallible release strategy must
+   exist in the same change ([ADR 0029 §3b](../adrs/0029-eip-lexical-alignment.md);
+   [`027-derivation-findings.md` F3](../plans/027-derivation-findings.md)).
 
 > **Dependency-policy rule adopted here (2026-07-27), to keep this coherent with RFC-0004.** RFC-0004 keeps
 > `robfig/cron` *inside* the root module while this RFC pushes `expr-lang` *out* — both are zero-transitive

@@ -54,7 +54,7 @@ on top later without breaking the SPI — the same layering Spring Integration u
 - **Channel Adapter** (inbound/outbound, connects an external system) → **the SPI**, the reason `msgin`
   exists. Inbound emits messages onto a channel; outbound writes them out.
 - **Polling Consumer vs Event-Driven Consumer** → the two inbound SPI shapes: a pulled `PollingSource`
-  (driven by a shared Poller) and a pushed `StreamingSource` (owns its blocking loop). DB polls; Redis
+  (driven by a shared Poller) and a pushed `EventDrivenSource` (owns its blocking loop). DB polls; Redis
   `BRPOP` / NATS push / pgx `LISTEN` stream.
 - **Guaranteed Delivery + Transactional Client + Idempotent Receiver** → the reliability model: per-
   adapter **at-least-once vs at-most-once** contracts, ack/nack, and consumer-side idempotency via a
@@ -74,7 +74,7 @@ independent encodings** placed deliberately in different layers.
 ```
 Layer 1 — CALLER (typed, generic)     Message[T] · Producer[T] · Consumer[T] · Handler[T]
    │  PAYLOAD CODEC  (T ⟷ []byte)     performed by the RUNTIME, which KNOWS T
-Layer 2 — SPI (untyped, monomorphic)  Message[any] · PollingSource · StreamingSource · OutboundAdapter · Delivery
+Layer 2 — SPI (untyped, monomorphic)  Message[any] · PollingSource · EventDrivenSource · OutboundAdapter · Delivery
    │  ENVELOPE FRAMING  (hdrs+body ⟷ storage)   performed by the ADAPTER, type-agnostic
 Layer 3 — BACKEND                     memory · sql · pgx · redis · nats · http
 ```
@@ -266,7 +266,7 @@ publish-subscribe is deferred.
 | ADR | Decision | Essence |
 | --- | --- | --- |
 | [0001](docs/adrs/0001-message-payload-typing.md) | Payload typing | Generics on the caller API; **payload codec in runtime**, **envelope framing in adapter** (the two-encoding split). |
-| [0002](docs/adrs/0002-adapter-spi.md) | Adapter SPI | Non-generic SPI over `Message[any]`; runtime type-switches on `PollingSource`/`StreamingSource`; `Delivery` w/ `Ack`/`Nack(delay)`; runtime-owned retry + invalid-message + DLQ; `NativeReliability` (redelivery vs dead-letter, independent). |
+| [0002](docs/adrs/0002-adapter-spi.md) | Adapter SPI | Non-generic SPI over `Message[any]`; runtime type-switches on `PollingSource`/`EventDrivenSource`; `Delivery` w/ `Ack`/`Nack(delay)`; runtime-owned retry + invalid-message + DLQ; `NativeReliability` (redelivery vs dead-letter, independent). |
 | [0003](docs/adrs/0003-multi-module-repository-layout.md) | Layout | Multi-module monorepo; core (+ memory + http + sql) + separate modules for pgx/redis/nats; module-path-prefixed release tags. |
 | [0004](docs/adrs/0004-clockwork-dependency.md) | Time | `jonboulle/clockwork` directly (deterministic tests). |
 | [0005](docs/adrs/0005-cenkalti-backoff-dependency.md) | Backoff | Closed-form exponential for all redelivery (attempt-indexed). ~~`cenkalti/backoff/v4` for the outbound-HTTP tight loop~~ — **that clause is superseded by [0025](docs/adrs/0025-producer-outbound-retry.md)**; the closed-form decision stands. |

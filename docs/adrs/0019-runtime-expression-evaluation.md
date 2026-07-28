@@ -1,6 +1,16 @@
 # ADR 0019 — Accept `expr-lang/expr` as a core dependency; runtime-expression endpoints
 
-- **Status:** Proposed (2026-07-20) — **both adversarial audit rounds complete; bundle SOUND.** Round 1 (Opus,
+- **Status:** **Accepted (2026-07-20), then PARTIALLY SUPERSEDED by
+  [ADR 0029](0029-eip-lexical-alignment.md) (2026-07-27)** — annotated during audit round 1, finding D6.
+  ADR 0029 **reverses this ADR's central decision**: `expr-lang/expr` is no longer accepted as a *core-module*
+  dependency, and the six in-core `*Expr` constructors are removed outright and reborn as providers in a
+  separate `expr` module. **What survives unchanged is the contract**: an invalid expression still
+  fails **at construction**, not at first message — the compile error simply moves to the provider call
+  (Spec 014 §7). The expression semantics, `header()` form, and error taxonomy decided here all stand.
+  *(The status also read "Proposed" long after the code shipped; corrected to Accepted, since the decision was
+  implemented and is in `expr.go` today.)*
+- **Original status line, retained for the record:** Proposed (2026-07-20) — **both adversarial audit rounds
+  complete; bundle SOUND.** Round 1 (Opus,
   verified via a real expr v1.17.8 compile+run spike: all 6 API assumptions TRUE, no blockers) folded H1/M1/M2/L1-L3;
   round 2 verified every fix and folded NEW-1 (a RouterExpr compile-error coverage hole the L2 guard-ordering
   created) + LOW tidies. Resolved: O8-1→`header()` form, O8-2→`RouterExprCases` cut. Gated only on an explicit user

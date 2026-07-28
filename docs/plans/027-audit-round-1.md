@@ -1,8 +1,13 @@
 # Plan 027 — Adversarial design audit, ROUND 1 (2026-07-27)
 
-> **STATUS: `NEEDS-REVISION`. DO NOT IMPLEMENT the Plan 027 bundle until these findings are folded in and a
-> round-2 audit passes.** Three independent Opus auditors were handed the complete bundle (Spec 014 + ADR 0027 +
-> ADR 0028 + ADR 0029 + Plan 027) on distinct lenses. **All three returned `NEEDS-REVISION`.**
+> **STATUS: findings FOLDED IN (2026-07-27). The bundle is REVISED and now AWAITS ROUND 2.**
+> Every finding below is dispositioned in **§K**, with the artifact and section that resolves it. The six §H
+> decisions were settled with the user. **DO NOT IMPLEMENT until round 2 passes** — the revision rewrote the
+> normative move-list and changed public signatures, which is exactly the kind of churn round 2 exists to catch.
+>
+> *Original round-1 verdict, retained:* three independent Opus auditors were handed the complete bundle
+> (Spec 014 + ADR 0027 + ADR 0028 + ADR 0029 + Plan 027) on distinct lenses. **All three returned
+> `NEEDS-REVISION`.**
 
 | Lens | Verdict | Findings |
 |---|---|---|
@@ -411,6 +416,75 @@ with document B", so partial integration manufactures exactly that class of defe
 5. **Housekeeping** — Spec 011's Plan 027→028 renumber (D3), ADR 0019 supersession status (D6), ADR 0003 amended
    note (D7), RFC-0004/0005 "Promoted to" lines (D4), RFC index layout annotations (L4).
 6. **Then round 2** — same three-lens parallel Opus audit on the revised bundle.
+
+## K. Disposition — every round-1 finding (revision pass, 2026-07-27)
+
+Legend: **FIXED** = folded into the named artifact · **DISCARDED** = verified false, with evidence ·
+**RE-FILED** = moved to a later increment · **SUPERSEDED** = a better fix than the one the audit proposed.
+
+| # | Disposition | Where |
+|---|---|---|
+| A1 `Subscription` import cycle | **FIXED** | Spec 014 §3.2 (declaration-level split), ADR 0027 §4, ADR 0028 §1, Plan Task 6 |
+| A2 `backoff.go` split | **FIXED** | Spec 014 §3.2, ADR 0027 §4, Plan Task 7 |
+| A3 18 crossing identifiers | **FIXED + CORRECTED** | Spec 014 §3.3, ADR 0027 §6–§7, Plan Task 3.5. **Only 8 are genuine**: 4 dissolve with `expr.go`'s deletion, 6 with the `flowcontrol.go` split, **2 are false positives** (below) |
+| A4 ~12 unmatched test files | **SUPERSEDED** | Spec 014 §3.4 — the audit's premise (many need splitting) is wrong: a `package X_test` binary may import any package, so a spanning test needs a *home*, not a split. All 45 assigned; **exactly one** splits (`retry_test.go`), and it is not one the audit named |
+| A5 `OverflowPolicy`/`ProbeGate` unplaced | **FIXED** | Spec 014 §3.2, ADR 0027 §5 — all four flowcontrol interfaces + `OverflowPolicy` **stay in root**, which also keeps `adapter/memory/queuestore.go:74` compiling unchanged |
+| A6 §9.1 falsified by `handler.go` | **FIXED** (§H4) | Spec 014 §4 (closed contract + allow-list) and §9.1 (scriptable `go list -deps .` check); Plan Task 11 |
+| B1 exchange reply exclusivity | **FIXED** | ADR 0028 §6 (store + `Close()` the `Subscription`; document exclusivity; test the fan-out case), Spec 014 §5.1, Plan Task 2 |
+| B2 `ReleaseStrategy` cannot carry an error | **FIXED** (§H5) | RFC-0003 §3/§7.5, ADR 0029 §3, Spec 014 §6, Plan Tasks 9–10 |
+| B3 orphaned aggregator branches | **FIXED** | Resolved by B2 — the fallible type keeps both branches publicly reachable. Plan Task 9 verifies coverage returns to baseline |
+| B4 `MessageChannel` ≡ `OutboundAdapter` | **FIXED** (§H3) | ADR 0028 §5 (keep both; Pipe vs Channel Adapter), Spec 014 §5.3, **ADR 0013 amended in place**, Spec 014 §9.4 extends the capability test |
+| B5 `DirectChannel` `Subscription` semantics | **FIXED** | ADR 0028 §7 (five-row semantics table), Spec 014 §5.2, Plan Task 2's corrected branch list. The unwritable case is now writable via B1's `Close` |
+| C `SettleMembers` | **RE-FILED** (§H1) | Plan Task 11 deleted; Spec 014's old §8 (`SettleMembers`) deleted — **§8 is now "Godoc alignment"**, see M5; RFC-0005 §5/§7.3 + header; RFC index |
+| D1 no ADR for `SettleMembers` | **MOOT** | Re-filed with C — the Resequencer increment writes its own ADR |
+| D2 missing ADR citations | **FIXED** | ADR 0028 cites + amends 0013 and cites 0014; ADR 0029 cites 0002 |
+| D3 plan-number collision | **FIXED** | `docs/specs/011-http-adapter.md:92-94, 675-680` — gin is **Plan 028**; ADR 0024's non-existence stated |
+| D4 missing "Promoted to" | **FIXED** | RFC-0004 and RFC-0005 headers |
+| D5 no traceability trailers | **FIXED** | Plan Global constraint 7 |
+| D6 ADR 0019 status | **FIXED** | ADR 0019 header — Accepted, then partially superseded by ADR 0029 |
+| D7 ADR 0003 stale dep list | **FIXED** | ADR 0003 annotation (verified against `go.mod`: `cenkalti/backoff/v4` is not a root dep at all) |
+| E1 "root 32 → 9" | **FIXED** | Spec 014 §3.1 and ADR 0027 Consequences — the honest figure is **14**, enumerated |
+| E2 ADR 0003 premise false | **FIXED** | ADR 0027 Context + header ("Amends: nothing"), Spec 014 §1.4, RFC index |
+| E3 "no call site subscribes" | **FIXED** | RFC-0002 §3, Spec 014 §1.2, ADR 0028 Context — four-of-five, with the fifth named |
+| E4 fabricated `endpoint → channel` | **FIXED** | ADR 0027 §2, Spec 014 §3, Plan Tasks 4–8 "Watch for" |
+| E5 "godoc prose, not code" | **FIXED** | ADR 0027 Context — the three real code sites named; Plan Task 0 records them |
+| F1 `gopls` Move does not exist | **FIXED** | Plan header "How the moves are actually performed" |
+| F2 per-module `go mod tidy` | **FIXED** | Plan Task 1 (explicit seven-module loop), Spec 014 §7 |
+| F3 CI needs two edits + has a hole | **FIXED** | Plan Task 10 — three edits, including the pre-existing `crontest` gap (verified: the matrix lists 6 dirs) |
+| F4 root loses its package doc | **FIXED** | Spec 014 §3.5, Plan Task 1 (`doc.go` created in the same commit) + Global constraint 3 |
+| F5 Task 2's RED unevidenced | **FIXED** | Plan Task 2 — compiler transcript against unmodified code goes in the ledger |
+| F6 `toHalfOpen` coverage | **FIXED** | Plan Task 7 |
+| F7 Task 3 scope overstated | **FIXED** | ADR 0029 §1, Plan Task 3 — 30 occurrences, 12 files, root module only |
+| G `RequestReplyExchanger` | **CONFIRMED** | ADR 0029 §2, RFC-0002 §7.1 — verified with source; the `-er` nit decided in favour of our form |
+| M4 §9.6 seven modules | **FIXED** | Spec 014 §9.6 — **eight** |
+| M5 godoc-alignment subsection | **FIXED** | Spec 014 §8 (new) |
+| L4 RFC index layout unannotated | **FIXED** | `docs/rfcs/README.md` — every line marked `[1]` / `4` / `5` by increment |
+
+### Discarded — two A3 rows verified false
+
+- **`breaker`** — the audit lists `breaker.go`'s unexported struct as crossing into `consumer.go`/`flowcontrol.go`.
+  It does not. `consumer.go:39,121` declare a **field** named `breaker` of type `CircuitBreaker`;
+  `flowcontrol.go:161` is `o.breaker = b`, a field assignment. Every remaining hit is prose. **No crossing.**
+- **`RetryPolicy.delayFor`'s framing** — the audit called it an ADR-level dilemma ("export `DelayFor`, or move
+  `RetryPolicy` to `endpoint`"). Neither is needed: it is private convenience over the **exported** `Backoff`
+  field, so `endpoint` computes it directly once `backoff.go` splits. Deleted and inlined (§H2).
+
+### New findings from the revision pass (not raised by any auditor)
+
+1. **`exchange.go` is a fifth file needing a split.** It declares `RequestReplyExchange` (`exchange.go:35`),
+   which Spec 014 §4 keeps in root, while §3 moved the file whole to `endpoint` — the same class of defect as
+   A1/A2. Fixed in Spec 014 §3.2 and ADR 0027 §4; it is why the move-list is now declaration-level.
+2. **`jitter` is not a crossing** (checked because A3's method missed `exchange.go`). Declared and used only in
+   `backoff.go`; `producer.go:362` mentions it in a comment. It travels to `resilience` cleanly.
+3. **`nilFuncStep` has a task-ordering wrinkle.** It is declared in `transformer.go`, which Task 5 moves out,
+   while `activator.go` uses it and does not leave root until Task 8. Plan Tasks 4–8 now carry an explicit
+   three-row sequence for it and `boxMessage`.
+4. **ADR 0013's link to ADR 0014 was broken** (`0014-channel-settlement.md`; the file is
+   `0014-publish-subscribe.md`). Fixed.
+5. **ADR 0013's Status is still "Proposed … pending round-2 re-audit + user go-ahead"** although its decisions
+   shipped long ago. **Not fixed here** — out of this bundle's scope, and correcting a shipped ADR's status is a
+   separate housekeeping pass. Recorded so it is not lost. *(ADR 0019 had the same defect and was corrected
+   because D6 already required editing that header.)*
 
 ## I. What round 2 must re-audit
 

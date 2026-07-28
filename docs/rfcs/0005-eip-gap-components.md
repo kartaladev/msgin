@@ -3,6 +3,10 @@
 - **Author:** kartaladev/msgin maintainers
 - **Date:** 2026-07-22
 - **Status:** Accepted (open questions settled 2026-07-27 — see §7; the OQ6 blocker is resolved)
+- **Promoted to:** *not yet promoted* — five independent additive increments, each after Spec 014 / Plan 027
+  (§5). **Nothing from this RFC rides the Spec 014 breaking window.** An earlier revision routed
+  `MessageGroupStore.SettleMembers` (§7.3) into that window as a "step 0"; that was **reverted 2026-07-27**
+  (audit round 1 §H1) and the method now lands with the Resequencer increment that consumes it — see §5.
 - **Reviewers:** TBD
 
 ## 1. Summary
@@ -126,20 +130,42 @@ right using the existing durable stores, so users don't.
 Each pattern is an independent additive increment (spec + ADR + plan + SDD), **after RFC-0001** so new code is
 born into the `endpoint`/`routing`/`transform` packages and the new SPI homes:
 
-0. **Inside the breaking window, not here:** add `MessageGroupStore.SettleMembers` (see the note below). — S
 1. Idempotent Receiver — `DedupStore` SPI (root) + memory/sql impls, `InboxDeduper` claim method, lease columns
    in the reference DDL. Lands in `endpoint`. — M
 2. Recipient List → `routing`. — S
-3. Resequencer → `routing` (consumes `SettleMembers` from step 0). — M
+3. Resequencer → `routing`, **carrying `MessageGroupStore.SettleMembers` with it** (§7.3). — L
 4. Content Enricher → `transform` (now M, §7.1); Message Expiration → the `endpoint` dispatch path (S).
 
-> **Correction (2026-07-27) — this RFC is no longer purely non-breaking.** §2 bills the whole set as "additive
-> and non-breaking", which the `SettleMembers` decision (§7.3) contradicts: adding a method to the shipped
-> `MessageGroupStore` interface breaks every implementer. Resolution: **land `SettleMembers` during RFC-0001's
-> breaking window** (step 0), ahead of the Resequencer that needs it. The method is defined and implemented for
-> memory + sql + the three dialect modules while the API is already moving; the Resequencer then lands later as
-> genuinely additive work. This keeps RFC-0005's "additive, independent of the window" framing true for
-> everything except one method deliberately pulled forward.
+> **`SettleMembers` lands WITH the Resequencer, not ahead of it — revised 2026-07-27** (audit round 1, finding
+> group C; decision §H1). An earlier revision of this section carried a "step 0" that pulled the method forward
+> into RFC-0001's breaking window, on the argument that *adding a method to a shipped interface breaks every
+> implementer, so it must ride the window*. **That argument does not survive this project's own facts:**
+>
+> - **Nothing is tagged and there are no consumers**, so a "breaking" interface change costs a mechanical edit
+>   today *and* a mechanical edit in the Resequencer increment. The window buys nothing.
+> - **Every implementer is in this repository** — `memory`, `sql`, and the three dialect modules. There is no
+>   third party to break.
+> - The Resequencer increment is **equally pre-v1**, so it is equally free.
+>
+> Against that zero saving stood a real cost: the method has **no caller** until the Resequencer, and four
+> semantics no one could pin without one — lease state after a partial settle, whether `createdAt` resets,
+> empty-residual handling, and the ordering of un-named claimed members versus members added during the lease.
+> **Both branches of the `createdAt` question are wrong for a Resequencer**: reset it and the gap timeout can
+> never fire; don't and the reaper re-releases the group every tick. Guessing those and freezing the guess into
+> conformance tests across five modules is the expensive mistake, not the mechanical rename.
+>
+> Two further blockers the pulled-forward version had not accounted for, both now inherited by the Resequencer
+> increment and to be specified there:
+>
+> - **A second exported SPI breaks with it.** `sql.GroupStore` delegates to `GroupDialect`
+>   (`postgres/groupdialect.go:179`, `mysql:177`, `sqlite:193`), whose godoc invites third-party implementers.
+>   `SettleMembers` needs a `GroupDialect` method too.
+> - **The `IN` list must be capped or chunked.** SQLite's default `SQLITE_MAX_VARIABLE_NUMBER` is 999; an
+>   uncapped id list with no typed error violates CLAUDE.md's sensible-defaults rule.
+>
+> **Consequence:** RFC-0005's "additive and non-breaking" framing in §2 holds for every pattern *except* the
+> Resequencer, whose increment carries one interface addition. That is a property of the Resequencer, declared
+> here, not a dependency on RFC-0001's window.
 
 ### Timeline
 
@@ -210,6 +236,13 @@ branch tested; multi-instance behaviour documented (in-process vs durable seam) 
 3. **Resequencer → reuse `MessageGroupStore`, extended with `SettleMembers`.** See the 2026-07-27 audit note in
    §3 for why plain reuse is unsafe and why a separate `ResequencerStore` was rejected (it would duplicate the
    lease, fencing, and reaper machinery `MessageGroupStore` only got right after two audit rounds).
+
+   **Scheduling (revised 2026-07-27, audit round 1 §H1): `SettleMembers` lands INSIDE the Resequencer
+   increment**, not in RFC-0001's breaking window. Full rationale in §5. The Resequencer increment therefore
+   owns, and must specify before implementing: the four undecided semantics (lease state after partial settle,
+   `createdAt` reset, empty residual, ordering of un-named claimed members vs. members added during the lease),
+   the matching `GroupDialect` method across the three dialect modules, and a cap-or-chunk policy for the id
+   `IN` list. It is an **L**, not an **S**.
 
 4. **Message Expiration → a dedicated expired sink** (`WithExpiredChannel`), mirroring the Aggregator's shipped
    `WithExpiredGroupChannel`, including a paired typed error when an expiration is configured without a sink

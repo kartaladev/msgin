@@ -44,14 +44,29 @@ Fix the drift register (ranked); leave the exemplary parts untouched.
   > `var _ MessageChannel` assertion outside a test fake). `QueueChannel` has `Send`+`Poll` (it is a
   > `PollingSource`, not a `MessageChannel`); `PublishSubscribeChannel` has `Send`+`Subscribe`→`(Subscription,
   > error)`. So `MessageChannel` is not a channel abstraction — it is `DirectChannel`'s shape wearing the
-  > general name. Every consumer of the type (`WithDiscardChannel`, `WithDefaultChannel`, the router's `pick`
-  > return, `NewChannelExchange`'s `request`) calls **only `Send`** — verified, no call site subscribes — yet
-  > the interface demands `Subscribe`. Consequence today: **you cannot discard to, route to, or exchange over a
-  > `QueueChannel` or a `PublishSubscribeChannel`.** The segregation therefore *fixes a functional limitation*,
-  > which raises its priority above a lexical fix.
+  > general name. **Eight of the nine call sites** call **only `Send`**, yet the interface demands
+  > `Subscribe`. Consequence before the fix: **you cannot discard to, route to, aggregate into, exchange over,
+  > or serve an HTTP request into a `QueueChannel` or a `PublishSubscribeChannel`.** The segregation therefore
+  > *fixes a functional limitation*, which raises its priority above a lexical fix.
   >
-  > The one genuine subscriber is `exchange.go:247`, which calls `reply.Subscribe(...)` — so `ChannelExchange`
-  > needs both shapes and is the concrete customer proving `SubscribableChannel` earns its keep.
+  > The **ninth** call site — `NewChannelExchange`'s `reply`, which calls `reply.Subscribe(...)` — is the sole
+  > genuine subscriber. That is precisely why the answer is **two interfaces rather than one narrowing**:
+  > `ChannelExchange` needs both shapes, and is the concrete customer proving `SubscribableChannel` earns its
+  > keep.
+  >
+  > **The count has been wrong three times; the SCOPE RULE is the contract** (2026-07-28). An early draft
+  > claimed "verified, no call site subscribes" and the next sentence contradicted it (audit round 1, E3).
+  > Round 1 replaced it with *four of five*. Round 2 §A6 "corrected" that to *six of seven*, adding the two
+  > Aggregator options. **Both were still wrong — both searched only the pattern core and stopped at the module
+  > boundary**, missing `adapter/http/inbound.go:116` and `adapter/http/stdlib/inbound.go:33`. The measured
+  > answer is **nine**; the enumeration is [ADR 0028 §4a](../adrs/0028-channel-interface-segregation.md) and
+  > [Spec 014 §5.0](../specs/014-core-package-layout.md), each of which states the command rather than asking
+  > a reader to trust the number:
+  >
+  > ```bash
+  > grep -rn "msgin\.MessageChannel\|MessageChannel interface" --include="*.go" . \
+  >   | grep -v "_test.go" | grep -v "^./docs" | grep -v '// '
+  > ```
 - `Exchange`/`ChannelExchange` — decide: keep (qualified as `RequestReply*`) or rename away from the
   AMQP-overloaded "exchange". If kept, add a disclaiming godoc line.
 
@@ -116,8 +131,19 @@ RFC-0003/0004's new names.
 1. **`Exchange` → keep, qualified.** Root keeps `RequestReplyExchange`; the in-process implementation is
    `endpoint.ChannelExchange`, with a godoc line disclaiming the AMQP meaning. Rationale: Spring Integration
    names its own equivalent interface `RequestReplyExchanger`, so "exchange" here is the consensus term rather
-   than drift. **The ADR must cite that source explicitly** rather than assert it — if the citation does not
-   hold up, this decision reverts to a rename.
+   than drift.
+
+   > **Citation VERIFIED (audit round 1, finding G).** `org.springframework.integration.gateway.RequestReplyExchanger`
+   > exists and is Spring Integration's default gateway service interface — *"When a gateway is declared with no
+   > `service-interface`, an internal framework interface `RequestReplyExchanger` is used"*
+   > (`docs.spring.io/spring-integration/reference/gateway.html`); Spring 6.5 adds `AsyncRequestReplyExchanger`.
+   > The decision **stands** and does not revert to a rename.
+   >
+   > *Recorded nit, decided:* Spring's is `RequestReplyExchang**er**` (agent noun, method `exchange`); ours is
+   > `RequestReplyExchange` with method `Exchange`. **We keep our form.** Go's single-method-interface convention
+   > points at the `-er` suffix, but our name is the *pattern* (Request-Reply) not the *agent*, the method is the
+   > verb, and `RequestReplyExchanger.Exchange` would stutter agent-and-action. The citation establishes that
+   > "exchange" is consensus vocabulary, which is all it was asked to establish.
 2. **`FilterPredicate` vs `MessageSelector` → neither; `routing.Predicate[A]`.** See §3 Examples above and
    RFC-0003 §7 for the full six-type set.
 3. **`MessageChannel` split → now, in this window.** RFC-0001 chose C-full, which removes the reason to defer
@@ -146,6 +172,25 @@ RFC-0003/0004's new names.
 
    Call sites narrow honestly to send-only: `WithDiscardChannel`, `WithDefaultChannel`, the router's `pick`
    return, and `NewChannelExchange`'s `request` take `MessageChannel`; its `reply` takes `SubscribableChannel`.
+
+4. **`Permanent` → KEPT, not renamed** (drift register entry; audit round 1 §H6, settled with the user
+   2026-07-27). The register raised `Permanent(err)` as a candidate for `Terminal` or `NonRetryable`. It is
+   **considered and kept**, which this RFC's success metric explicitly admits as a resolution:
+
+   - **`Terminal` is already taken, twice over.** `terminal` is load-bearing in `handler.go`/`activator.go` for
+     "end of chain", and the planned NATS adapter brings `Term` (stop redelivery) — three distinct meanings
+     competing for one root.
+   - **`permanent`/`transient` is the established antonym pair** across six files. `Terminal` has no antonym in
+     the codebase's vocabulary; renaming would orphan `transient` or force a second rename.
+   - **The name is a deliberate mirror**, already recorded at `reliability.go:20`, of
+     `cenkalti/backoff.Permanent` — the same concept under the same name in the library msgin's retry semantics
+     were modelled on.
+   - `NonRetryable` was the runner-up (accurate, self-describing) and is **not adopted**: it describes the
+     mechanism rather than the classification, and it does not pair with `transient` either.
+
+   **Consequence for the window:** no rename ships, so `Permanent` and `RetryAfter` keep their names and stay in
+   root. Their classifiers (`IsPermanent`, `RetryAfterOf`) are newly **exported** in this window — see Spec 014
+   §4.1; that is forced by the package split, not by this decision.
 
 ## 8. Appendix
 

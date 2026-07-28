@@ -1,136 +1,159 @@
 # Session handover — msgin
 
-> **READ FIRST, before doing anything.** Read `CLAUDE.md` (root), then **`docs/plans/027-audit-round-1.md`**, then
-> the pointers in §3. Trust those files over this handover and over any memory.
+> **READ FIRST.** Read `CLAUDE.md`, then `docs/specs/014-core-package-layout.md` and
+> `docs/plans/027-core-package-layout.md` (both **regenerated** 2026-07-28), then
+> `docs/plans/027-derivation-findings.md` (F0–F11, the evidence base). Trust those over this file and over
+> any memory.
 >
-> **⛔ DO NOT DELEGATE CODE WRITING YET.** The design bundle exists but **failed its round-1 adversarial audit —
-> all three auditors returned `NEEDS-REVISION`, 18 HIGH findings.** Plan 027 Task 4 cannot compile as written.
-> The next work is a **revision pass, then a round-2 audit** — not implementation. Spec 014, ADRs 0027–0029 and
-> Plan 027 all carry DO-NOT-IMPLEMENT banners; do not remove them until round 2 passes.
+> **STATE: the refactor is IMPLEMENTED and GREEN. The bundle is regenerated and all banners are cleared.**
+> What remains is the **round-3 adversarial audit** and the **pre-merge review gates**.
 >
-> **Safepoint:** branch `claude/repo-structure-refactor-jt79t1` @ `28dd9e4` + uncommitted docs (see §2). No Go code
-> has changed at any point — the entire branch is documentation. `go build ./...` green.
+> **⚠️ UNCOMMITTED WORK IN THE TREE.** The migration is committed (`c83dde9`); everything since — Task D's
+> code and Task E's whole documentation regeneration — is **uncommitted**. Do not `git checkout`,
+> `git stash`, `git reset`, or `git clean`. Do not commit without asking.
 
-## 1. Objective & roadmap position
+## 1. Objective & position
 
-`msgin` is a Go 1.25 Enterprise Integration Patterns library (`github.com/kartaladev/msgin`). HTTP/SSE work is
-complete (Plans 025/026 merged). **The active effort is the pre-v1 refactor program.**
+`msgin` is a Go 1.25 Enterprise Integration Patterns library. The active effort is the **pre-v1 core
+refactor**: flatten-to-packages, channel interface segregation, and EIP lexical alignment.
 
-All five RFCs in `docs/rfcs/` are **Accepted** — 22 open questions settled with the user, one at a time. The first
-slice (RFC-0001 + 0002 + 0003) was promoted to **Spec 014 + ADRs 0027/0028/0029 + Plan 027**, then audited. The
-audit failed it.
+Spec 014 + ADRs 0027/0028/0029 + Plan 027 **failed two adversarial audits** (3/3 auditors each), both times
+because the move-list was hand-typed and asserted as verified. Round 2 §F changed the method: **migrate
+first, let the compiler prove it, generate the move-list from the green tree, then write the documents.**
 
-**Sequencing decision that still stands:** the breaking window runs **FIRST**, ahead of the feature roadmap. The
-gin binding is renumbered off 027 (it becomes Plan 028) — but `docs/specs/011-http-adapter.md:94,677` still says
-027, which is audit finding **D3** and must be fixed.
+**That method has now been executed end to end.** The migration is done and green; the bundle has been
+rewritten from generated evidence.
 
 ## 2. Exact state
 
-Branch `claude/repo-structure-refactor-jt79t1`, four commits ahead of `main` (`6f44db6`), **not pushed**:
-
-- `a54f023` — `docs(rfcs): settle all open questions; accept the refactor program`
-- `2463a4f` — `docs: promote the first refactor slice to spec 014, ADRs 0027-0029, plan 027`
-- `145c26c` — `docs(handover): refactor program accepted; first slice promoted, audit pending`
-- `28dd9e4` — `docs(claude): refresh project status from greenfield to pre-v1`
-
-**Uncommitted in the worktree** (the audit record + the DO-NOT-IMPLEMENT banners + this handover):
+Branch `claude/repo-structure-refactor-jt79t1`, **not pushed**. `main` is at `6f44db6`.
 
 ```
-?? docs/plans/027-audit-round-1.md
- M docs/specs/014-core-package-layout.md
- M docs/adrs/0027-core-package-restructure.md
- M docs/adrs/0028-channel-interface-segregation.md
- M docs/adrs/0029-eip-lexical-alignment.md
- M docs/plans/027-core-package-layout.md
- M docs/HANDOVER.md
+c83dde9  refactor(core)!: extract the flat core into endpoint/routing/transform/channel/resilience
+ab233d9  docs(audit): settle all six round-1 decisions; record the governing criteria
 ```
 
-Commit these first — the audit record is the session's most valuable artifact and exists nowhere else. No code
-changed; `GOTOOLCHAIN=go1.25.12 go build ./...` green.
+**Committed** (`c83dde9`): the whole mechanical migration. 105 files, +2040/−3145. Root 32 → **14** non-test
+files.
+
+**Uncommitted in the working tree** — two logical units, both green:
+- **Task D** — `MessageChannel` segregation + `SubscribableChannel`, `channel.WithSingleSubscriber()` (D-F),
+  `StreamingSource` → `EventDrivenSource`.
+- **Task E** — the regeneration of Spec 014, Plan 027, ADRs 0027/0028/0029, RFC-0002/0003,
+  `docs/specs/011-http-adapter.md`, plus `CLAUDE.md`/`MESSAGING.md` rename touch-ups.
+
+**Verified green at handover:** all seven modules `build` + `vet`; `go test ./... -race -shuffle=on` across
+all 11 root packages; Docker-backed `dbtest` and `crontest` run for real. Coverage `-coverpkg=./...`
+**93.26%** (baseline 93.23%).
+
+The `../msgin-derive` worktree is **merged and redundant** — its branch `refactor/mechanical-derivation`
+points at `c83dde9`. Safe to `git worktree remove`; left in place only because removal was not requested.
 
 ## 3. Traceability pointers (read in this order)
 
-1. `CLAUDE.md` — workflow, gates, conventions that OVERRIDE defaults.
-2. **`docs/plans/027-audit-round-1.md`** — the full round-1 findings, grouped by theme, with the decisions the
-   revision pass needs (§H) and what round 2 must re-audit (§I). **This is the working document.**
-3. `docs/rfcs/README.md` — program index, decided package layout, promotion status, sequencing.
-4. `docs/rfcs/0001`–`0005` — each RFC's **§7 Decisions**. Read §7 *before* §3; several §3 passages predate the
-   decisions and carry dated resolution notes rather than being rewritten.
-5. `docs/specs/014-core-package-layout.md`, `docs/adrs/0027`/`0028`/`0029`, `docs/plans/027-core-package-layout.md`
-   — the bundle under revision.
+1. `CLAUDE.md` — hard rules. **SDD is the default execution mode; direct main-session implementation needs
+   explicit per-task approval.**
+2. `docs/specs/014-core-package-layout.md` + `docs/plans/027-core-package-layout.md` — regenerated; every
+   table transcribes a pasted command.
+3. **`docs/plans/027-derivation-findings.md`** — F0–F11, the evidence base. Treat as evidence, not
+   scripture: it contains two self-corrections.
+4. `docs/plans/027-derivation-brief.md` — env, tooling, the green gate, the coverage rule. Written for
+   subagent consumption; hand it to every implementer.
+5. `docs/plans/027-audit-round-2.md` — §E what is verified-sound (**do not re-open**), §G.1 the eight
+   settled decisions. Historical record; its banner stays.
+6. `docs/adrs/0027`, `0028`, `0029`.
 
-## 4. Decisions, deviations, and what the audit overturned
+## 4. Next actions
 
-**Settled with the user this session** (all recorded in the RFCs' §7): C-full; EIP-chapter package names
-(`endpoint`/`routing`/`transform` + `channel`, `resilience`); `MessageChannel` split with `PollableChannel`
-omitted; named func types with combinator methods, names dropping the package's qualifier; `expr-lang` to its own
-module while `robfig/cron` stays (rule: *weight material to non-users*, 7.1 MB vs 144 KB); two-phase `DedupStore`
-Claim/Settle with a lease. **User overrode my recommendation on four:** `Poller` exported, `Once` ships, Enricher
-is a full endpoint (S→M), `robfig` in-module (which deleted RFC-0004's own success metric).
+### 4.1 Round-3 adversarial audit — the immediate next step
 
-**What the audit overturned — see the audit record for evidence.** Five structural claims I wrote into the bundle
-are verified **false**: the "ADR 0003 says the core is one package" quote (that phrase exists nowhere but my own
-files), the `endpoint → channel` import edge, "no call site subscribes through the interface", "root 32 → 9" (the
-table yields 12), and "every reference is godoc prose, not code". Four of these sat inside acceptance criteria.
+CLAUDE.md mandates an independent adversarial audit of the **complete bundle together** (spec + ADRs + plan)
+before implementation. Implementation has in this case *preceded* the audit by design (that was the whole
+method change), so the round-3 audit is now checking a bundle that describes **code that actually exists** —
+tell the auditors that explicitly, and that they may verify any claim against the tree.
 
-**Verified and settled for good:** Spring Integration does name its equivalent interface `RequestReplyExchanger`,
-so "keep `Exchange`, qualified" stands and Plan 027 Task 3's blocker is cleared.
+Use fresh Opus subagents, three lenses as in rounds 1–2. **The consistency lens should have little to find**
+— that is the test of whether the method worked. Prime them with:
+- Every number should be reproducible by the command printed beside it. Re-run a sample.
+- §E of round 2 lists what is settled; re-opening it is out of scope.
+- The eight decisions D-A…D-H are **user decisions**, not open questions.
 
-**Pending approvals / open questions:**
+### 4.2 Pre-merge gates — NOT YET RUN
 
-- **Nothing is pushed.** Pushing needs explicit approval.
-- **All six §H decisions are SETTLED** (user, 2026-07-27) — see audit record §H, which now records each with its
-  rationale, and §J for the execution order. In brief: **cut `SettleMembers`** from Plan 027; **delete
-  `delayFor`** and inline it in `endpoint` (`RetryPolicy` stays in root as vocabulary); **keep both
-  `MessageChannel` and `OutboundAdapter`**; **keep `Chain`/`To` in root** and make §9.1 a scriptable check;
-  **`ReleaseStrategy` → `(bool, error)`** with the bool-only form kept as sugar; **keep `Permanent`** (no rename).
-- **Two standing criteria the user set, which govern the whole revision:**
-  1. *"Make the library as flexible as possible with sensible defaults / opinionated — higher quality, ready for
-     production use."* Where a choice is balanced, resolve toward **an easy default path plus a fully capable
-     escape hatch** (CLAUDE.md's *Sensible defaults*), never trading one away for the other.
-  2. **Consistency with Pipes and Filters.** `MessageChannel` is the EIP **Pipe**, `Step` is the **filter**, and
-     `Chain` assembles the pipeline — that is why the channel type is not collapsed into `OutboundAdapter` (a
-     Channel Adapter, a different pattern) and why the assembler stays in root with the vocabulary.
-     `doc_composition.go:4` already states this model and **Task 1 deletes that file**, so the revision must carry
-     the Pipes-and-Filters framing into the new package docs rather than parking it.
+**`/code-review` and `/security-review` over `main..HEAD` have never run on this branch.** CLAUDE.md makes
+both hard preconditions before merging, and the branch carries a large breaking refactor plus new public API
+(`SubscribableChannel`, `WithSingleSubscriber`, `IsPermanent`, `RetryAfterOf`, `NewID`, `EventDrivenSource`).
+The round-3 design audit does **not** substitute for either. `c83dde9`'s commit body records that it was
+committed without them, at the user's explicit direction.
 
-## 5. Next actions
+### 4.3 Open items the regeneration surfaced (F11) — small, real
 
-1. **Do the revision pass** — this is the whole job, and it is a fresh-session-sized piece of work. All decisions
-   are settled (§4); **follow audit record §J's execution order** and do it as **one atomic pass**, because most
-   consistency findings are "document A now disagrees with document B" and partial integration manufactures
-   exactly that defect. Touches ~15 files across `docs/rfcs`, `docs/specs`, `docs/adrs`, `docs/plans`. The heavy
-   items:
-   - Rewrite Spec 014 §3 with **four** file splits and add a **symbol-level table** (18 identifiers) plus a
-     **45-row test-file table**. Add a Task 3.5 for shared-helper resolution before any extraction.
-   - Fix the false claims (audit §E) and the missing ADR citations (audit §D).
-   - Replace the §9.1 acceptance criterion with the scriptable one (`go list -deps .` has no subpackage).
-   - Correct the plan header's non-existent "gopls Move"; make Task 1's tidy per-module.
-   - Carry the **Pipes-and-Filters framing** out of the deleted `doc_composition.go` into the new package docs.
-2. **Run round 2** — the same three-lens parallel Opus audit on the revised bundle (design/API correctness;
-   plan-level execution; cross-document consistency), each handed the complete bundle with an explicit
-   evidence-or-discarded output contract. Round 2 is required, not optional: the fixes rewrite the normative
-   move-list and change public signatures.
-3. **Only after round 2 passes**, ask the user for the go-ahead and delegate implementation via SDD — one fresh
-   implementer subagent per task, coordinator verifies green and commits, adversarial reviewer before delivery.
+- **F11.6** root's `boxMessage` and `nilFuncStep` are now **dead code**. `unused` is disabled, so nothing
+  reports it. Delete them.
+- **F11.7** the staleness sweep needs a **second arm for deleted symbols**: 7 `*Expr` godoc mentions survive
+  that a moved-symbol grep structurally cannot see. Related: `ErrInvalidExpression` and `ErrExprResultType`
+  are **orphaned in root** — a decision Task 10 (the `expr` module) owes.
+- **F11.8** **none of the five subpackages has a `doc.go`**, though Spec 014 §3.5 makes them normative.
+  `ST1000` is off, so the gate is blind to it.
+- **F11.5** the capability test covers 3 targets × **3** sites; Spec §9.4 requires **8**. The four missing
+  are exactly the sites both `MessageChannel` censuses missed.
+- Spec 011 §6 Phases 3/4 carry no ✅ DELIVERED marker although SSE shipped in Plans 025/026. Deliberately
+  left — marking a phase delivered is a claim needing its own verification.
+
+### 4.4 Then
+
+Plan 027's remaining tasks: **Task 9** (named behavior types/combinators — note D-E already landed early),
+**Task 10** (the `expr` provider module, which must adopt the orphaned sentinels), **Task 11** (migration
+guide, doc sync, whole-branch gate).
+
+## 5. What this method proved (the point of the exercise)
+
+Hand-derivation failed twice; mechanical derivation caught all of the following, each compiler- or
+command-verified. Full detail in the findings file.
+
+- **`apidiff`: 95 removals, 5 additions.** Decomposition verified as a partition by set arithmetic
+  (87 relocated + 6 `*Expr` deleted + 1 rename + 1 `MessageChannel.Subscribe`), empty residual.
+- **§3.2 splits: 80 declarations across six files, zero unlocated.** Round-2 §B3 charged the hand-written
+  table with omitting five declarations — **it omitted thirty-one**.
+- **The `MessageChannel` census is NINE**, not ADR 0028's "four of five" nor round-2's corrected "six of
+  seven". The two both missed — `adapter/http/inbound.go:116` and `adapter/http/stdlib/inbound.go:33` — are
+  in the HTTP adapter; both censuses searched only the pattern core. **Now written as an invariant with a
+  check command, not a count** — round 2 corrected the number and the number broke again.
+- **42 error sentinels**, not 89.
+- **ADR 0028 §7's semantics table was missing a row**: a stale handle's `Cancel` after a resubscribe would
+  have silently evicted the *new* subscriber — a latent bug the "decided" table would have shipped.
+- **`endpoint` read `Message`'s unexported fields at 6 sites, not the 4 the compiler printed** — Go's
+  10-error cap hid `producer.go:423`. **Never enumerate a change set from build stderr.** Likewise `go vet`
+  showed only 1 of 3 capability failures; `go test -c` showed all three.
+- **Coverage attribution:** default per-package coverage shows root falling 99.3% → 81.8%, *below* the 85%
+  gate, purely because blackbox tests moved to sibling packages. `-coverpkg=./...` shows 93.2%+ against a
+  91.9% baseline. **Every extraction task must verify with `-coverpkg`** or the gate fails falsely.
+- **Task ordering (F3):** Task 1 destroys the only driver for three *core* aggregator branches; their sole
+  fallible release strategy was `WithReleaseExpr`. **D-E is a Task 1 prerequisite, not Task 9 work.**
+- **Test identifiers cross package boundaries** (F2): deleting `expr_test.go` left the root test binary red.
+  `go build` cannot see it. §3.4 must inventory test *identifiers*, not only test *files*.
+- **Placement cannot be reference-counted:** `queuechannel_e2e_test.go` has 3 `endpoint` refs vs 1 `channel`
+  ref and belongs to `channel` — the endpoint symbols are the harness, not the SUT.
+- **`retry_test.go` does not split** (confirms §A7); zero case-level splits.
+- **Adapter blast radius: 28 files, 154 occurrences = 115 code + 39 godoc-comment-only.** The comment-only
+  ones break nothing, so a task that stops at "green" leaves them silently wrong. Zero new module edges.
 
 ## 6. Gotchas & environment
 
-- **`export GOTOOLCHAIN=go1.25.12`** always (bare `go1.25` is rejected).
-- **`./...` is not the repo.** Seven modules today, eight once `expr` lands; the gate is the per-module
-  `GOWORK=off` loop in CLAUDE.md's Commands section. **Every satellite `go.mod` carries `expr-lang // indirect`
-  under a `replace` to the local root**, so dropping the dep makes six modules need `go mod tidy` at once.
-- **`gopls` has NO Move refactoring** (`api-json` v0.23.0 exposes rename options only), it is not on PATH (only
-  `$(go env GOPATH)/bin/gopls`), and it has been unavailable inside subagents in past sessions. Package moves are
-  `git mv` + package clause + `goimports -w`, with `go build ./...` as the authoritative reference-finder. Do not
-  write "use gopls Move" back into the plan.
-- Tooling: `govulncheck` at `$(go env GOPATH)/bin/govulncheck`; **`gofumpt` NOT installed** — use
-  `test -z "$(gofmt -l .)"`; `golangci-lint` on PATH. `.golangci.yml` sets `linters.default: none` and does not
-  enable ST1000, so a missing package doc will not be caught.
-- `.github/workflows/ci.yml` has a **pre-existing gap**: the `module` matrix and the `workspace` job both omit
-  `adapter/cron/crontest`. Fix it in the same edit that adds `expr`.
-- `dbtest` and `crontest` need a running Docker daemon.
-- Repo has **zero git tags** — do NOT propose tagging. This is what makes every break in Spec 014 affordable, and
-  it is also why the `SettleMembers` "must ride the window" argument fails.
-- `.claude/settings.json` has been permanently dirty in past sessions — never commit it; stage explicit pathspecs,
-  never `git add .`. (It is clean right now.)
+- **`export GOTOOLCHAIN=go1.25.12`** always; **`export PATH="$(go env GOPATH)/bin:$PATH"`** — `goimports`,
+  `gofumpt`, `gopls`, `govulncheck`, `apidiff`, `gorelease` all live there and none are on `PATH`.
+- **`./...` is not the repo** — seven modules. Use the per-module `GOWORK=off` loop in the brief.
+- **`go build ./...` does not compile tests**; `go vet` does, but stops after one type-error batch — use
+  `go test -c` for a full transcript.
+- **The `apidiff` baseline is at `/tmp/msgin-derive/root.api`** (NOT in `msgin-derive-artifacts/`, which an
+  earlier brief claimed). `/tmp` is not durable — **re-capture it into the repo or a durable path before
+  relying on it again.**
+- Reusable tooling from the derivation run: `decls` (AST decl dump) and `qualify` (AST-based
+  requalification; **a regex version corrupted EIP pattern names in godoc — never go back to regex**).
+  Sources in the session scratchpad; rebuild if `/tmp` was cleared.
+- `.golangci.yml` sets `linters.default: none` — **`ST1000` and `unused` are both off**, so missing package
+  docs and dead code after a move are reported by nothing.
+- `gopls` has **no Move refactoring**.
+- `.github/workflows/ci.yml` omits `adapter/cron/crontest` from both jobs — pre-existing gap.
+- Repo has **zero git tags** — do NOT propose tagging.
+- Never commit `.claude/settings.json`; stage explicit pathspecs.

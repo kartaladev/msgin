@@ -3,7 +3,7 @@
 A coordinated set of RFCs for one pre-v1 effort: reduce reader/maintainer cognitive load, align with the
 EIP / Spring Integration consensus, and close the catalogued pattern gaps. The **refactor** RFCs (0001–0004)
 share a **single breaking window** (`v0.x`, SemVer-major intent); the **gap-closure** RFC (0005) is additive
-and lands independently, except for one method pulled into the window. All share one design language:
+and lands independently — **nothing from it rides the window** (revised 2026-07-27). All share one design language:
 **vocabulary + interfaces in the core; implementations and providers in packages named for their EIP chapter;
 dependencies point inward.**
 
@@ -15,31 +15,53 @@ precede the CLAUDE.md artifact chain (spec → plan → ADR); an accepted RFC sp
 
 | RFC | Title | Scope | Breaking? |
 |---|---|---|---|
-| [0001](0001-core-package-restructure.md) | Core package restructure | **C-full**: root keeps vocabulary + SPI only; `endpoint`/`routing`/`transform`/`channel`/`resilience` hold every implementation | Yes (amends ADR 0003) |
+| [0001](0001-core-package-restructure.md) | Core package restructure | **C-full**: root keeps vocabulary + SPI only; `endpoint`/`routing`/`transform`/`channel`/`resilience` hold every implementation | Yes (**amends nothing** — the flat core was never a recorded decision; see ADR 0027 Context) |
 | [0002](0002-eip-alignment.md) | EIP semantic & lexical alignment | Fidelity-audit renames + the `MessageChannel`/`SubscribableChannel` split (a capability fix, not just lexical) + godoc | Yes |
 | [0003](0003-endpoint-behavior-types.md) | Endpoint behavior types & provider model | Named func types (`routing.Predicate`, …) with combinator methods; expr becomes a provider **module**; expr dropped from core | Yes (amends ADR 0019) |
 | [0004](0004-trigger-scheduling.md) | Trigger-driven scheduling: Poller & scheduled sources | One `Trigger` SPI; **public** `Poller`; dissolve `adapter/cron`; `robfig` stays in the root module | Yes (amends ADR 0017; **ADR 0016 stands**) |
-| [0005](0005-eip-gap-components.md) | Fill the EIP scope gaps | Add Idempotent Receiver, Resequencer, Recipient List, Content Enricher, Message Expiration (all five in v1) | Almost — one SPI method rides the window |
+| [0005](0005-eip-gap-components.md) | Fill the EIP scope gaps | Add Idempotent Receiver, Resequencer, Recipient List, Content Enricher, Message Expiration (all five in v1) | Additive, **except** the Resequencer increment, which carries `MessageGroupStore.SettleMembers` |
 
 ## The decided package layout
 
-Every RFC places its code here, so read this before any of them:
+Every RFC places its code here, so read this before any of them. **`[1]` marks what increment 1 (Spec 014 /
+Plan 027) actually creates; everything else is a later increment's contribution to the same tree** — annotated
+2026-07-27 after audit round 1 (finding L4), because an unannotated end-state layout reads as a move-list and
+is not one.
 
 ```
-msgin/       root (vocabulary + SPI ONLY) — Message/Headers, errors, Delivery, Subscription,
-             MessageChannel/SubscribableChannel/MessageHandler, PollingSource/EventDrivenSource,
-             ChannelStore/MessageGroupStore/DedupStore, PayloadCodec, RetryPolicy,
-             Trigger + TriggerContext, Elector/Locker
-  endpoint/    Consumer, Producer, Poller, Gateway, ChannelExchange, Activate,
-               ScheduledSource, IdempotentReceiver      (EIP ch.10 Messaging Endpoints)
-  routing/     Filter, Router, Splitter, Aggregator, Resequencer, RecipientList
-                                                        (EIP ch.7 Message Routing)
-  transform/   Transform, Enrich                        (EIP ch.8 Message Transformation)
-  channel/     DirectChannel, QueueChannel, PublishSubscribeChannel
-  resilience/  RateLimiter, CircuitBreaker, OverflowPolicy, backoff
-  trigger/cron/  CronTrigger (robfig — root module)
-expr/  ← its own module    Predicate / RouteFunc / Transformer / … providers
+msgin/       root (vocabulary + SPI ONLY)
+       [1]     Message/Headers, errors, Delivery, Subscription, PayloadCodec,
+       [1]     MessageChannel/SubscribableChannel/MessageHandler/Step,
+       [1]     PollingSource/EventDrivenSource/OutboundAdapter/RequestReplyExchange,
+       [1]     ChannelStore/MessageGroupStore, RetryPolicy/Hooks/BackoffStrategy,
+       [1]     RateLimiter/CircuitBreaker/ProbeGate/OverflowPolicy,
+       [1]     Chain/To/PayloadOf/Permanent/IsPermanent/RetryAfter/RetryAfterOf/NewID
+        4      Trigger + TriggerContext, Elector/Locker
+        5      DedupStore
+  endpoint/  (EIP ch.10 Messaging Endpoints)
+       [1]     Consumer, Producer, Gateway, ChannelExchange, Activate/Consume
+        4      Poller (exported), ScheduledSource
+        5      IdempotentReceiver, Message Expiration
+  routing/   (EIP ch.7 Message Routing)
+       [1]     Filter, Router, Split, Aggregator + the behavior types
+        5      Resequencer, RecipientList
+  transform/ (EIP ch.8 Message Transformation)
+       [1]     Transform + Transformer[A,B]
+        5      Enrich
+  channel/
+       [1]     DirectChannel, QueueChannel, PublishSubscribeChannel, PubSub
+  resilience/  IMPLEMENTATIONS ONLY — the interfaces above stay in root
+       [1]     ExponentialBackoff, NewCircuitBreaker, NewTokenBucket
+  trigger/cron/
+        4      CronTrigger (robfig — root module)
+expr/  ← its own module
+       [1]     Predicate / RouteFunc / SplitFunc / Transformer / Correlation / Release providers
 ```
+
+> **`resilience` holds no interfaces** — corrected 2026-07-27 (audit A5). An earlier version of this block put
+> `RateLimiter`/`CircuitBreaker`/`OverflowPolicy` there. That contradicted the program's own "interfaces in the
+> core" rule and broke `adapter/memory/queuestore.go:74`, which takes `msgin.OverflowPolicy` in an exported
+> signature. See [Spec 014 §3.2](../specs/014-core-package-layout.md) / [ADR 0027 §5](../adrs/0027-core-package-restructure.md).
 
 ## How they relate
 
@@ -56,7 +78,10 @@ expr/  ← its own module    Predicate / RouteFunc / Transformer / … providers
 - **0002 is cross-cutting** — its renames ride 0001's package moves in one breaking review. Its
   `MessageChannel` split fixes a *functional* limitation, not only a name.
 - **0003 and 0004 are downstream of 0001's packages** and share one dependency-policy rule (below).
-- **0005 is additive and last**, except `MessageGroupStore.SettleMembers`, which lands in the window.
+- **0005 is additive and last** — **entirely**. `MessageGroupStore.SettleMembers` was briefly routed into the
+  window and is now back where it belongs, inside the Resequencer increment that consumes it (revised
+  2026-07-27, audit §H1: nothing is tagged and every implementer is in this repo, so the window buys nothing,
+  while a real caller is what pins the method's four undecided semantics).
 
 ## One rule the RFCs share
 
@@ -69,9 +94,9 @@ decisions read as arbitrary; it is recorded in [RFC-0003 §7](0003-endpoint-beha
 
 | RFC | Promoted to | State |
 |---|---|---|
-| 0001, 0002, 0003 | [Spec 014](../specs/014-core-package-layout.md), [ADR 0027](../adrs/0027-core-package-restructure.md) / [0028](../adrs/0028-channel-interface-segregation.md) / [0029](../adrs/0029-eip-lexical-alignment.md), [Plan 027](../plans/027-core-package-layout.md) | **Bundle written 2026-07-27; awaiting the adversarial design audit before any code** |
-| 0004 | — | Increment 2, not yet promoted |
-| 0005 | — | After the window; `SettleMembers` rides Plan 027 Task 11 |
+| 0001, 0002, 0003 | [Spec 014](../specs/014-core-package-layout.md), [ADR 0027](../adrs/0027-core-package-restructure.md) / [0028](../adrs/0028-channel-interface-segregation.md) / [0029](../adrs/0029-eip-lexical-alignment.md), [Plan 027](../plans/027-core-package-layout.md) | **Round-1 audit `NEEDS-REVISION` (3/3 auditors) → revised 2026-07-27 → AWAITING ROUND 2.** No code until round 2 passes. See [audit record](../plans/027-audit-round-1.md) |
+| 0004 | — | Increment 2, not yet promoted. One decision (`robfig` stays) is consumed by the increment-1 window |
+| 0005 | — | After the window, entirely. `SettleMembers` now lands **with** the Resequencer, not in the window |
 
 **RFC-0003 was folded into the first increment** rather than following it. Its six `*Expr` constructors return
 `Step`/`*Router`/`AggregatorOption` — types that move to `routing`/`transform` — so `expr.go` cannot remain in
@@ -88,17 +113,17 @@ Plan 027 therefore sequences the `*Expr` deletion **first**, before any extracti
 
 **The compensating decision: run the window FIRST, ahead of the feature roadmap.** Blast radius is at its
 smallest today (87 `msgin.*` symbols referenced by `adapter/`), and every adapter landed first enlarges it.
-Plan 027 (HTTP SSE gin binding) and any future `pgx`/`redis`/`nats` adapter get written directly into the new
-layout rather than migrated into it.
+**Plan 028** (the HTTP SSE gin binding — renumbered from 027, which the window now occupies) and any future
+`pgx`/`redis`/`nats` adapter get written directly into the new layout rather than migrated into it.
 
-1. **Split from `main` now.** RFC-0001's moves + RFC-0002's renames and channel split, as one apidiff pass and
-   one ADR set. Then RFC-0003 (all three phases) and RFC-0004 (all five phases).
-2. **Also in the window:** `MessageGroupStore.SettleMembers` (RFC-0005 step 0), so the Resequencer can land
-   later as additive work.
-3. **After the window:** Plan 027, then RFC-0005's five components incrementally — Idempotent Receiver and
-   Recipient List first.
+1. **Split from `main` now.** RFC-0001's moves + RFC-0002's renames and channel split + RFC-0003's behavior
+   types and `expr` module, as one apidiff pass and one ADR set. **This is [Plan 027](../plans/027-core-package-layout.md).**
+2. **Then increment 2:** RFC-0004 (Trigger, exported `Poller`, dissolve `adapter/cron`), born into `endpoint`.
+3. **Then the feature roadmap:** Plan 028 (gin), then RFC-0005's five components incrementally — Idempotent
+   Receiver and Recipient List first; the Resequencer carries `MessageGroupStore.SettleMembers` with it.
 
-> **Audit (2026-07-24) — deferral risk compounds.** The roadmap is still *growing* (Plan 027 next, and
+> **Audit (2026-07-24) — deferral risk compounds.** The roadmap is still *growing* (the gin binding — now
+> Plan 028 — next, and
 > CLAUDE.md's blueprint still lists **unbuilt** `redis`/`nats`/`pgx` adapters). Every adapter landed before the
 > window **enlarges RFC-0001's blast radius** and RFC-0002's rename churn, and the "quiet `main`" to split from
 > keeps receding. **Resolved 2026-07-27:** the original mitigation (pull the non-breaking work forward) died

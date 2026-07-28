@@ -4,7 +4,7 @@
 - **Context source:** [Spec 003 — Composition endpoints](../specs/003-composition-endpoints.md) §3 (D1–D6, D8), §4.
 - **Related:** builds on [ADR 0001 — Payload typing](0001-message-payload-typing.md) (typed caller API over a
   non-generic `Message[any]` core) and [ADR 0002 — Adapter SPI](0002-adapter-spi.md) (settlement, invalid-message
-  channel, worker pool). Companion [ADR 0014 — Channel settlement](0014-channel-settlement.md) covers the
+  channel, worker pool). Companion [ADR 0014 — Publish-subscribe](0014-publish-subscribe.md) covers the
   buffered + pub-sub channel kinds; this ADR covers the composition model and the synchronous `DirectChannel`.
 
 ## Context
@@ -63,6 +63,18 @@ type mismatch surfaces at runtime as `ErrPayloadType` (decision 4), exactly as d
   `*memory.Broker` (and every wire outbound adapter) satisfies `OutboundAdapter` but not `MessageChannel`
   (no `Subscribe`). So `To(sink OutboundAdapter)` makes the "any outbound adapter is a valid terminal sink"
   claim actually true; `*DirectChannel` (which has `Send`) also satisfies it. A nil sink → `ErrNilSink`.
+
+  > **AMENDED by [ADR 0028](0028-channel-interface-segregation.md) (2026-07-27) — this rationale is now void.**
+  > ADR 0028 narrows `MessageChannel` to `Send` only, so the distinction this bullet rests on ceases to exist:
+  > a `*memory.Broker` satisfies **both** interfaces. The *decision* stands unchanged — `To` still takes
+  > `OutboundAdapter` — but for a different reason: `To` terminates a flow at a **Channel Adapter** (EIP ch.4),
+  > a system-boundary role, and `OutboundAdapter` is the SPI that names that role. The two interfaces are
+  > deliberately kept distinct despite becoming method-identical, because `MessageChannel` is the EIP **Pipe**
+  > and `OutboundAdapter` is the **Channel Adapter** — two patterns, one signature. See ADR 0028 §5.
+  >
+  > **Consequence to test for:** every shipped `OutboundAdapter` now *also* satisfies `MessageChannel`, so it
+  > becomes a legal discard target, default route, router destination, and exchange request channel. That is a
+  > real capability widening; Spec 014 §9.4 requires it be covered.
 - **`Chain` terminal contract (audit F6).** `Chain`'s innermost `next` is a no-op consume, so a **producing**
   flow (ending in a Transform/Activate/passing-Filter) with **no** `To`/`Consume` terminal **silently discards
   its final message**. This is a documented contract on `Chain`'s godoc — always end a producing flow with

@@ -3,6 +3,11 @@
 - **Author:** kartaladev/msgin maintainers
 - **Date:** 2026-07-22
 - **Status:** Accepted (open questions settled 2026-07-27 — see §7)
+- **Promoted to:** *not yet promoted* — **increment 2**, after Spec 014 / Plan 027 lands. Deliberately deferred:
+  ADR 0027's C-full decision means the exported `Poller` and the `Trigger` SPI are born into `endpoint`, a
+  package that does not exist until the restructure ships. One decision of this RFC is nonetheless **consumed
+  by** the Spec 014 window: `robfig/cron` **stays** in the root module (§7), which ADR 0029 §6 cites as the
+  other half of its dependency-weight rule.
 - **Reviewers:** TBD
 
 ## 1. Summary

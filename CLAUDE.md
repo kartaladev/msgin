@@ -189,7 +189,7 @@ The vocabulary is EIP's; the shape mirrors Spring Integration but is pure, idiom
 
 ***Planned*** — design only, no code yet; the shape below is intent, not fact:
 
-- **pgx** (`adapter/database/pgx`, own module) — PostgreSQL-native (`jackc/pgx/v5`) + wire-compatible derivatives; adds **`LISTEN`/`NOTIFY` event-driven** (`StreamingSource`) alongside polling, `pgxpool`, `COPY` bulk outbound.
+- **pgx** (`adapter/database/pgx`, own module) — PostgreSQL-native (`jackc/pgx/v5`) + wire-compatible derivatives; adds **`LISTEN`/`NOTIFY` event-driven** (`EventDrivenSource`) alongside polling, `pgxpool`, `COPY` bulk outbound.
 - **Redis** (`adapter/redis`, own module) — list (`LPUSH`/`BRPOP`, at-most-once) or streams (`XADD`/`XREADGROUP`/`XACK`, consumer groups, at-least-once, native redelivery).
 - **NATS** (`adapter/nats`, own module) — core subject pub/sub (at-most-once) or JetStream (pull *and* push, at-least-once, `Ack`/`Nak`/`Term`).
 
@@ -208,7 +208,7 @@ These were the open decisions; all are now ratified in [`docs/specs/001-messagin
 
 1. **Module layout → multi-module monorepo** ([ADR 0003](docs/adrs/0003-multi-module-repository-layout.md)). Core (stdlib + clockwork, incl. `memory` + `database/sql`); `database/pgx`, `redis`, `nats` are separate modules. **Supersedes the earlier single-module lean** — release tags are now module-path-prefixed; local dev uses `go.work`.
 2. **Message payload typing → generics + split codec** ([ADR 0001](docs/adrs/0001-message-payload-typing.md)). `Message[T]` on the caller API; non-generic SPI over `Message[any]`; payload codec (`T`↔`[]byte`) in the runtime, envelope framing in the adapter.
-3. **Adapter SPI → non-generic, dual inbound, runtime-owned reliability** ([ADR 0002](docs/adrs/0002-adapter-spi.md)). `PollingSource` (shared Poller) + `StreamingSource`; `Delivery` with `Ack`/`Nack` closures; `NativeReliability` escape hatch.
+3. **Adapter SPI → non-generic, dual inbound, runtime-owned reliability** ([ADR 0002](docs/adrs/0002-adapter-spi.md)). `PollingSource` (shared Poller) + `EventDrivenSource`; `Delivery` with `Ack`/`Nack` closures; `NativeReliability` escape hatch.
 4. **Error handling → runtime-owned** ([ADR 0002](docs/adrs/0002-adapter-spi.md)). One configurable `RetryPolicy` (max-attempts → dead-letter, backoff); adapters expose only raw ack/nack.
 5. **Concurrency → point-to-point + worker pool** ([ADR 0002](docs/adrs/0002-adapter-spi.md)). Default 1 (ordered), `N>1` = Competing Consumers; consumer groups via adapters; pub-sub deferred.
 6. **`clockwork` core dependency → ratified** ([ADR 0004](docs/adrs/0004-clockwork-dependency.md)).
