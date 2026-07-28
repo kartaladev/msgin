@@ -19,6 +19,8 @@ import (
 
 	"github.com/kartaladev/msgin"
 	msghttp "github.com/kartaladev/msgin/adapter/http"
+	"github.com/kartaladev/msgin/endpoint"
+	"github.com/kartaladev/msgin/resilience"
 )
 
 // TestNewConfig_outbound exercises the outbound option surface added in Plan
@@ -345,7 +347,7 @@ func TestEncodeRequest(t *testing.T) {
 //
 // Every branch (1-17, incl. 4b) has a mutation-sensitive case. Permanence and
 // transient-wait behaviour are asserted through their OBSERVABLE consequence on
-// a msgin.Producer (assertPermanent / a two-phase fake-clock advance), never via
+// an endpoint.Producer (assertPermanent / a two-phase fake-clock advance), never via
 // errors.Is on a marker (Plan 023 D6). HTTP is fully hermetic: httptest.Server,
 // hand-built responses via a roundTripperFunc, no real network.
 
@@ -568,7 +570,7 @@ func TestOutbound_Send_transport(t *testing.T) {
 		assert.NotContains(t, s, "/hook", "the URL path must not leak")
 
 		// Transient: NOT wrapped in msgin.Permanent, so the runtime retries it.
-		assertTransientWait(t, sendErr, msgin.ExponentialBackoff{Initial: time.Second}, time.Second)
+		assertTransientWait(t, sendErr, resilience.ExponentialBackoff{Initial: time.Second}, time.Second)
 	})
 
 	t.Run("branch 6: a cancellation is preserved through the redaction wrap", func(t *testing.T) {
@@ -728,7 +730,7 @@ func TestOutbound_Send_redirects(t *testing.T) {
 	})
 }
 
-// TestOutbound_Send_endToEnd wires the real Outbound behind a msgin.Producer with
+// TestOutbound_Send_endToEnd wires the real Outbound behind an endpoint.Producer with
 // WithProducerRetry: branch 16 (a 503 is retried then succeeds) and branch 17 (a
 // 429 + Retry-After: 30 waits 30s because the server minimum exceeds the 1s
 // computed backoff — max(computed, min(server, cap))). BytesPayloadCodec is
@@ -764,11 +766,11 @@ func TestOutbound_Send_endToEnd(t *testing.T) {
 		clk := clockwork.NewFakeClock()
 		out, err := msghttp.NewOutbound(url)
 		require.NoError(t, err)
-		policy := msgin.RetryPolicy{Backoff: msgin.ExponentialBackoff{Initial: time.Second}}
-		prod, err := msgin.NewProducer[[]byte](out,
-			msgin.WithProducerCodec[[]byte](msgin.BytesPayloadCodec{}),
-			msgin.WithProducerRetry[[]byte](policy),
-			msgin.WithProducerClock[[]byte](clk),
+		policy := msgin.RetryPolicy{Backoff: resilience.ExponentialBackoff{Initial: time.Second}}
+		prod, err := endpoint.NewProducer[[]byte](out,
+			endpoint.WithProducerCodec[[]byte](msgin.BytesPayloadCodec{}),
+			endpoint.WithProducerRetry[[]byte](policy),
+			endpoint.WithProducerClock[[]byte](clk),
 		)
 		require.NoError(t, err)
 
@@ -809,7 +811,7 @@ func TestOutbound_Send_endToEnd(t *testing.T) {
 	})
 }
 
-// ExampleNewOutbound wires the O1 webhook adapter behind a msgin.Producer and
+// ExampleNewOutbound wires the O1 webhook adapter behind an endpoint.Producer and
 // POSTs a []byte message to an httptest.Server that echoes back what it
 // received.
 //
@@ -836,7 +838,7 @@ func ExampleNewOutbound() {
 		panic(err)
 	}
 
-	producer, err := msgin.NewProducer[[]byte](out, msgin.WithProducerCodec[[]byte](msgin.BytesPayloadCodec{}))
+	producer, err := endpoint.NewProducer[[]byte](out, endpoint.WithProducerCodec[[]byte](msgin.BytesPayloadCodec{}))
 	if err != nil {
 		panic(err)
 	}

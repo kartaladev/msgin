@@ -23,7 +23,7 @@ import (
 // test until the constructors call them — so both sit at 0% coverage until then,
 // by construction (Plan 024 Task 1's coverage note).
 //
-// As with a hand-built &msgin.ChannelExchange{}, a hand-built &Outbound{} or
+// As with a hand-built &endpoint.ChannelExchange{}, a hand-built &Outbound{} or
 // &Exchange{} that skips its constructor is unsupported and will nil-deref: the
 // resolved *Config those types read directly (httpClient, maxResponseBytes) is
 // only ever the one NewConfig produced.
@@ -300,7 +300,7 @@ func sanitizeExcerpt(b []byte) string {
 // A hand-built &Outbound{} that skips NewOutbound is unsupported and will
 // nil-deref — the resolved *Config it reads directly (httpClient via the
 // no-follow client, maxResponseBytes) is only ever the one NewConfig produced,
-// exactly as a hand-built &msgin.ChannelExchange{} is unsupported.
+// exactly as a hand-built &endpoint.ChannelExchange{} is unsupported.
 type Outbound struct {
 	url    string
 	client *http.Client

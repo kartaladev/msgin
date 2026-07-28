@@ -15,6 +15,7 @@ import (
 
 	msgin "github.com/kartaladev/msgin"
 	msginsql "github.com/kartaladev/msgin/adapter/database/sql"
+	"github.com/kartaladev/msgin/endpoint"
 	"github.com/stretchr/testify/require"
 )
 
@@ -132,7 +133,7 @@ func (r *recordingSink) count() int {
 // runConsumerUntil runs consumer until done is signalled (or the deadline),
 // then cancels and returns Run's error. It joins the Run goroutine so no
 // goroutine outlives the test.
-func runConsumerUntil(t *testing.T, ctx context.Context, consumer msgin.Consumer[string], done <-chan struct{}, deadline time.Duration) error {
+func runConsumerUntil(t *testing.T, ctx context.Context, consumer endpoint.Consumer[string], done <-chan struct{}, deadline time.Duration) error {
 	t.Helper()
 	runCtx, cancel := context.WithCancel(ctx)
 	errCh := make(chan error, 1)

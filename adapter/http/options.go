@@ -144,7 +144,7 @@ type Config struct {
 	// set-flag pattern. A hand-built &Config{} reaching an outbound call reads
 	// httpClient/maxResponseBytes directly (there is intentionally no
 	// nil-fallback accessor for them — an unsupported hand-built &Outbound{}
-	// nil-derefs, exactly like a hand-built &msgin.ChannelExchange{}), as does the
+	// nil-derefs, exactly like a hand-built &endpoint.ChannelExchange{}), as does the
 	// reply-header allow-list (reached only through Exchange). The outbound-request
 	// header allow-list and clock keep their nil-safe accessors, because they are
 	// reachable through the exported EncodeRequest/ClassifyResponse with a nil cfg.
@@ -1099,7 +1099,7 @@ func WithReadTimeout(d time.Duration) Option {
 
 // NewConfig validates opts and builds a Config, resolving the documented
 // default for any option left unset. WithMaxBodyBytes and WithSuccessStatus
-// use the set-flag pattern (mirrors msgin.WithMaxInFlight/WithAttemptTTL): an
+// use the set-flag pattern (mirrors endpoint.WithMaxInFlight/WithAttemptTTL): an
 // unset option resolves to its default, while an explicitly-set-but-invalid
 // value is a construction error (ErrInvalidMaxBodyBytes /
 // ErrInvalidStatusCode) rather than a silently-substituted default.

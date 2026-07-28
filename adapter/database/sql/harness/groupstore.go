@@ -11,6 +11,8 @@ import (
 
 	msgin "github.com/kartaladev/msgin"
 	msginsql "github.com/kartaladev/msgin/adapter/database/sql"
+	"github.com/kartaladev/msgin/channel"
+	"github.com/kartaladev/msgin/routing"
 	"github.com/stretchr/testify/require"
 )
 
@@ -23,7 +25,7 @@ import (
 // reference store cannot exhibit (ADR 0021 §6): H1 concurrent-first-add
 // completion detection, the two-connection claim race, H2 stale-epoch recovery
 // (re-absorbed members, no orphans, fenced stale settle), H-A crash-mid-release
-// re-emitting to the OUTPUT channel via a real *msgin.Aggregator reaper, and H-B
+// re-emitting to the OUTPUT channel via a real *routing.Aggregator reaper, and H-B
 // deadlock-freedom under a high-concurrency same-key add/settle loop.
 //
 // Cross-connection races drive concurrent goroutines over the SAME db pool: a
@@ -390,8 +392,8 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 		// asserted directly: the crashed COMPLETE group must reach OUTPUT, not
 		// EXPIRED — asserting expiredCount==0 makes that explicit rather than
 		// merely inferring it from outCount==1 alone.
-		out := msgin.NewDirectChannel()
-		expiredCh := msgin.NewDirectChannel()
+		out := channel.NewDirectChannel()
+		expiredCh := channel.NewDirectChannel()
 		var (
 			mu           sync.Mutex
 			outCount     int
@@ -411,13 +413,13 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 		})))
 
 		recoverStore := newStore(t, table, msginsql.WithGroupLeaseTTL(ttl), msginsql.WithGroupLockedBy("recoverer"))
-		agg, err := msgin.NewAggregator[[]byte, []byte](recoverStore,
+		agg, err := routing.NewAggregator[[]byte, []byte](recoverStore,
 			func(_ context.Context, group []msgin.Message[[]byte]) (msgin.Message[[]byte], error) {
 				return msgin.New([]byte("aggregated")), nil
 			},
-			msgin.WithOutputChannel(out),
-			msgin.WithExpiredGroupChannel(expiredCh),
-			msgin.WithCompletionSize(2),
+			routing.WithOutputChannel(out),
+			routing.WithExpiredGroupChannel(expiredCh),
+			routing.WithCompletionSize(2),
 		)
 		require.NoError(t, err)
 

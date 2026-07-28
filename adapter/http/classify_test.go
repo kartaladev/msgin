@@ -18,12 +18,14 @@ import (
 
 	"github.com/kartaladev/msgin"
 	msghttp "github.com/kartaladev/msgin/adapter/http"
+	"github.com/kartaladev/msgin/endpoint"
+	"github.com/kartaladev/msgin/resilience"
 )
 
 // This file holds Plan 024 Task 3's tests: ClassifyResponse, StatusError and
 // parseRetryAfter. Every branch (1-20, incl. 13a/13b, 18, 19/19b/19c/19d/19e,
 // 20) has a mutation-sensitive case. Permanence and Retry-After delays are
-// asserted through their OBSERVABLE consequence on a msgin.Producer, never via
+// asserted through their OBSERVABLE consequence on an endpoint.Producer, never via
 // errors.Is on the marker (which proves nothing — Plan 023 D6).
 
 // newResponse builds a hand-crafted *http.Response for ClassifyResponse. The
@@ -88,13 +90,13 @@ func assertPermanent(t *testing.T, classified error) {
 	sink := &countingSink{}
 	policy := msgin.RetryPolicy{
 		MaxAttempts: 3,
-		Backoff:     msgin.ExponentialBackoff{Initial: time.Second},
+		Backoff:     resilience.ExponentialBackoff{Initial: time.Second},
 		DeadLetter:  sink,
 	}
-	prod, err := msgin.NewProducer[[]byte](adapter,
-		msgin.WithProducerCodec[[]byte](msgin.BytesPayloadCodec{}),
-		msgin.WithProducerRetry[[]byte](policy),
-		msgin.WithProducerClock[[]byte](clk),
+	prod, err := endpoint.NewProducer[[]byte](adapter,
+		endpoint.WithProducerCodec[[]byte](msgin.BytesPayloadCodec{}),
+		endpoint.WithProducerRetry[[]byte](policy),
+		endpoint.WithProducerClock[[]byte](clk),
 	)
 	require.NoError(t, err)
 
@@ -116,10 +118,10 @@ func assertTransientWait(t *testing.T, classified error, backoff msgin.BackoffSt
 	clk := clockwork.NewFakeClock()
 	adapter := &retryThenOKAdapter{classified: classified}
 	policy := msgin.RetryPolicy{Backoff: backoff} // MaxAttempts 0: retry until success or budget
-	prod, err := msgin.NewProducer[[]byte](adapter,
-		msgin.WithProducerCodec[[]byte](msgin.BytesPayloadCodec{}),
-		msgin.WithProducerRetry[[]byte](policy),
-		msgin.WithProducerClock[[]byte](clk),
+	prod, err := endpoint.NewProducer[[]byte](adapter,
+		endpoint.WithProducerCodec[[]byte](msgin.BytesPayloadCodec{}),
+		endpoint.WithProducerRetry[[]byte](policy),
+		endpoint.WithProducerClock[[]byte](clk),
 	)
 	require.NoError(t, err)
 
@@ -362,7 +364,7 @@ func TestClassifyResponse_transient(t *testing.T) {
 	t.Parallel()
 
 	const backoff = time.Second
-	oneSecond := msgin.ExponentialBackoff{Initial: backoff} // Delay(0) == 1s
+	oneSecond := resilience.ExponentialBackoff{Initial: backoff} // Delay(0) == 1s
 
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	dateCfg, err := msghttp.NewConfig(msghttp.WithOutboundClock(clockwork.NewFakeClockAt(base)))

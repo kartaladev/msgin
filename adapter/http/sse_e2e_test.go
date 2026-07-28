@@ -15,6 +15,7 @@ import (
 
 	"github.com/kartaladev/msgin"
 	msghttp "github.com/kartaladev/msgin/adapter/http"
+	"github.com/kartaladev/msgin/endpoint"
 )
 
 // =============================================================================
@@ -286,8 +287,8 @@ func TestConsumer_overSSEClient_smoke(t *testing.T) {
 		return nil
 	}
 
-	consumer, err := msgin.NewConsumer[[]byte](client, handler,
-		msgin.WithConsumerCodec[[]byte](msgin.BytesPayloadCodec{}))
+	consumer, err := endpoint.NewConsumer[[]byte](client, handler,
+		endpoint.WithConsumerCodec[[]byte](msgin.BytesPayloadCodec{}))
 	require.NoError(t, err)
 
 	runErr := make(chan error, 1)

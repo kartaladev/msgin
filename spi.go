@@ -70,3 +70,37 @@ type LiveValueSource interface {
 type ScheduledSender interface {
 	SendAfter(ctx context.Context, msg Message[any], delay time.Duration) error
 }
+
+// TopicPublisher publishes a message to a named topic. Native-topic broker
+// adapters (Kafka, NATS, Redis) implement this using their own topics, so topic
+// support is handled generically through one SPI.
+type TopicPublisher interface {
+	Publish(ctx context.Context, topic string, msg Message[any]) error
+}
+
+// TopicSubscriber subscribes a handler to a named topic, returning a Subscription
+// whose Cancel unsubscribes. The counterpart SPI to TopicPublisher (split per the
+// interface-segregation principle: a publish-only or subscribe-only adapter is
+// legitimate).
+type TopicSubscriber interface {
+	Subscribe(topic string, h MessageHandler) (Subscription, error)
+}
+
+// RequestReplyExchange is the narrow SPI a gateway delegates to: it sends a
+// request and returns the correlated reply (or an error). ChannelExchange is the
+// in-process implementation; a future HTTP/NATS adapter implements Exchange for
+// a real external round-trip, so both gateway façades work over it unchanged.
+//
+// Contract: an implementation MUST release every piece of request-scoped state
+// it acquires — a correlator entry, an in-flight connection, a response body —
+// on EVERY exit path, including a panic unwinding out of a downstream call.
+// Deferred cleanup is the only reliable way to honour this; an implementation
+// that cleans up at each return site alone will leak whenever a caller-supplied
+// handler panics. An implementation MUST NOT recover such a panic into an error
+// return: the panic belongs to the caller's code and must propagate with its
+// original value and stack (ADR 0022 Addendum A3; Spec 012) — unless a
+// CALLER-SUPPLIED hook on the cleanup path itself panics, which replaces the
+// original (see WithUnmatchedReplySink and WithExchangeLogger).
+type RequestReplyExchange interface {
+	Exchange(ctx context.Context, req Message[any]) (Message[any], error)
+}

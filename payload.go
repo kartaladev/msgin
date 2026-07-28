@@ -4,7 +4,7 @@ import "fmt"
 
 // PayloadOf asserts m's payload to T, returning a typed Message[T] with the same
 // headers (no re-stamp). On mismatch it wraps the package sentinel ErrPayloadType
-// with the wanted/actual types; because isPermanent classifies ErrPayloadType as
+// with the wanted/actual types; because IsPermanent classifies ErrPayloadType as
 // permanent, the driving Consumer routes it to the invalid-message channel (never
 // a panic). PayloadOf[any] succeeds for any non-nil payload. An untyped-nil
 // payload (a message built with New[any](nil)) has no dynamic type, so the

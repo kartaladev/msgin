@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	msgin "github.com/kartaladev/msgin"
+	"github.com/kartaladev/msgin/endpoint"
 )
 
 // runConsumerUntil runs consumer until done is signalled (or the deadline),
@@ -13,7 +13,7 @@ import (
 // goroutine outlives the test. Shared by SourceSuite and OutboundSuite so the
 // produce/consume round-trip test can drive the same real-runtime consumer
 // loop the Source suite already exercises.
-func runConsumerUntil(t *testing.T, ctx context.Context, consumer msgin.Consumer[string], done <-chan struct{}, deadline time.Duration) error {
+func runConsumerUntil(t *testing.T, ctx context.Context, consumer endpoint.Consumer[string], done <-chan struct{}, deadline time.Duration) error {
 	t.Helper()
 	runCtx, cancel := context.WithCancel(ctx)
 	errCh := make(chan error, 1)

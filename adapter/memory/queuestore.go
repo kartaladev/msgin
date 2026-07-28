@@ -11,7 +11,7 @@ import (
 
 // QueueStore is an in-memory msgin.ChannelStore: a bounded FIFO with lease/claim
 // settlement, carrying live Go values (no codec). It is the fast, DB-free default
-// buffer behind a msgin.QueueChannel.
+// buffer behind a channel.QueueChannel.
 //
 // Delivery guarantee: at-least-once within the process lifetime — a Nacked or
 // never-settled claim is re-claimable. Buffered and in-flight messages are LOST

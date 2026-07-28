@@ -30,12 +30,12 @@ func Permanent(err error) error {
 	return &permanentError{err: err}
 }
 
-// isPermanent reports whether err must skip retry: an explicit Permanent marker,
+// IsPermanent reports whether err must skip retry: an explicit Permanent marker,
 // a decode/type mismatch (ErrPayloadDecode / ErrPayloadType), or an over-size
 // payload (ErrPayloadTooLarge — an over-size message will not shrink on
 // redelivery). A recovered handler panic (ErrHandlerPanic) is NOT permanent — it
 // is retried.
-func isPermanent(err error) bool {
+func IsPermanent(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -47,15 +47,6 @@ func isPermanent(err error) bool {
 		errors.Is(err, ErrPayloadDecode) ||
 		errors.Is(err, ErrPayloadTooLarge)
 }
-
-// noNativeReliability is the NativeReliability default for sources that do not
-// implement the optional capability (e.g. memory): neither native redelivery
-// nor native dead-letter. Using a value (never nil) upholds NF-11 — the runtime
-// never nil-calls the capability.
-type noNativeReliability struct{}
-
-func (noNativeReliability) NativeRedelivery() bool { return false }
-func (noNativeReliability) NativeDeadLetter() bool { return false }
 
 // retryAfterError marks a transient error with a server-instructed minimum
 // delay. Wrapping is transparent to errors.Is/As via Unwrap.
@@ -107,13 +98,13 @@ func RetryAfter(err error, d time.Duration) error {
 	return &retryAfterError{err: err, d: d}
 }
 
-// retryAfterOf reports the server-instructed minimum delay carried by err, if
-// any, matching isPermanent's structure (errors.As over the wrap chain).
+// RetryAfterOf reports the server-instructed minimum delay carried by err, if
+// any, matching IsPermanent's structure (errors.As over the wrap chain).
 //
 // Deliberately NO `if err == nil` guard: errors.As(nil, &re) already returns
 // false, and the only caller (nextDelay) never passes nil, so the guard would be
 // both redundant and blackbox-unreachable.
-func retryAfterOf(err error) (time.Duration, bool) {
+func RetryAfterOf(err error) (time.Duration, bool) {
 	var re *retryAfterError
 	if errors.As(err, &re) {
 		return re.d, true

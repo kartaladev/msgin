@@ -17,6 +17,8 @@ import (
 	"github.com/kartaladev/msgin"
 	msghttp "github.com/kartaladev/msgin/adapter/http"
 	"github.com/kartaladev/msgin/adapter/http/stdlib"
+	"github.com/kartaladev/msgin/channel"
+	"github.com/kartaladev/msgin/endpoint"
 )
 
 func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
@@ -25,7 +27,7 @@ func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 // that accepts every message (returns a nil error).
 func acceptingTarget(t *testing.T) msgin.MessageChannel {
 	t.Helper()
-	ch := msgin.NewDirectChannel()
+	ch := channel.NewDirectChannel()
 	require.NoError(t, ch.Subscribe(msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error {
 		return nil
 	})))
@@ -37,10 +39,10 @@ func acceptingTarget(t *testing.T) msgin.MessageChannel {
 // t.Cleanup so no reply waiter lingers (goleak).
 func echoExchange(t *testing.T) msgin.RequestReplyExchange {
 	t.Helper()
-	request := msgin.NewDirectChannel()
-	reply := msgin.NewDirectChannel()
+	request := channel.NewDirectChannel()
+	reply := channel.NewDirectChannel()
 	require.NoError(t, request.Subscribe(msgin.Chain(msgin.To(reply))))
-	x, err := msgin.NewChannelExchange(request, reply)
+	x, err := endpoint.NewChannelExchange(request, reply)
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, x.Close()) })
 	return x
@@ -258,7 +260,7 @@ func TestNewInboundGateway_clientCannotChooseTheResponseContentType(t *testing.T
 // fire-and-forget handoff has no reply body to show, so a deterministic 202
 // is the whole observable outcome.
 func ExampleNewInbound() {
-	target := msgin.NewDirectChannel()
+	target := channel.NewDirectChannel()
 	if err := target.Subscribe(msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error {
 		return nil // accept every message
 	})); err != nil {
@@ -290,11 +292,11 @@ func ExampleNewInbound() {
 // msgin.HeaderCorrelationID — dropping it would leave the reply unmatched to
 // the waiting caller (Plan 019 G6).
 func ExampleNewInboundGateway() {
-	request := msgin.NewDirectChannel()
-	reply := msgin.NewDirectChannel()
+	request := channel.NewDirectChannel()
+	reply := channel.NewDirectChannel()
 
 	flow := msgin.Chain(
-		msgin.Activate(func(_ context.Context, m msgin.Message[[]byte]) (msgin.Message[[]byte], error) {
+		endpoint.Activate(func(_ context.Context, m msgin.Message[[]byte]) (msgin.Message[[]byte], error) {
 			return msgin.WithPayload(m, bytes.ToUpper(m.Payload())), nil
 		}),
 		msgin.To(reply),
@@ -303,7 +305,7 @@ func ExampleNewInboundGateway() {
 		panic(err)
 	}
 
-	exchange, err := msgin.NewChannelExchange(request, reply)
+	exchange, err := endpoint.NewChannelExchange(request, reply)
 	if err != nil {
 		panic(err)
 	}

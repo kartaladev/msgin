@@ -104,7 +104,7 @@ var (
 	// an OUTER divert fails, the joined inner error can carry ErrDeadLettered from
 	// the INNER producer. errors.Is then reports true although the outer divert
 	// did not happen. The same applies when p.out is a nested retrying Producer,
-	// whose error passes through the isPermanent and no-DLQ arms unchanged. The
+	// whose error passes through the IsPermanent and no-DLQ arms unchanged. The
 	// sentinel therefore answers "was something dead-lettered somewhere in this
 	// chain", not "is this message in the sink I configured". Where the
 	// distinction matters, give each level its own sink and inspect that sink.

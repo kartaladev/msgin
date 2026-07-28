@@ -9,6 +9,8 @@ import (
 	msginsql "github.com/kartaladev/msgin/adapter/database/sql"
 	"github.com/kartaladev/msgin/adapter/database/sql/postgres"
 	"github.com/kartaladev/msgin/adapter/memory"
+	"github.com/kartaladev/msgin/channel"
+	"github.com/kartaladev/msgin/routing"
 )
 
 // groupStoreLineItem is one line of an order, correlated by orderID toward a
@@ -24,8 +26,8 @@ type groupStoreLineItem struct {
 // Aggregator built over memory.NewGroupStore() (in-process only) and one
 // built over msginsql.NewGroupStore(...) (durable, multi-process) are
 // interchangeable from here down.
-func wireGroupAggregator(store msgin.MessageGroupStore, out msgin.MessageChannel) (*msgin.Aggregator, error) {
-	return msgin.NewAggregator[groupStoreLineItem, int](store,
+func wireGroupAggregator(store msgin.MessageGroupStore, out msgin.MessageChannel) (*routing.Aggregator, error) {
+	return routing.NewAggregator[groupStoreLineItem, int](store,
 		func(_ context.Context, group []msgin.Message[groupStoreLineItem]) (msgin.Message[int], error) {
 			total := 0
 			for _, m := range group {
@@ -33,8 +35,8 @@ func wireGroupAggregator(store msgin.MessageGroupStore, out msgin.MessageChannel
 			}
 			return msgin.New(total), nil
 		},
-		msgin.WithOutputChannel(out),
-		msgin.WithCompletionSize(3),
+		routing.WithOutputChannel(out),
+		routing.WithCompletionSize(3),
 	)
 }
 
@@ -48,7 +50,7 @@ func wireGroupAggregator(store msgin.MessageGroupStore, out msgin.MessageChannel
 // mid-process, keeps this wiring identical to the durable one in
 // Example_sqlGroupStore.
 func runGroupAggregatorDemo(store msgin.MessageGroupStore) {
-	out := msgin.NewDirectChannel()
+	out := channel.NewDirectChannel()
 	if err := out.Subscribe(msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
 		fmt.Printf("order total: %v\n", m.Payload())
 		return nil

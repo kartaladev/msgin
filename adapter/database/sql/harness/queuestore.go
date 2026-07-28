@@ -18,7 +18,7 @@ import (
 // is durable across the Enqueue/Claim/Ack lifecycle, redelivers a Nacked
 // (requeue=true) claim, and gives two competing QueueStores over the same table
 // disjoint claims — the properties a durable msgin.ChannelStore backing a
-// msgin.QueueChannel must uphold (Spec 007, ADR 0018). Each subtest provisions
+// channel.QueueChannel must uphold (Spec 007, ADR 0018). Each subtest provisions
 // its own fresh table (kit.Lease.EnsureSchema), so subtests never interfere.
 func RunQueueStore(t *testing.T, kit TestKit, db *sql.DB) {
 	t.Helper()

@@ -163,7 +163,7 @@ func New[T any](payload T, opts ...MessageOption) Message[T] {
 		m[k] = v
 	}
 	if cfg.id == "" {
-		cfg.id = randomID()
+		cfg.id = NewID()
 	}
 	m[HeaderMessageID] = cfg.id
 	m[HeaderTimestamp] = cfg.clock.Now()
@@ -185,9 +185,9 @@ func NewMessage[T any](payload T, headers Headers) Message[T] {
 	return Message[T]{payload: payload, headers: headers}
 }
 
-// randomID returns a random 128-bit id, hex-encoded, used as the default
+// NewID returns a random 128-bit id, hex-encoded, used as the default
 // msgin.message-id when New is not given an explicit WithID.
-func randomID() string {
+func NewID() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])
 	return hex.EncodeToString(b[:])

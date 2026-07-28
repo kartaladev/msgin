@@ -55,7 +55,7 @@ func (t *responseTracker) Write(b []byte) (int, error) {
 // would otherwise take the whole server down with it. Recovering here keeps
 // the panic inside a single request regardless of what runs downstream — do
 // not remove this recover. (As of Spec 012 / ADR 0022 Addendum A,
-// msgin.ChannelExchange.Exchange also reclaims its reply-waiter slot on a
+// endpoint.ChannelExchange.Exchange also reclaims its reply-waiter slot on a
 // panic unwind, closing a former residual of this boundary; that is a
 // property of the exchange, not a reason to drop the recover.)
 func recoverHandler(w *responseTracker, cfg *Config, op string) {
@@ -167,7 +167,7 @@ func ServeAsync(w http.ResponseWriter, r *http.Request, target msgin.MessageChan
 //     LOGGED ONLY. No second status is written; there is no way to signal the
 //     failure to a client that is already gone.
 //
-// A PANIC raised by the flow — msgin.ChannelExchange runs a DirectChannel
+// A PANIC raised by the flow — endpoint.ChannelExchange runs a DirectChannel
 // subscriber on this goroutine — is recovered and answered with a plain 500
 // when the response is not yet committed, so the panic never escapes the
 // request and the server keeps serving subsequent ones.
@@ -175,7 +175,7 @@ func ServeAsync(w http.ResponseWriter, r *http.Request, target msgin.MessageChan
 // The recover contains the panic to this request and yields a clean 500
 // instead of crashing the process — that fault isolation is required
 // regardless of what the exchange does with its own state. As of Spec 012 /
-// ADR 0022 Addendum A, msgin.ChannelExchange.Exchange also reclaims its
+// ADR 0022 Addendum A, endpoint.ChannelExchange.Exchange also reclaims its
 // reply-waiter slot on a panic unwind (RequestReplyExchange's godoc now
 // states this as part of the SPI contract), closing a former residual of
 // this boundary: a panicking flow used to leak one correlator-map entry per

@@ -13,6 +13,7 @@ import (
 
 	msgin "github.com/kartaladev/msgin"
 	msginsql "github.com/kartaladev/msgin/adapter/database/sql"
+	"github.com/kartaladev/msgin/endpoint"
 	"github.com/stretchr/testify/require"
 )
 
@@ -21,7 +22,7 @@ import (
 // OutboundSuite made (Plan 006 Task 3): the producer hot path (frames headers
 // + JSON payload into a row), the produce/consume round-trip with a paired
 // Source on the same table, use as a msgin.RetryPolicy.DeadLetter AND a
-// msgin.WithInvalidMessageSink target, Ready/Send surfacing
+// endpoint.WithInvalidMessageSink target, Ready/Send surfacing
 // ErrSchemaNotReady, and Send's defensive framing/payload error branches.
 func RunOutbound(t *testing.T, kit TestKit, db *sql.DB) {
 	t.Helper()
@@ -49,7 +50,7 @@ func RunOutbound(t *testing.T, kit TestKit, db *sql.DB) {
 		out, err := msginsql.NewOutboundAdapter(db, table, kit.Lease)
 		require.NoError(t, err)
 
-		producer, err := msgin.NewProducer[string](out)
+		producer, err := endpoint.NewProducer[string](out)
 		require.NoError(t, err)
 
 		msg := msgin.New("hello-world", msgin.WithID("prod-1"), msgin.WithHeaders(map[string]any{"custom": "value"}))
@@ -78,7 +79,7 @@ func RunOutbound(t *testing.T, kit TestKit, db *sql.DB) {
 
 		out, err := msginsql.NewOutboundAdapter(db, table, kit.Lease)
 		require.NoError(t, err)
-		producer, err := msgin.NewProducer[string](out)
+		producer, err := endpoint.NewProducer[string](out)
 		require.NoError(t, err)
 
 		require.NoError(t, producer.Send(ctx, msgin.New("round-trip-payload", msgin.WithID("rt-1"))))
@@ -98,9 +99,9 @@ func RunOutbound(t *testing.T, kit TestKit, db *sql.DB) {
 			once.Do(func() { close(done) })
 			return nil
 		}
-		consumer, err := msgin.NewConsumer[string](src, handler,
-			msgin.WithPollInterval[string](200*time.Millisecond),
-			msgin.WithShutdownTimeout[string](10*time.Second),
+		consumer, err := endpoint.NewConsumer[string](src, handler,
+			endpoint.WithPollInterval[string](200*time.Millisecond),
+			endpoint.WithShutdownTimeout[string](10*time.Second),
 		)
 		require.NoError(t, err)
 
@@ -119,7 +120,7 @@ func RunOutbound(t *testing.T, kit TestKit, db *sql.DB) {
 
 		out, err := msginsql.NewOutboundAdapter(db, table, kit.Lease)
 		require.NoError(t, err)
-		p, err := msgin.NewProducer[string](out)
+		p, err := endpoint.NewProducer[string](out)
 		require.NoError(t, err)
 		src, err := msginsql.NewPollingSource(db, table, kit.Lease)
 		require.NoError(t, err)
@@ -157,27 +158,27 @@ func RunOutbound(t *testing.T, kit TestKit, db *sql.DB) {
 		cases := []struct {
 			name       string
 			handlerErr error
-			buildOpts  func(dlq *msginsql.Outbound) []msgin.ConsumerOption[string]
+			buildOpts  func(dlq *msginsql.Outbound) []endpoint.ConsumerOption[string]
 		}{
 			{
 				name:       "MaxAttempts exhaustion diverts to RetryPolicy.DeadLetter",
 				handlerErr: fmt.Errorf("transient boom"),
-				buildOpts: func(dlq *msginsql.Outbound) []msgin.ConsumerOption[string] {
-					return []msgin.ConsumerOption[string]{
-						msgin.WithRetryPolicy[string](msgin.RetryPolicy{MaxAttempts: 1, DeadLetter: dlq}),
-						msgin.WithPollInterval[string](200 * time.Millisecond),
-						msgin.WithShutdownTimeout[string](10 * time.Second),
+				buildOpts: func(dlq *msginsql.Outbound) []endpoint.ConsumerOption[string] {
+					return []endpoint.ConsumerOption[string]{
+						endpoint.WithRetryPolicy[string](msgin.RetryPolicy{MaxAttempts: 1, DeadLetter: dlq}),
+						endpoint.WithPollInterval[string](200 * time.Millisecond),
+						endpoint.WithShutdownTimeout[string](10 * time.Second),
 					}
 				},
 			},
 			{
 				name:       "Permanent handler error diverts to WithInvalidMessageSink",
 				handlerErr: msgin.Permanent(errors.New("poison")),
-				buildOpts: func(dlq *msginsql.Outbound) []msgin.ConsumerOption[string] {
-					return []msgin.ConsumerOption[string]{
-						msgin.WithInvalidMessageSink[string](dlq),
-						msgin.WithPollInterval[string](200 * time.Millisecond),
-						msgin.WithShutdownTimeout[string](10 * time.Second),
+				buildOpts: func(dlq *msginsql.Outbound) []endpoint.ConsumerOption[string] {
+					return []endpoint.ConsumerOption[string]{
+						endpoint.WithInvalidMessageSink[string](dlq),
+						endpoint.WithPollInterval[string](200 * time.Millisecond),
+						endpoint.WithShutdownTimeout[string](10 * time.Second),
 					}
 				},
 			},
@@ -200,7 +201,7 @@ func RunOutbound(t *testing.T, kit TestKit, db *sql.DB) {
 					return tc.handlerErr
 				}
 
-				consumer, err := msgin.NewConsumer[string](src, handler, tc.buildOpts(dlq)...)
+				consumer, err := endpoint.NewConsumer[string](src, handler, tc.buildOpts(dlq)...)
 				require.NoError(t, err)
 
 				runCtx, cancel := context.WithCancel(ctx)

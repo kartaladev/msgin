@@ -72,7 +72,7 @@
 // Delivery guarantee: AT-MOST-ONCE on its own — each adapter performs ONE
 // attempt and only CLASSIFIES the outcome (nil / plain-transient /
 // msgin.RetryAfter / msgin.Permanent). AT-LEAST-ONCE arises only under a retry
-// authority: a msgin.Producer configured with WithProducerRetry (which owns
+// authority: an endpoint.Producer configured with WithProducerRetry (which owns
 // backoff, budget, Retry-After combination and dead-lettering), or a
 // Consumer-driven flow's redelivery. A source-less flow gets neither, so the
 // receiving endpoint must be idempotent.
@@ -170,7 +170,7 @@
 // above): an msgin.StreamingSource that connects to a caller-configured
 // remote text/event-stream endpoint, parses it with SSEParser, and emits each
 // event as a msgin.Delivery — the wiring NewConsumer needs to run it as a
-// flow, over msgin.WithConsumerCodec[[]byte](msgin.BytesPayloadCodec{}) since
+// flow, over endpoint.WithConsumerCodec[[]byte](msgin.BytesPayloadCodec{}) since
 // every SSEClient delivery carries a []byte wire payload, never a live Go
 // value.
 //

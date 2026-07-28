@@ -18,6 +18,7 @@ import (
 
 	"github.com/kartaladev/msgin"
 	msghttp "github.com/kartaladev/msgin/adapter/http"
+	"github.com/kartaladev/msgin/endpoint"
 )
 
 // --- Plan 024 Task 5: O2 NewExchange / Exchange -----------------------------
@@ -441,7 +442,7 @@ func TestExchange_reflectedXSS_e2e(t *testing.T) {
 	next := msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
 		return msghttp.EncodeResponse(rec, m, encCfg)
 	})
-	handler := msgin.OutboundGateway(x)(next)
+	handler := endpoint.OutboundGateway(x)(next)
 	require.NoError(t, handler.Handle(t.Context(), msgin.New[any]([]byte("req"))))
 
 	assert.Equal(t, "application/octet-stream", rec.Header().Get("Content-Type"),
@@ -690,10 +691,10 @@ func TestExchange_bodyBounds(t *testing.T) {
 	})
 }
 
-// TestExchange_gateway covers branches 27-29: through msgin.NewGateway[[]byte,
+// TestExchange_gateway covers branches 27-29: through endpoint.NewGateway[[]byte,
 // []byte] the reply bytes come back (27); through NewGateway[[]byte, string] the
 // recorded codec limitation surfaces as msgin.ErrPayloadType (28); and through
-// msgin.OutboundGateway an incoming correlation id is restored on the forwarded
+// endpoint.OutboundGateway an incoming correlation id is restored on the forwarded
 // reply (29).
 func TestExchange_gateway(t *testing.T) {
 	t.Parallel()
@@ -701,7 +702,7 @@ func TestExchange_gateway(t *testing.T) {
 	t.Run("branch 27: NewGateway[[]byte,[]byte].Request returns the reply bytes", func(t *testing.T) {
 		t.Parallel()
 		x := exchangeReturning(t, http.StatusOK, "reply-bytes", nil)
-		g, err := msgin.NewGateway[[]byte, []byte](x)
+		g, err := endpoint.NewGateway[[]byte, []byte](x)
 		require.NoError(t, err)
 
 		reply, err := g.Request(t.Context(), []byte("hi"))
@@ -712,7 +713,7 @@ func TestExchange_gateway(t *testing.T) {
 	t.Run("branch 28: NewGateway[[]byte,string] hits the codec limitation (ErrPayloadType)", func(t *testing.T) {
 		t.Parallel()
 		x := exchangeReturning(t, http.StatusOK, "reply-bytes", nil)
-		g, err := msgin.NewGateway[[]byte, string](x)
+		g, err := endpoint.NewGateway[[]byte, string](x)
 		require.NoError(t, err)
 
 		_, err = g.Request(t.Context(), []byte("hi"))
@@ -728,7 +729,7 @@ func TestExchange_gateway(t *testing.T) {
 			captured = m
 			return nil
 		})
-		handler := msgin.OutboundGateway(x)(next)
+		handler := endpoint.OutboundGateway(x)(next)
 
 		in := msgin.New[any]([]byte("req")).WithHeader(msgin.HeaderCorrelationID, "incoming-corr")
 		require.NoError(t, handler.Handle(t.Context(), in))
@@ -740,10 +741,10 @@ func TestExchange_gateway(t *testing.T) {
 }
 
 // ExampleNewExchange drives the O2 synchronous request-reply adapter through a
-// msgin.NewGateway against an httptest.Server that answers every request with a
+// endpoint.NewGateway against an httptest.Server that answers every request with a
 // fixed body.
 //
-// The gateway must be NewGateway[[]byte, []byte]: msgin.Gateway carries no codec
+// The gateway must be NewGateway[[]byte, []byte]: endpoint.Gateway carries no codec
 // and type-asserts the reply, so a []byte request payload (what EncodeRequest
 // accepts) and a []byte reply (what Exchange produces) are the only types that
 // round-trip. The call is g.Request(ctx, []byte(...)) — it takes a raw value and
@@ -762,7 +763,7 @@ func ExampleNewExchange() {
 		panic(err)
 	}
 
-	gateway, err := msgin.NewGateway[[]byte, []byte](exchange)
+	gateway, err := endpoint.NewGateway[[]byte, []byte](exchange)
 	if err != nil {
 		panic(err)
 	}

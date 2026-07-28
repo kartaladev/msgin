@@ -11,6 +11,7 @@ import (
 
 	msgin "github.com/kartaladev/msgin"
 	msginsql "github.com/kartaladev/msgin/adapter/database/sql"
+	"github.com/kartaladev/msgin/endpoint"
 	"github.com/stretchr/testify/require"
 )
 
@@ -86,14 +87,14 @@ func RunLock(t *testing.T, kit TestKit, db *sql.DB) {
 		dlq := &recordingSink{}
 		done := make(chan struct{})
 		var once sync.Once
-		consumer, err := msgin.NewConsumer[string](src, handler,
-			msgin.WithConcurrency[string](1),
-			msgin.WithMaxInFlight[string](1),
-			msgin.WithPollMaxBatch[string](1),
-			msgin.WithPollInterval[string](100*time.Millisecond),
-			msgin.WithShutdownTimeout[string](10*time.Second),
-			msgin.WithRetryPolicy[string](msgin.RetryPolicy{MaxAttempts: 3, DeadLetter: dlq}),
-			msgin.WithHooks[string](msgin.Hooks{
+		consumer, err := endpoint.NewConsumer[string](src, handler,
+			endpoint.WithConcurrency[string](1),
+			endpoint.WithMaxInFlight[string](1),
+			endpoint.WithPollMaxBatch[string](1),
+			endpoint.WithPollInterval[string](100*time.Millisecond),
+			endpoint.WithShutdownTimeout[string](10*time.Second),
+			endpoint.WithRetryPolicy[string](msgin.RetryPolicy{MaxAttempts: 3, DeadLetter: dlq}),
+			endpoint.WithHooks[string](msgin.Hooks{
 				OnDeadLetter: func(_ context.Context, _ msgin.Message[any], _ error) {
 					once.Do(func() { close(done) })
 				},
@@ -183,12 +184,12 @@ func RunLock(t *testing.T, kit TestKit, db *sql.DB) {
 			return nil
 		}
 
-		consumer, err := msgin.NewConsumer[string](src, handler,
-			msgin.WithConcurrency[string](n),
-			msgin.WithMaxInFlight[string](n),
-			msgin.WithPollMaxBatch[string](1),
-			msgin.WithPollInterval[string](100*time.Millisecond),
-			msgin.WithShutdownTimeout[string](10*time.Second),
+		consumer, err := endpoint.NewConsumer[string](src, handler,
+			endpoint.WithConcurrency[string](n),
+			endpoint.WithMaxInFlight[string](n),
+			endpoint.WithPollMaxBatch[string](1),
+			endpoint.WithPollInterval[string](100*time.Millisecond),
+			endpoint.WithShutdownTimeout[string](10*time.Second),
 		)
 		require.NoError(t, err)
 
@@ -240,14 +241,14 @@ func RunLock(t *testing.T, kit TestKit, db *sql.DB) {
 		}
 		done := make(chan struct{})
 		var once sync.Once
-		consumer, err := msgin.NewConsumer[string](src, handler,
-			msgin.WithConcurrency[string](1),
-			msgin.WithMaxInFlight[string](1),
-			msgin.WithPollMaxBatch[string](1),
-			msgin.WithPollInterval[string](100*time.Millisecond),
-			msgin.WithShutdownTimeout[string](10*time.Second),
-			msgin.WithRetryPolicy[string](msgin.RetryPolicy{MaxAttempts: 1, DeadLetter: dlq}),
-			msgin.WithHooks[string](msgin.Hooks{
+		consumer, err := endpoint.NewConsumer[string](src, handler,
+			endpoint.WithConcurrency[string](1),
+			endpoint.WithMaxInFlight[string](1),
+			endpoint.WithPollMaxBatch[string](1),
+			endpoint.WithPollInterval[string](100*time.Millisecond),
+			endpoint.WithShutdownTimeout[string](10*time.Second),
+			endpoint.WithRetryPolicy[string](msgin.RetryPolicy{MaxAttempts: 1, DeadLetter: dlq}),
+			endpoint.WithHooks[string](msgin.Hooks{
 				OnDeadLetter: func(_ context.Context, _ msgin.Message[any], _ error) {
 					once.Do(func() { close(done) })
 				},
@@ -345,12 +346,12 @@ func RunLock(t *testing.T, kit TestKit, db *sql.DB) {
 			return hctx.Err()
 		}
 
-		consumer, err := msgin.NewConsumer[string](src, handler,
-			msgin.WithConcurrency[string](1),
-			msgin.WithMaxInFlight[string](1),
-			msgin.WithPollMaxBatch[string](1),
-			msgin.WithPollInterval[string](100*time.Millisecond),
-			msgin.WithShutdownTimeout[string](200*time.Millisecond),
+		consumer, err := endpoint.NewConsumer[string](src, handler,
+			endpoint.WithConcurrency[string](1),
+			endpoint.WithMaxInFlight[string](1),
+			endpoint.WithPollMaxBatch[string](1),
+			endpoint.WithPollInterval[string](100*time.Millisecond),
+			endpoint.WithShutdownTimeout[string](200*time.Millisecond),
 		)
 		require.NoError(t, err)
 

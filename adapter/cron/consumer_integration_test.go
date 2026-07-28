@@ -12,6 +12,7 @@ import (
 
 	"github.com/kartaladev/msgin"
 	"github.com/kartaladev/msgin/adapter/cron"
+	"github.com/kartaladev/msgin/endpoint"
 )
 
 // handlerRecorder records every fire the consumer's handler observes, so the
@@ -36,7 +37,7 @@ func (r *handlerRecorder) snapshot() []string {
 }
 
 // TestSource_ThroughNewConsumer drives a fake-clock cron Source through
-// msgin.NewConsumer[T] + Run — the shape every real caller uses — instead of
+// endpoint.NewConsumer[T] + Run — the shape every real caller uses — instead of
 // draining Source.Stream by hand. Proves: NewConsumer resolves the Source via
 // LiveValueSource (no codec needed), the handler receives the fired payload
 // typed as T, and shutdown is goleak-clean.
@@ -55,7 +56,7 @@ func TestSource_ThroughNewConsumer(t *testing.T) {
 		return nil
 	}
 
-	c, err := msgin.NewConsumer[string](src, h) // cron Source ⇒ LiveValueSource ⇒ no codec
+	c, err := endpoint.NewConsumer[string](src, h) // cron Source ⇒ LiveValueSource ⇒ no codec
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(t.Context())

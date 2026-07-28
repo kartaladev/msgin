@@ -13,7 +13,7 @@ import (
 
 // ExampleSource shows a recurring source: an "@every 1h" schedule emits a
 // message carrying the fire time. A fake clock makes the output deterministic;
-// in production you would pass the source to msgin.NewConsumer and Run it.
+// in production you would pass the source to endpoint.NewConsumer and Run it.
 func ExampleSource() {
 	epoch := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	clk := clockwork.NewFakeClockAt(epoch)

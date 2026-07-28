@@ -186,7 +186,7 @@ type TransactionResolver func(ctx context.Context) (Querier, error)
 // # Do not use as a DLQ / invalid-message sink (LOW audit)
 //
 // A strict shared-transaction Outbound must NOT be passed as a
-// msgin.RetryPolicy.DeadLetter or msgin.WithInvalidMessageSink target. The
+// msgin.RetryPolicy.DeadLetter or endpoint.WithInvalidMessageSink target. The
 // runtime's divert path calls Send on a settlement-scoped context that never
 // carries the caller's business transaction, so r would report (nil, nil) on
 // every poison message, Send would return ErrNoSharedTransaction, and the
