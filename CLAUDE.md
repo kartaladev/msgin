@@ -229,10 +229,11 @@ These were the open decisions; all are now ratified in [`docs/specs/001-messagin
 
 Minimal dependencies is a **hard requirement** for this library — every direct dep is a transitive dep forced on every consumer.
 
-- **The core (root module) depends on the Go standard library only — with three accepted, ADR-justified third-party exceptions**, each verified/required to add **zero net-new transitive dependencies**:
+- **The core (root module) depends on the Go standard library only — with two accepted, ADR-justified third-party exceptions**, each verified/required to add **zero net-new transitive dependencies**:
   - **`github.com/jonboulle/clockwork`** — injectable time, used directly by the pattern core (see Testing rules; [ADR 0004](docs/adrs/0004-clockwork-dependency.md)).
   - **`github.com/robfig/cron/v3`** — cron/recurring schedule parser, imported by the `adapter/cron` package (root module; [ADR 0016](docs/adrs/0016-robfig-cron-dependency.md)).
-  - **`github.com/expr-lang/expr`** — runtime expression evaluation for `FilterExpr`/`RouterExpr` in the pattern core ([ADR 0019](docs/adrs/0019-runtime-expression-evaluation.md)); v1.17.8 verified zero-transitive (`go mod tidy` after `go get` touched only `expr-lang/expr` lines in `go.sum`).
+
+  **`github.com/expr-lang/expr` is no longer a core dependency.** It was one ([ADR 0019](docs/adrs/0019-runtime-expression-evaluation.md)) while the expression-backed endpoints lived in the pattern core; the Plan 027 restructure removed them and **dropped `expr-lang/expr` from the root `go.mod` in this window**. Runtime expression evaluation will live in a separate `expr` provider module, which owns that dependency so no consumer of the core pays for it. Only the two orphaned sentinels (`ErrInvalidExpression`, `ErrExprResultType`) remain in root's error contract for that module to return.
 
   No *other* third-party imports in the pattern core or the in-memory/`http`/`database/sql` adapters. `database/sql` is stdlib; the SQL *driver* is the caller's choice, injected — msgin does not import a driver.
 - **Adapters that need a heavy client declare a narrow interface and let the consumer inject the implementation** (the Redis case above). Prefer "accept an interface" over "import a client." This keeps the dep out of the module graph, and makes the adapter trivially testable (the interface is mockable via `use-mockgen`).

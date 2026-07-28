@@ -1,7 +1,13 @@
 # ADR 0027 — Restructure the core into EIP-chapter packages (C-full), with a clean break
 
-- **Status:** **ACCEPTED — REGENERATED FROM A GREEN TREE (2026-07-28), pending round-3 audit.** Its decisions
-  are **implemented** (commit `c83dde9` plus the uncommitted channel work) and every claim below is measured.
+- **Status:** **ACCEPTED — REGENERATED FROM A GREEN TREE (2026-07-28); round-3 audit returned
+  `NEEDS-REVISION` 3/3 and its findings are folded in below.** Its decisions are **implemented** across
+  commits `c83dde9` (the extraction) and **`b6ce7bb`** (channel segregation + the `EventDrivenSource` rename),
+  plus an uncommitted round-3 fix pass (F12/F13). Every claim below is measured.
+  > *Round-3 status correction.* This line previously read *"commit `c83dde9` plus the **uncommitted** channel
+  > work"* — pinned to the tree as it stood when written and never requoted. `git log --oneline -3` shows
+  > `0e2dcf0` / `b6ce7bb` / `c83dde9`; the channel work is committed. Plan 027's Progress table carried the
+  > identical defect and is corrected there too.
   > *Round-2 banner cleared 2026-07-28.* Each defect it named is gone and each fix is evidenced in
   > [`027-derivation-findings.md`](../plans/027-derivation-findings.md):
   > §2's *"no subpackage imports another"* is **restated as the invariant that is actually true** and holds —
@@ -61,11 +67,19 @@ that cost were wrong in the same direction, and the third is measured rather tha
 > *Corrected twice.* An early draft claimed "in `adapter/database/sql` every reference is godoc prose, not
 > code" — the grep covered only `NewConsumer`/`NewProducer` (audit E5). The round-1 revision replaced it with
 > *"the known non-test adapter code changes are **exactly** two sites"*, which round-2 §A2 (3/3 auditors)
-> falsified by two orders of magnitude. **The migration measured it:** `git diff --stat -- adapter/` →
-> **28 files changed, 181 insertions, 160 deletions**; `adaptscan` classified **115 CODE selectors + 39
-> COMMENT mentions + 0 STRING**, of which **69 non-test selectors are in `adapter/database/sql/harness`, a
-> separate module in the CI matrix that root's `go build ./...` cannot see**. The full per-file and per-module
-> inventory is Spec 014 §3.6 (evidence: F9.2, F9.3, F9.9).
+> falsified by two orders of magnitude. **A third correction was needed** (round 3): the replacement figure
+> was itself taken with a bare `git diff --stat -- adapter/` at a moment when `HEAD` was `c83dde9`, and then
+> presented as the whole-window cost. Measured over the actual window, with the range **in** the command:
+>
+> ```
+> $ git diff --stat c83dde9~1..HEAD -- adapter/ | tail -1
+>  31 files changed, 239 insertions(+), 191 deletions(-)
+> ```
+>
+> **31 files, ±239/−191.** Of the requalification pass specifically, `adaptscan` classified **115 CODE
+> selectors + 39 COMMENT mentions + 0 STRING**, of which **69 non-test selectors are in
+> `adapter/database/sql/harness`, a separate module in the CI matrix that root's `go build ./...` cannot
+> see**. The full per-file and per-module inventory is Spec 014 §3.6 (evidence: F9.2, F9.3, F9.9, F13).
 
 The cost is real, entirely mechanical, and **no `go.mod` needed an edit** — every satellite already `require`s
 and `replace`s the root module, and the new packages live inside it (F9.6).
@@ -115,7 +129,12 @@ package.** Scriptable, with no allow-list entry:
 
 ```bash
 go list -deps . | grep -E 'kartaladev/msgin/(endpoint|routing|transform|channel|resilience)'         # EMPTY
-go list -deps ./endpoint ./routing ./transform ./channel ./resilience | grep 'kartaladev/msgin/'     # EMPTY
+
+# The second grep is REQUIRED: `go list -deps` emits its own argument packages, so without it this
+# arm prints five lines on a correct tree and is unsatisfiable (round-3; Spec 014 §3).
+go list -deps ./endpoint ./routing ./transform ./channel ./resilience \
+  | grep 'kartaladev/msgin/' \
+  | grep -vE '^github.com/kartaladev/msgin/(endpoint|routing|transform|channel|resilience)$'         # EMPTY
 ```
 
 > *Corrected (audit finding E4).* The earlier text asserted an `endpoint → channel` edge, justified as "the
@@ -256,7 +275,7 @@ Consequences:
 - `backoff.go` **remains a split** (§4): `BackoffStrategy` root, `ExponentialBackoff` + `jitter` → `resilience`.
 - Callers write two imports for a retry policy —
   `msgin.RetryPolicy{Backoff: resilience.ExponentialBackoff{…}}`. Accepted; recorded in `MIGRATION.md`.
-- The three adapter construction sites (`sql/source.go:175,235`, `harness/source.go:112`) are expected
+- The three adapter construction sites (`sql/source.go:176,236`, `harness/source.go:114`) are expected
   mechanical churn.
 
 **Filed as a follow-up, deliberately NOT in this window:** `pollErrorBackoff` is a hard-coded policy with no
@@ -328,7 +347,8 @@ true again, and now covers both classes.
 **One residual, recorded rather than papered over:** root's `boxMessage` (`payload.go:30`) and `nilFuncStep`
 (`handler.go:66`) are now **dead code** — every package inlined its own copy and root has no user left. Go
 does not error on unused package-level declarations and `.golangci.yml` sets `linters.default: none`, so
-`unused` is off and nothing reports it. Plan 027 Task 9.5 deletes them.
+`unused` is off and nothing reports it. **Deleted in the round-3 pass** (F12.4); the exported surface is
+unchanged, re-verified with `apidiff` rather than assumed, since both were unexported.
 
 ### 7. Three symbols become exported
 
@@ -350,7 +370,21 @@ is **void on export** (§D17) — the nil case is public surface and needs a tes
 
 ## Consequences
 
-**Positive.** The organising principle holds without exception. Root becomes a small, stable contract of
+**Positive.** The organising principle — *implementations live in a package named for the EIP chapter that
+defines them* — holds for every EIP pattern in the library, **with one acknowledged and deliberate
+exception**: `resilience` is named for a *concern*, not a chapter, because resilience is not an EIP concern at
+all. Its `doc.go` says so outright and cites [ADR 0006](0006-resilience-flow-control.md) rather than inventing
+a chapter (round-2 §D15). The honest statement of the principle is therefore:
+
+> **Every EIP pattern lives in the package named for its chapter, and every package that is not named for a
+> chapter states why it has none.** Two packages fall outside the chapter mapping — `resilience` (no EIP
+> chapter, no Spring counterpart) and the root itself (vocabulary + SPI) — and both say so in their own
+> package docs.
+
+*(Round-3 correction: this line read "holds without exception" while §5 and §3.5 both already recorded
+`resilience` as the exception — a self-contradiction inside the bundle.)*
+
+Root becomes a small, stable contract of
 **14 source files** and **101 exported non-method symbols**. Package names carry EIP meaning, so RFC-0005's
 five components each have an obvious, non-arbitrary home. The dependency graph is a single fan-in to root —
 **zero inter-subpackage edges**, verified by `go list`, not asserted. Only one breaking window is ever spent.
@@ -369,10 +403,11 @@ $ decls . | grep -v _test.go | awk -F'\t' '$5=="exported" && $3!="method" {print
 > *"use `gopls` move/rename"* instruction that F1 showed does not exist. The figure sat inside a normative
 > acceptance criterion, which is now the explicit 14-file list plus a scriptable import check (Spec 014 §9.1).
 
-**Adapters do NOT compile against root unchanged, and that estimate was wrong twice.** The measured cost is
-**28 files, ±181 lines, across `adapter/` and two satellite modules** — 115 code selectors plus 39 godoc
-mentions no compiler will ever flag (Spec 014 §3.6; F9.9). It is entirely mechanical, and **no `go.mod`
-needed an edit**, but it is not zero and it is not two sites.
+**Adapters do NOT compile against root unchanged, and that estimate was wrong three times.** Measured over
+the whole window (`git diff --stat c83dde9~1..HEAD -- adapter/`), the cost is **31 files, ±239/−191 lines,
+across `adapter/` and two satellite modules** — of which the requalification pass alone is 115 code selectors
+plus 39 godoc mentions no compiler will ever flag (Spec 014 §3.6; F9.9, F13). It is entirely mechanical, and
+**no `go.mod` needed an edit for the requalification**, but it is not zero and it is not two sites.
 
 **Negative, accepted.**
 
@@ -398,6 +433,9 @@ needed an edit**, but it is not zero and it is not two sites.
   extracted **last** so the cycle check is meaningful. `go build` does not compile test binaries and cannot
   see the six satellite modules; that gap is how round-2 §B2 survived.
 
-**Neutral.** The 87 distinct `msgin.*` symbols referenced by `adapter/` are unchanged in path for the SPI and
+**Neutral.** The `msgin.*` symbols referenced by `adapter/` are unchanged in path for the SPI and
 vocabulary; the movers are enumerated in Spec 014 §3 and the `apidiff` review is read against §4.1's
-decomposition of the 93 removals.
+decomposition of the **95** removals (87 relocated + 6 `*Expr` deleted + 1 rename + 1
+`MessageChannel.Subscribe`). *(Corrected round 3: this line said **93**, repeating a hand-typed figure from
+Spec 014 §4.1's prose that its own generated table contradicted. Re-derived at HEAD with
+`apidiff docs/plans/027-root-api-baseline.txt . | grep -c ': removed'` → 95.)*

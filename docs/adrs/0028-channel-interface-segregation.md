@@ -1,7 +1,14 @@
 # ADR 0028 — Segregate `MessageChannel` into send-only and subscribable contracts
 
-- **Status:** **ACCEPTED — REGENERATED FROM A GREEN TREE (2026-07-28), pending round-3 audit.** Implemented
-  and tested (Plan 027 Task 2; `channel` measures 100% statement coverage).
+- **Status:** **ACCEPTED — REGENERATED FROM A GREEN TREE (2026-07-28); round-3 audit returned
+  `NEEDS-REVISION` 3/3 and its findings are folded in below.** Implemented and tested in commit **`b6ce7bb`**
+  (Plan 027 Task 2; `channel` measures 100% statement coverage).
+  > *Round-3 corrections in this ADR:* the *"five test fakes were **deleted**"* claim is false — all five
+  > survive and it was their no-op `Subscribe` **stubs** that went (Consequences); the Topology section's
+  > dangling sentence is closed; the Consequences no longer imply D-F improves exclusivity **by default** (it
+  > is off by default and the default wiring still silently mis-routes); and the capability-test gap is
+  > restated as **five** missing positions, including the one every enumeration dropped — `NewRouter`'s `pick`
+  > return (§4a row 3). Evidence: F13.
   > *Round-2 banner cleared 2026-07-28.* Every defect it named is fixed **in this ADR**, not merely noted:
   > the Context's call-site census is now **nine, stated as a scope rule** (§Context, §4a) — round 1's
   > *four of five* and round 2's *six of seven* were both produced by searching the pattern core only;
@@ -311,11 +318,29 @@ The interfaces state what each call site actually requires, which is both better
 Aggregator **output/expired-group** sink (rows 4–5) — so a distributed deployment gains options rather than
 losing them. `ChannelExchange.Close` — which **already existed** — now releases its reply subscription.
 
-**Corroborating evidence the segregation was right, from the migration itself:** five test fakes existed only
-to satisfy the old bundled interface and were **deleted, not migrated** — `fakeAggChannel`, `failNthChannel`,
-`idsAggChannel`, `collector`, `scriptedChannel`, each with a `Subscribe(msgin.MessageHandler) error` returning
-`nil`. **Five of the six `MessageChannel` implementations in the test suite never wanted `Subscribe` at all**
-(F10.6).
+> **Say the limit of §6's D-F plainly, because the Consequences above overstate it.** `WithSingleSubscriber`
+> is **off by default and nothing in this library turns it on**. So the *default wiring is unchanged*: two
+> exchanges sharing one `PublishSubscribeChannel` still compiles, still runs, and **still silently hands every
+> correlated reply to the second exchange's unmatched-reply sink**. D-F does not fix the mis-routing; it gives
+> a caller who already suspects the problem a way to make it a typed error. Framing D-F as *"improving
+> exclusivity"* reads as though the failure mode were addressed by default. It is not, and
+> `NewChannelExchange` does **not** opt its reply channel in — deliberately, because the exchange does not own
+> the channel it is handed and cannot know whether the caller wants fan-out. A future increment may add an
+> exchange-side option that opts in; that is not this window.
+
+**Corroborating evidence the segregation was right, from the migration itself.** Five test fakes —
+`fakeAggChannel`, `failNthChannel`, `idsAggChannel`, `collector`, `scriptedChannel` — each carried a no-op
+`Subscribe(msgin.MessageHandler) error { return nil }` that existed **only** to satisfy the old bundled
+interface. **All five of those stubs are gone; all five fakes remain**, migrated with their tests into
+`routing` and `endpoint`. **Five of the six `MessageChannel` implementations in the test suite never wanted
+`Subscribe` at all** (F10.6, corrected F13).
+
+> *Corrected (round 3).* This paragraph previously said the five **fakes** were *"deleted, not migrated"*.
+> They were not — only their `Subscribe` stubs were. Two greps settle it:
+> `git grep -n 'func (.*) Subscribe(.*msgin.MessageHandler) error' ab233d9 -- '*_test.go'` lists exactly those
+> five stubs; `grep -rn --include='*_test.go' 'Subscribe(.*MessageHandler) error' .` at HEAD returns nothing,
+> while all five type declarations are still present. The stub deletion is the **better** evidence, since it
+> isolates the unwanted method rather than confounding it with the fake's disposal.
 
 **Negative, accepted.**
 
@@ -334,9 +359,12 @@ to satisfy the old bundled interface and were **deleted, not migrated** — `fak
 
 **Risk to test for.** A narrowed parameter type silently accepts more implementations, so a regression here is
 invisible to the compiler. Spec 014 §9.4 therefore requires a test proving a `QueueChannel`, a
-`PublishSubscribeChannel`, **and** a shipped `OutboundAdapter` each work at the send-only positions §4a
-enumerates — **including rows 4–5 and 7–8**, not just discard/default/request. It must fail against the
-pre-window code, or it is not testing the fix.
+`PublishSubscribeChannel`, **and** a shipped `OutboundAdapter` each work at **all eight** send-only positions
+§4a enumerates. The shipped test covers **three** (rows 1, 2, 6); rows **3, 4, 5, 7, 8** are missing.
+**Row 3 — `NewRouter`'s `pick` return — has been dropped from every enumeration of the gap so far**, and it is
+the position that matters most: it is the only one where the channel is chosen at **message time** by
+*caller-supplied* code, so it is where a widened `MessageChannel` actually buys a durable destination per
+message. The test must fail against the pre-window code, or it is not testing the fix.
 
 **And the RED artifact needs its own technique.** All root tests are one `package msgin_test` binary, so a
 capability test that fails to *compile* takes the whole binary down and produces **no `FAIL` line**. The
@@ -344,7 +372,9 @@ transcript must come from `go test -c -o /dev/null .` — `go vet .` shows only 
 type errors, because it stops after one error batch (F10.1).
 
 **Topology.** `SubscribableChannel` remains an **in-process contract**: a Go channel cannot cross a process
-boundary, so a reply arriving at instance B for a request made on instance A is not reachable through it. The
+boundary, so a reply arriving at instance B for a request made on instance A is not reachable through it.
+*(Round-3 fix: this sentence previously ended on a dangling "The", orphaned by the blockquote below; the
+continuation is the paragraph that follows it.)*
 
 > **`channel.PubSub` is in-process too, and the mandatory review omitted it** (round-2 §D3). It is a
 > `map[string]*PublishSubscribeChannel` guarded by a local mutex (`channel/pubsub_registry.go:13`): two

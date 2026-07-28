@@ -1,6 +1,12 @@
 # Plan 027 — Core package layout, channel segregation, and behavior types
 
-> ## Status: **REGENERATED 2026-07-28 from a green tree — pending round-3 audit**
+> ## Status: **REGENERATED 2026-07-28 from a green tree — ROUND-3 AUDIT: `NEEDS-REVISION` 3/3, findings folded in**
+>
+> **Read [Global Constraint 0](#global-constraints) first.** Round 3 found the *generated* tables perfect and
+> **every surviving defect in hand-written prose or in a command that was pasted but never run** — each one a
+> number pinned to an intermediate state (one commit, the derivation tree, the root module) and presented as a
+> property of the finished branch. Global Constraint 0 states the rule that closes the class; the round-3 code
+> fixes are F12 and the document fixes are F13.
 >
 > The round-2 `⛔ DO NOT EXECUTE` banner is **cleared**. Every blocker it listed is resolved, and each
 > resolution is evidenced in [`027-derivation-findings.md`](027-derivation-findings.md) rather than argued:
@@ -11,7 +17,7 @@
 > | §3.2's split tables omit declarations | **FIXED** | F11.1 — six splits, **80** declarations, generated, zero unlocated |
 > | Task 1 leaves the root test binary red (`collector`, `order`) | **FIXED** | F2, F8.4 — both resolved; `go vet ./...` clean workspace-wide |
 > | `poller.go:131` forces `endpoint → resilience` | **FIXED** (D-A) | F11.4 — local `pollErrorBackoff`; zero sibling edges |
-> | No task migrates the adapter tree | **FIXED** | Task 7 below; F9 — 28 files, 115 code + 39 godoc, all seven modules green |
+> | No task migrates the adapter tree | **FIXED** | Task 7 below; F9 — the requalification pass is 115 code + 39 godoc across 28 files; the **whole window** is `git diff --stat c83dde9~1..HEAD -- adapter/` → 31 files, ±239/−191 (F13). All seven modules green |
 > | `apidiff`/`gorelease` not installed | **FIXED** | F11.9 — both in `$(go env GOPATH)/bin`; §0 exports the path |
 > | `expr` cannot build under `GOWORK=off` | **FIXED in the plan** | Task 10 now specifies the `require` + `replace` pair |
 > | "the ledger" load-bearing 8× and never defined | **FIXED** | §Ledger below defines it: file path, contents, lifecycle |
@@ -89,7 +95,9 @@ interfaces, Pipe vs Channel Adapter, exchange exclusivity, D-F),
 [0029](../adrs/0029-eip-lexical-alignment.md); amends [ADR 0019](../adrs/0019-runtime-expression-evaluation.md)
 and annotates [ADR 0013](../adrs/0013-composition-endpoints.md). Derivation evidence:
 [`027-derivation-brief.md`](027-derivation-brief.md) and
-[`027-derivation-findings.md`](027-derivation-findings.md) (F0–F11). Branch:
+[`027-derivation-findings.md`](027-derivation-findings.md) (F0–F13). Tools and the `apidiff` baseline are
+**committed in-repo** at [`027-tools/`](027-tools/) and
+[`027-root-api-baseline.txt`](027-root-api-baseline.txt) — **no gate may depend on `/tmp`**. Branch:
 `claude/repo-structure-refactor-jt79t1`.
 
 **This increment is behavior-preserving by construction, with exactly four decided exceptions**
@@ -117,14 +125,41 @@ and defined nowhere; it is defined here.
 - **Who writes:** the task that discovers the fact, in the same commit as its code.
 - **Who reads:** every later task that depends on it, by section number. This plan cites sections explicitly
   (`F7`, `F9.3`, …) so a fresh subagent can find them without reading the whole file.
-- **What must be in it** (all present today): the apidiff baseline diff (F11.2), per-package coverage both
-  ways (F10.8, F11.11), the six declaration-level split tables (F11.1), the test-placement census (F8.2), the
-  cross-file test-identifier inventory (F8.4), the adapter change inventory (F9.3, F9.9), the RED compiler
-  transcript for the capability test (F10.1), and the deleted `*Expr` test cases Task 10 must reinstate.
+- **What is in it today:** the apidiff baseline diff (F11.2), per-package coverage both ways (F10.8, F11.11,
+  F12.8, F13), the six declaration-level split tables (F11.1), the test-placement census (F8.2), the
+  cross-file test-identifier inventory (F8.4), the adapter change inventory (F9.3, F9.9, F13), the RED
+  compiler transcript for the capability test (F10.1), and the round-3 code + doc fixes (F12, F13).
+- **What is NOT in it, despite an earlier claim that it was:** the **deleted `*Expr` test cases**. The ledger
+  holds two table rows (M-1, M-6) and nothing else; none of the twelve deleted test functions is recorded
+  anywhere under `docs/`. Task 10's parity source is **`git show ab233d9:expr_test.go`** and
+  **`git show ab233d9:expr.go`**, named there explicitly. *(Round-3 correction: "all present today" was
+  false for this item.)*
 
 ---
 
 ## Global constraints
+
+0. **THE GOVERNING RULE — every pasted command carries its explicit commit range and module scope.**
+   Round 3 (3/3 `NEEDS-REVISION`) found that the *generated* tables verified perfectly — all 80 §3.2
+   declaration rows, the apidiff partition, the file counts — while **every surviving defect was a number or a
+   command pinned to an intermediate state and then presented as a property of the finished branch**: one
+   task's commit (`c83dde9`) quoted as the whole window; the derivation working tree quoted as the repository;
+   the **root module** quoted as the workspace. Concretely, `git diff --stat -- adapter/` (implicitly
+   `HEAD`-relative at the moment it ran) and `go mod tidy` (implicitly root-only) each produced a true number
+   about a *different* thing than the sentence around it claimed.
+
+   Therefore:
+   - A `git diff`/`git log`/`git show` in a document **must name its range in the command itself** —
+     `git diff --stat c83dde9~1..HEAD -- adapter/`, never a bare `git diff --stat -- adapter/`.
+   - A per-module fact (`go mod tidy`, `go test`, coverage, `go vet`) **must be shown for every module it
+     claims to cover**, in the loop form, never measured on root and generalised.
+   - A coverage figure **must name the tree it was taken from** (`ab233d9` = pre-refactor, `c83dde9` =
+     post-extraction, `b6ce7bb`, HEAD) *and* the profile mode (`-coverpkg=./...` vs default). "Baseline" is
+     not a tree.
+   - A "verified"/"clean"/"dropped cleanly" claim with no pasted output is **not a claim**, it is a wish.
+
+   This rule is the reason round 3 failed and the reason rounds 1 and 2 failed before it. Re-derive under it;
+   do not re-type a number from a previous round's document.
 
 1. **`go vet ./...` after every single move**, not `go build`, and not only at task end. `go vet` compiles
    test binaries; `go build` does not, and cannot see the satellite modules. An import cycle surfaces
@@ -132,9 +167,19 @@ and defined nowhere; it is defined here.
 2. **Blackbox tests only** — every `_test.go` stays `package <pkg>_test` and drives the exported API. Moving a
    test must not tempt anyone into whitebox access to reach a now-unexported helper; if that happens, the
    symbol's placement is wrong, not the test.
-3. **Exactly one package-doc file per package.** Each new package gets a `doc.go`; duplicate `// Package`
-   comments after a merge are a `go vet` failure. `golangci-lint` will **not** catch a missing one:
-   `.golangci.yml` sets `linters.default: none` and does not enable `ST1000`.
+3. **Exactly one package-doc file per package — asserted by COUNT, because no tool catches a duplicate.**
+   `go vet`, `go build`, `gofmt` and `golangci-lint` were all run against a deliberately planted duplicate
+   `// Package` comment and **every one of them passed** (round 3, proven by execution — Spec 014 §3.5).
+   `ST1000` is off (`.golangci.yml` sets `linters.default: none`) and checks for a *missing* comment anyway.
+   The only assertion that fails is this one:
+   ```bash
+   for p in . endpoint routing transform channel resilience; do
+     n=$(grep -l '^// Package ' $p/*.go 2>/dev/null | wc -l | tr -d ' ')
+     [ "$n" = 1 ] || { echo "FAIL $p has $n"; exit 1; }
+   done
+   ```
+   Silent at HEAD. *(The earlier wording — "duplicate `// Package` comments after a merge are a `go vet`
+   failure" — was false and appeared in three places.)*
 4. **Coverage is measured with `-coverpkg=./...` on BOTH sides.** This is not a preference; a
    default-vs-default comparison across a package split is not like-for-like and **fails CLAUDE.md's 85%
    gate falsely on every extraction task**. Default per-package puts root at 81.8% (was 99.3%) purely because
@@ -158,7 +203,13 @@ and defined nowhere; it is defined here.
    assert it mechanically, not by eye:
    ```bash
    go list -deps . | grep -E 'kartaladev/msgin/(endpoint|routing|transform|channel|resilience)'         # EMPTY
-   go list -deps ./endpoint ./routing ./transform ./channel ./resilience | grep 'kartaladev/msgin/'     # EMPTY
+
+   # The second grep is REQUIRED. `go list -deps` includes its ARGUMENT packages, so the earlier
+   # published form printed five lines on a CORRECT tree and six on a broken one — it could neither
+   # pass nor distinguish the two. Round-3 defect; corrected in all four places it appeared.
+   go list -deps ./endpoint ./routing ./transform ./channel ./resilience \
+     | grep 'kartaladev/msgin/' \
+     | grep -vE '^github.com/kartaladev/msgin/(endpoint|routing|transform|channel|resilience)$'        # EMPTY
    ```
    **Adapters importing `msgin/resilience` violate nothing** — they are consumers, not peers. The earlier
    blanket instruction *"any proposed edge from root into a subpackage, or between two subpackages, is a
@@ -185,26 +236,33 @@ and defined nowhere; it is defined here.
 
 | Task | Content | State |
 |---|---|---|
-| 0 | Baseline, move-list, apidiff baseline | **DONE** — `/tmp/msgin-derive/root.api`, F0 |
+| 0 | Baseline, move-list, apidiff baseline | **DONE** — committed at `docs/plans/027-root-api-baseline.txt`, F0 |
 | 1 | Delete the `*Expr` constructors, drop `expr-lang`, root `doc.go`, **D-D**, **D-E pulled forward** | **DONE** — F2–F6 |
-| 2 | Segregate `MessageChannel`; `SubscribableChannel`; `DirectChannel.Subscription`; **D-F** | **DONE, UNCOMMITTED** — F10 |
-| 3 | `StreamingSource` → `EventDrivenSource` | **DONE, UNCOMMITTED** — F10.4 |
+| 2 | Segregate `MessageChannel`; `SubscribableChannel`; `DirectChannel.Subscription`; **D-F** | **DONE** — commit `b6ce7bb`, F10 |
+| 3 | `StreamingSource` → `EventDrivenSource` | **DONE** — commit `b6ce7bb`, F10.4 |
 | 3.5 | Export `IsPermanent`/`RetryAfterOf`/`NewID`; delete `RetryPolicy.delayFor` | **DONE** — commit `c83dde9` |
 | 4–8 | Extract `routing`, `transform`, `channel`, `resilience`, `endpoint`; place the 44 test files | **DONE** — commit `c83dde9`, F8 |
 | 7a | Requalify `adapter/` + the six satellite modules | **DONE** — commit `c83dde9`, F9 |
+| — | Round-3 code fixes (7-module `go mod tidy`, ST1008, reliability tests, dead-helper deletion, 5 × `doc.go`, article agreement) | **DONE, UNCOMMITTED** — F12 |
 | **9** | Named behavior types + combinators | **PARTIAL** — `CorrelationStrategy`/`ReleaseStrategy` shipped; 4 types + combinators remain |
-| **9.5** | Residual cleanups the migration left behind | **NOT STARTED** — see below |
+| **9.5** | Residual cleanups the migration left behind | **PARTIAL** — the dead-helper deletion and the article sweep landed in the round-3 pass; the sentinel **decision**, the two-arm sweep, and the capability-test widening remain |
 | **10** | The `expr` provider module | **NOT STARTED** |
-| **11** | Package docs for the five subpackages | **NOT STARTED** |
+| **11** | Package docs + Spec 014 §8/§10 godoc obligations | **PARTIAL** — 11a (`doc.go` × 5) done; 11b/11c not started |
 | **12** | `MIGRATION.md`, doc sync, whole-branch gate | **NOT STARTED** |
 
 ```
-$ git log --oneline -1
+$ git log --oneline -3
+0e2dcf0 docs(027): regenerate the bundle from the verified tree; clear all round-2 banners
+b6ce7bb refactor(core)!: segregate MessageChannel; add WithSingleSubscriber; rename StreamingSource
 c83dde9 refactor(core)!: extract the flat core into endpoint/routing/transform/channel/resilience
 ```
 
-**The Task 2/3 work is green but uncommitted.** Committing it is the first action of the resumed plan, and it
-is *not* covered by the per-task pre-authorisation until the user approves this regenerated plan.
+> **CORRECTED (round 3).** This section said Tasks 2 and 3 were *"DONE, UNCOMMITTED"* and instructed the next
+> session that *"committing it is the first action of the resumed plan"*. **They landed in `b6ce7bb`.** The
+> status was pinned to the tree as it stood when it was written and never requoted against `git log` — Global
+> Constraint 0's shape again, and ADR 0027's status line carried the identical defect. What **is** uncommitted
+> is the round-3 fix pass (F12) plus this documentation correction pass (F13); that is what the next session
+> commits first, subject to the usual approval.
 
 ---
 
@@ -215,15 +273,25 @@ diff, and because four of them carry findings later tasks depend on.
 
 ### Task 0 — baseline · **DONE**
 
-`apidiff -w /tmp/msgin-derive/root.api .` before any change; per-module coverage baselines; all seven modules
+`apidiff -w docs/plans/027-root-api-baseline.txt .` before any change (the file is **committed**, so a `/tmp`
+reap or a fresh clone cannot break Task 12's `apidiff` gate); per-module coverage baselines; all seven modules
 green at baseline (F0). Root: 32 source + 45 test files; 42 error sentinels (F1); 245 exported / 138
 unexported top-level declarations.
 
 ### Task 1 — remove the `*Expr` constructors; drop `expr-lang` · **DONE**
 
 Deleted `FilterExpr`, `RouterExpr`, `TransformExpr`, `SplitExpr`, `WithCorrelationExpr`, `WithReleaseExpr`,
-`expr.go`, `expr_test.go`, `doc_composition.go`; created root `doc.go` in the same change; ran `go mod tidy`
-in all seven modules. `expr-lang` dropped cleanly; root direct deps 3 → 2 (F6).
+`expr.go`, `expr_test.go`, `doc_composition.go`; created root `doc.go` in the same change. Root direct deps
+3 → 2 (F6).
+
+> **CORRECTED (round 3).** This task's earlier text said *"ran `go mod tidy` in all seven modules"* and
+> *"`expr-lang` dropped cleanly"*. **It only ran in root.** F6 was a root-only measurement stated
+> workspace-wide, and the other six `go.mod`s **and** `go.sum`s carried
+> `github.com/expr-lang/expr v1.17.8 // indirect` for the rest of the window. CI runs `go mod tidy` +
+> `git diff --exit-code` **per module**, so 5 of 6 matrix jobs were red on a purely mechanical omission.
+> **The satellites were re-tidied in the round-3 fix pass** and all seven are now `go mod tidy -diff`-clean
+> with `expr-lang` gone from every `go.mod` and every `go.sum` — pasted output in F12.1 and Spec 014 §7.
+> This is Global Constraint 0's exact failure shape: a true root-module number presented as a workspace fact.
 
 **Four findings this task produced that later tasks depend on:**
 
@@ -267,8 +335,16 @@ Delivered: `MessageChannel` narrowed to `Send`; `SubscribableChannel` added; `Su
   of its own) and `adapter/database/sql/postgres/example_sql_groupstore_test.go:54`. ADR 0028 and this task's
   earlier draft both described it as a root-module change.
 
-Five test fakes were **deleted, not migrated**, because they existed only to satisfy the old bundled
-interface: `fakeAggChannel`, `failNthChannel`, `idsAggChannel`, `collector`, `scriptedChannel`.
+Five **no-op `Subscribe` stubs** were deleted — `fakeAggChannel`, `failNthChannel`, `idsAggChannel`,
+`collector`, `scriptedChannel` each carried a `Subscribe(msgin.MessageHandler) error { return nil }` that
+existed only to satisfy the old bundled interface. **The five fakes themselves all survive**, migrated with
+their tests into `routing` and `endpoint`.
+
+> *Corrected (round 3).* This line previously said the five **fakes** were "deleted, not migrated". False —
+> `git grep 'func (.*) Subscribe(.*msgin.MessageHandler) error' ab233d9 -- '*_test.go'` lists the five stubs,
+> the same grep at HEAD returns nothing, and all five `type` declarations are still present
+> (`routing/aggregator_test.go:22,157`, `routing/aggregator_settlement_test.go:24`,
+> `endpoint/gateway_test.go:19`, `endpoint/exchange_test.go:811`). See F13.
 
 ### Task 3 — `StreamingSource` → `EventDrivenSource` · **DONE (uncommitted)**
 
@@ -345,7 +421,30 @@ satellite already `require`s and `replace`s the root module (F9.6). All seven mo
       // package transform
       type Transformer[A, B any] func(ctx context.Context, m msgin.Message[A]) (msgin.Message[B], error)
       ```
-- [ ] Add `Predicate.And` / `Or` / `Not`.
+- [ ] Add `Predicate.And` / `Or` / `Not` — **with nil semantics specified, because the naive version panics.**
+
+      > **`p.And(nil)` would panic on caller input**, which CLAUDE.md forbids outright (*"library code … must
+      > not `panic` on caller input — return errors instead"*) and which contradicts this package's own
+      > settled convention: `routing/filter.go:29` returns `nilFuncStep()` for a nil `pred`, and
+      > `NewRouter`'s godoc says *"A nil pick is tolerated at construction and surfaces as `ErrNilFunc` at
+      > Handle time (no panic on input)."* A nil receiver is equally reachable — `var p routing.Predicate[T]`
+      > is nil, and `p.Or(q)` is legal Go on a nil func value.
+
+      **Decided semantics — degrade to the existing sentinel, never panic:**
+
+      | Expression | Result |
+      |---|---|
+      | `p.And(nil)` / `nil.And(q)` | a `Predicate[A]` returning `(false, msgin.ErrNilFunc)` |
+      | `p.Or(nil)` / `nil.Or(q)` | a `Predicate[A]` returning `(false, msgin.ErrNilFunc)` |
+      | `nil.Not()` | a `Predicate[A]` returning `(false, msgin.ErrNilFunc)` |
+
+      **The error is returned at evaluation, not at construction** — combinators are pure and return a
+      `Predicate`, not `(Predicate, error)`, so there is nowhere for a construction-time error to go. This is
+      exactly `nilFuncStep`'s shape, and it reuses the **existing** `ErrNilFunc` rather than minting a
+      sentinel, so a caller's `errors.Is` handling already covers it. **No short-circuit may skip the nil
+      check**: `p.Or(nil)` must not silently return `(true, nil)` when `p` is true — a nil operand is a
+      programming error and must surface even when the short-circuit would hide it. State this on each
+      combinator's godoc.
 - [ ] Every type's godoc **names its Spring equivalent** — this is the mitigation that justifies dropping the
       Spring names (ADR 0029 §4), so verify it **per type**, not sampled.
 - [ ] Record the expected `apidiff` output as **reviewed, source-compatible** parameter-type changes. Do not
@@ -354,7 +453,9 @@ satellite already `require`s and `replace`s the root module (F9.6). All seven mo
 **Hot-path branches needing a case each:** `And` short-circuit on false; `And` error propagation from the
 left and from the right predicate; `Or` short-circuit on true; `Or` error propagation from each side; `Not`
 inverting a true and a false; `Not` **propagating** an error rather than inverting it *(the case a naive
-`Not` gets wrong)*.
+`Not` gets wrong)*; **`And`/`Or` with a nil argument → `ErrNilFunc`**; **`And`/`Or`/`Not` on a nil receiver →
+`ErrNilFunc`**; **`Or` with a nil argument when the left side is `true`** — the short-circuit must not hide
+the nil (the case a naive short-circuit gets wrong, and the reason the nil check precedes it).
 
 > **Do NOT re-verify "aggregator coverage returns to 100% on `NewAggregator` and `Handle`."** That criterion
 > is void: **D-D deleted** the `NewAggregator` guard rather than rescuing it (F5, round-2 §B4), and the three
@@ -368,17 +469,47 @@ func types on Go 1.25). `-coverpkg=./...` on both sides.
 
 ---
 
-## Task 9.5 — Residual cleanups the migration left behind · **S** · NOT STARTED
+## Task 9.5 — Residual cleanups the migration left behind · **S** · PARTIAL
 
-Four items, each invisible to `go build`, `go vet`, `go test`, and `gofmt`. None is cosmetic; each is a
-delivery blocker under CLAUDE.md's godoc and dead-code expectations.
+Each item is invisible to `go build`, `go vet`, `go test`, and `gofmt`. None is cosmetic; each is a delivery
+blocker under CLAUDE.md's godoc and dead-code expectations.
 
-- [ ] **Delete root's dead `boxMessage` and `nilFuncStep`.** Zero users in root and zero in root's tests
-      after every package inlined its own copy; `.golangci.yml`'s `linters.default: none` means `unused` is
-      off, so nothing reports it (F11.6).
-      ```
-      payload.go:30  func boxMessage[T any](m Message[T]) Message[any]
-      handler.go:66  func nilFuncStep() Step
+### 9.5.0 — DECIDE THIS FIRST: the two orphaned expr sentinels
+
+**This is the task's first action, not its third**, because Task 12's assertion block and Spec 014 §4.1's
+apidiff expectation are all **contingent on it**, and Task 10 *consumes* whatever is decided.
+
+- [ ] **Decide:** do `ErrInvalidExpression` (`errors.go:161`) and `ErrExprResultType` (`errors.go:183`) stay in
+      root's closed contract, or leave it? Both have **zero users** today and their godoc names constructors
+      that no longer exist (F11.7). Leaving two unreferenced sentinels inside a contract this window declares
+      *closed* is not a neutral default.
+
+      | Option | Root exported | Root sentinels | `apidiff` removals |
+      |---|--:|--:|--:|
+      | **A — keep in root** (the `expr` module imports them; one error contract, consistent with ADR 0029 §5's provider-side wrapping) | 101 | 42 | 95 |
+      | **B — remove from root** (the `expr` module mints its own, consistent with §3.2's rule that a directly-imported package owns its sentinels) | **99** | **40** | **97** |
+
+      **Recommended default: A.** ADR 0029 §5 keeps the *fail-at-construction* error contract in one place, and
+      §3.2's rule cuts the other way only for packages a consumer imports *instead of* root — an `expr` caller
+      imports `routing` and `msgin` anyway. But B is defensible and this plan does not pre-empt the user.
+- [ ] **Propagate the decision** the same commit: the ledger; Spec 014 §3.2's orphan note and §4.1's
+      contingency block; Task 12's assertion numbers; and Task 10's `RouteFunc`, whose **two construction
+      validations wrap `ErrInvalidExpression`** — so option B means Task 10 declares the replacement sentinel
+      before it can compile.
+
+### 9.5.1 — the rest
+
+- [x] **Delete root's dead `boxMessage` and `nilFuncStep`.** **DONE** in the round-3 pass (F12.4); zero users
+      in root and zero in root's tests after every package inlined its own copy, and `.golangci.yml`'s
+      `linters.default: none` means `unused` is off, so nothing reported it (F11.6). Confirmed
+      surface-neutral: `apidiff` still reports 95/5, because both were unexported.
+- [x] **Fix the article-agreement class**, not its instances. **DONE** in the round-3 pass (F12.6), and the
+      sweep was wrong in *both* directions before it: `routing`/`transform` are consonant-initial so
+      "a routing.X" was always correct, while the real defects were three "an msgin.X" sites. The two-way
+      check that is now empty:
+      ```bash
+      grep -rnE '\b[Aa] endpoint\.|\b[Aa]n (msgin|routing|transform|channel|resilience)\.' --include='*.go' .   # empty
+      grep -rn --include='*.go' -E '\[(endpoint|routing|channel|transform|resilience)\.[A-Z]' adapter/          # empty
       ```
 - [ ] **Run the two-arm staleness sweep to empty** (Spec 014 §8.1). Arm 1 (moved symbols) currently has **2**
       survivors; arm 2 (deleted symbols — a class arm 1 structurally cannot see) has **7**:
@@ -387,32 +518,31 @@ delivery blocker under CLAUDE.md's godoc and dead-code expectations.
       ARM 2: errors.go:156,175,176,177 · routing/splitter.go:52 · routing/aggregator.go:316
              routing/aggregator_test.go:1276
       ```
-- [ ] **Decide the fate of the two orphaned expr sentinels** — `ErrInvalidExpression` (`errors.go:161`) and
-      `ErrExprResultType` (`errors.go:183`) have zero users and their godoc names deleted constructors. Either
-      the `expr` module imports them from root (and Task 10 wires that) or they are removed from root's closed
-      contract. **This is a decision, not a cleanup** — record it in the ledger and, if it changes the root
-      contract, in Spec 014 §4.
-- [ ] **Fix the article-agreement class**, not its instances (F9.5) — `msgin` takes "a", `endpoint` takes
-      "an", so every mechanically rewritten comment reading "a endpoint.Producer" is wrong:
-      ```bash
-      grep -rn --include='*.go' -E '\b[Aa] (endpoint|routing|transform)\.' .                            # empty
-      grep -rn --include='*.go' -E '\[(endpoint|routing|channel|transform|resilience)\.[A-Z]' adapter/  # empty
-      ```
-- [ ] **Extend the capability test to the four uncovered send-only positions.** `capability_test.go`'s
-      `TestSendOnlyCallSitesAcceptEveryChannel` covers **3 targets × 3 sites = 9 subtests** today
-      (filter discard, router default, exchange request). Spec 014 §9.4 requires all eight send-only
-      positions, and the four missing ones are precisely the ones the two failed censuses missed:
-      | Missing site | Why it matters |
-      |---|---|
-      | `routing.WithOutputChannel` | a durable `QueueChannel` as the Aggregator **output** — round-2 §A6's point |
-      | `routing.WithExpiredGroupChannel` | same, for the **expired-group** sink |
-      | `msghttp.ServeAsync`'s `target` | an HTTP request parked in a durable queue channel |
-      | `stdlib.NewInbound`'s `target` | same, via the stdlib binding |
+      Regenerate `docs/plans/027-tools/symmap.tsv` before running arm 1 — it is derived and it went stale by
+      one entry (`channel.WithSingleSubscriber`) between `c83dde9` and `b6ce7bb`.
+- [ ] **Extend the capability test to ALL EIGHT send-only positions.** `capability_test.go`'s
+      `TestSendOnlyCallSitesAcceptEveryChannel` covers **3 targets × 3 sites = 9 subtests** today (filter
+      discard, router default, exchange request — `capability_test.go:152,163,174`). Spec 014 §9.4 requires all
+      eight, so **five** are missing, not four:
+
+      | # | Missing site | Why it matters |
+      |---|---|---|
+      | 3 | **`routing.NewRouter`'s `pick` return** (`routing/router.go:29,37`) | **The omission the earlier draft made.** This is the position where a *user-supplied* `pick` returns a durable `QueueChannel` — precisely the widening ADR 0028 exists for, and the only one of the eight where the channel is chosen at **message time** rather than at construction. |
+      | 4 | `routing.WithOutputChannel` | a durable `QueueChannel` as the Aggregator **output** — round-2 §A6's point |
+      | 5 | `routing.WithExpiredGroupChannel` | same, for the **expired-group** sink |
+      | 7 | `msghttp.ServeAsync`'s `target` | an HTTP request parked in a durable queue channel |
+      | 8 | `stdlib.NewInbound`'s `target` | same, via the stdlib binding |
+
+      > The earlier draft's own Verify line said *"5 core + 2 HTTP"* two lines after asserting all eight were
+      > required — 7 of 8, and the one it dropped was #3. Six of the eight positions are core, two are HTTP.
+
       The two HTTP sites live in `adapter/http` and `adapter/http/stdlib`, so their cases belong in **those
       packages' tests**, not in root's `capability_test.go`.
 
-**Verify:** both sweep arms empty; the capability test covers 3 targets × 5 core sites plus the two HTTP
-sites; the eight-module `GOWORK=off` loop green; `-coverpkg=./...` unchanged.
+**Verify:** the sentinel decision recorded in the ledger with its three downstream numbers propagated; both
+sweep arms empty; the capability test covers **3 targets × 6 core sites** in `capability_test.go` **plus 3 × 2
+HTTP sites** in the two adapter packages — 24 subtests total, not 9; the eight-module `GOWORK=off` loop green;
+`-coverpkg=./...` measured against a **named** tree (Global Constraint 0).
 
 **Commit:** `refactor(core): delete dead root helpers, clear the staleness sweep, widen the capability test`
 
@@ -434,25 +564,77 @@ sites; the eight-module `GOWORK=off` loop green; `-coverpkg=./...` unchanged.
       2. add `expr` to the `workspace` job's loop;
       3. **fix the pre-existing gap** — `adapter/cron/crontest` is missing from **both** and has been since
          it was created.
-- [ ] Providers returning the Task 9 types. **The shape is NOT uniform, and the earlier plan assumed it was**
-      (round-2 §D2):
+- [ ] Providers returning the Task 9 types. **The shape is NOT uniform, and it is NOT non-generic** — the
+      earlier plan got both wrong (round-2 §D2 for the first; round 3, compile-proven, for the second):
       ```go
-      func Predicate[A any](s string)   (routing.Predicate[A], error)
-      func SplitFunc[A, B any](s string)(routing.SplitFunc[A, B], error)
+      func Predicate[A any](s string)      (routing.Predicate[A], error)
+      func SplitFunc[A, B any](s string)   (routing.SplitFunc[A, B], error)
       func Transformer[A, B any](s string) (transform.Transformer[A, B], error)
-      func Correlation(s string)       (routing.CorrelationStrategy, error)
-      func Release(s string)           (routing.ReleaseStrategy, error)
-      func RouteFunc(s string, routes map[string]msgin.MessageChannel) (routing.RouteFunc, error)   // ← extra param
+      func Correlation[A any](s string)    (routing.CorrelationStrategy, error)   // ← A, not non-generic
+      func Release[A any](s string)        (routing.ReleaseStrategy, error)       // ← A, not non-generic
+      func RouteFunc[A any](s string, routes map[string]msgin.MessageChannel) (routing.RouteFunc, error)
+                                                                                 // ← A AND an extra param
       ```
+      **Why `A` is mandatory on all three, and why dropping it does not compile.** The deleted originals were
+      all `[A any]`, and the parameter is load-bearing twice:
+
+      ```
+      $ git show ab233d9:expr.go | grep -nE '^func '
+       89:func FilterExpr[A any](expression string, opts ...FilterOption) (Step, error)
+      115:func RouterExpr[A any](keyExpr string, routes map[string]MessageChannel, opts ...RouterOption) (*Router, error)
+      167:func TransformExpr[A, B any](expression string) (Step, error)
+      217:func SplitExpr[A, B any](expression string) (Step, error)
+      321:func WithCorrelationExpr[A any](expression string) AggregatorOption
+      390:func WithReleaseExpr[A any](expression string) AggregatorOption
+      ```
+
+      1. **`compile[A]` type-checks `payload.Field` against `A`** (`expr.go:35`). Without `A` the compiler has
+         no type to check the expression's `payload` root against, and ADR 0019's *fail-at-construction*
+         contract collapses to a runtime error.
+      2. **`PayloadOf[A]` IS the M-6 `ErrPayloadType` branch this task mandates** — `expr.go:129,224,284,331`.
+         A non-generic provider has nothing to assert the member payload to, so the branch cannot exist, and
+         the acceptance bar below ("M-6 non-`A` member → `ErrPayloadType`") is unreachable.
+
+      **`A` is not inferable from a `string` argument**, so callers must instantiate explicitly:
+      `expr.Release[Order]("…")`, `expr.Correlation[Order]("…")`, `expr.RouteFunc[Order]("…", routes)`. Say so
+      in each provider's godoc; a caller who writes `expr.Release("…")` gets an unhelpful inference error.
+
       `RouteFunc` additionally carries the **two construction validations** `RouterExpr` had. Do not force it
       into a `(string) → (T, error)` mould it cannot fit.
 - [ ] `Release` returns `routing.ReleaseStrategy`, whose `(bool, error)` shape is what lets an evaluation
       failure propagate instead of being swallowed into a permanent `false`. `WithReleaseStrategy(expr.Release(…))`
       now compiles, which is the point of D-E.
-- [ ] Reinstate the Task 1 test cases from the ledger against the providers. Behavioral parity with the
-      deleted `*Expr` constructors is the acceptance bar. **Two of them are `toGroupEnv` guard cases that
-      genuinely belong here** — M-1 (empty group snapshot) and M-6 (non-`A` member → `ErrPayloadType`) —
-      while H-1/H-2/H-3 already returned in Task 1 and must **not** be re-added (F3).
+- [ ] **Reinstate the deleted `*Expr` test cases against the providers. The parity source of truth is git,
+      NOT the ledger.**
+
+      > **CORRECTED (round 3).** This step previously said *"reinstate the Task 1 test cases from the ledger …
+      > (all present today)"*, and §Ledger listed *"the deleted `*Expr` test cases Task 10 must reinstate"*
+      > among the things *"all present today"*. **They are not there.** The ledger holds exactly **two table
+      > rows** (M-1 and M-6, in F3 / ADR 0029 §3b) and **none of the twelve deleted test functions** is
+      > recorded anywhere under `docs/`. A worker following the instruction as written would have found
+      > nothing and either invented a parity bar or skipped it.
+
+      The twelve functions to reach parity with (`git show ab233d9:expr_test.go | grep -nE '^func (Test|Example)'`):
+
+      ```
+       45:TestFilterExpr             141:TestFilterExpr_Concurrent   207:ExampleFilterExpr
+      233:ExampleRouterExpr          251:TestTransformExpr           326:ExampleTransformExpr
+      348:TestSplitExpr              459:ExampleSplitExpr            483:TestRouterExpr
+      589:TestWithCorrelationExpr    676:TestWithReleaseExpr         843:ExampleWithReleaseExpr
+      ```
+
+      **Read the sources before writing anything:**
+      - `git show ab233d9:expr_test.go` — the 12 functions and every case they carry. This is the bar.
+      - `git show ab233d9:expr.go` — the implementations, including `compile`, `compileGroup`, `toGroupEnv`,
+        `exprSliceToChildren`, and the two `RouterExpr` construction validations.
+
+      *(`docs/plans/014-expr-endpoints.md` and `docs/plans/018-expr-sugar.md` carry partial skeletons of some
+      of these tests. They are a useful cross-check on intent but are **not** the parity bar — they predate
+      several revisions of the cases.)*
+
+      **Two cases are `toGroupEnv` guard cases that genuinely belong here** — M-1 (empty group snapshot) and
+      M-6 (non-`A` member → `ErrPayloadType`) — while H-1/H-2/H-3 already returned in Task 1 and must **not**
+      be re-added (F3).
 - [ ] Runtime failures wrap the **source expression text** — the debuggability mitigation ADR 0029 §3 traded
       the interface shape for, so it is a requirement, not a nicety.
 
@@ -468,25 +650,74 @@ call, never at first message. All **eight** modules green standalone under `GOWO
 
 ---
 
-## Task 11 — Package documentation for the five subpackages · **S** · NOT STARTED
+## Task 11 — Package docs AND the unowned godoc obligations · **M** · PARTIAL
 
-None of the five has a `doc.go`; only root does (F11.8). `ST1000` is not enabled, so lint will never flag it.
+> **This task grew in round 3.** Spec 014 **§8's nine godoc bullets** and **§10's four multi-instance godoc
+> obligations** were written in the indicative, as though they described the tree, and **had no owning task
+> at all** — so nothing in this plan was ever going to produce them. Audited against HEAD, **five of the nine
+> and two of the four were unmet.** They are Task 11 checkboxes now, each grep-verifiable.
 
-- [ ] `endpoint/doc.go` — EIP ch.10 *Messaging Endpoints*; Spring `org.springframework.integration.endpoint`.
-- [ ] `routing/doc.go` — EIP ch.7 *Message Routing*; Spring `…integration.router`.
-- [ ] `transform/doc.go` — EIP ch.8 *Message Transformation*; Spring `…integration.transformer`.
-- [ ] `channel/doc.go` — EIP ch.3 (Pipe) and ch.4 (Publish-Subscribe Channel); Spring `…integration.channel`.
-- [ ] `resilience/doc.go` — **state explicitly that it has no EIP chapter and no Spring counterpart**, and
-      cite [ADR 0006](../adrs/0006-resilience-flow-control.md) instead. Spec 014 §3.5's *"each subpackage doc
-      names its EIP chapter and its Spring counterpart"* is unsatisfiable for this one (round-2 §D15);
-      inventing a chapter would be exactly the lexical drift this program exists to prevent.
-- [ ] Confirm root's `doc.go` states the **Pipes-and-Filters** model in Spec 014 §3.5's terms: a
-      `MessageChannel` is the **Pipe**, a `Step` is the **filter**, `Chain` assembles the pipeline.
+### 11a — the five subpackage `doc.go` files · **DONE** (uncommitted, F12.5)
 
-**Verify:** `for p in . endpoint routing transform channel resilience; do grep -c '^// Package ' $p/*.go; done`
-→ exactly one per package. `go vet ./...` clean (a duplicate package comment is a vet failure).
+All five landed in the round-3 fix pass, closing F11.8. `ST1000` is off (`linters.default: none`), so nothing
+would ever have flagged their absence.
 
-**Commit:** `docs(core): package documentation for the five extracted packages`
+- [x] `endpoint/doc.go` — EIP ch.10 *Messaging Endpoints*; Spring `org.springframework.integration.endpoint`.
+- [x] `routing/doc.go` — EIP ch.7 *Message Routing*; Spring `…integration.router`.
+- [x] `transform/doc.go` — EIP ch.8 *Message Transformation*; Spring `…integration.transformer`.
+- [x] `channel/doc.go` — EIP ch.3 (Pipe) and ch.4 (Publish-Subscribe Channel); Spring `…integration.channel`.
+- [x] `resilience/doc.go` — **states explicitly that it has no EIP chapter and no Spring counterpart** and
+      cites [ADR 0006](../adrs/0006-resilience-flow-control.md) instead (round-2 §D15). Inventing a chapter
+      would be exactly the lexical drift this program exists to prevent.
+- [x] Root's `doc.go` states the **Pipes-and-Filters** model in Spec 014 §3.5's terms: a `MessageChannel` is
+      the **Pipe**, a `Step` is the **filter**, `Chain` assembles the pipeline (`doc.go:5-14`).
+
+### 11b — Spec 014 §8's unmet godoc bullets
+
+Each line pairs the edit with the grep that proves it. **Run each grep before ticking the box.**
+
+- [ ] **§8.1 — name Correlation Identifier.** "Return Address" is present; the *in-process* pattern is never
+      named. Add it to `endpoint`'s `ChannelExchange`/`doc.go` prose.
+      → `grep -rn -i 'correlation identifier' --include='*.go' .` must be **non-empty**.
+- [ ] **§8.3 — the AMQP disclaimer on `RequestReplyExchange`.** Currently **absent workspace-wide**, despite
+      Spec 014 §6 and ADR 0029 §2 both asserting in the present tense that it exists.
+      → `grep -rn -i 'amqp' --include='*.go' .` must be **non-empty** and must hit `spi.go`.
+- [ ] **§8.4 — every named behavior type names its Spring equivalent, per type.** Currently only the *package*
+      docs name Spring; `routing.CorrelationStrategy` and `routing.ReleaseStrategy` do not. This is the
+      mitigation that justifies dropping the Spring names (ADR 0029 §4), so it is **not** discharged by a
+      package-level mention.
+      → for each of `CorrelationStrategy`, `ReleaseStrategy`, and Task 9's `Predicate`, `RouteFunc`,
+      `SplitFunc`, `Transformer`: `grep -B10 'type <T>' <file> | grep -i spring` must hit.
+- [ ] **§8.7 — `msghttp.ServeAsync` and `stdlib.NewInbound` state the widened `target` contract.** Neither
+      godoc mentions that any `MessageChannel` — a durable `QueueChannel`, a `PublishSubscribeChannel`, any
+      `OutboundAdapter` — now qualifies, which is the whole user-visible payoff of §5.0 rows 7–8.
+      → `grep -n -i 'QueueChannel' adapter/http/inbound.go adapter/http/stdlib/inbound.go` must hit both.
+
+### 11c — Spec 014 §10's unmet multi-instance obligations (CLAUDE.md mandatory)
+
+- [ ] **`channel.WithSingleSubscriber` states it is a SINGLE-PROCESS guard.** ADR 0028 §6.2 requires it in so
+      many words — *"must not be documented as a distributed exclusivity guarantee"* — and the godoc
+      (`channel/pubsub.go:69-83`) never mentions the process boundary. Two instances each holding their own
+      `PublishSubscribeChannel` still each accept a subscriber.
+      → `grep -n -A22 'func WithSingleSubscriber' channel/pubsub.go | grep -i 'single-process\|per-process\|instance'` must hit.
+- [ ] **`RetryPolicy.MaxAttempts` states the per-instance bound.** `retry.go:37-41` says nothing about
+      topology, so a caller sizing a poison-message threshold behind a load balancer gets `N ×` what they
+      asked for. Say: attempts are tracked per instance (`endpoint/attempts.go:26`), so across N nodes the
+      effective global bound is `N × MaxAttempts`; this applies **only** to sources without a native
+      delivery-count header (a `NativeReliability` source is unaffected); the distributed answer is the
+      broker's own redelivery count or a shared idempotency/dedup store.
+      → `grep -n -B12 'MaxAttempts int' retry.go | grep -i 'instance'` must hit.
+
+**Verify:**
+```bash
+for p in . endpoint routing transform channel resilience; do
+  n=$(grep -l '^// Package ' $p/*.go 2>/dev/null | wc -l | tr -d ' ')
+  [ "$n" = 1 ] || { echo "FAIL $p has $n"; exit 1; }
+done                                   # silent — this is the check, NOT `go vet` (Global Constraint 3)
+```
+Plus every grep in 11b/11c above, run and pasted into the ledger. `go vet ./...` clean.
+
+**Commit:** `docs(core): package docs and the godoc obligations Spec 014 §8/§10 require`
 
 ---
 
@@ -516,11 +747,19 @@ None of the five has a `doc.go`; only root does (F11.8). `ST1000` is not enabled
 - [ ] **Assert every invariant mechanically**, into the ledger:
       ```bash
       go list -deps . | grep -E 'kartaladev/msgin/(endpoint|routing|transform|channel|resilience)'        # EMPTY
-      go list -deps ./endpoint ./routing ./transform ./channel ./resilience | grep 'kartaladev/msgin/'    # EMPTY
+      go list -deps ./endpoint ./routing ./transform ./channel ./resilience \
+        | grep 'kartaladev/msgin/' \
+        | grep -vE '^github.com/kartaladev/msgin/(endpoint|routing|transform|channel|resilience)$'       # EMPTY
       ls *.go | grep -v _test.go | wc -l                                                                 # 14
-      decls . | grep -v _test.go | awk -F'\t' '$5=="exported" && $3!="method"{print $4}' | sort -u | wc -l  # 101
-      decls . | grep -v _test.go | awk -F'\t' '$3=="var" && $4 ~ /^Err/{print $1}' | sort | uniq -c        # 42 errors.go
+      go run docs/plans/027-tools/decls.go . | grep -v _test.go \
+        | awk -F'\t' '$5=="exported" && $3!="method"{print $4}' | sort -u | wc -l                        # 101 (see contingency below)
+      go run docs/plans/027-tools/decls.go . | grep -v _test.go \
+        | awk -F'\t' '$3=="var" && $4 ~ /^Err/{print $1}' | sort | uniq -c                               # 42 errors.go (contingent)
       ```
+      > **These two numbers are CONTINGENT on Task 9.5's first decision** (the fate of `ErrInvalidExpression`
+      > and `ErrExprResultType`). They are **101 / 42 / apidiff 95** only if both sentinels **stay** in root.
+      > If they are removed, the assertions become **99 / 40 / apidiff 97**. Read the decision recorded in the
+      > ledger by Task 9.5 before asserting either pair; do not treat the numbers above as fixed.
       Then diff root's exported surface against **Spec 014 §4's closed list** — every symbol accounted for,
       nothing extra.
 - [ ] **Re-run the `MessageChannel` scope-rule census** (Spec 014 §5.0) rather than citing a number. Three
@@ -552,6 +791,8 @@ None of the five has a `doc.go`; only root does (F11.8). `ST1000` is not enabled
 | RED cannot be evidenced for a compile-time failure | The transcript comes from `go test -c -o /dev/null .`, not `go vet` (which stops after one type-error batch) |
 | `expr` cannot build standalone | Task 10 ships `require` + `replace` together, and CI gets all three edits |
 | `gopls` unavailable in a subagent | No task depends on it; `go vet ./...` is the authoritative reference-finder and `grep` the fallback |
-| Root loses its package doc | Done in Task 1's change; the five subpackage docs are Task 11, and Task 11's verify counts them |
+| Root loses its package doc | Done in Task 1's change; the five subpackage docs landed in the round-3 pass (F12.5). Task 11's verify **counts** them — `go vet` does NOT catch a duplicate (Global Constraint 3) |
+| A godoc obligation has no owning task | Spec 014 §8's nine bullets and §10's four obligations were unowned and six were unmet; **Task 11b/11c owns all thirteen**, each with a grep that must be run and pasted |
+| A number is pinned to an intermediate state | **Global Constraint 0** — every pasted command carries its commit range and module scope. This is the signature behind every round-3 defect |
 | Expression support absent mid-branch | Bounded to Tasks 1→10 within one branch; Task 1 preserved the test cases in the ledger that Task 10 must satisfy |
 | Branch conflicts with in-flight feature work | Run this window **before** Plan 028 (gin) or any new adapter; blast radius grows with every adapter landed first |

@@ -27,19 +27,30 @@ export PATH="$(go env GOPATH)/bin:$PATH"     # goimports, gofumpt, gopls, apidif
 
 `gopls` has **no Move refactoring** and has been unreliable inside subagents. Use the scripts below.
 
-## Tools already built (use these, do not rebuild)
+## Tools — COMMITTED, in-repo (use these, do not rebuild)
+
+> **Round-3 correction.** These previously existed only as compiled binaries under `/tmp/msgin-derive/`, so a
+> fresh clone or a `/tmp` reap made Spec 014 §8.1's staleness sweep and Plan 027 Task 12's invariant block
+> unrunnable, with no rebuild instructions anywhere. **No gate may depend on `/tmp`.** They are now committed
+> as `//go:build ignore` programs; see [`027-tools/README.md`](027-tools/README.md).
 
 | Tool | Purpose |
 |---|---|
-| `/tmp/msgin-derive/decls <dir>` | AST dump of every top-level decl: `file⇥line⇥kind⇥name⇥exported`. This is how every table gets generated. |
-| `/tmp/msgin-derive/qualify <pkgdir> msgin <Sym>...` | **AST-based** rewrite of bare identifiers to `msgin.X`. Operates on the AST, so **comments and strings are never touched** (a regex version corrupted EIP pattern names in godoc — do not go back to regex). |
-| `/tmp/msgin-derive/extract.sh <pkg> <files...>` | git mv + package clause + qualify + goimports + build. |
+| `go run docs/plans/027-tools/decls.go <dir>` | AST dump of every top-level decl: `file⇥line⇥kind⇥name⇥exported`. This is how every table gets generated. |
+| `go run docs/plans/027-tools/qualify.go <pkgdir> msgin <Sym>...` | **AST-based** rewrite of bare identifiers to `msgin.X`. Operates on the AST, so **comments and strings are never touched** (a regex version corrupted EIP pattern names in godoc — do not go back to regex). |
+| `docs/plans/027-tools/symmap.tsv` | Symbol → destination-package map, consumed by §8.1 ARM 1. **Derived — regenerate it after every move** (command below); it went stale by one entry (`channel.WithSingleSubscriber`) between `c83dde9` and `b6ce7bb`. |
+| `docs/plans/027-root-api-baseline.txt` | The `apidiff -w` baseline, committed for the same reason. |
 
-Regenerate the qualification target set after **every** move (root shrinks as you go):
+Regenerate the qualification target set and the symbol map after **every** move (root shrinks as you go):
 
 ```bash
-/tmp/msgin-derive/decls . | grep -v '_test\.go' \
-  | awk -F'\t' '$5=="exported" && $3!="method" {print $4}' | sort -u > /tmp/msgin-derive/root-exported.txt
+go run docs/plans/027-tools/decls.go . | grep -v '_test\.go' \
+  | awk -F'\t' '$5=="exported" && $3!="method" {print $4}' | sort -u > <tmpdir>/root-exported.txt
+
+for p in endpoint routing transform channel resilience; do
+  go run docs/plans/027-tools/decls.go $p | grep -v '_test\.go' \
+    | awk -F'\t' -v P=$p '$5=="exported" && $3!="method" {print P"\t"$4}'
+done | sort -u -k2,2 > docs/plans/027-tools/symmap.tsv
 ```
 
 ## The green gate — run after EVERY step
@@ -107,5 +118,5 @@ like-for-like and fails the gate falsely.
 
 ## Snapshots
 
-`/tmp/msgin-derive/snapshots/after-task1.tgz`. Take one at each green boundary:
-`tar czf /tmp/msgin-derive/snapshots/<name>.tgz --exclude='.git' .`
+Working-tree convenience only — **no gate depends on these**, unlike the tools and the apidiff baseline above:
+`tar czf <tmpdir>/snapshots/<name>.tgz --exclude='.git' .` at each green boundary.

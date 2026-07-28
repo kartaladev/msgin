@@ -65,7 +65,105 @@ points at `c83dde9`. Safe to `git worktree remove`; left in place only because r
 
 ## 4. Next actions
 
-### 4.1 Round-3 adversarial audit — the immediate next step
+### 4.0 ROUND-3 AUDIT — 3/3 NEEDS-REVISION, **and the findings have now been WORKED** (2026-07-28)
+
+> **STATUS: all six blockers resolved; every CI gate green.** Verified after the fixes:
+>
+> ```
+> go mod tidy -diff        TIDY-CLEAN in all 7 modules (expr-lang gone from go.mod AND go.sum)
+> golangci-lint run ./...  0 issues
+> gofmt -l .               empty (whole tree)
+> seven-module GOWORK=off  GREEN ×7 (build + vet)
+> go test ./... -race -shuffle=on   11 packages, 0 failures
+> coverage -coverpkg=./...          93.4%   (pre-refactor baseline 91.9%)
+> acyclicity gate (corrected form)  EMPTY — the gate now actually works
+> one `// Package` per package      1,1,1,1,1,1  (five subpackage doc.go files added)
+> ```
+>
+> Code fixes are recorded in the findings file as **F12**, doc corrections as **F13**.
+> **Everything below this box is the audit as originally reported** — kept because the *reasoning* is what
+> matters for round 4, not the resolved status of each item.
+>
+> **NOT yet done:** a **round-4 audit** (rounds 1–3 each found defects the previous round's fixes
+> introduced, and this pass edited the same documents again), and **`/code-review` + `/security-review`**
+> over `main..HEAD`, which are user-triggered and have never run on this branch.
+>
+> **Uncommitted at handover:** the code fixes, the doc corrections, `docs/plans/027-tools/`, the five
+> subpackage `doc.go` files, and this file. Nothing since `0e2dcf0` is committed.
+
+#### The audit as originally reported
+
+Run 2026-07-28 against `0e2dcf0`, three Opus lenses (consistency · design · executability). **The method
+worked where it was applied** — all three independently confirmed the *generated* artifacts:
+
+- **All 80 §3.2 declaration rows verify exactly** (source, destination, visibility), checked against an
+  independently rebuilt AST dumper. **Zero defects.** This is the artifact that sank rounds 1 and 2.
+- `apidiff` 95/5 reproduces and partitions as claimed (87+6+1+1) with an **empty residual**.
+- Root 14 files · 101 exported symbols · 42 sentinels · the `MessageChannel` census · the dependency graph ·
+  every coverage figure · every traceability link — all reproduced.
+
+**Every surviving defect is in hand-written prose, or in a command that was pasted but never run.**
+
+#### The two code blockers — the branch is NOT green in the sense CI means
+
+| # | Defect | Evidence |
+|---|---|---|
+| **B1** | **`expr-lang` was never dropped from the satellites.** 6 of 7 `go.mod`s still require it; `go mod tidy` is **dirty in all 6**. CI runs per-module `go mod tidy` + `git diff --exit-code` → **5 of 6 matrix jobs red today.** Spec §9 AC-3/AC-6 both fail, and Spec §1.3's motivating defect ("a consumer using nothing but the SQL adapter still pulls `expr-lang`") is unfixed for exactly the consumer it names. | `grep -rn expr-lang --include='go.mod' .` |
+| **B2** | **`golangci-lint` regressed 0 → 3** (ST1008 in `channel/channel_test.go:122,140,150`, introduced by `b6ce7bb`). CI's lint job is red. The plan defers lint to Task 12, so it went unseen across two committed tasks. | `golangci-lint run ./...` |
+
+**Fix B1 with `GOWORK=off go mod tidy` in all seven modules; B2 by reordering the closure to `(int, error)`.**
+
+#### The four route blockers — the plan is not executable as written
+
+- **B3 · the acyclicity gate can never pass** (found by all three auditors). `go list -deps` includes its
+  argument packages, so the command published in **four** documents as `# must be EMPTY` prints five lines on
+  a correct tree — and would print six on a broken one, so it cannot even distinguish the cases. The
+  invariant itself **holds**. Fix: append
+  `| grep -vE '^github.com/kartaladev/msgin/(endpoint|routing|transform|channel|resilience)$'`.
+- **B4 · Task 10's provider signatures do not compile** (compile-proven). The plan and Spec §7 specify
+  non-generic `Correlation`/`Release`/`RouteFunc`, but the deleted originals were all `[A any]`, and `A` is
+  load-bearing twice: `compile[A]` type-checks `payload.Field`, and `PayloadOf[A]` **is** the M-6
+  `ErrPayloadType` branch Task 10 mandates. Must be `Correlation[A any]` etc. in plan **and** spec.
+- **B5 · Task 10's acceptance material does not exist.** The plan says to reinstate the deleted `*Expr` test
+  cases "from the ledger, all present today". The ledger holds **two table rows**; none of the 12 deleted
+  test functions are recorded anywhere in `docs/`. Only `git show ab233d9:expr_test.go` has them — name it.
+- **B6 · three mandatory gates depend on untracked `/tmp` artifacts.** Task 12 invokes `decls` (a compiled
+  binary at `/tmp/msgin-derive/decls`) and Spec §8.1 ARM 1 reads `symmap.tsv`. Neither is in the repo; a
+  fresh clone or a `/tmp` reap makes them unrunnable, with no rebuild instructions. **Commit `decls`' source
+  under `docs/plans/027-tools/` and commit `symmap.tsv`.**
+
+#### False claims to correct (each convergent across ≥2 auditors)
+
+- **"Five test fakes were deleted, not migrated"** — all five survive; what was deleted is their vestigial
+  `Subscribe` **stubs**. The conclusion holds; the evidence cited to justify a ratified decision does not.
+- **"No `Err*` var elsewhere in the workspace"** — there are **51**, in three shipped adapter packages. The
+  paragraph's design rationale rests on this, and the repo's precedent argues the opposite way.
+- **§4.1's prose** says "the 93" and "the 86" while its own table sums to **95/87**.
+- **"A duplicate package comment is a `go vet` failure"** — *proven false by execution*: vet, build, gofmt
+  and golangci-lint all pass on a duplicate. Task 11's only mechanical check is blind to the defect it names.
+- **§3.6's adapter inventory** is a `c83dde9`-only snapshot presented as the whole-window figure; 5 of 7 rows
+  are stale at HEAD. **Recurrence of round-2 §A2.**
+- **The coverage "baseline" (93.23%) is the post-extraction tree**, not pre-split. True `ab233d9` → HEAD is
+  93.5% → 93.3%, a real −0.26pp, entirely explained by the newly-dead root helpers.
+- **F10.8 lists 6 uncovered blocks; there are 11.** The one that matters: `reliability.go:39`, the `err==nil`
+  arm of the **newly exported** `IsPermanent`. `IsPermanent` and `RetryAfterOf` have **zero direct tests**,
+  and Task 3.5 enumerates no hot-path branches at all — a CLAUDE.md delivery blocker.
+- **Spec §8/§10's godoc obligations have no owning task** — five unmet, two asserted as already done.
+- Plan §Progress says Tasks 2/3 are "DONE, UNCOMMITTED" and tells the next session to commit first; they
+  landed in `b6ce7bb`, one commit *before* the regeneration wrote that they hadn't.
+
+#### The rule that would have caught most of this
+
+The consistency lens named the shared signature, and it is the right frame for round 4:
+
+> **Every surviving defect is a number or command pinned to an intermediate state** — Task 7a, the derivation
+> working tree, the root module — **and then presented as a property of the finished branch.**
+
+**Adopt one rule: every pasted command carries its explicit commit range and module scope.** That single
+change catches B1, B3, §3.6, the coverage baseline, and the 93/86 arithmetic in one pass. Do **not** work
+round 4 as "fix these ~20 items" — that is what has failed three times.
+
+### 4.1 (superseded — the round-3 audit above has run)
 
 CLAUDE.md mandates an independent adversarial audit of the **complete bundle together** (spec + ADRs + plan)
 before implementation. Implementation has in this case *preceded* the audit by design (that was the whole

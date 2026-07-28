@@ -1,7 +1,13 @@
 # ADR 0029 — EIP lexical alignment, named behavior types, and the expr provider module
 
-- **Status:** **ACCEPTED — REGENERATED FROM A GREEN TREE (2026-07-28), pending round-3 audit.** §1 and §3 are
-  implemented; §5's `expr` module is Plan 027 Task 10 and not yet built.
+- **Status:** **ACCEPTED — REGENERATED FROM A GREEN TREE (2026-07-28); round-3 audit returned
+  `NEEDS-REVISION` 3/3 and its findings are folded in below.** §1 and §3 are implemented (commit `b6ce7bb`
+  for the rename); §5's `expr` module is Plan 027 Task 10 and not yet built.
+  > *Round-3 corrections in this ADR:* §5a's provider signatures **did not compile** —
+  > `Correlation`/`Release`/`RouteFunc` must be `[A any]`, because `compile[A]` type-checks `payload.Field`
+  > and `PayloadOf[A]` **is** the M-6 `ErrPayloadType` branch §3b hands to Task 10; and §2's AMQP-disclaimer
+  > line is written as though it exists — `grep -rn -i 'amqp' --include='*.go' .` returns nothing, so it is an
+  > outstanding Spec 014 §8 obligation, now owned by Plan 027 Task 11b. Evidence: F13.
   > *Round-2 banner cleared 2026-07-28.* Every defect it named is fixed **in this ADR**:
   > §3's *"fixes all three"* is **withdrawn** — `cfg.optErr` is deleted instead (**decision D-D**, §3a), and
   > the three surviving branches are the `Handle`-side ones, restored by pulling **D-E** forward into Task 1
@@ -84,8 +90,13 @@ than overlooked.
 
 ### 2. `Exchange` is kept, qualified
 
-Root keeps `RequestReplyExchange`; the implementation is `endpoint.ChannelExchange`, with a godoc line
-disclaiming AMQP's broker-side-routing-table meaning.
+Root keeps `RequestReplyExchange`; the implementation is `endpoint.ChannelExchange`, and its godoc **must
+carry** a line disclaiming AMQP's broker-side-routing-table meaning.
+
+> **NOT YET SHIPPED — corrected round 3.** This sentence, and Spec 014 §6, were written in the present tense
+> ("with a godoc line disclaiming…") as though the line already existed. `grep -rn -i 'amqp' --include='*.go' .`
+> returns **nothing**, workspace-wide. It is an outstanding **Spec 014 §8** obligation owned by Plan 027
+> Task 11, and it has a grep-verifiable checkbox there now.
 
 > **VERIFIED (audit round 1, finding G) — the decision stands.**
 > `org.springframework.integration.gateway.RequestReplyExchanger` exists and is Spring Integration's default
@@ -232,24 +243,52 @@ func Predicate[A any](s string) (routing.Predicate[A], error)
 `replace` the module cannot resolve the root module under `GOWORK=off` — which is how CI's `module` job runs
 it. A `use` line in `go.work` is necessary but not sufficient (round-2 §C2).
 
-### 5a. The provider shape is NOT uniform — `RouteFunc` takes a second parameter
+### 5a. The provider shape is NOT uniform, and it is NOT non-generic
 
-An earlier draft asserted a uniform `(string) → (T, error)` shape for all six providers. **`RouterExpr` never
-had that shape** (round-2 §D2): it also took `routes map[string]MessageChannel`, and it carried **two**
-construction validations of its own. The provider set, stated honestly:
+Two separate errors, corrected in two rounds.
+
+**Not uniform** (round-2 §D2). An earlier draft asserted a uniform `(string) → (T, error)` shape for all six.
+**`RouterExpr` never had that shape**: it also took `routes map[string]MessageChannel`, and it carried **two**
+construction validations of its own.
+
+**Not non-generic** (round 3, compile-proven by an auditor). The corrected draft then wrote
+`Correlation(s string)`, `Release(s string)` and `RouteFunc(s string, routes …)` **without a type parameter**,
+and that does not compile. Every deleted original was `[A any]`:
+
+```
+$ git show ab233d9:expr.go | grep -nE '^func '
+ 89:func FilterExpr[A any](expression string, opts ...FilterOption) (Step, error)
+115:func RouterExpr[A any](keyExpr string, routes map[string]MessageChannel, opts ...RouterOption) (*Router, error)
+167:func TransformExpr[A, B any](expression string) (Step, error)
+217:func SplitExpr[A, B any](expression string) (Step, error)
+321:func WithCorrelationExpr[A any](expression string) AggregatorOption
+390:func WithReleaseExpr[A any](expression string) AggregatorOption
+```
+
+`A` is load-bearing twice, and both uses are things this ADR elsewhere insists on:
+
+1. **`compile[A]` (`expr.go:35`) type-checks `payload.Field` against `A`.** That is what makes §5's
+   preservation of ADR 0019's *fail-at-construction* contract real rather than nominal.
+2. **`PayloadOf[A]` (`expr.go:129,224,284,331`) IS the M-6 `ErrPayloadType` branch** §3b hands to Task 10. A
+   non-generic provider has nothing to assert the member payload to, so that branch cannot exist and §5's
+   parity bar is unmeetable — the same failure mode the bool-only `ReleaseStrategy` had.
+
+The provider set, stated correctly:
 
 ```go
 func Predicate[A any](s string)      (routing.Predicate[A], error)
 func SplitFunc[A, B any](s string)   (routing.SplitFunc[A, B], error)
 func Transformer[A, B any](s string) (transform.Transformer[A, B], error)
-func Correlation(s string)           (routing.CorrelationStrategy, error)
-func Release(s string)               (routing.ReleaseStrategy, error)
-func RouteFunc(s string, routes map[string]msgin.MessageChannel) (routing.RouteFunc, error)   // ← not uniform
+func Correlation[A any](s string)    (routing.CorrelationStrategy, error)
+func Release[A any](s string)        (routing.ReleaseStrategy, error)
+func RouteFunc[A any](s string, routes map[string]msgin.MessageChannel) (routing.RouteFunc, error)
 ```
 
-Forcing `RouteFunc` into the uniform mould would produce a provider that **cannot express the router**. Plan
-027 Task 10's branch list carries `RouteFunc`'s two extra construction validations, and the two `toGroupEnv`
-guard cases (M-1, M-6) that genuinely belong in this module rather than in the core.
+**`A` is not inferable from a `string` argument**, so every call site instantiates explicitly —
+`expr.Release[Order]("qty > 10")`. This is an ergonomic cost of the split, it is unavoidable given (1) and
+(2), and each provider's godoc must state it. Plan 027 Task 10's branch list carries `RouteFunc`'s two extra
+construction validations, and the two `toGroupEnv` guard cases (M-1, M-6) that genuinely belong in this module
+rather than in the core.
 
 ### 6. The dependency rule that makes this coherent with ADR 0016
 
