@@ -1,6 +1,14 @@
 # Plan 027 — Core package layout, channel segregation, and behavior types
 
-> ## Status: **REGENERATED 2026-07-28 from a green tree — ROUND-3 AUDIT: `NEEDS-REVISION` 3/3, findings folded in**
+> ## Status: **REGENERATED 2026-07-28 from a green tree — AUDITED THROUGH ROUND 7; latest verdict `NEEDS-REVISION` 4/4 (26 blockers, 37 minors), fix pass applied per [round 7 §5](027-audit-round-7.md)**
+>
+> **Rounds 4–7 have run since this plan was regenerated.** Round 7 is the live one: read
+> [`027-audit-round-7.md`](027-audit-round-7.md) **§0** (counter-rules 6–10), **§1** (D-K revised, D-L revised,
+> D-M + `ErrNilSink`, D-N, D-O) and **§5** (the APPLIED/REMAINING fix-pass ledger — the authority on which
+> corrections are in this file and which are still owed) before executing anything. A **bounded round 8**,
+> scoped to the joins and the gate sets, is owed before implementation starts at Task 9.
+> *(Round-7 M-M9: this headline still read "ROUND-3 AUDIT: `NEEDS-REVISION` 3/3" while the body below cited
+> rounds 6 and 7 many times. Per-round detail stays in the body; the headline names the latest round only.)*
 >
 > **Read [Global Constraint 0](#global-constraints) first.** Round 3 found the *generated* tables perfect and
 > **every surviving defect in hand-written prose or in a command that was pasted but never run** — each one a
@@ -47,7 +55,11 @@
 > *(History: rounds 1 and 2 each returned `NEEDS-REVISION` from all three auditors, both times on hand-typed
 > tables. [Round 1](027-audit-round-1.md) §K dispositions its findings and its six §H decisions stand;
 > [round 2](027-audit-round-2.md) §F called for exactly this regeneration and its eight §G.1 decisions
-> D-A…D-H stand.)*
+> D-A…D-H stand. **Later rounds:** [round 6](027-audit-round-6.md) — read its **§6**, which corrects its own
+> §1–§4 — produced D-K/D-L/D-M; [round 7](027-audit-round-7.md) produced **D-L (revised)**, **D-N**, **D-O**
+> and the `ErrNilSink` scope correction to D-M, and its **§5** is the fix-pass ledger this plan's remaining
+> corrections are drawn from. Rounds 3–5 are recorded in [`docs/HANDOVER.md`](../HANDOVER.md). Round-7 M-M2:
+> only rounds 1 and 2 were linked from here, so the two newest records had no reverse link at all.)*
 
 > **For agentic workers:** REQUIRED SUB-SKILL: `superpowers:subagent-driven-development` (the project default) or
 > `superpowers:executing-plans`. Steps use checkbox (`- [ ]`) syntax.
@@ -120,17 +132,22 @@ and annotates [ADR 0013](../adrs/0013-composition-endpoints.md). Derivation evid
 [`027-root-api-baseline.txt`](027-root-api-baseline.txt) — **no gate may depend on `/tmp`**. Branch:
 `claude/repo-structure-refactor-jt79t1`.
 
-**This increment is behavior-preserving by construction, with exactly six decided exceptions**
-(Spec 014 §2.1): the channel segregation, `ChannelExchange.Close` cancelling its reply subscription,
-`channel.WithSingleSubscriber()` (off by default), `WithReleaseStrategy`'s retyping, **the reply-channel
-exclusivity probe (D-J, Task 9.6)**, and **deterministic endpoint faults becoming `Permanent` (D-M,
-Tasks 9 and 9.7)**. Everywhere else, a task that finds itself rewriting an assertion has either found a real
-defect (stop, report it) or is doing more than the plan says (stop, re-read the task).
+**This increment is behavior-preserving by construction, with the decided exceptions enumerated by
+[Spec 014 §2.1's table](../specs/014-core-package-layout.md#21-the-deliberate-behavior-changes-the-register)
+— that table is the register, and this plan deliberately does not restate its length.** As of round 7 it
+holds: the channel segregation; `ChannelExchange.Close` cancelling its reply subscription;
+`channel.WithSingleSubscriber()` (off by default); `WithReleaseStrategy`'s retyping; **the reply-channel
+exclusivity probe (D-J, Task 9.6)**; **deterministic endpoint faults becoming `Permanent` (D-M, Task 9.7 for
+the shipped producers, Task 9 for the combinators)**; and **`divert` falling back to the dead-letter sink
+before discarding (D-N, Task 9.7)**. Everywhere else, a task that finds itself rewriting an assertion has
+either found a real defect (stop, report it) or is doing more than the plan says (stop, re-read the task).
 
-> **ROUND-6 CORRECTION (E-B6).** This read *"exactly four decided exceptions"* while D-J (Task 9.6) already
-> required changing an assertion and D-M now requires changing four shipped producers. An implementer
-> executing Task 9.6 literally was instructed by the sentence above to **stop and report it**. The cardinality
-> word is swept here and at Task 9.6's round-4 correction and in the Risks table; Spec §2.1 gains rows 5 and 6.
+> **ROUND-6 CORRECTION (E-B6), EXTENDED IN ROUND 7.** This read *"exactly four decided exceptions"* while D-J
+> (Task 9.6) already required changing an assertion; round 6 re-typed it as *"six"*, and round 7's D-N made it
+> seven within the day. **The count is not swept again — it is deleted.** Every site that referred to the
+> register by length now cites the table, which is the convention ADR 0028 adopted in round 6. A cardinality
+> word here is load-bearing (an implementer executing Task 9.6 was literally instructed by the old sentence to
+> *stop and report it*) and is therefore the wrong shape of fact to write down at all.
 
 **Tech stack.** Go 1.25 (`GOTOOLCHAIN=go1.25.12`), the root module plus a new `expr` module, and the six
 existing satellite modules — **eight modules** at the end.
@@ -536,6 +553,14 @@ satellite already `require`s and `replace`s the root module (F9.6). All seven mo
 
 ## Task 9 — Named behavior types and combinators · **M** · PARTIAL
 
+> **EXECUTE TASK 9.7 FIRST** (round-7 D-M2/X-M2). Task 9.7 classifies the **shipped** producers; this task
+> authors three **new** producers under the same rule. Running this task first creates, across three commits,
+> exactly the half-classified tree Task 9.7's own rationale calls *"worse than either uniform answer"* —
+> `Predicate.And(nil)` permanent while `transform.Transform(nil)` is not. Nothing in 9.7 depends on 9, 9.5 or
+> 9.6: the combinators return a `Predicate`, never a `Step`, so they never call `nilFuncStep`. **The task
+> numbers do not change** — they are cross-document links (ADR 0029 §5.0b, Spec §2.1, AC-5 all cite them by
+> number); only the execution order is pinned. Record the order you actually ran in the ledger.
+
 **Shipped already** (pulled forward with D-E, Task 1): `routing.CorrelationStrategy`
 (`routing/aggregator.go:25`), `routing.ReleaseStrategy` (`:35`), `WithReleaseStrategy(ReleaseStrategy)`
 (`:82`), `WithReleaseWhen(func(MessageGroup) bool)` (`:89`).
@@ -571,15 +596,20 @@ satellite already `require`s and `replace`s the root module (F9.6). All seven mo
       **closed enumeration** and a bare `ErrNilFunc` is not in it, so without the wrap the most deterministic
       fault the library can produce consumes the whole retry budget, lands in the **dead-letter** sink rather
       than the **invalid-message** sink, and records an unhealthy signal that trips the circuit breaker
-      (`endpoint/consumer.go:614`, `:733`). Measured at `aae6160` (root code byte-identical to `dadc775`), via
-      a throwaway root `_test` file:
+      (`endpoint/consumer.go:614`, `:733`).
 
-      ```
-      IsPermanent(msgin: nil endpoint function                 ) = false
-      IsPermanent(msgin: no route for message                  ) = false
-      IsPermanent(msgin: payload is not of the expected type   ) = true
-      IsPermanent(msgin: message has no correlation key        ) = false
-      ```
+      > **The sentinel census below is EVIDENCE, not this task's gate** (round-7 X-B2, counter-rule 7). D-M
+      > wraps at the **producer** and deliberately leaves `IsPermanent`'s enumeration alone, so every row reads
+      > identically before and after. Task 9.7 carries the gate that measures the observable D-M actually
+      > moves — the producer path. Re-measured at `fe86a12`:
+      >
+      > ```
+      > IsPermanent(msgin: nil endpoint function              ) = false
+      > IsPermanent(msgin: no route for message               ) = false
+      > IsPermanent(msgin: payload is not of the expected type) = true
+      > IsPermanent(msgin: message has no correlation key     ) = false
+      > IsPermanent(msgin: nil outbound sink                  ) = false
+      > ```
 
       The in-tree precedent carries the identical rationale in its own godoc —
       `routing/aggregator.go:151-160` wraps `ErrNoCorrelation` in `msgin.Permanent` *"so the message would be
@@ -587,14 +617,32 @@ satellite already `require`s and `replace`s the root module (F9.6). All seven mo
       stays transient and is NOT wrapped**: `routing/router.go:48-56`'s `pick` is caller-supplied and
       evaluated per message, so a message unroutable now may be routable after a config reload.
 
-      **Wrap with the position, because the bare sentinel collapses six nil sites into one string.**
-      `msgin: nil endpoint function` says nothing about `And` vs `Or` vs `Not`, receiver vs argument, or which
-      link of `p.And(q).Or(r)` failed — and CLAUDE.md requires *"typed, wrapping errors that name the
-      offending field/input"*. The shape:
+      **Wrap with the position, because the bare sentinel collapses every nil position into one string** —
+      receiver and argument, across `And`, `Or` and `Not`, and across every shipped producer Task 9.7 fixes.
+      *(Round-7 X-M4: this read "six nil sites", which is **five** in this task's frame — `Not` takes no
+      argument, so `And`-arg, `And`-recv, `Or`-arg, `Or`-recv, `Not`-recv is the whole set. Stated as the
+      invariant rather than re-typed as five.)* `msgin: nil endpoint function` says nothing about `And` vs `Or`
+      vs `Not`, receiver vs argument, or which link of `p.And(q).Or(r)` failed — and CLAUDE.md requires
+      *"typed, wrapping errors that name the offending field/input"*. The shape, **and the exact string it
+      produces** — five tests are written against this text, so it is published rather than inferred
+      (round-7 D-M1/X-M9; measured at `fe86a12`):
 
       ```go
       fmt.Errorf("%w: routing.Predicate.And: nil argument", msgin.Permanent(msgin.ErrNilFunc))
       ```
+      ```
+      "msgin: permanent: msgin: nil endpoint function: routing.Predicate.And: nil argument"
+      errors.Is=true IsPermanent=true
+      ```
+
+      The doubled `msgin:` comes from `permanentError.Error()` (`reliability.go:13`) prefixing a sentinel whose
+      own text is already `msgin:`-prefixed. It is a property of `Permanent` itself, present on every existing
+      `Permanent(msgin.ErrX)` in the tree, and is **recorded, not repaired here** — changing that format is a
+      separate decision touching every permanent error msgin produces. The context-first alternative
+      (`"routing.Predicate.And: nil argument: msgin: permanent: msgin: nil endpoint function"`) was measured
+      equally `errors.Is`/`IsPermanent`-clean and rejected only for consistency with the tree's existing
+      cause-first wraps (`payload.go:15`, `endpoint/consumer.go:869`, `endpoint/producer.go:467`). See ADR 0029
+      §5.0b.
 
       Each combinator's godoc states that **`errors.Is(err, msgin.ErrNilFunc)` still matches** and that
       `msgin.IsPermanent(err)` is true.
@@ -645,7 +693,16 @@ so the `And` half had no covering case under CLAUDE.md's hard gate.)*
 result, and — in the same case — that **`errors.Is(err, msgin.ErrNilFunc)` still matches** through both the
 `msgin.Permanent` wrap and the positional `fmt.Errorf`. The classification *is* the behavior change; an
 `errors.Is`-only assertion cannot see it, which is exactly how the bare sentinel survived unnoticed in the
-four shipped producers Task 9.7 now fixes.
+shipped producers Task 9.7 now fixes.
+**NEW in round 7 (X-M5) — the THIRD assertion, on the positional text, which this list omitted while Task 9.7
+requires it.** Every nil case above asserts **all three** of `errors.Is(err, msgin.ErrNilFunc)`,
+`msgin.IsPermanent(err) == true`, **and** that the message names its position — distinctly per case, so
+`And`-argument, `And`-receiver, `Or`-argument, `Or`-receiver and `Not`-receiver each produce a different
+string. Assert on the position substring (e.g. `routing.Predicate.And: nil argument`), **not** on the whole
+error text: the full string embeds `permanentError`'s format, and pinning that here would make an unrelated
+future change to `Permanent`'s rendering fail five tests in this package. Without this assertion the five
+cases are indistinguishable, which is the debuggability defect the wrap exists to fix and is precisely what
+the two-assertion form could not detect.
 
 > **Do NOT re-verify "aggregator coverage returns to 100% on `NewAggregator` and `Handle`."** That criterion
 > is void: **D-D deleted** the `NewAggregator` guard rather than rescuing it (F5, round-2 §B4), and the three
@@ -656,6 +713,18 @@ demonstrate it rather than assume it (round-2 §E confirms bare closures still i
 func types on Go 1.25). `-coverpkg=./...` on both sides.
 
 **Commit:** `feat(routing,transform): name the endpoint behavior types and add combinators`
+
+```
+Spec: 014
+Plan: 027
+ADR: 0029
+RFC: 0002
+RFC: 0003
+```
+
+*(Round-7 X-M12: only Tasks 9.6 and 9.7 carried a trailer block; the other five tasks left the worker to
+reconstruct the footer from Global Constraint 7. The ADR set is per task — this one realizes ADR 0029's
+behavior-type naming and combinators, whose own header declares RFC 0002 + 0003.)*
 
 ---
 
@@ -717,11 +786,20 @@ blocker under CLAUDE.md's godoc and dead-code expectations.
       **projections**. Task 12 re-runs the commands and treats their output as the truth.
 - [ ] **Deletion is CODE, and it belongs to this task's commit** — remove both `var` blocks from `errors.go`
       (`ErrInvalidExpression` at `:180`, `ErrExprResultType` at `:206`, each with the godoc block above it,
-      starting at `:168` and `:193` respectively). **Copy `ErrInvalidExpression`'s godoc (`:168-180`) out to
-      Task 10 first** — it is the only surviving statement of the construction-vs-evaluation split, and under
-      **revised D-K** it is the only one of the two that Task 10 re-declares. `ErrExprResultType`'s godoc
-      (`:193-206`) is not carried forward: the `expr` module returns `msgin.ErrPayloadType` instead of minting
-      a replacement, so there is no declaration for that comment to sit above.
+      starting at `:168` and `:193` respectively). **Delete both godoc blocks outright — do NOT copy either
+      one forward.** Task 10 writes `expr.ErrInvalidExpression`'s godoc **fresh**, from the three-point
+      content spec in its own checkbox, and the reason is not stylistic: the root text names
+      `ErrExprResultType` (a sentinel revised D-K abolishes, and one Spec AC-10 arm 2 requires to be empty
+      **workspace-wide**, `errors.go` included) and closes with *"It is exported **here, not in the
+      provider**"*, the exact premise D-I reversed. `ErrExprResultType`'s godoc (`:193-206`) has no
+      destination at all: the `expr` module returns `msgin.ErrPayloadType` rather than minting a replacement,
+      so there is no declaration for that comment to sit above.
+
+      > **ROUND-7 CORRECTION (X-B5, this task's half).** This bullet read *"Copy `ErrInvalidExpression`'s
+      > godoc (`:168-180`) out to Task 10 first"*, and Task 10 read *"recover it from
+      > `git show 3d0b87a:errors.go`, lines 168–180"*. **Two documents, one instruction, and executing it
+      > breaks the delivered tree** — see Task 10's correction block, which pastes the thirteen lines the
+      > command actually emits. The *content* still crosses to Task 10; the *text* does not.
 
       > **ROUND-4 CORRECTION (B3).** This bullet previously claimed the godoc being deleted *"is where 3 of
       > arm 2's 7 staleness survivors live (`errors.go:175,176,177`)"* and told the implementer those three
@@ -785,13 +863,43 @@ blocker under CLAUDE.md's godoc and dead-code expectations.
       The two HTTP sites live in `adapter/http` and `adapter/http/stdlib`, so their cases belong in **those
       packages' tests**, not in root's `capability_test.go`.
 
+      > **THERE IS NO RED FOR THIS CHECKBOX, AND THAT IS CORRECT — round-7 X-M10.** Do not hunt for one.
+      > The widening these five subtests assert **already landed in `b6ce7bb`**, which segregated
+      > `MessageChannel` down to send-only:
+      > ```
+      > $ git show b6ce7bb -- channel.go | grep -E '^-' | grep Subscribe
+      > -	Subscribe(h MessageHandler) error
+      > $ go doc github.com/kartaladev/msgin.MessageChannel | sed -n '3,5p'
+      > type MessageChannel interface {
+      > 	Send(ctx context.Context, msg Message[any]) error
+      > }
+      > ```
+      > All five sites already take `msgin.MessageChannel` — `routing/router.go:29,37`,
+      > `routing/aggregator.go:55,133`, `adapter/http/inbound.go:116`,
+      > `adapter/http/stdlib/inbound.go:33` — so every new subtest **passes the first time it compiles**.
+      > These cases are a **regression fence around ADR 0028's widening**, not a red-to-green proof of new
+      > behavior. Their failure mode is a future narrowing, and a test that has never been red is exactly
+      > what catches that. TDD's red step is satisfied for this checkbox by *deleting* the widening locally
+      > and watching the case fail, if a worker wants the evidence; it is not a precondition for the commit.
+
 **Verify:** the sentinel decision recorded in the ledger with its three downstream numbers propagated; both
 sweep arms empty; the capability test covers **3 targets × 6 core sites** in `capability_test.go` **plus 3 × 2
 HTTP sites** in the two adapter packages — 24 subtests total, not 9; the **seven**-module `GOWORK=off` loop
 green (not eight — `expr` does not exist until Task 10);
 `-coverpkg=./...` measured against a **named** tree (Global Constraint 0).
 
-**Commit:** `refactor(core)!: move the expr sentinels out of root, clear the staleness sweep, widen the capability test`
+**Commit:** `refactor(core,http)!: move the expr sentinels out of root, clear the staleness sweep, widen the capability test`
+
+```
+Spec: 014
+Plan: 027
+ADR: 0029
+RFC: 0002
+RFC: 0003
+```
+
+*(Round-7 X-M12. ADR 0029 §5.0a is D-I — the expr sentinels leaving root — which is this task's headline
+edit.)*
 
 > **ROUND-6 CORRECTION (E-M4) — two defects in one subject line.** It read
 > `refactor(core): delete dead root helpers, clear the staleness sweep, widen the capability test`.
@@ -801,10 +909,28 @@ green (not eight — `expr` does not exist until Task 10);
 > removing two exported symbols from the closed root contract (`apidiff` 95 → 97 removals, §9.5.0's table),
 > where the *smaller* break in Task 9.6 is correctly typed `feat(core,channel,endpoint)!`. Conventional
 > Commits' `!` is the machine-readable breaking-change marker and this is a breaking change.
+>
+> **ROUND-7 CORRECTION (X-M3) — a third defect: the scope was `(core)` alone.** Two of this task's own
+> capability-widening sites are **`adapter/http/inbound.go:116`** and **`adapter/http/stdlib/inbound.go:33`**,
+> and the checkbox above says in terms that their cases *"belong in those packages' tests, not in root's
+> `capability_test.go`"* — so the commit touches two modules' worth of files under a scope naming one.
+> Corrected to `refactor(core,http)!`; `http` is the scope this repo already uses for `adapter/http`
+> (`git log --oneline` → `feat(http): SSE client hardening …`, `docs(http): SSE client example …`).
 
 ---
 
-## Task 9.6 — Reply-channel exclusivity probe (decision D-J) · **S** · NOT STARTED
+## Task 9.6 — Reply-channel exclusivity probe (decision D-J) · **M** · NOT STARTED
+
+> **RE-SIZED `S` → `M` in round 7 (X-M1). Do NOT split it** — `Task 9.6` is a cross-document link
+> (ADR 0030, Spec 014 §5.1/§8, Plan §11's gate groups), and renumbering breaks joins the last two rounds were
+> spent repairing. The `S` label was written when this task was "add one interface and one guard". It now
+> ships, in one commit: **2 root exported symbols** (`ExclusiveSubscribable`, `ErrSharedReplyChannel`) whose
+> godoc is **normative text copied verbatim** from ADR 0030 §1 and phrase-gated by Task 11b; **2 `channel`
+> methods** plus their compile-time assertions and a `channel_test` table; an **`endpoint` option**
+> (`WithSharedReplyChannel`) with its config field and the constructor guard; a **full `NewChannelExchange`
+> godoc rewrite** to four outcomes; **two test fakes**; a **truth table**; a test-prose rewrite; **both
+> coverage arms**; and — added in round 7 by **D-O** — the `safeSingleSubscriber` recover helper with its
+> **sixth** truth-table row. That is `M` work by every other task's yardstick in this plan.
 
 > **NEW in this pass.** Realizes [ADR 0030](../adrs/0030-reply-channel-exclusivity-probe.md) and
 > [Spec 014 §5.1](../specs/014-core-package-layout.md), which amend ADR 0028 §6.2's default posture. Three
@@ -895,7 +1021,7 @@ green (not eight — `expr` does not exist until Task 10);
       > then consult the flag) suppresses the *rejection* while still paying for the probe — and would make the
       > §8.13 godoc false. *(Round-6 D-M2; ADR 0030 and Spec §5.1 are being corrected to match.)*
 
-**Hot-path branches — four arms, a truth table, one case each** (fold into one `table-test`):
+**Hot-path branches — five arms, a truth table, one case each** (fold into one `table-test`):
 
 | probe implemented | `SingleSubscriber()` | `WithSharedReplyChannel()` | result |
 |---|---|---|---|
@@ -903,6 +1029,42 @@ green (not eight — `expr` does not exist until Task 10);
 | yes | `true` | — | accepted |
 | yes | `false` | no | **`ErrSharedReplyChannel`** |
 | yes | `false` | yes | accepted |
+| yes | **panics** | no | **`ErrSharedReplyChannel`** (fail closed — **D-O**) |
+
+- [ ] **`safeSingleSubscriber` — the probe is caller code called inside a constructor (decision D-O).**
+      Wrap every call:
+
+      ```go
+      func safeSingleSubscriber(ex msgin.ExclusiveSubscribable, log *slog.Logger) (b bool) {
+      	defer func() {
+      		if r := recover(); r != nil {
+      			b = false // fail closed: a probe that panicked has not proven exclusivity
+      			// log at WARN with the recovered value
+      		}
+      	}()
+      	return ex.SingleSubscriber()
+      }
+      ```
+
+      **Fail closed, not open.** A panicking probe has proven nothing, and CLAUDE.md's sensible-defaults rule
+      says to pick the value that fails safe when a wrong default could silently corrupt — here, a full copy of
+      every reply reaching another exchange's unmatched-reply sink. Returning `true` on panic would accept the
+      channel the probe exists to reject.
+
+      > **Why this is not optional.** Compile-proven in round 7: a panicking probe **escapes
+      > `NewChannelExchange`** and a blocking one **hangs it**, with `goleak` catching the stuck goroutine on
+      > top of `endpoint.NewChannelExchange`. Four authorities in this repo already forbade the pattern — most
+      > directly **`ErrUnboundedRetry`'s own godoc**, which says its check is *"deliberately **STRUCTURAL** …
+      > because `BackoffStrategy` is a public interface and **calling caller code inside a constructor may
+      > panic, may block**, and is non-deterministic"* — and `endpoint/consumer.go` already carries **eleven**
+      > `safeX` recover-wrappers for exactly this class. D-J introduced a twelfth call site outside it.
+      >
+      > **Blocking cannot be defended against** (there is no context and no timeout at construction), so it is
+      > a stated MUST in the godoc, not a guard. See ADR 0030 §1 part (e).
+
+      **The sixth row above is its covering case**: a test-local `ExclusiveSubscribable` whose
+      `SingleSubscriber()` panics, asserted to yield `ErrSharedReplyChannel` — *not* a propagated panic. Assert
+      with `require.NotPanics` around the constructor, since the pre-D-O behavior is a panic escaping it.
 
 The "no" row needs a **test-local `SubscribableChannel` that deliberately omits the method**, because no
 in-tree type can drive it to an **accepted** outcome. Both production implementations
@@ -971,8 +1133,8 @@ fake the arm is unreachable and the CLAUDE.md coverage gate fails.
       > **ROUND-4 CORRECTION (exec-B3).** This bullet said *"add it to `exA` **and** to `exB`'s **in the
       > default-fan-out case**"*, which is not expressible in the test as written and would have stalled an
       > implementer on whether restructuring the table is permitted (the plan forbids changing assertions
-      > outside Spec §2.1's exceptions — **six** as of round 6, D-J being row 5; see the goal statement above
-      > and E-B6).
+      > outside the rows of Spec §2.1's table, D-J being row 5; see the goal statement above and E-B6.
+      > *Round 7: the cardinality word that stood here has been removed rather than re-typed — cite the table.*)
 - [ ] **The blast radius was swept, not assumed — it is ONE TEST, TWO CONSTRUCTIONS.** Measured across the
       whole workspace, not the pattern core (the §3.6 recurrence pattern is an inventory scoped too narrowly).
 
@@ -1037,7 +1199,13 @@ RFC: 0002
 
 ---
 
-## Task 9.7 — Classify the shipped deterministic endpoint faults as `Permanent` (decision D-M) · **S** · NOT STARTED
+## Task 9.7 — Classify the shipped deterministic endpoint faults as `Permanent`, and stop discarding them (decisions D-M, D-N) · **M** · NOT STARTED
+
+> **RE-SIZED S → M in the round-7 pass (X-M1).** The `S` label covered "wrap four producers". It does not cover
+> the round-7 scope: **five** producers (D-B1 adds root's `handler.go:55`), the **D-N** fallback in
+> `endpoint/consumer.go` at two call sites plus a new accessor and a WARN, **15** godoc lines including two
+> sentinel godocs and the deliberate-exclusion note, `nilFuncStep`'s **signature** change in three packages
+> rippling to five call sites, and ~12 test cases across four packages. The task **number** is unchanged.
 
 > **NEW in the round-6 pass.** Task 9's combinators adopt `msgin.Permanent(msgin.ErrNilFunc)` because D-M says
 > so — but D-M is a **rule about a class**, not about the three new combinators, and the class already has
@@ -1057,49 +1225,154 @@ RFC: 0002
 > 3. **Task 12 re-measures and re-reviews.** The classification must be settled before the whole-branch
 >    `/code-review`, not discovered by it.
 >
-> It is placed *after* 9.6 rather than before 9 only to keep the two shipped-code behavior changes (D-J, D-M)
-> adjacent in the log; nothing in 9.7 depends on 9, 9.5 or 9.6, so an executor may pull it earlier if the
-> branch order demands it — say so in the ledger if you do.
+> **ROUND-7 CORRECTION (D-M2 / X-M2) — this task RUNS FIRST, before Task 9.** The paragraph above argues that
+> a half-classified tree is *"worse than either uniform answer"* and the ordering that followed it created
+> exactly that state across three commits. Nothing in 9.7 depends on 9, 9.5 or 9.6 — the combinators return a
+> `Predicate`, never a `Step`, so they never call `nilFuncStep` — so running 9.7 first is free and makes Task
+> 9's new producers land into an already-uniform tree. **The task NUMBER is unchanged** (ADR 0029 §5.0b, Spec
+> §2.1 row 6 and Spec AC-5 all cite it by number; renumbering is a coordinated three-document edit for no
+> gain). Record the order you actually ran in the ledger.
+>
+> **This task also carries decision D-N** (Spec §2.1 row 7) — the `divert` dead-letter fallback — **in the same
+> commit**. Splitting them would leave a tree, between commits, in which a mis-wired step's message is silently
+> dropped where it was previously captured durably.
 
 **Skills:** start from `cc-skills-golang:golang-how-to`; TDD via `superpowers:test-driven-development`;
 `gopls` for navigation; `table-test` for the branch table; blackbox `_test` packages only.
 
 **RED FIRST — the baseline this task must invert.** Before editing anything, drop a throwaway
-`package msgin_test` file at the repo root that prints the classification, run it, and paste the output into
-the ledger. Measured at `aae6160` (root code byte-identical to `dadc775` — `git diff --name-only
-dadc775..aae6160 | grep -v '^docs/'` → `CLAUDE.md` only):
+`package msgin_test` file at the repo root, run it, and paste the output into the ledger. Delete the throwaway
+before committing; the ledger keeps the transcript. Measured at `fe86a12` (root `.go` byte-identical to the
+`dadc775` code pin).
+
+> **ROUND-7 CORRECTION (X-B2) — the previous baseline was UNSATISFIABLE BY ANY CORRECT IMPLEMENTATION and has
+> been replaced.** It measured `IsPermanent(bare msgin.ErrNilFunc)` and annotated it *"← must become true"*.
+> D-M wraps at the **producer** and deliberately does not touch `IsPermanent`'s closed enumeration, so that row
+> reads `false` before **and** after — there is no correct edit that turns it green. The block disproved itself
+> three lines down, where `ErrNoCorrelation` is noted as *already wrapped at its producer* and still prints
+> `false`. The only way to satisfy it was to add `ErrNilFunc` to the enumeration, which D-M rejects and which
+> would make `NewAggregator`'s deliberately-bare constructor return permanent.
+> **Counter-rule 7: a gate must measure the observable the change actually moves.** That observable is the
+> **producer path**, gate 1 below. Both forms were run at `fe86a12`; the transcripts are pasted verbatim.
+
+**Gate 1 (the RED→GREEN gate) — the producer path.** One message through a `memory` broker with
+`RetryPolicy{MaxAttempts: 3, DeadLetter: dlq}` and **no** `WithInvalidMessageSink`, counting hook fires and
+sink receipts. The GREEN rows were produced by substituting a step that returns the post-edit error shape, so
+the target is measured rather than predicted:
 
 ```
-$ go test -run TestDMPermanenceCensus -v .            # output verbatim; the ← notes are ANNOTATIONS
-IsPermanent(msgin: nil endpoint function                 ) = false      ← must become true
-IsPermanent(msgin: no route for message                  ) = false      ← must STAY false
-IsPermanent(msgin: payload is not of the expected type   ) = true       ← unchanged
-IsPermanent(msgin: message has no correlation key        ) = false      ← already wrapped at its producer
+$ go test -run TestR7ProducerPath -v .
+RED  transform.Transform(nil)      [dlq, no invalid sink] OnRetry=2 OnDeadLetter=1 OnInvalidMessage=0 | dlqSink=1 invalidSink=0 discarded=false
+GREEN Permanent(ErrNilFunc)        [dlq, no invalid sink] OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1 | dlqSink=0 invalidSink=0 discarded=true
+GREEN Permanent(ErrNilFunc)        [dlq + invalid sink]   OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1 | dlqSink=0 invalidSink=1 discarded=false
+RED  msgin.To(nil)                 [dlq, no invalid sink] OnRetry=2 OnDeadLetter=1 OnInvalidMessage=0 | dlqSink=1 invalidSink=0 discarded=false
+GREEN Permanent(ErrNilSink)        [dlq, no invalid sink] OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1 | dlqSink=0 invalidSink=0 discarded=true
+GREEN Permanent(ErrNilSink)        [dlq + invalid sink]   OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1 | dlqSink=0 invalidSink=1 discarded=false
 ```
 
-The last row is the shape to copy: `ErrNoCorrelation` is *not* in `IsPermanent`'s closed enumeration either —
-its **producer** wraps it (`routing/aggregator.go:151-160`), with D-M's exact rationale already in its godoc.
-Delete the throwaway file before committing; the ledger keeps the transcript.
+**`OnRetry=2 OnDeadLetter=1 OnInvalidMessage=0` → `OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1` is the gate.**
+Note `msgin.To(nil)` produces the **byte-identical** RED line — that is decision D-B1's evidence, and the
+reason `handler.go:55` is the fifth edit site below.
 
-- [ ] **Four edit sites — three `nilFuncStep` copies plus `Router.Handle`.** Verified at `aae6160`:
+> **`DeadLetter: dlq` is mandatory in the harness, not decoration.** `RetryPolicy{MaxAttempts: 3}` alone is
+> **rejected by `NewConsumer`** — an earlier revision of this block and of ADR 0029 §5.0b both wrote it that
+> way, and it cannot be run:
+>
+> ```
+> RetryPolicy{MaxAttempts: 3}.Validate()                   = msgin: finite MaxAttempts requires a DeadLetter sink
+> RetryPolicy{MaxAttempts: 3, DeadLetter: sink}.Validate() = <nil>
+> RetryPolicy{MaxAttempts: 0}.Validate()                   = <nil>
+> ```
+>
+> (`retry.go:46-53`.) A finite `MaxAttempts` therefore **always** has a DeadLetter sink, which is why row 2's
+> `discarded=true` is the *default* outcome rather than a corner case — and why D-N is in this task.
 
-      | Site | What it is |
-      |---|---|
-      | `endpoint/helpers.go:21` | `nilFuncStep`'s returned handler |
-      | `routing/helpers.go:23` | `nilFuncStep` (package-local copy) |
-      | `transform/transformer.go:38` | `nilFuncStep` (package-local copy) |
-      | `routing/router.go:48` | `Router.Handle`, the `r.pick == nil` early return |
+**Gate 2 (no-regression guard, NOT a RED→GREEN gate) — the sentinel census.** Labelled so no one mistakes it
+for gate 1 again. Every row must read **the same after the edit as before**; a row that changes means someone
+amended `IsPermanent`'s enumeration, which D-M rejects:
 
-      Each returns a bare `msgin.ErrNilFunc` today. Each becomes `msgin.Permanent(msgin.ErrNilFunc)`, wrapped
-      with the position exactly as Task 9's combinators are:
+```
+$ go test -run TestR7SentinelCensus -v .
+IsPermanent(msgin: nil endpoint function              ) = false      ← must STAY false (producer wraps, sentinel does not)
+IsPermanent(msgin: no route for message               ) = false      ← must STAY false (deliberate transient)
+IsPermanent(msgin: payload is not of the expected type) = true       ← unchanged (already enumerated)
+IsPermanent(msgin: message has no correlation key     ) = false      ← already wrapped at its producer
+IsPermanent(msgin: nil outbound sink                  ) = false      ← must STAY false (producer wraps)
+```
+
+Row 4 is the shape to copy: `ErrNoCorrelation` is *not* in the enumeration either — its **producer** wraps it
+(`routing/aggregator.go:151-160`), with D-M's exact rationale already in its godoc.
+
+- [ ] **Five edit sites — three `nilFuncStep` copies, `Router.Handle`, and `msgin.To`.** Re-derived at
+      `fe86a12` by the class sweep below (**not** by grepping a sentinel name):
+
+      | Site | What it is | Sentinel |
+      |---|---|---|
+      | `endpoint/helpers.go:21` | `nilFuncStep`'s returned handler | `ErrNilFunc` |
+      | `routing/helpers.go:23` | `nilFuncStep` (package-local copy) | `ErrNilFunc` |
+      | `transform/transformer.go:38` | `nilFuncStep` (package-local copy) | `ErrNilFunc` |
+      | `routing/router.go:48` | `Router.Handle`, the `r.pick == nil` early return | `ErrNilFunc` |
+      | **`handler.go:55`** | **`To`'s returned handler, the `sink == nil` early return** | **`ErrNilSink`** |
+
+      Each returns a bare sentinel today. Each becomes `msgin.Permanent(<sentinel>)`, wrapped with the position
+      exactly as Task 9's combinators are:
       ```go
       fmt.Errorf("%w: routing.Router.Handle: nil pick", msgin.Permanent(msgin.ErrNilFunc))
+      fmt.Errorf("%w: msgin.To: nil sink", msgin.Permanent(msgin.ErrNilSink))   // handler.go:55
       ```
       The three `nilFuncStep` copies are shared by five public constructors, so the wrap text must name the
       **caller**, not the helper — pass the position in:
-      `nilFuncStep("transform.Transform: nil fn")`. A single `msgin: nil endpoint function` string across six
-      positions is the debuggability defect CLAUDE.md's *"errors that name the offending field/input"* rule
+      `nilFuncStep("transform.Transform: nil fn")`. A single `msgin: nil endpoint function` string across every
+      position is the debuggability defect CLAUDE.md's *"errors that name the offending field/input"* rule
       exists to prevent.
+
+      > **`handler.go:55` is the ROUND-7 addition (D-B1), and why it was missed is mechanical.** ADR 0029
+      > §5.0b's old derivation command greped `msgin\.ErrNilFunc` — scoped to **one sentinel name** *and* to
+      > the **qualified** form — so it was structurally blind to a producer inside package `msgin`. `To(sink)`
+      > captures `sink` at construction and its handler body tests it per message: the same shape and the same
+      > discriminator arm as `nilFuncStep`, and gate 1 above measures the **byte-identical** RED line for it.
+      > *(Counter-rule 9.)*
+
+- [ ] **Re-derive the site list with the class sweep, not with a sentinel name.** Run this before editing and
+      again after; the alternation is generated from `errors.go`, the `(msgin\.)?` prefix is optional so an
+      unqualified root producer cannot hide, and the trailing class admits the `}` / `)` a one-line
+      `HandlerFunc` body ends with. Output at `fe86a12`, pasted whole:
+
+      ```
+      $ sentinels=$(grep -oE '^\s*Err[A-Za-z]+ =' errors.go | tr -d ' \t=' | paste -sd'|' -)   # 43 sentinels
+      $ grep -rnE "return (msgin\.)?($sentinels)[ })]*(//.*)?$" --include='*.go' . \
+          | grep -v '_test\.go' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -v 'Permanent(' | sort
+      adapter/memory/queuestore.go:146:		return msgin.ErrOverflowDropped // nothing evictable (all in-flight) → drop
+      adapter/memory/queuestore.go:151:	return msgin.ErrOverflowDropped // OverflowReject
+      channel/direct.go:87:		return msgin.ErrNoSubscriber
+      endpoint/helpers.go:21:		return msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { return msgin.ErrNilFunc })
+      endpoint/producer.go:589:		return msgin.ErrScheduledSendUnsupported
+      handler.go:55:				return ErrNilSink
+      retry.go:48:		return ErrInvalidMaxAttempts
+      retry.go:51:		return ErrNoDeadLetter
+      routing/helpers.go:23:		return msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { return msgin.ErrNilFunc })
+      routing/router.go:48:		return msgin.ErrNilFunc
+      routing/router.go:56:			return msgin.ErrNoRoute
+      transform/transformer.go:38:		return msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { return msgin.ErrNilFunc })
+      ```
+
+      > **`| sort` is load-bearing, not tidiness — and this checkbox's gate is a DIFF, so it matters.**
+      > `grep -r`'s traversal order is **not stable between runs**: three consecutive runs on the *unchanged*
+      > tree at `fe86a12` emitted the same twelve lines in two different orders. Sorted, three runs are
+      > byte-identical. Do not drop it.
+
+      **Twelve lines: the five edit sites plus seven that stay bare.** ADR 0029 §5.0b carries the per-line
+      triage (`retry.go` ×2 = construction-time validation; `queuestore.go` ×2 and `direct.go:87` and
+      `producer.go:589` = returned to the **sender**, no `MessageHandler` body; `router.go:56` = `ErrNoRoute`,
+      the deliberate transient exclusion). **After the edit, re-run and confirm the five edit-site lines are
+      gone and the seven survivors are unchanged** — that is this checkbox's gate.
+
+      The single-result anchor is a **shortlist, not the class**. Dropping the `[ })]*(//.*)?$` anchor (pattern
+      `return .*\b(msgin\.)?($sentinels)\b`) sweeps every return of a root sentinel and reports **63 lines** at
+      `fe86a12`; the extra 51 are two-result constructor returns of the `return nil, msgin.ErrX` shape,
+      including the deliberately-excluded `routing/aggregator.go:251`. *(Derived summary — the command is the
+      one above with that pattern.)* Constructor arity is a strong proxy for the invariant's second arm but is
+      **not** the invariant: when a new sentinel lands, triage the 63.
 - [ ] **`ErrNoRoute` is NOT wrapped — this is a decision, not an omission.** `routing/router.go:48-56`'s
       `pick` is caller-supplied and evaluated **per message**; it may consult a routing table, feature flag or
       lookup service, so a message unroutable now may be routable after a config reload. `WithDefaultChannel`
@@ -1107,64 +1380,187 @@ Delete the throwaway file before committing; the ledger keeps the transcript.
       case** asserting `msgin.IsPermanent(err) == false` for `ErrNoRoute`, so a later sweep cannot "finish the
       job" by wrapping it.
 - [ ] **Update every godoc that promises the old behavior.** Each says *"a nil X yields `ErrNilFunc`"* with no
-      classification. The exhaustive list, from
-      `grep -rn 'ErrNilFunc' --include='*.go' endpoint/activator.go routing/filter.go routing/splitter.go transform/transformer.go routing/router.go | grep '//'`
-      at `aae6160`:
+      classification. The list is derived by an **unrestricted** sweep — round-7 X-B4: the previous form
+      hard-coded five filenames and thereby missed two sites, one of them `ErrNilFunc`'s **own sentinel
+      godoc**. Output at `fe86a12`, pasted whole:
 
       ```
-      routing/filter.go:26:// ErrPayloadType; a nil pred yields ErrNilFunc.
-      routing/splitter.go:13:// an fn error propagates without forwarding; a nil fn yields ErrNilFunc (no
+      $ grep -rn 'ErrNilFunc\|ErrNilSink' --include='*.go' . | grep -v '_test\.go' | grep '//' | sort
       endpoint/activator.go:13:// error propagates without forwarding; a nil svc yields ErrNilFunc. For a
       endpoint/activator.go:37:// svc yields ErrNilFunc.
-      transform/transformer.go:14:// without forwarding. A nil fn yields ErrNilFunc (no panic on caller input).
-      transform/transformer.go:35:// function: its handler returns ErrNilFunc instead of panicking on a nil call.
+      endpoint/helpers.go:16:// nilFuncStep returns a Step whose handler always fails with ErrNilFunc — the
+      errors.go:150:	// ErrNilSink is returned by To when its OutboundAdapter sink is nil.
+      errors.go:152:	// ErrNilFunc is returned by an endpoint (Transform/Filter/Activate/Consume/
+      handler.go:50:// A nil sink yields ErrNilSink at send time (no panic on caller input).
+      routing/aggregator.go:239:// a nil store is ErrNilStore, a nil fn is ErrNilFunc, and no WithOutputChannel
+      routing/filter.go:26:// ErrPayloadType; a nil pred yields ErrNilFunc.
+      routing/helpers.go:18:// nilFuncStep returns a Step whose handler always fails with ErrNilFunc — the
+      routing/helpers.go:20:// §3.3; the body is five lines over the exported Step/HandlerFunc/ErrNilFunc.
       routing/router.go:25:// returned channel is ignored). A nil pick yields ErrNilFunc. Router implements
       routing/router.go:36:// construction and surfaces as ErrNilFunc at Handle time (no panic on input).
+      routing/splitter.go:13:// an fn error propagates without forwarding; a nil fn yields ErrNilFunc (no
+      transform/transformer.go:14:// without forwarding. A nil fn yields ErrNilFunc (no panic on caller input).
+      transform/transformer.go:35:// function: its handler returns ErrNilFunc instead of panicking on a nil call.
       ```
 
-      Seven exported-godoc lines across six declarations (`Filter`, `Split`, `Activate`, `Consume`,
-      `Transform`, `Router`+`NewRouter`), plus `transform/transformer.go:35`, which is `nilFuncStep`'s own
-      unexported comment and must move with them. Each must state that the error is **permanent** — routed to
-      the **invalid-message** channel rather than retried to the dead-letter sink — and that
-      `errors.Is(err, msgin.ErrNilFunc)` still matches. Re-run the grep after the edit and paste it: the
-      godoc gate here is the grep's *content*, not its exit status.
-- [ ] **Record it in the ledger** as an `F`-section with the RED transcript, the four sites, and the GREEN
-      re-run, and note that Spec §2.1 carries it as row 6.
+      **15 lines, pasted whole and `sort`-pinned** *(round-7 X-M6 flagged a sibling block presented as pasted
+      output but re-typed in a different order; `grep -r`'s own order is not reproducible, so `| sort` is what
+      makes "pasted whole" checkable at all).*
+
+      Explicit checkboxes, because two of these are the sites the hard-coded grep could not see:
+
+      - [ ] **`errors.go:152` — `ErrNilFunc`'s own sentinel godoc.** The single statement every caller reads,
+            and the natural home for the governing invariant, which the godoc states in these words
+            (ADR 0029 §5.0b, Spec §2.1 row 6 — a phrase match, so do not paraphrase):
+
+            > **every deterministic typed error msgin returns from inside a `MessageHandler` body is
+            > `Permanent`; every one returned from a constructor is bare.**
+
+            Applied here: a producer inside a `MessageHandler` body returns it wrapped in `msgin.Permanent`
+            with positional context, `errors.Is(err, msgin.ErrNilFunc)` still matches, and a **constructor**
+            (`NewAggregator`) returns it **bare**.
+      - [ ] **`errors.go:150` — `ErrNilSink`'s sentinel godoc**, same treatment (D-B1).
+      - [ ] **`routing/aggregator.go:239` — the deliberate EXCLUSION.** Say so explicitly: `NewAggregator`
+            returns `ErrNilFunc` bare because it is construction-time and never reaches a `RetryPolicy`. Left
+            unsaid, the next sweep reads it as an omission and "finishes the job".
+      - [ ] `handler.go:50` (`To`), `endpoint/activator.go:13` + `:37` (`Activate`, `Consume`),
+            `routing/splitter.go:13` (`Split`), `routing/filter.go:26` (`Filter`),
+            `routing/router.go:25` + `:36` (`Router`, `NewRouter`), `transform/transformer.go:14`
+            (`Transform`) — each states that the error is **permanent**, routed to the **invalid-message**
+            channel rather than retried to the dead-letter sink, and that `errors.Is(err, msgin.ErrNilFunc)`
+            (resp. `ErrNilSink`) still matches.
+      - [ ] The three `nilFuncStep` internal comments (`endpoint/helpers.go:16`, `routing/helpers.go:18` +
+            `:20`, `transform/transformer.go:35`) move with them, and gain the position parameter's meaning.
+
+      Re-run the sweep after the edit and paste it: the godoc gate here is the grep's *content*, not its exit
+      status.
+### D-N — the `divert` dead-letter fallback (Spec §2.1 row 7), SAME COMMIT
+
+> **Why it is here and not a separate task.** D-M as decided opens an unacknowledged data-loss path, and it is
+> the *default* configuration rather than a corner case: a finite `MaxAttempts` **requires** a `DeadLetter`
+> (`RetryPolicy.Validate`, `retry.go:46-53` — transcript in gate 1 above) while `WithInvalidMessageSink` is
+> optional and unset by default. Gate 1's row 2 is the loss, measured: `dlqSink=1 discarded=false` becomes
+> `dlqSink=0 discarded=true`. Landing D-M without D-N would leave a tree, between commits, in which a
+> mis-wired step's message is silently dropped where it was previously captured durably. **CLAUDE.md:** *"When
+> a wrong default could silently corrupt (… lose data …), pick the value that fails safe."*
+
+**RED baseline for D-N, at THIS task's start** (counter-rule 8 — gate 1's transcript above is the same run, so
+no separate pin is needed). Row 3 was produced by pointing the invalid-message sink at the same sink instance
+the DeadLetter names, which is exactly the destination the fallback selects, so the target is **measured, not
+predicted**:
+
+```
+$ go test -run TestR7DivertFallback -v .
+BEFORE D-M  bare ErrNilFunc          [dlq only]           OnRetry=2 OnDeadLetter=1 OnInvalidMessage=0 | dlqSink=1 invalidSink=0 discarded=false
+AFTER  D-M  Permanent(ErrNilFunc)    [dlq only, NO D-N]   OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1 | dlqSink=0 invalidSink=0 discarded=true
+AFTER  D-M+D-N Permanent(ErrNilFunc) [dlq only, fallback] OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1 | dlqSink=1 invalidSink=1 discarded=false
+```
+
+*(Row 3's `invalidSink=1` is the same counter as `dlqSink` — one sink instance, counted twice by the harness.
+One message, one sink receipt.)* **The gate: row 2 must become row 3.**
+
+- [ ] **Read `endpoint/consumer.go`'s `divert` path before writing anything** — `:747-791` (the three-outcome
+      contract) and its two invalid-path call sites, `:688` (decode failure) and `:716` (permanent handler
+      error). The dead-letter call site is `:726`.
+- [ ] **Implement the fallback at the CALL SITES, not inside `divert`.** `divert` is shared by all three
+      paths; putting the fallback in its `sink == nil` arm would make the dead-letter call site
+      (`:726`, whose `sink` *is* `c.policy.DeadLetter`) fall back to itself — a no-op today, but a trap for the
+      next reader. Add one small accessor and use it at `:688` and `:716`:
+      ```go
+      // invalidTarget returns where an invalid message is diverted: the configured
+      // invalid-message sink, or — when none is configured (D-N) — the dead-letter
+      // sink, so a fault previously captured durably is never downgraded to a
+      // discard by D-M's reclassification. nil only when neither is configured,
+      // where ADR 0007 D7's logged discard remains the terminal behavior.
+      func (c *consumer[T]) invalidTarget() msgin.OutboundAdapter
+      ```
+- [ ] **`OnInvalidMessage` fires, NOT `OnDeadLetter`** — the hook reports the **classification**, the sink is
+      only the **destination**. Firing `OnDeadLetter` would assert the message exhausted its retry budget,
+      which under D-M it explicitly did not. No change to `divert`'s `terminalHook` argument at either site.
+- [ ] **Announce the fallback.** Keep the existing loud WARN at `endpoint/consumer.go:766` for the
+      neither-sink case, and add a WARN on the fallback naming **both** facts — no invalid-message sink
+      configured, message sent to the dead-letter sink instead. A caller must not discover by inspection that
+      their DLQ has started receiving invalid messages.
+- [ ] **Both invalid-path call sites, not just the permanent one.** `:688` (decode failure) gets the fallback
+      too; two invalid-message paths with different fallback behavior would be incoherent. The decode arm's
+      change is **discard → dead-letter**, a strict improvement over ADR 0007 D7's discard and a behavior
+      change in its own right — say so in the commit body rather than letting it ride in silently.
+- [ ] **Amend [ADR 0007 D7](../adrs/0007-reliability-settlement-api.md#d7--no-invalid-sink-policy-tasks-45)**
+      — already written; verify the note still matches what you implemented and correct the ADR if it does not.
+- [ ] Update `divert`'s own godoc (`:747-762`): its first outcome is no longer *"nil sink → discarding IS the
+      terminal invalid event"* unconditionally.
 
 **Hot-path branches needing a case each** (fold into one `table-test` per package, `assert`-closure form):
+
+*D-M — the classification:*
 
 - each of the **five** public nil entry points — `endpoint.Activate(nil)`, `endpoint.Consume(nil)`,
   `routing.Filter(nil)`, `routing.Split(nil)`, `transform.Transform(nil)` — asserting **all three** of
   `errors.Is(err, msgin.ErrNilFunc)`, `msgin.IsPermanent(err) == true`, and that the message names its
-  position;
+  position (assert the position **substring**, not the whole error text — the full string embeds
+  `permanentError`'s format);
+- **`msgin.To(nil)`** (D-B1, root `handler.go`) — same three assertions over `msgin.ErrNilSink`. This is a
+  **root**-package case and needs a root `_test` file, which is why `core` is in the commit scope;
 - `NewRouter(nil).Handle` — same three assertions, the one non-`nilFuncStep` site;
 - **the negative:** `Router.Handle` with a `pick` that returns no channel and no default →
-  `errors.Is(err, msgin.ErrNoRoute)` **and `msgin.IsPermanent(err) == false`**.
+  `errors.Is(err, msgin.ErrNoRoute)` **and `msgin.IsPermanent(err) == false`**;
+- **the constructor arm of the invariant:** `NewAggregator` with a nil fn → `errors.Is(err, ErrNilFunc)` **and
+  `msgin.IsPermanent(err) == false`**, so the deliberate exclusion has a test naming it as deliberate.
+
+*D-N — the fallback (all three in `endpoint`, driving a real consumer):*
+
+- **invalid sink nil, DeadLetter configured** → the DeadLetter sink receives the message, `OnInvalidMessage`
+  fires, `OnDeadLetter` does **not**, and the fallback WARN is emitted (assert via an injected `*slog.Logger`
+  writing to a buffer);
+- **neither sink configured** → the ADR 0007 D7 discard survives: `OnInvalidMessage` fires, nothing is sent,
+  the original delivery is Acked, the existing WARN is emitted. *Without this case a later sweep deletes the
+  discard arm as dead code;*
+- **invalid sink configured** → unchanged, and the DeadLetter sink receives **nothing** (proves the fallback
+  is not firing when it must not);
+- **the decode arm** with invalid sink nil and DeadLetter configured → the DeadLetter sink receives it, so
+  `:688`'s change is covered too and not only `:716`'s.
 
 **Verify:**
 
-- The RED transcript above, re-run, now printing `true` on row 1 and **still `false` on row 2**.
+- **Gate 1 re-run**, now printing `OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1` on the two former RED rows.
+- **Gate 2 (the census) re-run, every row UNCHANGED** — a row that moved means `IsPermanent`'s enumeration was
+  amended, which D-M rejects.
+- **D-N's gate re-run**, row 2 now reading row 3's values.
+- The class sweep and the godoc sweep re-run and pasted (their checkboxes above).
 - `go test ./... -race -shuffle=on` green across all root packages; the **seven**-module `GOWORK=off` loop
   (not eight — `expr` does not exist until Task 10).
 - **`apidiff` is expected to report NOTHING for this task.** No exported symbol is added, removed or retyped;
   the change is behavioral. Do not treat the empty diff as a failed run — say so in the commit body.
-- Per-package coverage on `endpoint`, `routing` and `transform` does not fall (all three are at ≥99% today);
-  `-coverpkg=./...` on both sides against a **named** tree (Global Constraint 0).
+- **Coverage: no NEW uncovered block outside AC-7's enumerated six**, in `endpoint`, `routing`, `transform`
+  and root; `-coverpkg=./...` on both sides against a **named** tree (Global Constraint 0).
 
-**Commit:** `fix(core,routing,transform)!: classify nil endpoint functions as Permanent`
+  > **Not a percentage floor — round-7 X-M14.** The previous wording was *"per-package coverage does not fall
+  > (all three are at ≥99% today)"*. `endpoint` measured **99.4%** and **99.1%** on two runs of the *unchanged*
+  > tree, so a floor expressed to one decimal fails on noise alone. The block-level criterion is stable and is
+  > what AC-7 already uses.
+
+**Commit:** `fix(core,endpoint,routing,transform)!: classify deterministic endpoint faults as Permanent`
 
 ```
 Spec: 014
 Plan: 027
+ADR: 0007
 ADR: 0029
 RFC: 0002
 ```
 
+> **The scope was wrong in both directions and is corrected here (round-7 X-M2).** It read
+> `fix(core,routing,transform)` — `core` was **unearned** (no root file was touched) and `endpoint` was
+> **missing** (`endpoint/helpers.go:21` is an edit site). Both are now earned: D-B1 adds `handler.go:55` and
+> its root `_test` case (**`core`**), and D-N adds `endpoint/consumer.go` on top of `endpoint/helpers.go`
+> (**`endpoint`**). `ADR: 0007` is new — D-N amends its D7.
+
 The `!` is deliberate even though `apidiff` is empty: the change moves a message from the **dead-letter** sink
 to the **invalid-message** sink and stops it recording an unhealthy breaker signal
-(`endpoint/consumer.go:614`, `:733`). A caller who watches the DLQ sees a behavioral break; the exported
-surface does not move. *(No tag exists — `git tag | wc -l` → 0 — so nothing downstream is affected today; the
-marker is for the log's benefit.)*
+(`endpoint/consumer.go:614`, `:733`), and D-N changes where an invalid message lands when no invalid-message
+sink is configured. A caller who watches the DLQ sees a behavioral break; the exported surface does not move.
+*(No tag exists — `git tag | wc -l` → 0 — so nothing downstream is affected today; the marker is for the log's
+benefit.)*
 
 ---
 
@@ -1211,7 +1607,26 @@ marker is for the log's benefit.)*
       1. add `expr` to the `module` matrix;
       2. add `expr` to the `workspace` job's loop — **after the `go.work` edit above**;
       3. **fix the pre-existing gap** — `adapter/cron/crontest` is missing from **both** and has been since
-         it was created (`grep -n crontest .github/workflows/ci.yml` → no output).
+         it was created. **Check it with the comment-stripped form** — `ci.yml` now *documents* the gap in
+         three comment lines, so a bare `grep -n crontest` hits them and reads as "already done":
+         ```
+         $ grep -v '^\s*#' .github/workflows/ci.yml | grep -c crontest
+         0
+         $ grep -c 'dir:' .github/workflows/ci.yml
+         6
+         ```
+         Both re-run on the working tree (2026-07-29). **The RED is the `0`**: today `crontest` appears in
+         `ci.yml` only in comments. Edit #3 is done when the comment-stripped grep is non-zero on **both**
+         sides — a `module`-matrix entry *and* the `workspace` job's `for dir in …` loop (`:129`) — and the
+         `dir:` count has gone **6 → 8** (edit #1 adds `expr`, edit #3 adds `crontest`).
+
+      > **ROUND-7 CORRECTION (X-B6, counter-rule 10).** This checkbox published
+      > *"`grep -n crontest .github/workflows/ci.yml` → no output"*, and **the very commit that carries this
+      > plan (`c4582ba`) falsified it**: that commit added the three `crontest` KNOWN-GAP comments to `ci.yml`,
+      > so the command now returns **3** hits and a worker running it concludes edit #3 is already done. It is
+      > not — no `dir:` entry and no loop entry exists. The comment-stripped form above is the one CLAUDE.md's
+      > own quality-gate block already uses. **Counter-rule 10: when a pass edits a file, re-run every pasted
+      > command in the bundle that reads that file.**
 - [ ] Providers returning the Task 9 types. **The shape is NOT uniform, and it is NOT non-generic** — the
       earlier plan got both wrong (round-2 §D2 for the first; round 3, compile-proven, for the second):
       ```go
@@ -1286,10 +1701,17 @@ marker is for the log's benefit.)*
       > starlark, …) instead of one per provider; the correct retry classification **for free**, because
       > `ErrPayloadType` is already inside root's `IsPermanent` — measured on the untouched tree,
       > `IsPermanent(msgin: payload is not of the expected type) = true` — so **no `msgin.Permanent` wrap is
-      > needed**; no root change and no new import edge. `ErrPayloadType`'s godoc is already domain-generic
-      > (*"a `Message[any]` payload cannot be asserted to T"*), which is exactly what a result-type mismatch
-      > is. **D-I is unaffected** — `ErrInvalidExpression` still leaves root and is still minted here, because
-      > it is a construction-time fault with no root twin.
+      > needed**; **no new root symbol and no new import edge — but `ErrPayloadType`'s godoc IS widened**
+      > (see the `errors.go:6` checkbox below). **D-I is unaffected** — `ErrInvalidExpression` still leaves
+      > root and is still minted here, because it is a construction-time fault with no root twin.
+      >
+      > **ROUND-7 CORRECTION (D-B8).** This paragraph read *"no root change and no new import edge.
+      > `ErrPayloadType`'s godoc is already domain-generic (*"a `Message[any]` payload cannot be asserted to
+      > T"*), which is exactly what a result-type mismatch is."* Both halves are wrong. The quoted godoc is
+      > `errors.go:6` verbatim and it is **specifically about a `Message[any]` payload** — an expression's
+      > evaluated result is not one — so the godoc is not domain-generic, it is domain-*narrow*, and D-K
+      > stretches the sentinel past it. Widening the comment **is** a root change; it is small, it is not
+      > breaking, and it now has an owning checkbox instead of a claim that there was nothing to do.
       >
       > **Consequence for the counts:** root's projections in §9.5.0 and Task 12 are **unchanged** (root loses
       > both sentinels either way). The ***`expr`-module*** sentinel count is **1, not 2**.
@@ -1298,9 +1720,59 @@ marker is for the log's benefit.)*
       `msgin.ErrInvalidExpression` to `expr.ErrInvalidExpression`, and the `ErrExprResultType` assertions
       become `msgin.ErrPayloadType`. `git show ab233d9:expr_test.go` asserts the root `msgin.Err*` form
       throughout, so **expect to rewrite the target in every one of the 12 functions** rather than copying
-      them verbatim. Godoc `ErrInvalidExpression` with the construction-vs-evaluation split the deleted root
-      godoc carried — it is the only surviving statement of that distinction, so recover it from
-      `git show 3d0b87a:errors.go`, lines 168–180, **before Task 9.5 deletes it**.
+      them verbatim.
+
+      **Godoc `expr.ErrInvalidExpression` with FRESH TEXT — do NOT copy the deleted root godoc.** What must
+      survive is the *content*: the **construction-vs-evaluation split**, restated in the `msgin/expr:`
+      module's own voice. Three things the comment must say:
+
+      1. **What it is** — a **construction-time** fault raised at the provider call: the expression is
+         empty, unparseable, or fails type-checking against `A`. The wrapped error carries the offending
+         source text.
+      2. **What it is NOT** — an evaluation-time fault. Those surface **per message**, as the endpoint's
+         handler error. **Name the counterpart, and it is `msgin.ErrPayloadType`, not an `expr` sentinel**
+         (revised D-K): an expression that evaluates to the wrong Go type returns
+         `fmt.Errorf("%w: expr result %T is not %T", msgin.ErrPayloadType, got, want)`, which root's
+         `IsPermanent` already classifies, so it is diverted to the invalid-message sink rather than
+         retried.
+      3. **Why it is declared here and not in root** — the fault is the provider's; root has no notion of an
+         expression and, after Task 1, no code that can produce one (D-I, §9.5.0). ADR 0019's
+         *fail-at-construction* contract is about **where the error is raised**, not about who declares the
+         value.
+
+      > **ROUND-7 CORRECTION (X-B5) — the verbatim-recovery instruction is WITHDRAWN.** This step read
+      > *"recover it from `git show 3d0b87a:errors.go`, lines 168–180, **before Task 9.5 deletes it**"*.
+      > Executed literally it produces **two defects**. Both are visible in the command's own output, run
+      > 2026-07-29:
+      >
+      > ```
+      > $ git show 3d0b87a:errors.go | sed -n '168,180p'
+      > 	// ErrInvalidExpression is the root error contract's construction-time fault
+      > 	// for a runtime-authored expression: the expression is empty, unparseable, or
+      > 	// fails type-checking against the payload type. The wrapped error names the
+      > 	// offending expression. Runtime evaluation errors are NOT this — they
+      > 	// propagate as the endpoint's handler error into the runtime's retry/DLQ path
+      > 	// (see ErrExprResultType for the evaluation-time counterpart).
+      > 	//
+      > 	// It has no producer in this module. Expression-backed endpoints are supplied
+      > 	// by the forthcoming separate msgin/expr provider module, which returns this
+      > 	// sentinel so callers have a single, errors.Is-able construction-fault
+      > 	// contract regardless of which package builds the endpoint. It is exported
+      > 	// here, not in the provider, to keep that contract in one place.
+      > 	ErrInvalidExpression = errors.New("msgin: invalid expression")
+      > ```
+      >
+      > 1. **Line 6 names `ErrExprResultType`.** Pasting the block reintroduces that identifier into shipped
+      >    `.go` source and **fails Spec 014 AC-10 arm 2** — `grep -rn --include='*.go' 'ErrExprResultType' .`
+      >    *"must become EMPTY workspace-wide"*. Under revised D-K that sentinel does not exist anywhere; a
+      >    godoc cross-reference to it is exactly the dangling-name staleness §8.1 arm 2 was built to catch.
+      > 2. **The closing clause — *"It is exported here, not in the provider"* — is the exact premise D-I
+      >    reversed.** Pasted into the provider, the comment asserts the opposite of the decision that put it
+      >    there.
+      >
+      > **Moot as of this correction (round-7 X-M13):** the old *"before Task 9.5 deletes it"* urgency.
+      > `git show 3d0b87a:` reads **history**, so nothing Task 9.5 does to the working tree can make that
+      > text unreadable. The deadline was fiction, and it is removed rather than reworded.
 - [ ] `Release` returns `routing.ReleaseStrategy`, whose `(bool, error)` shape is what lets an evaluation
       failure propagate instead of being swallowed into a permanent `false`. `WithReleaseStrategy(expr.Release(…))`
       now compiles, which is the point of D-E.
@@ -1383,6 +1855,135 @@ marker is for the log's benefit.)*
       **`ErrInvalidExpression` is NOT wrapped either** — it is a construction-time fault that never reaches
       the retry path. The two faults remain asymmetric; do not treat them uniformly.
 
+- [ ] **THIS TASK OWNS THE `errors.go:6` GODOC WIDENING — decision D-K, round-7 D-B8.** Revised D-K stretches
+      `msgin.ErrPayloadType` over a second producer class that its one-line godoc does not describe, and
+      until this round **no task amended it**. Measured on the untouched tree:
+
+      ```
+      $ sed -n '6,7p' errors.go
+      	// ErrPayloadType is returned when a Message[any] payload cannot be asserted to T.
+      	ErrPayloadType = errors.New("msgin: payload is not of the expected type")
+      ```
+
+      An expression's evaluated **result** is not *"a `Message[any]` payload"*. The claim in
+      [ADR 0029 §5.0b](../adrs/0029-eip-lexical-alignment.md) and [Spec 014 §7](../specs/014-core-package-layout.md)
+      that the godoc *"is already domain-generic"* was **false against the source**; both are corrected in
+      this pass and both now point here.
+
+      **Why Task 10 and not Task 9.5, although 9.5 is the task that already edits `errors.go`.** D-K is
+      Task 10's decision and Task 10 writes its only producer. If the widening landed in 9.5 the tree would
+      sit, for two commits, with root documenting an expression-domain fault that nothing in the workspace
+      can produce — precisely the orphaned-statement shape D-I exists to remove (and the shape the *old*
+      `ErrInvalidExpression` godoc had: *"It has no producer in this module"*). Counter-rule 6: one owner
+      holds a decision's statement, its consequence, its gate and its task. **Consequence:** Task 10's
+      commit touches **root**, which is why its scope line below is no longer `feat(expr)` alone.
+
+      Write it as:
+
+      ```go
+      	// ErrPayloadType is returned when a value cannot be asserted to the type the
+      	// caller declared for it. It has TWO producer classes and errors.Is cannot
+      	// tell them apart:
+      	//
+      	//   - PAYLOAD SIDE (this module) — a Message[any] payload cannot be asserted
+      	//     to T: PayloadOf (payload.go) and the consumer's live-value and wire
+      	//     decode paths (endpoint/consumer.go). Wrapped as "want %T, got %T".
+      	//   - EXPRESSION SIDE (the msgin/expr provider module, and any future
+      	//     CEL/starlark provider) — a compiled expression EVALUATED to a value
+      	//     that is not the declared result type. Wrapped as
+      	//     "expr result %T is not %T" (ADR 0029 §5.0b, decision D-K).
+      	//
+      	// Both classes are deterministic: the same input yields the same wrong type
+      	// on every redelivery. IsPermanent names this sentinel (reliability.go), so
+      	// either class is diverted to the invalid-message sink WITHOUT a Permanent
+      	// wrap. That is D-K's whole reason for reusing this sentinel.
+      	//
+      	// ACCEPTED TRADE-OFF, not an absence: errors.Is(err, ErrPayloadType) does
+      	// not separate the two, which buys callers ONE target instead of one per
+      	// expression provider — but the two remedies are disjoint (fix the codec or
+      	// the producing adapter, versus fix the expression). The ERROR STRING
+      	// carries the discriminator errors.Is deliberately does not: match
+      	// "expr result" to tell them apart.
+      	ErrPayloadType = errors.New("msgin: payload is not of the expected type")
+      ```
+
+      Four constraints on the text, each load-bearing:
+      1. **It must not name `ErrExprResultType`** — Spec AC-10 arm 2 requires that identifier to be empty
+         workspace-wide, and `errors.go` is inside the sweep.
+      2. **Each gated phrase must sit within one godoc line.** `go doc` reproduces the comment's own line
+         breaks, so a `grep -q` for a phrase that spans one can never match (the same defect the coordinator
+         fixed in Spec §8.0b's obligation-11 gate this round).
+      3. **The cost is stated as an accepted trade-off, not omitted.** §5.0c's cost analysis was narrowed to
+         moot for this half and nothing replaced it, leaving §5.0b listing only benefits — the identical
+         silence-shaped defect that overturned the first D-K one round earlier.
+      4. **`errors.Is` behavior is unchanged** — this is a documentation edit to a `//` comment. `apidiff`
+         is unaffected (comments are not surface), so §9.5.0's and Task 12's arithmetic do **not** move.
+
+      **RED at THIS task's start** (counter-rule 8 — nothing before Task 10 writes this text). This block is
+      **diff-identical to Spec 014 AC-10's fifth arm**, which is the normative set; re-run verbatim
+      2026-07-29 on the untouched tree:
+      ```
+      $ for p in 'PAYLOAD SIDE' 'EXPRESSION SIDE' 'ACCEPTED TRADE-OFF' 'expr result'; do
+          go doc github.com/kartaladev/msgin.ErrPayloadType | grep -q "$p"; printf '%-20s exit=%s\n' "$p" "$?"
+        done
+      PAYLOAD SIDE         exit=1
+      EXPRESSION SIDE      exit=1
+      ACCEPTED TRADE-OFF   exit=1
+      expr result          exit=1
+      ```
+      All four must print `exit=0` when the task is done. Four ANDed `grep -q`s, not a line count and not a
+      single match. *(`go doc` on a `var` prints the whole `var` block, so these are package-scoped phrase
+      matches; after Task 9.5 no other declaration in the block contains any of the four strings — the only
+      other `expr`-flavoured godoc in it is the pair 9.5 deletes.)*
+
+- [ ] **Extend Spec §8.1 arm 2's DECLARED-SIDE loop with `expr` — round-7 X-B7 (Task-10 half).** Spec
+      §8.1's command block already carries the instruction (*"TASK 10 MUST EXTEND THE LOOP WITH `expr` the
+      moment `expr/` exists"*, round-6 E-B2) and §8.1's allow-list table records `ErrInvalidExpression` as
+      **deliberately not allow-listed** for this reason — but the instruction landed only in the Spec's
+      comment block and **nowhere executable**. This checkbox is the executable half. Append `expr` to the
+      declared-side `for p in …` list, which is published in exactly **one** place — measured, not assumed
+      (run 2026-07-29; the tail of the ten-directory list is what makes the loop unique):
+      ```
+      $ grep -rn 'adapter/http/stdlib; do' docs/specs/*.md docs/plans/*.md | sort
+      docs/specs/014-core-package-layout.md:2018:        adapter/memory adapter/cron adapter/database/sql adapter/http adapter/http/stdlib; do \
+      ```
+      *(Other `for p in` hits in these files are the `symmap.tsv` regeneration loop and per-package loops
+      over the five core packages. `expr` does **not** belong in those — `symmap.tsv` maps symbols that
+      MOVED OUT OF ROOT, and no `expr` symbol was ever in root.)* The declared side goes from **eleven**
+      package directories to **twelve**:
+
+      ```
+      for p in endpoint routing transform channel resilience \
+               adapter/memory adapter/cron adapter/database/sql adapter/http adapter/http/stdlib expr; do
+      ```
+
+      **It cannot be added earlier**, which is why it is a Task 10 checkbox and not a Task 9.5 one —
+      `decls.go` panics on a directory that does not exist (run 2026-07-29):
+      ```
+      $ go run docs/plans/027-tools/decls.go ./expr
+      panic: open ./expr: no such file or directory
+      exit status 2
+      ```
+
+      **Proof the extension is REQUIRED and SUFFICIENT** — measured 2026-07-29 by emulating this task's end
+      state on the real tree (root's two expr sentinel blocks deleted with
+      `sed -i '' '193,206d;168,180d' errors.go`, a stub `expr/errors.go` whose godoc opens
+      `// ErrInvalidExpression is …` added, then both restored):
+      ```
+      === arm 2, loop WITHOUT expr (as published today) ===
+      ErrInvalidExpression
+      WithRelease
+      === arm 2, loop WITH expr appended (the Task 10 extension) ===
+      WithRelease
+      ```
+      Without the extension the sweep reports `ErrInvalidExpression` as a survivor **on a correct tree** — a
+      false positive from the arm's known comment-side-tree-wide / declared-side-fixed-list asymmetry, not a
+      real staleness. **Do NOT allow-list it instead**; that would hide every future staleness in the `expr`
+      module too (Spec §8.1's allow-list table, `ErrInvalidExpression` row).
+
+      *(`WithRelease` is `routing/aggregator.go:316`, the one genuine survivor, and it is Task 9.5's to
+      clear — it is shown here only to prove the command ran and the rest of the sweep was unperturbed.)*
+
 **Hot-path branches needing a case each:** invalid expression → `expr.ErrInvalidExpression` at construction;
 valid expression, wrong result type **→ asserted `errors.Is(err, msgin.ErrPayloadType)` AND
 `msgin.IsPermanent(err) == true`, and asserted to reach the INVALID-MESSAGE sink rather than the dead-letter
@@ -1393,9 +1994,29 @@ surfacing through `Handle` rather than returning `false`; **`RouteFunc`'s two co
 `toGroupEnv`'s empty-group and non-`A`-member guards.
 
 **Verify:** ADR 0019's fail-at-construction contract holds — an invalid expression errors at the provider
-call, never at first message. All **eight** modules green standalone under `GOWORK=off`.
+call, never at first message. All **eight** modules green standalone under `GOWORK=off`. **Spec 014 AC-10's
+four grep arms all pass**, including arm 2 (`ErrExprResultType` empty workspace-wide) — the arm the withdrawn
+verbatim-recovery instruction would have broken — plus AC-10's fifth arm, the three `go doc … ErrPayloadType`
+phrase gates. **Both arms of the §8.1 staleness sweep empty with the twelve-directory declared-side loop.**
 
-**Commit:** `feat(expr): expression providers as a separate module`
+**Commit:** `feat(expr,core): expression providers as a separate module; widen ErrPayloadType's contract`
+
+```
+Spec: 014
+Plan: 027
+ADR: 0029
+RFC: 0002
+RFC: 0003
+```
+
+*(Round-7 X-M12. ADR 0029 §5.0a–c owns both halves of this task — the `expr` module and `ErrPayloadType`'s
+widened contract.)*
+
+> **ROUND-7 (D-B8) — the scope gained `core` and the subject gained a second clause.** This task now edits
+> **root's `errors.go`** (the `ErrPayloadType` godoc widening above), so a `feat(expr)`-only scope would name
+> one of the two modules the commit touches. It is **not** breaking: widening a doc comment adds no symbol
+> and removes none, so no `!` — verify with `apidiff`, which must report the same counts §9.5.0's table
+> projects for the post-D-I/post-D-J tree.
 
 ---
 
@@ -1655,6 +2276,20 @@ round-6's counter-rule 4, and it is the reason three of these four gates shipped
 
 **Commit:** `docs(core): package docs and the godoc obligations Spec 014 §8/§10 require`
 
+```
+Spec: 014
+Plan: 027
+ADR: 0027
+ADR: 0028
+ADR: 0030
+RFC: 0001
+RFC: 0002
+```
+
+*(Round-7 X-M12. This task writes the godoc that Spec §8/§10's obligations demand: the package docs of the
+ADR-0027 layout, ADR 0028's segregated channel interfaces, and ADR 0030's exclusivity probe. RFC 0001 backs
+ADR 0027; RFC 0002 backs ADRs 0028 and 0030.)*
+
 ---
 
 ## Task 12 — Migration guide, doc sync, and the whole-branch gate · **M** · NOT STARTED
@@ -1720,6 +2355,22 @@ round-6's counter-rule 4, and it is the reason three of these four gates shipped
       nothing extra.
 - [ ] **Re-run the `MessageChannel` scope-rule census** (Spec 014 §5.0) rather than citing a number. Three
       documents have now quoted three different wrong counts; the check is the contract.
+- [ ] **Re-run Spec §8.1's two-arm staleness sweep to empty — AGAIN, on the delivered tree** (round-7 X-B7).
+      **Regenerate `docs/plans/027-tools/symmap.tsv` first** — it is derived, and Tasks 9–11 add symbols
+      (`SubscribableChannel`, `ExclusiveSubscribable`, `channel.WithSingleSubscriber`,
+      `endpoint.WithSharedReplyChannel`, the `expr` providers), so an un-regenerated map makes arm 1 report
+      a stale answer. Run arm 2's declared-side loop over **twelve** directories, i.e. including `expr`
+      (Task 10 extends it; `decls.go` panics on a missing dir, which is why it cannot be extended earlier).
+      Both arms must be **empty**; a survivor is a finding, not a note.
+
+      > **WHY THIS RUNS TWICE — round-7 X-B7.** The sweep was owned **only** by Task 9.5, and Tasks 9.6, 9.7,
+      > 10 and 11 each write godoc *after* it: 9.6 the `SingleSubscriber`/`ExclusiveSubscribable` comments,
+      > 9.7 the `nilFuncStep`/`ErrNilFunc`/`ErrNilSink` godoc sweep, 10 the whole `expr` module, 11 the §8/§10
+      > obligations. A sweep that runs before those edits **cannot certify the tree that ships** — and this is
+      > not hypothetical: the arm-2 invariant is exactly what would have caught Task 10's dangling
+      > `ErrExprResultType` cross-reference (round-7 X-B5). The Risks table names this sweep as the mitigation
+      > for *"a change is invisible to the compiler"*, so the mitigation has to sit at the end of the branch,
+      > not in its middle.
 - [ ] Run the full per-module `GOWORK=off` loop across **eight** modules, `go vet`, `golangci-lint`,
       `test -z "$(gofmt -l .)"`, `govulncheck`, `go mod tidy` (no-op in every module), and
       `CGO_ENABLED=0 go build ./...`.
@@ -1753,6 +2404,22 @@ round-6's counter-rule 4, and it is the reason three of these four gates shipped
 
 **Commit:** `docs: migration guide and doc sync for the core restructure`
 
+```
+Spec: 014
+Plan: 027
+ADR: 0007
+ADR: 0027
+ADR: 0028
+ADR: 0029
+ADR: 0030
+RFC: 0001
+RFC: 0002
+RFC: 0003
+```
+
+*(Round-7 X-M12. Task 12 is the whole-branch gate, so it carries **every** ADR the branch realizes —
+including ADR 0007, which D-N amends. ADR 0007 declares no RFC; the other four contribute RFC 0001/0002/0003.)*
+
 ---
 
 ## Risks
@@ -1760,10 +2427,10 @@ round-6's counter-rule 4, and it is the reason three of these four gates shipped
 | Risk | Mitigation |
 |---|---|
 | A count in a document rots and nobody notices | Every normative number in Spec 014 §3–§4 is generated with its command recorded in the ledger; Task 12 re-derives them rather than reading them. The `MessageChannel` census is stated as a **scope rule + command**, because three rounds of correcting the *number* produced three wrong numbers |
-| A change is invisible to the compiler | `go vet ./...` (not `go build`) after every move; the two-arm staleness sweep in Task 9.5; `unused` is off, so dead code needs an explicit check |
+| A change is invisible to the compiler | `go vet ./...` (not `go build`) after every move; the two-arm staleness sweep **in Task 9.5 and again in Task 12** — Tasks 9.6, 9.7, 10 and 11 all write godoc after 9.5, so only the Task 12 run certifies the delivered tree *(round-7 X-B7)*; `unused` is off, so dead code needs an explicit check |
 | Coverage looks like it regressed when it did not | Global Constraint 4: `-coverpkg=./...` on both sides. The **six** accepted uncovered blocks are enumerated with dispositions in Spec 014 §9 AC-7 and restated in Task 12, so a worker does not chase them *(round-6 C-M6: this said "two", and a worker would have reported the other four as regressions)* |
 | A satellite module is left red | The `GOWORK=off` loop — **seven** modules until Task 10, **eight** after (Global Constraint 5); **`harness` is checked with `go vet`, never `go test`** — it has no test files and `go test` reports a false pass |
-| A "pure move" quietly changes behavior | No assertion may change outside Spec 014 §2.1's **six** exceptions (rows 5–6 are D-J and D-M); identity is proved by **the normalised per-file diff alone** |
+| A "pure move" quietly changes behavior | No assertion may change outside **the rows of Spec 014 §2.1's table** — cite the table, never a count (it has grown three times: rows 5 D-J, 6 D-M, 7 D-N). Identity is proved by **the normalised per-file diff alone** |
 | `apidiff` noise hides a real break | Read against Spec 014 §4.1's decomposition of the removals into named classes — 95 into four at `dadc775`, a projected 97 into five once D-I lands |
 | RED cannot be evidenced for a compile-time failure | The transcript comes from `go test -c -o /dev/null .`, not `go vet` (which stops after one type-error batch) |
 | `expr` cannot build standalone | Task 10 ships `require` + `replace` together, and CI gets all three edits |

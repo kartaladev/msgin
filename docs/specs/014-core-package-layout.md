@@ -35,7 +35,11 @@
   > *(History: rounds 1 and 2 both returned `NEEDS-REVISION` from all three auditors, on hand-typed tables.
   > See [audit round 1](../plans/027-audit-round-1.md) §K and [audit round 2](../plans/027-audit-round-2.md)
   > §F, which called for exactly this regeneration. Round 1's six §H decisions and round 2's eight §G.1
-  > decisions D-A…D-H all stand.)*
+  > decisions D-A…D-H all stand. **Later rounds:** [audit round 6](../plans/027-audit-round-6.md) — read its
+  > **§6**, which corrects its own §1–§4 — produced D-K/D-L/D-M; [audit round 7](../plans/027-audit-round-7.md)
+  > produced **D-L (revised)**, **D-N**, **D-O** and the `ErrNilSink` scope correction to D-M, and its **§5**
+  > carries the fix-pass ledger. Rounds 3–5 are recorded in [`docs/HANDOVER.md`](../HANDOVER.md). Every round's
+  > record is a `docs/plans/027-audit-round-*.md` file; this bullet is their reverse link — round-7 M-M2.)*
 - **Promoted from:** [RFC-0001](../rfcs/0001-core-package-restructure.md) (package restructure),
   [RFC-0002](../rfcs/0002-eip-alignment.md) (lexical alignment + channel segregation),
   [RFC-0003](../rfcs/0003-endpoint-behavior-types.md) (behavior types + expr provider). All three were accepted
@@ -106,7 +110,10 @@ types, and the extraction of expression support into its own module. These land 
 `apidiff` review**, because they touch overlapping symbols and splitting them would cost two reviews of the same
 surface.
 
-**Out of scope:** any behavior change, with the six exceptions §2.1 enumerates. This increment is
+**Out of scope:** any behavior change, with the exceptions **§2.1's table** enumerates — **that table is the
+register; do not restate its length here or anywhere else.** It has grown three times (D-J, D-M, D-N) and
+every restated count went stale within a round. This is the convention ADR 0028 adopted in round 6: cite the
+table, never a count. This increment is
 **behavior-preserving by construction** everywhere else. The evidence is the **normalised per-file diff**:
 every moved file, compared against its pre-move snapshot, yields **exactly one** intentional difference
 (F8.6, F9.4).
@@ -134,10 +141,11 @@ every moved file, compared against its pre-move snapshot, yields **exactly one**
 > **The name-set argument is therefore withdrawn, not repaired.** Test-function names legitimately change in
 > this window; the normalised per-file diff is the claim that actually survives contact with the tree.
 
-### 2.1 The six deliberate behavior changes
+### 2.1 The deliberate behavior changes (the register)
 
-Everything else in this window is a move or a rename. These six are not, and each is a decided consequence
-rather than a side effect:
+Everything else in this window is a move or a rename. **The rows below are not, and each is a decided
+consequence rather than a side effect. This table is the register — anything that needs to refer to "the
+behavior changes" cites the table, never its length.**
 
 | # | Change | Where decided | Evidence |
 |---|---|---|---|
@@ -146,12 +154,21 @@ rather than a side effect:
 | 3 | `channel.WithSingleSubscriber()` — opt-in, **off by default**, so zero change to any existing flow | ADR 0028 §6.2 (D-F) | §4.1, F10.9 |
 | 4 | `WithReleaseStrategy` takes the named `ReleaseStrategy` (fallible); the bool-only sugar becomes `WithReleaseWhen` | ADR 0029 §3 (D-E) | §6, F3 |
 | 5 | `NewChannelExchange` **probes** `ExclusiveSubscribable` and **rejects** a reply channel that reports non-exclusive with `ErrSharedReplyChannel`, unless `endpoint.WithSharedReplyChannel()` is passed. A program that today builds two exchanges over one plain `PublishSubscribeChannel` stops compiling green: it now returns an error | ADR 0030 §3 (D-J), amended by **D-L** | §5.1, §9 AC-9, §10 |
-| 6 | **A deterministic endpoint fault carries its own retry classification.** Every producer of `ErrNilFunc` returns `msgin.Permanent(msgin.ErrNilFunc)` wrapped with positional context, so a mis-wired step is **diverted to the invalid-message channel** instead of consuming the retry budget, landing in the dead-letter sink and recording an unhealthy signal that trips the circuit breaker | ADR 0029 §5.0b (**D-M**) | §7, Plan 027 Task 9; precedent `routing/aggregator.go:151-160` |
+| 6 | **A deterministic endpoint fault carries its own retry classification.** *Invariant:* **every deterministic typed error msgin returns from inside a `MessageHandler` body is `Permanent`; every one returned from a constructor is bare.** Applied, each flow-path producer returns `msgin.Permanent(<sentinel>)` wrapped with positional context, so a mis-wired step is **diverted to the invalid-message channel** instead of consuming the retry budget, landing in the dead-letter sink and recording an unhealthy signal that trips the circuit breaker. Covers `ErrNilFunc` **and `ErrNilSink`** (`handler.go:55`, `msgin.To`); **excludes** `routing/aggregator.go:251` (`NewAggregator` — a constructor) and `ErrNoRoute` (evaluated per message) | ADR 0029 §5.0b (**D-M**, scope-corrected in round 7) | §7; **Plan 027 Task 9.7** (shipped producers) + **Task 9** (combinators); precedent `routing/aggregator.go:151-160` |
+| 7 | **`divert` falls back to the dead-letter sink before discarding.** When no invalid-message sink is configured but a `DeadLetter` sink is, an invalid message is routed there rather than discarded; the discard remains only when **neither** sink is configured. `OnInvalidMessage` fires either way. Without it, row 6 would turn a message the library previously captured durably into a **dropped** one, in the default configuration of every finite-retry consumer | ADR 0029 §5.0b (**D-N**), amending [ADR 0007 D7](../adrs/0007-reliability-settlement-api.md#d7--no-invalid-sink-policy-tasks-45) | §7; **Plan 027 Task 9.7**, same commit as row 6 |
 
-> **Rows 5 and 6 were added in the round-6 fix pass (E-B6).** D-J was propagated into twelve other spec
-> locations and skipped this table, while `:109` and AC-5 both told an implementer that anything outside
-> *"§2.1's four exceptions"* is a defect to **stop and report** — which is exactly what Task 9.6 instructs
-> them to do. The cardinality word is load-bearing, not prose.
+> **Row 6 is stated as an INVARIANT, not as a quantifier over a sentinel name** (round-7 D-B7/X-B3). It
+> previously read *"**Every** producer of `ErrNilFunc` returns `Permanent`"* — a universal quantifier that
+> flatly contradicts ADR 0029 §5.0b's deliberate exclusion of `routing/aggregator.go:251`. Round 6 §6 had
+> asked for *"the invariant, not the five-row list"*; a universal quantifier is strictly worse than the list it
+> replaced, because a list is at least checkable against the tree. The same wording is why `ErrNilSink`
+> survived four rounds: a rule phrased over one sentinel name cannot see a second member of its own class.
+>
+> **Rows 5 and 6 were added in the round-6 fix pass (E-B6); row 7 in round 7.** D-J was propagated into twelve
+> other spec locations and skipped this table, while `:109` and AC-5 both told an implementer that anything
+> outside *"§2.1's four exceptions"* is a defect to **stop and report** — which is exactly what Task 9.6
+> instructs them to do. **The lesson taken is that the count was load-bearing and should never have been
+> written down:** every site that referred to this table by length has now been repointed at the table itself.
 
 > **`SettleMembers` was cut from this window** (audit §H1, settled with the user 2026-07-27). The
 > "adding a method to a shipped interface must ride the breaking window" argument is void here: nothing is
@@ -1619,10 +1636,34 @@ leaving them anonymous. Each godoc names its Spring equivalent so a Spring-train
 nil, and calling a method on a nil func value is legal Go). CLAUDE.md forbids panicking on caller input, and
 this package already has a settled answer for exactly this shape — `routing/filter.go:29` returns
 `nilFuncStep()` for a nil `pred`, degrading to `msgin.ErrNilFunc` at dispatch. The combinators follow it: a
-nil receiver or a nil argument yields a `Predicate[A]` returning `(false, msgin.ErrNilFunc)` **at evaluation**
-(the combinators are pure and return a `Predicate`, not `(Predicate, error)`, so there is nowhere else to put
-it), reusing the **existing** sentinel rather than minting one. **The nil check precedes the short-circuit**:
+nil receiver or a nil argument yields a `Predicate[A]` returning `(false, err)` **at evaluation** (the
+combinators are pure and return a `Predicate`, not `(Predicate, error)`, so there is nowhere else to put it),
+reusing the **existing** sentinel rather than minting one. **The nil check precedes the short-circuit**:
 `p.Or(nil)` must surface `ErrNilFunc` even when `p` evaluates true. Plan 027 Task 9 enumerates the branches.
+
+**`err` is `msgin.Permanent(msgin.ErrNilFunc)`, wrapped with its position — §2.1 row 6 (D-M), and this
+paragraph is normative for it.** A nil combinator operand is fixed at construction and identical on every
+redelivery, so it takes the classification the invariant assigns:
+
+```go
+fmt.Errorf("%w: routing.Predicate.And: nil argument", msgin.Permanent(msgin.ErrNilFunc))
+// "msgin: permanent: msgin: nil endpoint function: routing.Predicate.And: nil argument"
+// errors.Is(err, msgin.ErrNilFunc) == true    msgin.IsPermanent(err) == true
+```
+
+The positional text is required, not cosmetic: a bare sentinel collapses every nil position — receiver and
+argument, across `And`, `Or` and `Not`, and across every shipped producer — into one string, which CLAUDE.md's
+*"errors that name the offending field/input"* rule exists to prevent. The wrap order is cause-first, matching
+every existing positional wrap in the tree (`payload.go:15`, `endpoint/consumer.go:869`,
+`endpoint/producer.go:467`). ADR 0029 §5.0b records the measured strings for both orders and why the doubled
+`msgin:` prefix (from `permanentError.Error()`, `reliability.go:13`) is recorded rather than repaired.
+
+> **ROUND-7 CORRECTION (R-B2 / D-B6).** This section specified the **pre-D-M** semantics — a bare
+> `(false, msgin.ErrNilFunc)`, no `Permanent`, no positional wrap — while §2.1 row 6 and §7 both cited D-M.
+> `grep -n Permanent` over this spec returned **zero hits between the §2.1 row and §7**. The spec is
+> normative, so an implementer following it would have written the bare sentinel and failed Task 9's own new
+> `IsPermanent` case. The round-6 pass added row 6 and never swept the section row 6 itself cites — the
+> forward-reference class §0 of the round-7 record names.
 
 A bare closure remains assignable, so **call sites are source-compatible**. `apidiff` will nonetheless report the
 parameter-type change on each typed constructor; that is expected and benign, and the plan records it as a
@@ -1679,6 +1720,12 @@ var (
 )
 ```
 
+**The godoc is written FRESH; root's deleted comment is not carried across** (round-7 X-B5). It must state
+the construction-vs-evaluation split and name **`msgin.ErrPayloadType`** as the evaluation-time counterpart.
+It must **not** name `ErrExprResultType` — §9 AC-10 arm 2 requires that identifier to be absent from every
+`.go` file in the workspace — and it must not repeat root's *"It is exported here, not in the provider"*
+clause, which asserts the premise D-I reversed.
+
 Root's `msgin.ErrInvalidExpression` and `msgin.ErrExprResultType` are **deleted**, not aliased. An alias would
 keep the dead names in root's closed contract while pretending they had moved, and `errors.Is` against an
 alias of a *different* `errors.New` value does not match — the alias would have to be `= msgin.ErrX`, which is
@@ -1704,18 +1751,34 @@ return zero, fmt.Errorf("%w: expr result %T is not %T", msgin.ErrPayloadType, go
 - **Why root's sentinel and not a twin.** ADR 0029 §5.0b's own argument was that a result-type mismatch is
   *the expression-domain **twin** of `ErrPayloadType`*. A twin that is a distinct `errors.New` value gives
   callers no shared `errors.Is` target, and every future CEL/starlark provider mints another one (§5.0c
-  recorded that cost and offered two escapes, neither of which was *"wrap the twin"*). `ErrPayloadType`'s
-  godoc (`errors.go:6`) is already domain-generic — *"a `Message[any]` payload cannot be asserted to T"* —
-  and a result-type mismatch is that same statement.
+  recorded that cost and offered two escapes, neither of which was *"wrap the twin"*).
 - **The retry classification comes for free, and that is the point.** `ErrPayloadType` is already inside
   `IsPermanent`'s closed enumeration (§4.1), so the fault is classified **permanent** and diverted to the
   invalid-message channel without a `msgin.Permanent` wrap. A freshly-minted `expr.ErrExprResultType` would
   have fallen outside that enumeration and been **retried** — the same defect **D-M** (§2.1 row 6) fixes for
   `ErrNilFunc`. The two decisions are one rule read from two directions: *a deterministic fault must not be
   retried*.
-- **Cost:** none to root's surface — no new root symbol, no new import edge, and the `expr` module's
+- **Cost to root's SURFACE: none.** No new root symbol, no new import edge, and the `expr` module's
   projected sentinel count drops from 2 to **1**. Root's projected count is unchanged at `43 − 2 + 1 = 42`
-  (§3.2, §4): root loses both expr sentinels either way.
+  (§3.2, §4): root loses both expr sentinels either way, and `apidiff` does not move.
+- **Cost to root's CONTRACT: `ErrPayloadType`'s godoc must be widened, and one `errors.Is` target now covers
+  two faults. Accepted, not absent.** `errors.go:6` today reads, in full:
+
+  ```
+  	// ErrPayloadType is returned when a Message[any] payload cannot be asserted to T.
+  	ErrPayloadType = errors.New("msgin: payload is not of the expected type")
+  ```
+
+  An expression's evaluated **result** is not a `Message[any]` payload, so D-K stretches the sentinel past
+  its stated contract. **Plan 027 Task 10 owns widening it** to name both producer classes, the permanence,
+  and the fact that the error *string* — `"want %T, got %T"` versus `"expr result %T is not %T"` — carries
+  the discriminator `errors.Is` deliberately does not. The two faults have **disjoint remedies** (fix the
+  codec/producing adapter, versus fix the expression) and one target; that is the price of the shared target
+  and it is stated rather than discovered.
+
+  > **ROUND-7 CORRECTION (D-B8).** This bullet read *"**Cost:** none to root's surface"* and the bullet above
+  > it asserted the godoc *"is already domain-generic"* — quoting the line while drawing the opposite
+  > conclusion from it. **No task amended `errors.go:6`**, in either document, until this round.
 - **D-I is unaffected.** `ErrInvalidExpression` is a construction-time fault with **no root twin**, so it
   still leaves root and the `expr` module still mints it with the `msgin/expr:` prefix.
 
@@ -1808,7 +1871,7 @@ optional polish.
 | **10** | **`SubscribableChannel`'s godoc cross-references `ExclusiveSubscribable`** (D-J) | ⛔ **N/A until Task 9.6** | Without it the optional capability is **undiscoverable from its own supertype**, so the accept-unknown arm becomes permanent for exactly the third-party channels most likely to fan out |
 | **11** | **`ExclusiveSubscribable.SingleSubscriber`'s godoc states the predicate END-TO-END and requires INVARIANCE** (D-J as amended by **D-L**, **revised** in round 7, and by **D-O**), in five parts: (a) it reports whether **every message sent to this channel reaches at most one recipient, counted across every process** — a statement about the channel's **policy**, not its current subscriber count, and an implementation **MUST NOT** compute it from a live subscriber count; (b) **verbatim, and normative down to its line breaks** — *"A channel MUST return false whenever a message sent to it can be received by any recipient other than the single subscriber registered on it — INCLUDING a recipient in another process. A broadcast broker subject, a Redis pub/sub channel, or an SSE stream fanned out to N instances MUST therefore return false even when its local handle admits one subscriber. A broker-backed channel MAY return true only when the broker guarantees the destination is private to this process's subscription — a per-instance NATS `_INBOX` reply subject, an exclusive auto-delete AMQP reply queue. That is the Return Address pattern, and it is what an honest true means here."*; (c) the value **MUST be constant for the channel's lifetime** — msgin calls it once, at construction, and treats it as an invariant; (d) implementations must **also** be safe for concurrent use; (e) it **MUST NOT block and MUST NOT panic** — msgin calls it inside `NewChannelExchange`, on the caller's goroutine, with no context and no timeout, so it must be a constant-time accessor over state fixed at construction (**D-O**) | ⛔ **N/A until Task 9.6** | **Invariance and concurrency-safety are different requirements and neither replaces the other.** A race-free `atomic.Load(&n) == 0` is concurrency-safe and still lies; the failure mode a bare concurrency clause leaves open is TOCTOU. Compile-proven in D-L: a state-reading probe answers `true` at construction, then admits N subscribers with **no error at all**. **Part (b) is D-L REVISED** — the round-6 wording (*"a channel whose deliveries reach other processes … MUST return false"*) measured **processes traversed** and therefore answered `false` for a per-instance NATS `_INBOX`, **the canonical Return Address channel**, while its own first sentence (*"THIS exchange will be the sole recipient"*) answered `true` for the same channel. Two normative sentences, opposite answers, and the correct implementation unrepresentable ([ADR 0030 §1](../adrs/0030-reply-channel-exclusivity-probe.md) carries the labelled withdrawal). **Part (e) is D-O**, compile-proven: `D1 panicking probe -> PANIC ESCAPES NewChannelExchange`, `D2 blocking probe -> NewChannelExchange HUNG` |
 | **11a** | **The same godoc states that EMBEDDING CUTS BOTH WAYS** (**D-L**): a type embedding `*channel.DirectChannel` or `*channel.PublishSubscribeChannel` **inherits `SingleSubscriber` by method promotion**, so it reports on the *embedded* channel even when it overrides `Subscribe` with its own multi-subscriber dispatch; a wrapper that changes subscription behavior **MUST declare its own `SingleSubscriber`** | ⛔ **N/A until Task 9.6** | ADR 0030 §5 presents embed-and-shadow as the **remedy** and never says promotion is also the **hazard**. Compile-proven: `struct{ *PublishSubscribeChannel }` reports `true` while its own `Subscribe` fans out to 2 |
-| **12** | **`NewChannelExchange`'s godoc states FOUR outcomes** — rejected · accepted-exclusive · accepted-no-probe · **accepted-but-only-exclusive-within-this-process** — and enumerates **`ErrChannelSubscribed`**, which it returns unwrapped from `reply.Subscribe` (`exchange.go:250`) and which its error list (`exchange.go:221-224`, naming only `ErrNilChannel`/`ErrInvalidReplyTimeout`/`ErrNilSubscription`) omits today. The **accepted-no-probe** arm additionally carries the **interface-wrapper hole** (**D-L**): a reply channel that wraps another by embedding the `msgin.SubscribableChannel` **interface** does **not** inherit `SingleSubscriber`, so it is accepted under this arm even when the channel it wraps would be rejected — a decorator over a fan-out channel must forward `SingleSubscriber` explicitly (or embed the concrete type) | ⛔ **N/A until Task 9.6** | ADR 0030 §Topology. The fourth outcome is the one a caller assumes away, because "the core rejects a shared reply channel" reads as a guarantee. The wrapper hole falsifies ADR 0030 §4's *"only a third-party implementation can be unknown to it"* — `struct{ msgin.SubscribableChannel }` is the idiomatic one-line logging/metrics decorator, and it makes the **in-tree** fan-out channel pass |
+| **12** | **`NewChannelExchange`'s godoc states FOUR outcomes** — rejected · accepted-exclusive · accepted-no-probe · **accepted-but-only-exclusive-within-this-process** — and enumerates **`ErrChannelSubscribed`**, which it returns unwrapped from `reply.Subscribe` (`exchange.go:250`) and which its error list (`exchange.go:221-224`, naming only `ErrNilChannel`/`ErrInvalidReplyTimeout`/`ErrNilSubscription`) omits today. The **accepted-no-probe** arm additionally carries the **wrapper hole** (**D-L**), which must be stated **BY SHAPE, NOT BY MECHANISM**: ***any* wrapper that does not itself declare `SingleSubscriber` is accepted under this arm, however it holds the channel it wraps** — so it is accepted even when the channel it wraps would be rejected, and a decorator over a fan-out channel must declare or forward `SingleSubscriber` explicitly. The two-line-decorator case (`struct{ msgin.SubscribableChannel }`, which promotes `Send`/`Subscribe` but not `SingleSubscriber`) is the *commonest* instance, not the boundary | ⛔ **N/A until Task 9.6** | ADR 0030 §Topology. The fourth outcome is the one a caller assumes away, because "the core rejects a shared reply channel" reads as a guarantee. The wrapper hole falsifies ADR 0030 §4's *"only a third-party implementation can be unknown to it"* — `struct{ msgin.SubscribableChannel }` is the idiomatic one-line logging/metrics decorator, and it makes the **in-tree** fan-out channel pass. **Round-7 correction (design M5): this obligation named only interface embedding.** Compile-proven that a generic wrapper holding the **concrete** type in a named field with hand-written `Send`/`Subscribe` forwarders strips the probe identically — `D3 generic wrapper[*PubSubChannel] -> <nil>` (accepted) where the bare channel is rejected. Naming one mechanism invites a reader to conclude the other is safe, so the obligation states the **invariant** |
 | **13** | **`endpoint.WithSharedReplyChannel`'s godoc states it SUPPRESSES THE PROBE and does not confer shareability** — on a `DirectChannel` the second exchange still gets `ErrChannelSubscribed` | ⛔ **N/A until Task 9.6** | CLAUDE.md's sensible-defaults rule names option godoc specifically; this is the one new symbol the plan left undocumented |
 
 **Three unmet (3, 4, 7), one half-met (1), and five more (10, 11, 11a, 12, 13) that arrive with Task 9.6 —
@@ -1933,11 +1996,18 @@ done < docs/plans/027-tools/symmap.tsv  # currently 2 survivors: codec.go:33, ro
 # so a symbol declared in a directory this list omits is reported as a survivor although it exists.
 # That is a FALSE POSITIVE, not a blind spot: the allow-list below exists solely to paper over it
 # for the satellite modules (WithBusyTimeout, WithImage, WithJournalMode, WithSharedMemory).
-# TASK 10 MUST EXTEND THE LOOP WITH `expr` the moment `expr/` exists (round-6 E-B2): the module's
-# `expr/errors.go` godoc opens `// ErrInvalidExpression is …`, so without the extension arm 2 reports
-# that name as a survivor on a correct tree. It is NOT in the list below because decls.go panics on a
-# directory that does not exist, and adding it before Task 10 would make the gate unrunnable.
+# TASK 10 MUST EXTEND THE LOOP WITH `expr` the moment `expr/` exists (round-6 E-B2), taking the declared
+# side from ELEVEN directories to TWELVE: the module's `expr/errors.go` godoc opens
+# `// ErrInvalidExpression is …`, so without the extension arm 2 reports that name as a survivor on a
+# correct tree. Measured by emulating Task 10's end state (round-7 X-B7):
+#     loop WITHOUT expr -> ErrInvalidExpression, WithRelease
+#     loop WITH    expr -> WithRelease
+# It is NOT in the list below because decls.go panics on a directory that does not exist
+# (`go run docs/plans/027-tools/decls.go ./expr` -> `panic: open ./expr: no such file or directory`),
+# so adding it before Task 10 would make the gate unrunnable.
 # Do NOT allow-list `ErrInvalidExpression` instead — that re-decorates the gate rather than fixing it.
+# THE EXECUTABLE HALF IS A CHECKBOX IN PLAN 027 TASK 10. Until round 7 this instruction lived only in
+# this comment block and nowhere a worker executes, which is round-7 blocker X-B7.
 # KNOWN BLIND SPOTS (true false-NEGATIVES) — stated, because an overclaimed gate is a decorative gate
 # (round-5 MINOR 5):
 #   * shape: a name outside With|Err|New is invisible (FilterExpr, StreamingSource, boxMessage...)
@@ -2034,8 +2104,18 @@ Both arms must be empty (arm 2 modulo the allow-list above). Run the sweep **aft
    pre-window code. **A compile failure produces no `FAIL` line** — the RED artifact is the compiler
    transcript from `go test -c -o /dev/null .`, not `go vet` (which stops after one type-error batch).
 5. **Behavior preservation** — every pre-existing test passes, modified only where it names a moved or
-   narrowed signature. No test's assertions change, outside §2.1's **six** exceptions — rows 5 (D-J) and 6
-   (D-M) are the ones Tasks 9.6 and 9 respectively *require* an assertion change for. **Proved by the
+   narrowed signature. No test's assertions change, outside **the rows of §2.1's table** (cite the table, not
+   a count — the table has grown three times). The rows that *require* an assertion change, with the task that
+   owns each:
+
+   | §2.1 row | Decision | Task that requires the assertion change |
+   |---|---|---|
+   | 5 | D-J | **Task 9.6** |
+   | 6 | D-M | **Task 9.7** (the shipped producers — `nilFuncStep` ×3, `Router.Handle`, `msgin.To`) **and Task 9** (the combinators) |
+   | 7 | D-N | **Task 9.7**, same commit as row 6 |
+
+   Row 6 previously named Task 9 alone, which is how a worker executing Task 9 would have folded Task 9.7's
+   shipped-code edits into Task 9's additive commit (round-7 R-B4/D-B7/X-B3). **Proved by the
    normalised per-file diff** — *not* by a `Test*`/`Example*` name-set identity, which §2 withdrew in round 5
    as false in every frame (224 → 211 → 221 unique names across the window; 17 left and 14 arrived, all
    documented in §4.1 and §6).
@@ -2107,9 +2187,10 @@ Both arms must be empty (arm 2 modulo the allow-list above). Run the sweep **aft
    state, is the observable.
 10. **Expr sentinels (D-I + revised D-K, §3.2, §7)** — the `expr` module declares **exactly one** sentinel,
     `ErrInvalidExpression`, with the `msgin/expr:` prefix; `ErrExprResultType` exists **nowhere in the
-    workspace**, because the result-type fault wraps `msgin.ErrPayloadType` (D-K). Four arms, each measured
-    on the untouched tree at `aae6160` (code byte-identical to `dadc775`) and labelled with what it prints
-    **today**, so a reviewer can tell a real gate from a no-regression guard:
+    workspace**, because the result-type fault wraps `msgin.ErrPayloadType` (D-K). Four arms **on the
+    sentinel names** (a fifth, on `ErrPayloadType`'s godoc, follows), each measured on the untouched tree at
+    `aae6160` (code byte-identical to `dadc775`) and labelled with what it prints **today**, so a reviewer
+    can tell a real gate from a no-regression guard:
 
     ```bash
     # RED today — prints 7 lines (errors.go:168,173,180,193,195,203,206)
@@ -2121,6 +2202,25 @@ Both arms must be empty (arm 2 modulo the allow-list above). Run the sweep **aft
     # RED today — "no required module provides package …/expr"
     go doc github.com/kartaladev/msgin/expr.ErrInvalidExpression | grep -q 'msgin/expr:'
     ```
+
+    A **fifth grep arm — `ErrPayloadType`'s widened godoc, decision D-K, owned by Task 10** (round-7 D-B8).
+    Reusing a root sentinel for a second producer class stretches it past a godoc that names only the first,
+    so §7's contract is not met until `errors.go:6` names both. Measured on the untouched tree at
+    `fe86a12`, all four RED (`exit=1`):
+
+    ```bash
+    # RED today — errors.go:6 is one line and names only the payload side
+    go doc github.com/kartaladev/msgin.ErrPayloadType | grep -q 'PAYLOAD SIDE'
+    go doc github.com/kartaladev/msgin.ErrPayloadType | grep -q 'EXPRESSION SIDE'
+    go doc github.com/kartaladev/msgin.ErrPayloadType | grep -q 'ACCEPTED TRADE-OFF'
+    go doc github.com/kartaladev/msgin.ErrPayloadType | grep -q 'expr result'
+    ```
+
+    Four ANDed `grep -q`s, not a line count and not one match — the same shape §8.0b's obligation-11 gate
+    uses, and each phrase must sit **within one godoc line**, because `go doc` reproduces the comment's own
+    line breaks. **Plan 027 Task 10 publishes this same set and must stay diff-identical to it**; this is the
+    normative copy. The fourth conjunct is deliberately the *error-string* discriminator, so the gate fails
+    if the widened godoc states the two classes but drops the trade-off's remedy.
 
     Plus a **behavioral** arm the greps cannot express, owned by Task 10: a provider whose expression
     evaluates to the wrong type returns an error satisfying **`errors.Is(err, msgin.ErrPayloadType)`** and

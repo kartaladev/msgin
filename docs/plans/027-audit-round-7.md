@@ -450,34 +450,98 @@ empty, `go build ./...` clean, `go test ./...` **11/11 ok**. Last commit `c4582b
 | coordinator | **R-B1** — Task 9.6's first checkbox (the last live use of the withdrawn handle-local wording, in the one document that writes the text) | ✅ fixed: now "write ADR 0030 §1 verbatim", with the correction rationale inline |
 | coordinator | **R-B3 / X-B8 / D-M1 / X-M7** — the Plan's gate block | ✅ fixed: 11 gates → **16**, diff-identical in coverage to Spec §8.0b (8.11 2→7 conjuncts, 8.11a added, 8.12 line-count → ANDed `grep -q`, 8.13 +1 conjunct, 8.4c–f added, 11c2 tightened). **Re-run: all 16 RED**, transcript pasted. X-B8's per-task baseline split recorded as a three-group table |
 | coordinator | **D-M1 / R-M5** mirrored into Spec §8.0b's obligation-12 gate | ✅ fixed (same line-counting bug) |
+| 3 | **X-B5** — Task 10's *"recover the godoc from `git show 3d0b87a:errors.go`, lines 168–180"*, **and its mirror in Task 9.5** (*"Copy `ErrInvalidExpression`'s godoc out to Task 10 first"*) | ✅ both withdrawn. Task 10 now carries a **three-point content spec** (construction-vs-evaluation split, counterpart named as `msgin.ErrPayloadType`, why it is declared in the provider) and writes fresh godoc. The command's 13 lines of real output are pasted in the correction block so the two defects are checkable, not asserted. **X-M13 folded in** — `git show 3d0b87a:` reads history, so *"before Task 9.5 deletes it"* was never a real deadline |
+| 3 | **D-B8** — the `ErrPayloadType` godoc widening, its owner, and the missing cost record | ✅ **Task 10 owns it** (rationale below). Godoc text drafted in the checkbox; **4-conjunct `go doc` gate, all RED, diff-identical in Spec AC-10 (arm 5) and Plan Task 10**, verified by mechanical `diff`. ADR 0029 §5.0b's *"No root change… godoc is already domain-generic"* → *"no new root **symbol** and no new import edge; the godoc IS widened"*, with `sed -n '6,7p' errors.go` pasted; Spec §7's *"Cost: none to root's surface"* split into **surface** (none) and **contract** (widened godoc + one `errors.Is` target over two disjoint remedies — accepted, stated). §5.0c gains *"a narrowing, not a cost of zero"*. Task 10's commit scope `feat(expr)` → **`feat(expr,core)`** |
+| 3 | **X-B7 (Task-10 half)** | ✅ new Task 10 checkbox extending Spec §8.1 arm 2's declared-side loop from **eleven to twelve** dirs, with the false positive **proven by emulation** (root's two sentinel blocks `sed`-deleted, stub `expr/errors.go` added, both restored): without `expr` → `ErrInvalidExpression, WithRelease`; with → `WithRelease`. `decls.go`'s panic on a missing dir pasted as the reason it cannot land earlier. Spec §8.1's comment block now points at the executable checkbox |
+| 3 | **X-M3 / X-M10** | ✅ Task 9.5's commit scope `refactor(core)!` → **`refactor(core,http)!`** (two of its own capability sites are in `adapter/http` + `adapter/http/stdlib`; `http` is the scope this repo already uses). X-M10: a labelled *"there is no RED for this checkbox, and that is correct"* block — the widening landed in `b6ce7bb`, proven with the removed `Subscribe` line and today's send-only `go doc MessageChannel` |
 
 **Verified after the above:** `grep -rn "this channel in this process"` over the Plan and Spec → **2 hits, both
 inside the labelled `ROUND-7 CORRECTION` block**; zero live sites.
 
-### REMAINING — nothing below has been started
+### REMAINING
 
-**Owner 1 leftovers:**
-- Spec **obligation 12**'s *text* (D-M5 — state the wrapper invariant **by shape**: *any* wrapper that does not
-  itself declare `SingleSubscriber` is accepted, however it holds the channel. Compile-proven that a generic
-  wrapper over the **concrete** type strips the probe identically). The *gate* is fixed; the obligation wording
-  is not.
-- Spec **§10**'s topology bullet — narrow the reversal claim to the **broadcast** case, per D-L revised.
-- Plan **Task 9.6**: D-O's `safeSingleSubscriber` checkbox + the **sixth** truth-table row; **R-M6** (the
-  `countingSharedChannel` fake must state it implements `Send`); **X-M8** (the stated reason for the
-  unconditional opt-out is falsified by D-M2 — the conclusion survives, the reason does not).
-- **D-M6** — ADR 0030's Alternatives table still never weighs the soft opt-in
-  (`endpoint.WithRequireExclusiveReply()`, or a warn-level log on the accept-unknown arm). Verify whether owner
-  1 landed this before dying; if not, it is outstanding.
+**Owner 1 leftovers — CLOSED by the coordinator 2026-07-29, except where noted:**
+- ✅ Spec **obligation 12**'s *text* (D-M5) — restated **by shape**: *"any wrapper that does not itself declare
+  `SingleSubscriber` is accepted under this arm, however it holds the channel it wraps"*, with the two-line
+  interface decorator demoted from *the boundary* to *the commonest instance*, and the compile-proven generic
+  concrete-field wrapper (`D3 generic wrapper[*PubSubChannel] -> <nil>`) recorded. Naming one mechanism invites
+  a reader to conclude the other is safe.
+- ✅ Plan **Task 9.6** — D-O's `safeSingleSubscriber` checkbox added (fail closed, with the four in-repo
+  authorities and the blocking-is-a-MUST-not-a-guard split), and the truth table raised **four arms → five**
+  with the panicking-probe row as its covering case, asserted via `require.NotPanics`.
+- ⚠️ **Still open (small):** Spec **§10**'s topology bullet — narrow the reversal claim to the **broadcast**
+  case per D-L revised. ADR 0030 §Topology carries the narrowing; the Spec bullet was not re-checked.
+- ⚠️ **Still open:** **R-M6** (the `countingSharedChannel` fake must state it implements `Send`), **X-M8** (the
+  stated reason for the unconditional opt-out is falsified by D-M2 — conclusion survives, reason does not), and
+  **D-M6** (ADR 0030's Alternatives table still never weighs the soft opt-in
+  `endpoint.WithRequireExclusiveReply()`, nor a warn-level log on the accept-unknown arm — D-L killed the
+  cheapness premise that made accept-unknown look free).
 
-**Owner 2 — D-M (+`ErrNilSink`) and D-N: NOT STARTED.** All of §2 "Owner 2": R-B2/D-B6 (Spec §6 still
-specifies pre-D-M semantics), R-B4/D-B7/X-B3 (Task 9.7 in no normative document), X-B2 (Task 9.7's RED gate is
-unsatisfiable — it measures the bare sentinel), X-B4 (the hard-coded five-file godoc grep misses `errors.go:152`
-and `routing/aggregator.go:239`), D-B1 (`ErrNilSink`), D-B4/D-N (the divert fallback + ADR 0007 amendment),
-D-B7 (Spec §2.1 row 6's universal quantifier), plus minors D-M1/X-M9, D-M2/X-M2, X-M4, X-M5, X-M14.
+**Owner 4b — Plan-027 hygiene: ✅ APPLIED 2026-07-29.** X-B6 (the falsified `crontest` evidence, now the
+comment-stripped form with the real transcript and counter-rule 10 named), X-B7's Task-12 half (the sweep now
+runs **twice** — 9.5 and again on the delivered tree — with a `WHY THIS RUNS TWICE` block naming the four tasks
+that write godoc after 9.5), M-M2 (reverse links to rounds 6 and 7 from both Plan and Spec), M-M9 (headline
+advanced from *"ROUND-3 AUDIT"* to round 7), X-M1 (Task 9.6 `S` → `M`), X-M12 (trailer footers on Tasks 9, 9.5,
+10, 11, 12 — `grep -c '^Plan: 027$'` → **7**, one per task).
 
-**Owner 3 — revised D-K: NOT STARTED.** X-B5 (Task 10's verbatim-recovery instruction reintroduces
-`ErrExprResultType` and the pre-D-I premise), D-B8 (`ErrPayloadType`'s godoc widening + the cost record), the
-shared half of X-B7, plus X-M3, X-M10, X-M13.
+It **verified rather than duplicated** two findings owner 2 had already closed (X-M1's Task-9.7 half; X-M6's
+re-typed godoc block, whose replacement it re-ran and confirmed byte-identical at 15 lines). It also **declined
+a prescribed sub-instruction**: the *"edit #3 is complete when it prints 1"* criterion is not derivable, because
+a matrix entry is a `- name:`/`dir:` pair and the `workspace` entry is a loop element. It published a checkable
+criterion instead — non-zero on both sides, and `dir:` goes **6 → 8**.
+
+### JOIN CHECK — RUN (counter-rule 6). Tool: `docs/plans/027-tools/joincheck.py`
+
+Run over all eight bundle documents after the pass. It **found a real gap**: `D-O` appeared 3× in the Plan with
+**no owning task**, which is owner 1's unfinished `safeSingleSubscriber` work surfacing mechanically rather than
+by inspection. Fixed (above), and every decision now resolves:
+
+| Decision | ADR | Spec 014 | Plan 027 |
+|---|---|---|---|
+| D-J | 0028 · 0030 | Task 9.6, 12 | Task 9.6 |
+| D-K | 0029 | Task 10 | Task 10 |
+| D-L | 0028 · 0030 | Task 11 | Task 9.6, 11 |
+| D-M | 0007 · 0029 | Task 9, 9.7 | Task 9, 9.7 |
+| D-N | 0007 · 0029 | Task 9, 9.7 | Task 9.7 |
+| D-O | 0030 | Task 9.6 | Task 9.6 |
+
+**The tool was corrected mid-check.** Its first version inferred ownership only from a `Task N` citation within
+200 characters of a mention — a **false-negative generator**, because a decision recorded as a checkbox inside
+its own task's section often never repeats the words "Task N". That is exactly why D-O read as unowned even
+after the fix. It now also attributes by **enclosing `## Task N` heading**, marked `*` in the output. The
+alternative — padding the documents with redundant citations to satisfy the checker — would have been fitting
+the artifact to the tool.
+
+**Owner 2 — D-M (+`ErrNilSink`) and D-N: ✅ APPLIED 2026-07-29.** *(Row reconciled by the coordinator — owner 2
+did not flip its own ledger entry, which owner 3 caught. A ledger that reads NOT STARTED for applied work is the
+same false-status class this chain keeps finding; the ledger is itself an artifact and must be measured, not
+remembered.)* R-B2/D-B6, R-B4/D-B7/X-B3, X-B2, X-B4, D-B1, D-B4/D-N and D-B7 are all closed, plus minors
+D-M1/X-M9, D-M2/X-M2, X-M4, X-M5, X-M14. Four files, `+690/−137`, zero `.go` touched.
+
+Two findings owner 2 added that were not in §2, both verified:
+
+- **`RetryPolicy{MaxAttempts: 3}` is REJECTED without a DeadLetter sink** (`msgin: finite MaxAttempts requires
+  a DeadLetter sink`), so every finite-retry consumer necessarily has a DLQ while `WithInvalidMessageSink` is
+  off by default. **D-N's loss path was therefore the DEFAULT configuration, not a corner case** — a stronger
+  premise than §1 recorded. The example config as written in ADR 0029 §5.0b and Plan Task 9 *cannot be run*;
+  corrected to `{MaxAttempts: 3, DeadLetter: dlq}` in both.
+- **`grep -r`'s traversal order is not stable between runs** — three runs on an unchanged tree emitted the same
+  12 lines in two different orders. Every pasted sweep in the bundle is now `| sort`-pinned; without it the
+  "diff the pasted block" gate fails on pure noise.
+
+**Owner-2 specification, flagged for review — not a prior decision.** D-N's §1 statement left three details
+undecided that the plan cannot execute without, and owner 2 settled them: **(a)** `OnInvalidMessage` fires, not
+`OnDeadLetter` (the hook reports classification; the sink is destination); **(b)** the fallback applies to
+**both** invalid-path call sites, so **the decode arm also changes discard → DLQ** — a second behavior change in
+its own right, recorded as such; **(c)** the fallback emits its own WARN. Implemented at the two call sites via
+an `invalidTarget()` accessor rather than inside `divert`, since `divert` is shared with the dead-letter path.
+**(b) is the one to confirm**: it widens D-N beyond nil-endpoint faults. The coordinator's read is that it is
+correct — D-N exists so a configured DeadLetter sink is never silently bypassed, and applying it to one call
+site but not the other would be arbitrary — but it exceeds what was approved when D-N was chosen.
+
+**Owner 3 — revised D-K: ✅ APPLIED 2026-07-29** (see the APPLIED table above; row added there). X-B5, D-B8,
+the Task-10 half of X-B7, X-M3, X-M10 and X-M13 are all closed. Zero `.go` files touched; `go build` ·
+`go vet` · `go test ./...` **11/11 ok** · `gofmt -l .` empty after the pass.
 
 **Owner 4b — Plan-027 hygiene: NOT STARTED.** These were mis-partitioned to owner 4a, whose brief forbade
 editing the Plan; it correctly refused them. **X-B6** (the plan's *"`grep -n crontest ci.yml` → no output"*

@@ -1,8 +1,14 @@
 # ADR 0007 — Reliability & settlement API
 
-- **Status:** Accepted (2026-07-17)
+- **Status:** Accepted (2026-07-17) · **D7 amended 2026-07-28 by decision D-N** — see the amendment note in
+  D7 below. The amendment is recorded here rather than by superseding this ADR: D7's reasoning stands
+  unchanged for the case it weighed (discard vs. keep-retrying); D-N adds a case it could not have weighed,
+  created by decision **D-M** in [ADR 0029 §5.0b](0029-eip-lexical-alignment.md).
 - **Context source:** [Spec 001 — Messaging core](../specs/001-messaging-core.md) §5–§8;
   [Plan 002 — Reliability](../plans/002-reliability.md)
+- **Amended by:** [ADR 0029 §5.0b](0029-eip-lexical-alignment.md) (D-N, D7 only) ·
+  **Spec:** [014 §2.1](../specs/014-core-package-layout.md) · **Plan:** [027](../plans/027-core-package-layout.md)
+  Task 9.7
 - **Related:** [ADR 0002 — Adapter SPI](0002-adapter-spi.md) (runtime-owned reliability, `Delivery`/
   `Ack`/`Nack`, `NativeReliability` escape hatch), [ADR 0004 — clockwork](0004-clockwork-dependency.md),
   [ADR 0005 — cenkalti/backoff](0005-cenkalti-backoff-dependency.md) (backoff placement)
@@ -164,6 +170,41 @@ not fall back to "keep retrying" — for a `Permanent`/decode error, retrying ca
 retrying anyway would only convert a configuration gap (no sink configured) into an infinite-retry
 trap, which is worse than a logged, observable discard. Task 5 implements the call site; this decision
 fixes the *policy* so Task 5 has nothing left to decide.
+
+> **AMENDED 2026-07-28 by decision D-N** — [ADR 0029 §5.0b](0029-eip-lexical-alignment.md#50b-the-two-sentinels-are-not-symmetric-and-a-deterministic-fault-needs-a-retry-classification--decisions-d-k-revised-and-d-m),
+> [Spec 014 §2.1](../specs/014-core-package-layout.md#21-the-deliberate-behavior-changes-the-register), realized
+> by [Plan 027](../plans/027-core-package-layout.md) Task 9.7. **The discard is no longer the immediate
+> fallback: the dead-letter sink is tried first.**
+>
+> When `invalidSink == nil` **and** `policy.DeadLetter != nil`, the invalid-message divert routes to the
+> **DeadLetter sink**. The discard above remains the terminal behavior only when **neither** sink is
+> configured. `OnInvalidMessage` still fires in both cases — the hook reports the *classification*, the sink is
+> only the *destination* — and the fallback is announced with its own WARN naming both facts (no invalid-message
+> sink configured; message sent to the dead-letter sink instead).
+>
+> **Why D7's original reasoning does not cover this case.** D7 weighed *discard* against *keep retrying* and
+> chose discard, correctly — but it never weighed *discard* against *a durable sink the caller already
+> configured*, because when it was written no permanent fault could arrive at a consumer that had a DeadLetter
+> and no invalid sink. Decision **D-M** creates exactly that arrival: it reclassifies deterministic endpoint
+> faults (`ErrNilFunc`, `ErrNilSink`) as `Permanent`, which moves them off the retry-exhaustion path that had
+> been depositing them in the DeadLetter sink. Measured, one message,
+> `RetryPolicy{MaxAttempts: 3, DeadLetter: dlq}`, no `WithInvalidMessageSink`:
+>
+> ```
+> BEFORE D-M       bare ErrNilFunc         OnRetry=2 OnDeadLetter=1 OnInvalidMessage=0 | dlqSink=1 discarded=false
+> AFTER  D-M       Permanent(ErrNilFunc)   OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1 | dlqSink=0 discarded=true
+> AFTER  D-M + D-N Permanent(ErrNilFunc)   OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1 | dlqSink=1 discarded=false
+> ```
+>
+> Without D-N a message this library previously captured **durably** would start being **dropped**. That is not
+> a corner case: a finite `MaxAttempts` **requires** a `DeadLetter` (`RetryPolicy.Validate`, `retry.go:46-53`)
+> while `WithInvalidMessageSink` is optional and unset by default, so "DeadLetter present, invalid sink absent"
+> is the shape of every finite-retry consumer that has not opted in. CLAUDE.md: *"When a wrong default could
+> silently corrupt (… lose data …), pick the value that fails safe."*
+>
+> **Scope:** both invalid-message divert call sites — the decode-failure path and the permanent-handler-error
+> path. The decode arm's change (discard → dead-letter) is a behavior change in its own right and a strict
+> improvement over the discard; it is recorded rather than inherited silently.
 
 ### D8 — `divert` settlement contract (Task 5)
 
