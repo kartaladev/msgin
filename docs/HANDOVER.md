@@ -17,23 +17,34 @@
 > `HEAD`** — a commit cannot state its own final diffstat, the same self-reference the box in §2 documents for
 > `HEAD`'s SHA.
 >
-> ### ⚠ THE ROUND-7 FIX PASS IS PARTIAL AND THE WORKING TREE IS DIRTY — READ `027-audit-round-7.md` §5 FIRST
+> ### ✅ THE DESIGN PHASE IS CLOSED. THE NEXT STEP IS IMPLEMENTATION, AT TASK 9.
 >
-> **Do not start implementation, and do not assume the bundle is coherent.** Owner 1's subagent died mid-edit
-> on an API session limit; the coordinator finished its two highest-value items by hand. **Owners 2, 3 and 4b
-> never ran, and the mandatory join check has not been run.** `docs/plans/027-audit-round-7.md` **§5** is the
-> authoritative APPLIED / REMAINING ledger — it names every finding in each bucket.
+> **Rounds 7 and 8 have both run and both fix passes are fully applied, verified and committed** (`7ee3fd6`,
+> `0c3ec29`). **Round 8 is the LAST audit round** — its findings were overwhelmingly stale *instructions*
+> rather than wrong *design*, and the remaining risk is better caught by writing code against the gates than by
+> another pass over the documents.
 >
-> Applied: owner 4a in full (7 files); D-L (revised) + D-O in ADR 0030; Spec obligation 11's five parts; the
-> Spec obligation-11 **gate**, which owner 1 left grepping `'reach other processes'` — D-L's *superseded*
-> wording, making it **unsatisfiable by any correct godoc**; Task 9.6's stale checkbox (R-B1); and the Plan's
-> gate block (R-B3), raised from 11 gates to **16** and made diff-identical in coverage to Spec §8.0b.
+> **ROUND 8 record: [`docs/plans/027-audit-round-8.md`](plans/027-audit-round-8.md).** Two lenses (design of
+> the round-7 decisions; the gate sets **executed**, not read) plus a join check. 14 blockers, 11 minors, all
+> closed. It produced **D-P** and corrected **D-N**, **D-O**, **D-M** and **D-K**.
 >
-> Not started: **D-M / `ErrNilSink` / D-N** (owner 2), **revised D-K** (owner 3), **Plan-027 hygiene**
-> (owner 4b), and the **join check**.
+> **The four decisions a fresh session must know, all DECIDED but NOT YET IMPLEMENTED:**
 >
-> **State is green, not finished:** zero `.go` changed, `gofmt -l .` empty, `go build ./...` clean,
-> `go test ./...` 11/11 ok. It is a safe place to stop, not a place to build on.
+> | | Decision | One-line meaning |
+> |---|---|---|
+> | **D-N** | An invalid message falls back to `RetryPolicy.DeadLetter` when no `WithInvalidMessageSink` is set | Stops silently deleting messages the operator configured a net for |
+> | **D-P** | …but that fallback is **SINGLE-SHOT** — if the sink's `Send` fails, discard per ADR 0007 D7 | D-N without it was a **measured unbounded retry loop**: 41 deliveries in <10 ms, invisible to MaxAttempts, backoff and the breaker |
+> | **D-O** | `SingleSubscriber` must not block or panic; msgin recovers, **fails closed**, and carries the panic **in the error** | A recovered panic that only reaches a discard logger is a deleted diagnosis |
+> | **D-M** | Deterministic endpoint faults are `Permanent` — but only those **fixed at construction** | The round-7 wording was false; two counter-examples are reachable today |
+>
+> **State: green AND finished.** Zero `.go` changed since `3d0b87a`; `gofmt -l .` empty; `go build ./...`
+> clean; join check clean; **all seven modules green standalone** under `GOWORK=off go test ./... -race
+> -shuffle=on`.
+>
+> **One open question for the user, deliberately not decided:** a dead-lettered message carries no
+> settlement-reason header, so a reader of the DLQ cannot distinguish *"retries exhausted"* from *"permanently
+> invalid"*. Recorded as a limitation with the SPI seam noted; stamping a header was rejected for this window
+> because it adds an exported root symbol **and** makes `divert` rewrite headers. See round-8 §2 A3.
 >
 > **No `.go` file has been touched since `3d0b87a`.** The code is green and unchanged; every edit in this
 > window is documentation. That means the tree is a safepoint, and it also means **every count in the bundle is a
@@ -89,18 +100,31 @@ refactor** (Plan 027): flatten-to-packages, channel interface segregation, EIP l
 Tasks 0–8 are **implemented, green and committed**. Tasks 9, 9.5, 9.6, **9.7 (new — D-M)**, 10, 11, 12 remain.
 **No implementation code for them has been written.**
 
-Sizes were revised in round 6: **9.5 is `M`** (was `S`) and **10 is `L`** (was `M`) — re-sized rather than split,
-because the task *number* is a cross-document link (`CLAUDE.md`, ADR 0029, Spec §8.1 all cite `9.5`/`9.5.1` by
-number). Both tasks record the clean split that stays available. **Task 9.6 is still `S` and is arguably `M`** after
-gaining two checkboxes — an open call, flagged rather than changed unilaterally.
+Sizes were revised across rounds 6–8: **9.5 `M`** (was `S`), **9.6 `M`** (was `S`), **9.7 `M`**, **10 `L`**
+(was `M`) — **re-sized rather than split**, because a task *number* is a cross-document link: `CLAUDE.md`,
+ADRs 0007/0029, Spec 014 and the audit records all cite `9.5`/`9.6`/`9.7`/`10` by number, so renumbering is a
+coordinated multi-document edit. Each task records the clean split that stays available if one is ever wanted.
 
 ## 2. Exact state
 
-Branch `claude/repo-structure-refactor-jt79t1`, measured at `c4582ba` (this file's commit **minus one** — see
-the box below): **17 commits ahead of `main` (`0de54e9`)**, and **14 ahead of `origin/<branch>` (`6f44db6`)** —
-i.e. partly pushed, with all refactor work unpushed. Committing this handover makes them **18 / 15**.
-**Verify these, never copy them** — they were wrong three ways in three consecutive handovers, and then wrong
-again in the fourth because nobody re-ran them after the round-6 fix pass was committed.
+Branch `claude/repo-structure-refactor-jt79t1`, measured at `0c3ec29` (this file's commit **minus one** — see
+the self-reference box below): **20 commits ahead of `main` (`0de54e9`)**, and **17 ahead of
+`origin/<branch>` (`6f44db6`)**, 0 behind — i.e. partly pushed, with all refactor work unpushed. Committing
+this handover makes them **21 / 18**.
+
+> **VERIFY THESE, NEVER COPY THEM.** They were wrong three ways in three consecutive handovers, then wrong
+> again twice more because nobody re-ran them after a fix pass was committed. Re-derive with
+> `git rev-parse --short main @{u} HEAD` and `git rev-list --left-right --count @{u}...HEAD`.
+
+**The five audit-round commits, newest first** — cite these, they are stable:
+
+| SHA | What it carries |
+|---|---|
+| `0c3ec29` | Round 8 + its fix pass; **D-P** |
+| `7ee3fd6` | Round 7's fix pass completed; the first join check |
+| `fe86a12` | Round 7's findings + the first half of its fixes; **D-L (revised)**, **D-N**, **D-O** |
+| `c4582ba` | Round 6's fix pass; **D-L**, **D-M**, revised **D-K** |
+| `aae6160` | The D-I/D-J close and rounds 4–5 |
 
 The round-6 fix pass landed as `c4582ba`: **25 files changed, `+2397/−323`** (24 modified +
 `docs/plans/027-audit-round-6.md` new), **zero `.go` files changed** —
@@ -368,21 +392,27 @@ decomposition is an exact partition. All cross-links resolve both ways.
 
 ## 6. Next actions
 
-1. **The design bundle is committed as `aae6160`; round 6's fix pass is `c4582ba`; ROUND 7 HAS RUN** (records:
-   [round 6](plans/027-audit-round-6.md) — 25 blockers / 34 minors, decisions **D-L**, **D-M**, revised **D-K**;
-   [round 7](plans/027-audit-round-7.md) — four Opus lenses, all four `NEEDS-REVISION`, **26 blockers / 37
-   minors**, producing **D-L (revised)**, **D-N**, **D-O** and a scope correction to **D-M**). Round 7's fix pass
-   is partitioned **by decision, not by file** (its §4, counter-rule 6) into four owners, and **ends with a
-   mandatory join check**. **Next after the fix pass: a bounded round 8**, scoped only to the joins and the gate
-   sets — not a fresh full-bundle audit.
-2. **Then implementation**, in plan order: Task 9 → 9.5 → 9.6 → 10 → 11 → 12. **Task 11 must run AFTER
-   Task 9.6** (Spec §8 obligations 10–13 document symbols 9.6 creates). **Ask before writing any
-   implementation code, and default to SDD** (fresh implementer subagent per task, coordinator verifies green
-   and commits, adversarial reviewer before delivery). Plan approval does **not** authorize the execution
-   mode.
-3. **Before merge:** `/code-review` and `/security-review` over `main..HEAD` (both have run per-increment;
-   the whole-branch pass has not). Consider `/code-review ultra` — it is user-triggered and billed, and an
-   assistant cannot launch it.
+1. **START HERE: implementation, Task 9.** The design phase is closed — do **not** open a round 9. Order:
+   **Task 9 → 9.5 → 9.6 → 9.7 → 10 → 11 → 12.** Two ordering constraints are load-bearing: **Task 11 must run
+   after Task 9.6** (it re-verifies gates 9.6 turns green), and **Task 9.7's own header states it runs first**
+   among the shipped-code changes — read its rationale block before resequencing.
+
+   **Ask the user before writing any implementation code, and default to SDD** — a fresh implementer subagent
+   per task writes code + tests TDD red→green, the coordinator verifies green and commits, an adversarial
+   reviewer reviews before delivery. **Plan approval does NOT authorize the execution mode**; that is a
+   separate, per-task go-ahead.
+
+2. **Before writing anything, run the §11 gate baseline** (Plan 027, `#### §11 RED baseline`) and confirm the
+   gates for *your* task are RED. **They are pinned per task, not to the untouched tree** — eleven of the
+   sixteen are expected GREEN by the time Task 11 starts. The per-group table beneath the block says which.
+
+3. **Before merge:** `/code-review` and `/security-review` over `main..HEAD` (both have run per-increment; the
+   whole-branch pass has **not**). Consider `/code-review ultra` — user-triggered and billed; an assistant
+   cannot launch it.
+
+4. **Do not re-litigate what is already proven.** Round 8 §3 lists what was verified by *execution* — all 16
+   gates RED and satisfiable, the staleness sweep, `apidiff`, the join check, `symmap.tsv`. Rounds 6 §6 and 7 §5
+   correct their own records; read those sections before trusting §1–§4 of the same files.
 
 ## 7. Gotchas & environment
 
