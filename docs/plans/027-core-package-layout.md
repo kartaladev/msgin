@@ -1,14 +1,15 @@
 # Plan 027 — Core package layout, channel segregation, and behavior types
 
-> ## Status: **REGENERATED 2026-07-28 from a green tree — AUDITED THROUGH ROUND 7; latest verdict `NEEDS-REVISION` 4/4 (26 blockers, 37 minors), fix pass applied per [round 7 §5](027-audit-round-7.md)**
+> ## Status: **REGENERATED 2026-07-28 from a green tree — AUDITED THROUGH ROUND 8 (bounded: design of the new decisions + the gate sets); verdict `NEEDS-REVISION` 2/2 (14 blockers, 11 minors), fix pass applied per [round 8](027-audit-round-8.md)**
 >
-> **Rounds 4–7 have run since this plan was regenerated.** Round 7 is the live one: read
-> [`027-audit-round-7.md`](027-audit-round-7.md) **§0** (counter-rules 6–10), **§1** (D-K revised, D-L revised,
-> D-M + `ErrNilSink`, D-N, D-O) and **§5** (the APPLIED/REMAINING fix-pass ledger — the authority on which
-> corrections are in this file and which are still owed) before executing anything. A **bounded round 8**,
-> scoped to the joins and the gate sets, is owed before implementation starts at Task 9.
-> *(Round-7 M-M9: this headline still read "ROUND-3 AUDIT: `NEEDS-REVISION` 3/3" while the body below cited
-> rounds 6 and 7 many times. Per-round detail stays in the body; the headline names the latest round only.)*
+> **Rounds 4–8 have run since this plan was regenerated.** [Round 8](027-audit-round-8.md) is the live one and
+> is the **last audit round** — read its **§1** (D-P), **§2** (the blockers, by owner), **§3** (verified sound
+> — do not re-open) and **§4** before executing anything. Round 8 produces **D-P** and corrections to **D-N**,
+> **D-O**, **D-M** and **D-K**; round 7's **§0** (counter-rules 6–10) still governs, and its **§5** records
+> which of *its* corrections landed. **Implementation begins at Task 9 once the round-8 fix pass is in.**
+> *(Round-7 M-M9 / round-8 gate minor: this headline read "ROUND-3 AUDIT: `NEEDS-REVISION` 3/3" until round 7
+> and "AUDITED THROUGH ROUND 7" until round 8, each time while the body cited a later round. Per-round detail
+> stays in the body; the headline names the latest round only — and is part of every round's fix pass.)*
 >
 > **Read [Global Constraint 0](#global-constraints) first.** Round 3 found the *generated* tables perfect and
 > **every surviving defect in hand-written prose or in a command that was pasted but never run** — each one a
@@ -134,12 +135,14 @@ and annotates [ADR 0013](../adrs/0013-composition-endpoints.md). Derivation evid
 
 **This increment is behavior-preserving by construction, with the decided exceptions enumerated by
 [Spec 014 §2.1's table](../specs/014-core-package-layout.md#21-the-deliberate-behavior-changes-the-register)
-— that table is the register, and this plan deliberately does not restate its length.** As of round 7 it
+— that table is the register, and this plan deliberately does not restate its length.** As of round 8 it
 holds: the channel segregation; `ChannelExchange.Close` cancelling its reply subscription;
 `channel.WithSingleSubscriber()` (off by default); `WithReleaseStrategy`'s retyping; **the reply-channel
 exclusivity probe (D-J, Task 9.6)**; **deterministic endpoint faults becoming `Permanent` (D-M, Task 9.7 for
-the shipped producers, Task 9 for the combinators)**; and **`divert` falling back to the dead-letter sink
-before discarding (D-N, Task 9.7)**. Everywhere else, a task that finds itself rewriting an assertion has
+the shipped producers, Task 9 for the combinators)**; **`divert` falling back to the dead-letter sink
+before discarding, single-shot (D-N + D-P, Task 9.7)**; and **the producer returning a permanent outbound
+error without dead-lettering it (D-M's producer-side consequence, Task 9.7 — gate 3, no code change)**.
+Everywhere else, a task that finds itself rewriting an assertion has
 either found a real defect (stop, report it) or is doing more than the plan says (stop, re-read the task).
 
 > **ROUND-6 CORRECTION (E-B6), EXTENDED IN ROUND 7.** This read *"exactly four decided exceptions"* while D-J
@@ -312,6 +315,62 @@ and defined nowhere; it is defined here.
    relaying it only through an SDD dispatch prompt has failed before.)*
 9. **Enumerate with `grep`, confirm with the compiler.** Never derive a change set from compiler stderr — Go
    caps at 10 errors per package (F7).
+
+   > **PIN THE PATH PREFIX AND THE ORDER ON EVERY PASTED SWEEP — `grep -r` is not portable between shells.**
+   > Two properties of `grep -r <pattern> .` are environment-dependent, and both break the "diff the pasted
+   > block" gate on pure noise:
+   > - **The `./` prefix.** GNU/BSD `grep -rn … .` emits `./adapter/memory/queuestore.go:146:`; the **ugrep**
+   >   wrapper installed on at least one machine used for this bundle emits `adapter/memory/queuestore.go:146:`
+   >   — no prefix. Measured 2026-07-30 on the tree, same pattern, same directory:
+   >   ```
+   >   $ grep -rn "return msgin.ErrNoSubscriber" --include='*.go' . | head -1
+   >   channel/direct.go:87:		return msgin.ErrNoSubscriber
+   >   $ /usr/bin/grep -rn "return msgin.ErrNoSubscriber" --include='*.go' . | head -1
+   >   ./channel/direct.go:87:		return msgin.ErrNoSubscriber
+   >   ```
+   >   **Every pasted `grep -r … .` transcript in this bundle is in the prefix-stripped form.** So: append
+   >   **`| sed 's,^\./,,'`** to any `grep -r … .` whose output is pasted or diffed, and paste the output of
+   >   *that* command. This is a documentation gate, not a code gate — it never changes what a sweep finds.
+   > - **Traversal order** (round-7 owner 2): three runs on an unchanged tree emitted the same twelve lines in
+   >   two different orders. Every pasted sweep is additionally **`| sort`-pinned**.
+   >
+   > A sweep that is pasted but neither prefix- nor order-pinned is not reproducible, which under Global
+   > Constraint 0 makes it a wish rather than a claim.
+
+10. **The canonical gate block has exactly ONE definition — Plan §11 ≡ Spec 014 §8.0b on the six shared ids.**
+    The two documents each carry a copy (the Spec's is normative, the Plan's is the executable transcript), and
+    in round 7 they diverged silently: the Spec had seven conjuncts on obligation 11 where the Plan had two, an
+    8.11a gate the Plan lacked entirely, and two different shapes for obligation 12. Both sets were RED, so
+    nothing caught it until an auditor built the comparison table by hand.
+
+    **Both blocks open with the marker comment `# ==== CANONICAL GATE BLOCK` at column 0 and use the
+    identical `g <id> "<command>"` form**, so the check is a mechanical `diff` rather than a reading. Run it
+    whenever either block is touched:
+
+    ```bash
+    gates() {   # every `g <id> "<cmd>"` inside a document's canonical block, continuations joined
+      sed -n '/^# ==== CANONICAL GATE BLOCK/,/^```$/p' "$1" \
+        | awk '/\\$/ { sub(/\\$/,""); printf "%s", $0; next } { print }' \
+        | grep -E '^g ' | sed 's/[[:space:]][[:space:]]*/ /g'
+    }
+    diff <(gates docs/plans/027-core-package-layout.md \
+             | grep -E '^g (8\.10|8\.11|8\.11a|8\.12|8\.13|11c1) ') \
+         <(gates docs/specs/014-core-package-layout.md)                     # MUST BE EMPTY
+    ```
+
+    The **Plan's block is a superset** — it also carries 8.1, 8.3, 8.4a–8.4f, 8.7 and 11c2, which have no Spec
+    §8.0b counterpart; the `grep -E` above selects the shared six. The Spec block carries exactly those six and
+    nothing else, so its side needs no filter, and a gate added to it with no Plan counterpart fails the diff
+    in the other direction.
+
+    **The marker pattern is anchored `^# ` deliberately.** An unanchored `/==== CANONICAL GATE BLOCK/` also
+    matches *this constraint's own prose*, which sits earlier in the file than the block it describes — so the
+    `sed` range would open here and run to the block's closing fence, making the extractor self-referential.
+    Caught by running it (a `parse error near '}'` when the extracted range was `eval`ed), not by reading it.
+
+    *(Round-8 C2. The round-7 pass wrote "Standing check, now a Global Constraint" into Task 11b and never
+    created the constraint — the list ran 0–9. A mechanism that exists only as a sentence describing itself is
+    the same absence it was meant to close.)*
 
 ---
 
@@ -655,7 +714,11 @@ satellite already `require`s and `replace`s the root module (F9.6). All seven mo
       a programming error and must surface even when the short-circuit would hide it. State this on each
       combinator's godoc.
 - [ ] Every type's godoc **names its Spring equivalent** — this is the mitigation that justifies dropping the
-      Spring names (ADR 0029 §4), so verify it **per type**, not sampled.
+      Spring names (ADR 0029 §4), so verify it **per type**, not sampled. **This task owns Spec §8 obligation
+      4 for the four types it creates** (`Predicate`, `RouteFunc`, `SplitFunc`, `Transformer`); the two shipped
+      types are Task 11b's. → **gates 8.4c–8.4f, §11 block**, RED at this task's start and GREEN at its end.
+      *(Round-8 C4, same class: the §11 pinning table already pinned these four to Task 9 while Task 9's Verify
+      never ran them. An obligation is owned by the task that creates the symbol.)*
 - [ ] **Note for Task 12 (E-M8): this task changes the expected shape of Spec §5.0's census.** Measured on the
       untouched tree, `grep -rn "msgin\.MessageChannel\|MessageChannel interface" --include="*.go" . | grep -v
       "_test.go" | grep -v "^./docs" | grep -v '// '` → **16 lines**, of which **two** are
@@ -710,7 +773,15 @@ the two-assertion form could not detect.
 
 **Verify:** existing tests compile unchanged with bare closures — that is the source-compatibility claim, so
 demonstrate it rather than assume it (round-2 §E confirms bare closures still infer against named generic
-func types on Go 1.25). `-coverpkg=./...` on both sides.
+func types on Go 1.25). `-coverpkg=./...` on both sides. **Plus gates 8.4c, 8.4d, 8.4e and 8.4f from the
+[§11 canonical block](#11-gate-block--the-one-source-for-every-11b11c-gate-red-at-each-gates-own-tasks-start)
+— RED before (the four types do not exist yet, so `go doc` reports `no symbol …`) and GREEN after, both
+transcripts in the ledger.** These four gates are Plan-only (no Spec §8.0b counterpart), so run them from the
+Plan's block:
+```bash
+eval "$(sed -n '/^# ==== CANONICAL GATE BLOCK/,/^```$/p' \
+          docs/plans/027-core-package-layout.md | grep -v '^```')" | grep '8\.4[cdef]'
+```
 
 **Commit:** `feat(routing,transform): name the endpoint behavior types and add combinators`
 
@@ -960,14 +1031,22 @@ edit.)*
       > canonical Return Address channel — answers `true`, while a broadcast subject answers `false`. The
       > withdrawn wording ("this channel in this process") answers `true` for **both**.
       >
-      > **Task 11b's obligation-11 gate is a phrase match against ADR 0030 §1's exact lines** (Spec §8.0b),
-      > so a paraphrase fails it with no diagnosis. `go doc` reproduces the comment's own line breaks —
-      > preserve them.
+      > **Gate 8.11 is a seven-conjunct phrase match against ADR 0030 §1's exact wording** (Spec §8.0b ≡ the
+      > §11 canonical block), so a paraphrase fails it with no diagnosis. **Line breaks no longer matter** —
+      > round 8 (C3) adopted the `d` normalizer, which folds `go doc`'s output to one line before matching, so
+      > a phrase may span a break. **Wording still matters exactly.** Copy, do not retype.
 - [ ] **Root — `errors.go`:** add `ErrSharedReplyChannel`. Godoc names both remedies
       (`channel.WithSingleSubscriber()` on the channel, or `endpoint.WithSharedReplyChannel()` on the
       exchange) and states the consequence being prevented — a full copy of every reply reaching another
       subscriber. **Do NOT reuse `ErrChannelSubscribed`**: it would report "already subscribed" for a channel
       that has no subscriber (ADR 0030 Consequences).
+
+      **It must also name the THIRD cause — decision D-O2 (round 8, B1):** the channel's `SingleSubscriber`
+      **panicked**, was recovered, and the exchange failed closed. That case is *not* a policy report — the
+      channel may well be exclusive — and the sentinel's message says the opposite, so the godoc has to send
+      the reader to `err.Error()` for the wrapped panic rather than off hunting for a second subscriber
+      (CLAUDE.md's debuggability criterion). **Copy the godoc from
+      [ADR 0030 §3](../adrs/0030-reply-channel-exclusivity-probe.md)**, which carries the decided text.
 - [ ] **`channel` — two methods:** `(*DirectChannel).SingleSubscriber() → true`;
       `(*PublishSubscribeChannel).SingleSubscriber() → c.cfg.single`. Add the compile-time assertions
       (`var _ msgin.ExclusiveSubscribable = (*DirectChannel)(nil)`, same for pub-sub) next to the existing
@@ -997,23 +1076,39 @@ edit.)*
       runs in `NewChannelExchange` **before `reply.Subscribe`**, so a rejected exchange leaves no subscription
       behind. Order relative to the existing `ErrNilChannel` and `ErrInvalidReplyTimeout` checks: after both
       (a nil channel cannot be probed).
-- [ ] **Rewrite `NewChannelExchange`'s reply godoc.** It currently says exclusivity "is documented rather than
-      enforced here" (`endpoint/exchange.go:216`) — that sentence becomes false. **State FOUR outcomes, and
-      let Task 11b own the final wording:** rejected when the channel reports non-exclusive; accepted when it
+- [ ] **Rewrite `NewChannelExchange`'s reply godoc — THIS TASK owns the final wording (round-8 C4).** It
+      currently says exclusivity "is documented rather than enforced here" (`endpoint/exchange.go:216`) — that
+      sentence becomes false. The content spec is **Spec §8 obligation 12**, and **gate 8.12 (§11 block) must
+      be GREEN before this task commits**; Task 11b re-runs it as a no-regression check and does not write it.
+      *(This checkbox used to say "let Task 11b own the final wording", which is unexecutable: this task
+      declares the symbols and cannot commit a green unit that leaves their godoc unwritten.)*
+      **State FOUR outcomes:** rejected when the channel reports non-exclusive; accepted when it
       reports exclusive; **accepted when the channel does not implement the probe at all** (the one a reader
-      will otherwise assume away); and **accepted but exclusive only *within this process*** — a channel whose
-      deliveries reach other processes must report `false` (D-L), and a truthful local `true` still carries no
-      cross-instance guarantee.
+      will otherwise assume away); and **accepted on the channel's own word, which the core cannot verify** —
+      under **D-L as REVISED in round 7** a channel must report `false` whenever a message sent to it can reach
+      any recipient other than its single registered subscriber, *including one in another process*; a
+      broker-backed channel may report `true` **only** when the broker guarantees the destination is private to
+      this process's subscription (a per-instance NATS `_INBOX`, an exclusive auto-delete AMQP reply queue).
+      The core takes that answer on trust.
+
+      > **ROUND-8 CORRECTION (join check).** This read *"accepted but exclusive only within this process — a
+      > channel whose deliveries **reach other processes** must report `false` (D-L)"*. That is D-L's
+      > **superseded** round-6 wording, which measured *processes traversed*; revised D-L measures *recipients
+      > reached*. Under the old form a per-instance NATS `_INBOX` — the canonical Return Address channel —
+      > must report `false` and is rejected by default, which is the exact defect the revision exists to
+      > remove. Found mechanically by `docs/plans/027-tools/joincheck.py` plus a withdrawn-phrase grep, not by
+      > inspection.
 
       > **ROUND-6 CORRECTION (D-M1).** This said *"State the **three** arms"*, while ADR 0030 `:230-233` and
       > Spec `:1691` both require **four** outcomes and Spec AC-9 `:1881` says *"all three acceptance
       > outcomes"* — i.e. three **accept** arms plus the reject arm. An implementer writing three would then
-      > have Task 11b's §8.12 gate rewrite the comment they just wrote. **Authority: Spec §8 obligation 12
-      > (four). Final wording: Task 11b.** The four-arm truth table below is the *guard's* branch table, which
+      > have gate 8.12 fail at the end of this very task. **Authority: Spec §8 obligation 12 (four). Final
+      > wording: THIS task** *(round-8 C4 — this line used to say "Final wording: Task 11b", which contradicted
+      > the same task's own gate)*. The four-arm truth table below is the *guard's* branch table, which
       > is a different four — the godoc's fourth outcome is a scope caveat on an accepted arm, not a fifth
       > branch.
 
-      > **NOTE — the option godoc (§8.13) and the guard order (D-M2).** Task 11b's §8.13 requires
+      > **NOTE — the option godoc (§8.13) and the guard order (D-M2).** Spec §8 obligation 13 requires
       > `WithSharedReplyChannel`'s godoc to say it **suppresses the probe**. That is only true if
       > `cfg.allowShared` is tested **first**: write
       > `if !cfg.allowShared { if ex, ok := reply.(msgin.ExclusiveSubscribable); ok && !ex.SingleSubscriber() { … } }`,
@@ -1029,22 +1124,71 @@ edit.)*
 | yes | `true` | — | accepted |
 | yes | `false` | no | **`ErrSharedReplyChannel`** |
 | yes | `false` | yes | accepted |
-| yes | **panics** | no | **`ErrSharedReplyChannel`** (fail closed — **D-O**) |
+| yes | **panics** | no | **`ErrSharedReplyChannel` wrapping the recovered value** (fail closed — **D-O**/**D-O2**) |
 
-- [ ] **`safeSingleSubscriber` — the probe is caller code called inside a constructor (decision D-O).**
-      Wrap every call:
+- [ ] **`safeSingleSubscriber` — the probe is caller code called inside a constructor (decision D-O, amended
+      by D-O2).** Wrap every call, and **return the recovered value as an error so the guard can wrap it**:
 
       ```go
-      func safeSingleSubscriber(ex msgin.ExclusiveSubscribable, log *slog.Logger) (b bool) {
+      func safeSingleSubscriber(ex msgin.ExclusiveSubscribable, log *slog.Logger) (b bool, cause error) {
       	defer func() {
       		if r := recover(); r != nil {
-      			b = false // fail closed: a probe that panicked has not proven exclusivity
-      			// log at WARN with the recovered value
+      			// fail closed: a probe that panicked has not proven exclusivity …
+      			b, cause = false, fmt.Errorf("SingleSubscriber panicked: %v", r)
+      			// … and log at WARN with the recovered value (redundant with cause, by design)
       		}
       	}()
-      	return ex.SingleSubscriber()
+      	return ex.SingleSubscriber(), nil
       }
       ```
+
+      and, in `NewChannelExchange`, wrap `cause` into the sentinel so `errors.Is` is unchanged **and** the
+      diagnosis survives:
+
+      ```go
+      if !cfg.allowShared {
+      	if ex, ok := reply.(msgin.ExclusiveSubscribable); ok {
+      		single, cause := safeSingleSubscriber(ex, cfg.logger)
+      		if !single {
+      			if cause != nil {
+      				return nil, fmt.Errorf("%w: %w", msgin.ErrSharedReplyChannel, cause)
+      			}
+      			return nil, msgin.ErrSharedReplyChannel
+      		}
+      	}
+      }
+      ```
+
+      > **ROUND-8 CORRECTION (design B1) — D-O2. The round-7 form destroyed the evidence of the fault it
+      > recovers from and reported a false diagnosis.** Compile-proven at `7ee3fd6` with the round-7 helper
+      > implemented exactly as it was written and a **genuinely exclusive** channel (embedding
+      > `*channel.DirectChannel`) whose `SingleSubscriber` panics:
+      >
+      > ```
+      > err                                      = "msgin: reply channel permits multiple subscribers; it is not exclusive to this exchange"
+      > errors.Is(err, ErrSharedReplyChannel)    = true
+      > panic value recoverable from err         = false
+      > anything on stderr/stdout from the logger= (nothing: cfg.logger defaults to io.Discard)
+      > ```
+      >
+      > With the wrap above, same worktree, same channel:
+      >
+      > ```
+      > err                                      = "msgin: reply channel permits multiple subscribers; it is not exclusive to this exchange: SingleSubscriber panicked: probe: nil map read in tenantExclusivity[tenant]"
+      > errors.Is(err, ErrSharedReplyChannel)    = true
+      > panic value recoverable from err         = true
+      > ```
+      >
+      > **Fail-closed unchanged; no new sentinel; the WARN stays; NO GATE MOVES** — the helper is unexported,
+      > so no `go doc` gate can see its signature, and §8.10/8.11/8.11a/8.12/8.13 were run against **both**
+      > implementations with ADR 0030 §1's godoc pasted verbatim and printed `GREEN` five-for-five under each.
+      > The rule this restores is written down in-repo, at `endpoint/poller.go:100-105`: *"safePoll does NOT
+      > log — pollLoop's existing error path already logs … with this error, **whose text carries the recovered
+      > panic value**"*. Eight of eight recover-wrappers that return an error embed `%v` of the recovered value
+      > (`consumer.go:863,885,909,921,935`, `poller.go:109`, `producer.go:563`, `channel/pubsub.go:203`); the
+      > ninth, `safeLimiterWait` (`consumer.go:514`), sets `err = nil` deliberately (fail *open*) and has no
+      > error to carry anything. **Caveat for the test:** `errors.Unwrap` returns `nil` on a two-verb `%w`
+      > wrap — assert with `errors.Is` / `errors.As` / `err.Error()`, never `errors.Unwrap`.
 
       **Fail closed, not open.** A panicking probe has proven nothing, and CLAUDE.md's sensible-defaults rule
       says to pick the value that fails safe when a wrong default could silently corrupt — here, a full copy of
@@ -1065,6 +1209,18 @@ edit.)*
       **The sixth row above is its covering case**: a test-local `ExclusiveSubscribable` whose
       `SingleSubscriber()` panics, asserted to yield `ErrSharedReplyChannel` — *not* a propagated panic. Assert
       with `require.NotPanics` around the constructor, since the pre-D-O behavior is a panic escaping it.
+
+      **Row 6 must ALSO assert the panic text is in `err.Error()` — `errors.Is` alone is not enough (D-O2).**
+      Panic with a distinctive literal from the fake and assert `require.ErrorContains(t, err, thatLiteral)`
+      alongside `require.ErrorIs(t, err, msgin.ErrSharedReplyChannel)`. **A sentinel-only assertion passes
+      against the diagnosis-losing round-7 implementation**, which is exactly how that defect would have
+      shipped green; the substring assertion is the only thing that pins D-O2. Do **not** assert through
+      `errors.Unwrap` — it returns `nil` on a two-verb `%w` wrap.
+
+      **Make the fake GENUINELY EXCLUSIVE**, e.g. `struct{ *channel.DirectChannel }` with its own panicking
+      `SingleSubscriber`. That is the shape that exposes the false diagnosis (the error claims non-exclusivity
+      about a channel whose second `Subscribe` returns `ErrChannelSubscribed`), and it costs nothing over a
+      bare fake.
 
 The "no" row needs a **test-local `SubscribableChannel` that deliberately omits the method**, because no
 in-tree type can drive it to an **accepted** outcome. Both production implementations
@@ -1176,8 +1332,31 @@ fake the arm is unreachable and the CLAUDE.md coverage gate fails.
   live in `channel` while every test that exercises them lives in `endpoint`, so `-coverpkg` credits them at
   100% while the package-local profile shows them at 0% (Spec §3.4e's attribution effect, in the one task
   written after §3.4e). This was compile-proven in the round-4 design audit: `channel` falls 100.0% → 98.3%.
-- The four-arm table shows four distinct subtests, **and** the `channel`-package test above pins
-  `SingleSubscriber()` for both types directly.
+- **The table shows SIX distinct subtests** — the four truth-table arms, **plus** AC-9's ordering row
+  (`countingSharedChannel`, asserting `n == 0` after a rejected construction) **plus** D-O's panicking-probe
+  row (asserting `ErrSharedReplyChannel` **and** the panic literal in `err.Error()`) — **and** the
+  `channel`-package test above pins `SingleSubscriber()` for both types directly.
+  *(Round-8 C6: this said *"the four-arm table shows four distinct subtests"*, while the task body above
+  requires six and Spec AC-9 requires the same six. A worker satisfying the Verify as written ships without
+  the ordering assertion **and** without D-O's covering case — the two rows added precisely because nothing
+  else observes them.)*
+- **THE FIVE `go doc` GATES FOR THIS TASK'S OWN GODOC — 8.10, 8.11, 8.11a, 8.12, 8.13, run from the
+  [§11 canonical block](#11-gate-block--the-one-source-for-every-11b11c-gate-red-at-each-gates-own-tasks-start),
+  RED before and GREEN after, both transcripts in the ledger.** This task **declares all three symbols and
+  rewrites `NewChannelExchange`'s godoc**, so Spec §8 obligations 10–13 are its acceptance criteria, not Task
+  11's (Spec §8's owner table; round-8 C4). Fourteen conjuncts in total; obligation 11 alone is seven.
+  ```bash
+  # Run the canonical block straight out of the Spec — no retyping, no second copy.
+  # Before this task's edit: 8.10 8.11 8.11a 8.12 8.13 RED, 11c1 RED.
+  # After:                   8.10 8.11 8.11a 8.12 8.13 GREEN, 11c1 STILL RED (Task 11c's).
+  eval "$(sed -n '/^# ==== CANONICAL GATE BLOCK/,/^```$/p' \
+            docs/specs/014-core-package-layout.md | grep -v '^```')"
+  ```
+  *(Round-8 C4, the structural cause of the four-way ownership contradiction: this Verify had **no `go doc`
+  gate at all**, so nothing measured the two root symbols or the normative godoc this task is the sole writer
+  of. Every other document then had to guess who owned them.)*
+- **Gate 11c1 is NOT this task's** — `channel.WithSingleSubscriber`'s single-process clause is Task 11c's, and
+  it is expected to stay **RED** through this task. Do not "fix" it here.
 - `apidiff` reports **two additions beyond the six measured at `dadc775`, for eight in total** —
   `ExclusiveSubscribable` and `ErrSharedReplyChannel`. `endpoint`'s `WithSharedReplyChannel` is **not** in
   root's diff, same as `channel.WithSingleSubscriber` was not. *(Round-4 correction, M5/exec-M7: this read
@@ -1199,7 +1378,7 @@ RFC: 0002
 
 ---
 
-## Task 9.7 — Classify the shipped deterministic endpoint faults as `Permanent`, and stop discarding them (decisions D-M, D-N) · **M** · NOT STARTED
+## Task 9.7 — Classify the shipped deterministic endpoint faults as `Permanent`, and stop discarding them (decisions D-M, D-N, D-P) · **M** · NOT STARTED
 
 > **RE-SIZED S → M in the round-7 pass (X-M1).** The `S` label covered "wrap four producers". It does not cover
 > the round-7 scope: **five** producers (D-B1 adds root's `handler.go:55`), the **D-N** fallback in
@@ -1213,8 +1392,13 @@ RFC: 0002
 > permanent and `transform.Transform(nil)` is not: the same fault, the same cause, two different delivery
 > outcomes. That is worse than either uniform answer.
 >
-> **Why it is its own task, placed HERE (after 9.6, before 10).** Three reasons, stated because the placement
-> is a judgement call:
+> **Why it is its own task — and where it actually runs.** ⚠️ **Read the ROUND-7 CORRECTION three paragraphs
+> down before acting on this one: the ordering below is SUPERSEDED.** The three reasons argue that 9.7 must be
+> a **separate commit** from Task 9, which still holds; the *position* they originally concluded ("after 9.6,
+> before 10") does not — round 7 moved it to **first, before Task 9**. The reasons are kept because reason 2
+> and reason 3 are still live constraints on where it may **not** go. *(Round-8, gate minor: this header said
+> both "placed HERE (after 9.6, before 10)" and "this task RUNS FIRST" ninety lines apart, with no marker on
+> the first.)* Three reasons, stated because the placement is a judgement call:
 > 1. **It touches shipped code and is a behavior change** (Spec §2.1 row 6), whereas Task 9's commit is a
 >    pure-addition commit for a brand-new surface. Folding them would put a `§2.1` exception inside a commit
 >    whose whole claim is "additive and source-compatible", and would make the Task 9 `apidiff` review
@@ -1233,9 +1417,16 @@ RFC: 0002
 > §2.1 row 6 and Spec AC-5 all cite it by number; renumbering is a coordinated three-document edit for no
 > gain). Record the order you actually ran in the ledger.
 >
-> **This task also carries decision D-N** (Spec §2.1 row 7) — the `divert` dead-letter fallback — **in the same
-> commit**. Splitting them would leave a tree, between commits, in which a mis-wired step's message is silently
-> dropped where it was previously captured durably.
+> **This task also carries decisions D-N and D-P** (Spec §2.1 row 7) — the `divert` dead-letter fallback and
+> the rule that **the fallback is single-shot** — **in the same commit**. Splitting them would leave a tree,
+> between commits, in which a mis-wired step's message is silently dropped where it was previously captured
+> durably (without D-N), or spins through redelivery forever when the fallback sink is down (without D-P).
+>
+> **ROUND-8 ADDITION (A5) — it also carries the PRODUCER-side consequence** (Spec §2.1 **row 8**). D-M's blast
+> radius had only ever been measured on the consumer; on the producer the same reclassification **removes** a
+> durable capture and flips an exported error contract. No code changes for it — the behavior is correct as it
+> stands — but it needs its gate (**gate 3**), its covering case, and its register row, so it does not ride in
+> silently.
 
 **Skills:** start from `cc-skills-golang:golang-how-to`; TDD via `superpowers:test-driven-development`;
 `gopls` for navigation; `table-test` for the branch table; blackbox `_test` packages only.
@@ -1263,16 +1454,29 @@ the target is measured rather than predicted:
 ```
 $ go test -run TestR7ProducerPath -v .
 RED  transform.Transform(nil)      [dlq, no invalid sink] OnRetry=2 OnDeadLetter=1 OnInvalidMessage=0 | dlqSink=1 invalidSink=0 discarded=false
-GREEN Permanent(ErrNilFunc)        [dlq, no invalid sink] OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1 | dlqSink=0 invalidSink=0 discarded=true
+GREEN Permanent(ErrNilFunc)        [dlq, no invalid sink] OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1 | dlqSink=0 invalidSink=0 discarded=true   ← D-M ONLY; see the note below
 GREEN Permanent(ErrNilFunc)        [dlq + invalid sink]   OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1 | dlqSink=0 invalidSink=1 discarded=false
 RED  msgin.To(nil)                 [dlq, no invalid sink] OnRetry=2 OnDeadLetter=1 OnInvalidMessage=0 | dlqSink=1 invalidSink=0 discarded=false
-GREEN Permanent(ErrNilSink)        [dlq, no invalid sink] OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1 | dlqSink=0 invalidSink=0 discarded=true
+GREEN Permanent(ErrNilSink)        [dlq, no invalid sink] OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1 | dlqSink=0 invalidSink=0 discarded=true   ← D-M ONLY; see the note below
 GREEN Permanent(ErrNilSink)        [dlq + invalid sink]   OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1 | dlqSink=0 invalidSink=1 discarded=false
 ```
 
 **`OnRetry=2 OnDeadLetter=1 OnInvalidMessage=0` → `OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1` is the gate.**
 Note `msgin.To(nil)` produces the **byte-identical** RED line — that is decision D-B1's evidence, and the
 reason `handler.go:55` is the fifth edit site below.
+
+> **ROUND-8 (gate minor) — rows 2 and 5 publish a state THIS TASK'S COMMIT NEVER LEAVES BEHIND. Read them as
+> D-M-only intermediates, not as the target.** They were measured by substituting D-M's error shape alone,
+> **before** D-N and D-P were folded into the same commit. D-N routes an invalid message with **no**
+> `WithInvalidMessageSink` to `RetryPolicy.DeadLetter` instead of discarding it, so at this commit's end those
+> two rows read **`dlqSink=1 … discarded=false`**, not `dlqSink=0 … discarded=true`. `discarded=true` survives
+> only in the configuration these rows do **not** measure — no invalid sink **and** no reachable dead-letter
+> sink (a `Send` that fails, which under **D-P** falls through single-shot to ADR 0007 D7's logged discard;
+> or `MaxAttempts: 0`, which needs no `DeadLetter`). **Do not re-measure and "correct" rows 1, 3, 4 and 6** —
+> they are unaffected: rows 1 and 4 are the pre-edit RED, and rows 3 and 6 configure an invalid sink, which
+> D-N leaves untouched. The gate's own arrow (`OnRetry`/`OnDeadLetter`/`OnInvalidMessage`) is unchanged in
+> every row; only the `dlqSink`/`discarded` columns of rows 2 and 5 move, and they move **because of a
+> decision in this same commit**. Task 9.7's D-N/D-P section below carries the post-fallback expectations.
 
 > **`DeadLetter: dlq` is mandatory in the harness, not decoration.** `RetryPolicy{MaxAttempts: 3}` alone is
 > **rejected by `NewConsumer`** — an earlier revision of this block and of ADR 0029 §5.0b both wrote it that
@@ -1302,6 +1506,29 @@ IsPermanent(msgin: nil outbound sink                  ) = false      ← must ST
 
 Row 4 is the shape to copy: `ErrNoCorrelation` is *not* in the enumeration either — its **producer** wraps it
 (`routing/aggregator.go:151-160`), with D-M's exact rationale already in its godoc.
+
+**Gate 3 (ROUND-8, A5 — the PRODUCER path). A RED→GREEN gate whose GREEN is a DOCUMENTED LOSS, not a fix.**
+D-M's blast radius was measured on the consumer only. `endpoint/producer.go:453-455` returns on `IsPermanent`
+**before** `p.deadLetter(...)`, so the producer's dead-letter sink stops receiving this class and the exported
+sentinel `errors.Is(err, msgin.ErrDeadLettered)` flips. One message through a `Producer` over a
+`*channel.DirectChannel` whose subscriber is the mis-wired step (`channel/direct.go:89` returns `h.Handle`
+verbatim), `RetryPolicy{MaxAttempts: 3, DeadLetter: dlq}`; the AFTER rows substitute the post-edit error shape,
+so the target is **measured, not predicted**:
+
+```
+$ GOWORK=off go run .        # throwaway module, replace => this tree; measured at 7ee3fd6
+BEFORE D-M transform.Transform(nil) OnRetry=2 OnDeadLetter=1 | dlqSends=1 | Is(ErrDeadLettered)=true  Is(ErrNilFunc)=true  Is(ErrNilSink)=false IsPermanent=false
+AFTER  D-M Permanent(ErrNilFunc)   OnRetry=0 OnDeadLetter=0 | dlqSends=0 | Is(ErrDeadLettered)=false Is(ErrNilFunc)=true  Is(ErrNilSink)=false IsPermanent=true
+BEFORE D-M msgin.To(nil)           OnRetry=2 OnDeadLetter=1 | dlqSends=1 | Is(ErrDeadLettered)=true  Is(ErrNilFunc)=false Is(ErrNilSink)=true  IsPermanent=false
+AFTER  D-M Permanent(ErrNilSink)   OnRetry=0 OnDeadLetter=0 | dlqSends=0 | Is(ErrDeadLettered)=false Is(ErrNilFunc)=false Is(ErrNilSink)=true  IsPermanent=true
+```
+
+**`dlqSends 1 → 0` and `Is(ErrDeadLettered) true → false` is the gate.** Do **not** "fix" it: `Producer.Send`
+is synchronous and hands the error to caller code that can act on it, so nothing is lost, which is also why
+**D-N's fallback does not extend to the producer** — the producer has no invalid-message sink at all
+(`grep -n 'InvalidMessageSink\|invalidSink' endpoint/producer.go` → **no output**). Its purpose is to make the
+change **observable and covered** (Spec §2.1 row 8), because round 7 recorded D-N's premise as *"no
+configuration that previously captured a message starts dropping it"* — true of the consumer, false here.
 
 - [ ] **Five edit sites — three `nilFuncStep` copies, `Router.Handle`, and `msgin.To`.** Re-derived at
       `fe86a12` by the class sweep below (**not** by grepping a sentinel name):
@@ -1340,7 +1567,7 @@ Row 4 is the shape to copy: `ErrNoCorrelation` is *not* in the enumeration eithe
 
       ```
       $ sentinels=$(grep -oE '^\s*Err[A-Za-z]+ =' errors.go | tr -d ' \t=' | paste -sd'|' -)   # 43 sentinels
-      $ grep -rnE "return (msgin\.)?($sentinels)[ })]*(//.*)?$" --include='*.go' . \
+      $ grep -rnE "return (msgin\.)?($sentinels)[ })]*(//.*)?$" --include='*.go' . | sed 's,^\./,,' \
           | grep -v '_test\.go' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -v 'Permanent(' | sort
       adapter/memory/queuestore.go:146:		return msgin.ErrOverflowDropped // nothing evictable (all in-flight) → drop
       adapter/memory/queuestore.go:151:	return msgin.ErrOverflowDropped // OverflowReject
@@ -1356,23 +1583,33 @@ Row 4 is the shape to copy: `ErrNoCorrelation` is *not* in the enumeration eithe
       transform/transformer.go:38:		return msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { return msgin.ErrNilFunc })
       ```
 
-      > **`| sort` is load-bearing, not tidiness — and this checkbox's gate is a DIFF, so it matters.**
-      > `grep -r`'s traversal order is **not stable between runs**: three consecutive runs on the *unchanged*
-      > tree at `fe86a12` emitted the same twelve lines in two different orders. Sorted, three runs are
-      > byte-identical. Do not drop it.
+      > **`| sort` AND `| sed 's,^\./,,'` are both load-bearing, not tidiness — this checkbox's gate is a
+      > DIFF, so both matter** (Global Constraint 9).
+      > - **Order:** `grep -r`'s traversal order is **not stable between runs** — three consecutive runs on the
+      >   *unchanged* tree at `fe86a12` emitted the same twelve lines in two different orders. Sorted, three
+      >   runs are byte-identical.
+      > - **Prefix:** system `grep -rn … .` prefixes every path with `./`; the **ugrep** wrapper on at least one
+      >   machine used for this bundle does not, and the block above is pasted in the **stripped** form. Without
+      >   the `sed`, this diff fails all twelve lines on a normal shell for a reason that has nothing to do with
+      >   the code. Re-verified 2026-07-30 with `/usr/bin/grep`: **the sed-pinned form reproduces the twelve
+      >   lines above byte-for-byte; the un-pinned form differs on every line.**
 
       **Twelve lines: the five edit sites plus seven that stay bare.** ADR 0029 §5.0b carries the per-line
-      triage (`retry.go` ×2 = construction-time validation; `queuestore.go` ×2 and `direct.go:87` and
-      `producer.go:589` = returned to the **sender**, no `MessageHandler` body; `router.go:56` = `ErrNoRoute`,
-      the deliberate transient exclusion). **After the edit, re-run and confirm the five edit-site lines are
-      gone and the seven survivors are unchanged** — that is this checkbox's gate.
+      triage, and **round 8 (B7) corrected three of the seven rationales without changing any conclusion**:
+      `retry.go` ×2 = construction-time validation (arm 3); `queuestore.go` ×2 and `direct.go:87` = a
+      **MUTABLE** cause (arm 2 — a drain or a later `Subscribe` resolves it), **not** *"no `MessageHandler`
+      body"*, which is compile-proven false for both; `producer.go:589` = handed to the caller from
+      `SendAfter` (arm 4); `router.go:56` = `ErrNoRoute`, the deliberate transient exclusion (arm 2).
+      **After the edit, re-run and confirm the five edit-site lines are gone and the seven survivors are
+      unchanged** — that is this checkbox's gate.
 
       The single-result anchor is a **shortlist, not the class**. Dropping the `[ })]*(//.*)?$` anchor (pattern
       `return .*\b(msgin\.)?($sentinels)\b`) sweeps every return of a root sentinel and reports **63 lines** at
       `fe86a12`; the extra 51 are two-result constructor returns of the `return nil, msgin.ErrX` shape,
       including the deliberately-excluded `routing/aggregator.go:251`. *(Derived summary — the command is the
-      one above with that pattern.)* Constructor arity is a strong proxy for the invariant's second arm but is
-      **not** the invariant: when a new sentinel lands, triage the 63.
+      one above with that pattern.)* Constructor arity is a strong proxy for the invariant's **third** arm but
+      is **not** the invariant: when a new sentinel lands, triage the 63 against all four arms.
+      *(Round-8 B7: "second arm" was written against the withdrawn two-arm form.)*
 - [ ] **`ErrNoRoute` is NOT wrapped — this is a decision, not an omission.** `routing/router.go:48-56`'s
       `pick` is caller-supplied and evaluated **per message**; it may consult a routing table, feature flag or
       lookup service, so a message unroutable now may be routable after a config reload. `WithDefaultChannel`
@@ -1413,12 +1650,35 @@ Row 4 is the shape to copy: `ErrNoCorrelation` is *not* in the enumeration eithe
             and the natural home for the governing invariant, which the godoc states in these words
             (ADR 0029 §5.0b, Spec §2.1 row 6 — a phrase match, so do not paraphrase):
 
-            > **every deterministic typed error msgin returns from inside a `MessageHandler` body is
-            > `Permanent`; every one returned from a constructor is bare.**
+            > **every typed error msgin returns from inside a `MessageHandler` body msgin itself constructs,
+            > whose cause was fixed at construction and cannot change for the message's lifetime, is
+            > `Permanent`; a fault a later `Subscribe`, config reload or drain could resolve stays bare and
+            > transient; every one returned from a constructor is bare, because construction never reaches a
+            > `RetryPolicy`; and everything else — handed to a caller from a non-constructor API — is bare
+            > too.**
 
             Applied here: a producer inside a `MessageHandler` body returns it wrapped in `msgin.Permanent`
             with positional context, `errors.Is(err, msgin.ErrNilFunc)` still matches, and a **constructor**
             (`NewAggregator`) returns it **bare**.
+
+            > **⛔ ROUND-8 CORRECTION (design B7) — DO NOT WRITE THE ROUND-7 SENTENCE INTO THIS PUBLIC GODOC.**
+            > This checkbox previously ordered the words *"every **deterministic** typed error msgin returns
+            > from inside a `MessageHandler` body is `Permanent`; every one returned from a constructor is
+            > bare"*. **That sentence is false, and this checkbox would have shipped it as `msgin`'s public
+            > contract.** Two counter-examples, both compile-proven at `7ee3fd6` and both reachable from a
+            > `MessageHandler` body msgin constructs (`To`'s returned `Step`, composed by `Chain`):
+            >
+            > ```
+            > Chain(To(*DirectChannel)).Handle       err=msgin: channel has no subscriber
+            >   errors.Is(err, msgin.ErrNoSubscriber)=true  msgin.IsPermanent(err)=false
+            > Chain(To(*QueueChannel[reject])).Handle err=msgin: message dropped by overflow policy
+            >   errors.Is(err, msgin.ErrOverflowDropped)=true  msgin.IsPermanent(err)=false
+            > ```
+            >
+            > Both are **correctly** transient (a `Subscribe` or a drain resolves them), so the old wording did
+            > not merely mis-describe an edge — it demanded a wrap that would be wrong. *"Deterministic"* was
+            > undefined and carried the whole load; the discriminator is **immutability of the cause at
+            > construction**. ADR 0029 §5.0b carries the correction and the twelve-line check.
       - [ ] **`errors.go:150` — `ErrNilSink`'s sentinel godoc**, same treatment (D-B1).
       - [ ] **`routing/aggregator.go:239` — the deliberate EXCLUSION.** Say so explicitly: `NewAggregator`
             returns `ErrNilFunc` bare because it is construction-time and never reaches a `RetryPolicy`. Left
@@ -1434,7 +1694,7 @@ Row 4 is the shape to copy: `ErrNoCorrelation` is *not* in the enumeration eithe
 
       Re-run the sweep after the edit and paste it: the godoc gate here is the grep's *content*, not its exit
       status.
-### D-N — the `divert` dead-letter fallback (Spec §2.1 row 7), SAME COMMIT
+### D-N + D-P — the `divert` dead-letter fallback, and its SINGLE SHOT (Spec §2.1 row 7), SAME COMMIT
 
 > **Why it is here and not a separate task.** D-M as decided opens an unacknowledged data-loss path, and it is
 > the *default* configuration rather than a corner case: a finite `MaxAttempts` **requires** a `DeadLetter`
@@ -1470,17 +1730,36 @@ One message, one sink receipt.)* **The gate: row 2 must become row 3.**
       // invalidTarget returns where an invalid message is diverted: the configured
       // invalid-message sink, or — when none is configured (D-N) — the dead-letter
       // sink, so a fault previously captured durably is never downgraded to a
-      // discard by D-M's reclassification. nil only when neither is configured,
-      // where ADR 0007 D7's logged discard remains the terminal behavior.
-      func (c *consumer[T]) invalidTarget() msgin.OutboundAdapter
+      // discard by D-M's reclassification. fellBack reports the second case, so the
+      // call site can emit D-N's WARN with the message id. Both are nil/false only
+      // when neither sink is configured, where ADR 0007 D7's logged discard remains
+      // the terminal behavior.
+      func (c *consumer[T]) invalidTarget() (sink msgin.OutboundAdapter, fellBack bool)
       ```
+
+      > **The nullary signature drafted in round 7 could not satisfy its own WARN checkbox** (round-8 design
+      > minor). The WARN below must name the message — its sibling at `endpoint/consumer.go:766` logs
+      > `"id", d.Msg.ID()` — and `invalidTarget()` returning only the sink leaves the call site unable to tell
+      > *"the caller configured this sink"* from *"we fell back to it"*. The `fellBack` bool is the smallest fix
+      > and keeps the accessor a pure config read, with `d` staying at the call site where it already is.
 - [ ] **`OnInvalidMessage` fires, NOT `OnDeadLetter`** — the hook reports the **classification**, the sink is
       only the **destination**. Firing `OnDeadLetter` would assert the message exhausted its retry budget,
       which under D-M it explicitly did not. No change to `divert`'s `terminalHook` argument at either site.
-- [ ] **Announce the fallback.** Keep the existing loud WARN at `endpoint/consumer.go:766` for the
-      neither-sink case, and add a WARN on the fallback naming **both** facts — no invalid-message sink
-      configured, message sent to the dead-letter sink instead. A caller must not discover by inspection that
-      their DLQ has started receiving invalid messages.
+- [ ] **Announce the fallback, and DEDUPLICATE it.** Keep the existing loud WARN at
+      `endpoint/consumer.go:766` for the neither-sink case, and add a WARN on the fallback naming **both**
+      facts — no invalid-message sink configured, message sent to the dead-letter sink instead — plus
+      `"id", d.Msg.ID()`. A caller must not discover by inspection that their DLQ has started receiving
+      invalid messages.
+
+      > **Deduplicate it, per the in-tree precedent** (round-8 design minor). *"No invalid-message sink is
+      > configured"* is **constant for the consumer's lifetime**, so an undeduplicated WARN emits one line per
+      > invalid message — a poison storm floods the log with a line that says the same thing every time. That
+      > is exactly the reason `governorPanic` deduplicates (`endpoint/consumer.go:573-585`: a `sync.Map`
+      > `LoadOrStore` keyed by method, and the message itself says *"further occurrences for this method
+      > suppressed"*). Reuse that shape — `c.panicLogged` is keyed by an arbitrary string, so a distinct key
+      > (e.g. `"divert.fallback"`) needs no new field; if a new field reads clearer, say so in the commit body.
+      > **The one-line-per-message form is only correct for the neither-sink WARN at `:766`**, which is a
+      > terminal discard and whose per-message id is the only record that the message existed.
 - [ ] **Both invalid-path call sites, not just the permanent one.** `:688` (decode failure) gets the fallback
       too; two invalid-message paths with different fallback behavior would be incoherent. The decode arm's
       change is **discard → dead-letter**, a strict improvement over ADR 0007 D7's discard and a behavior
@@ -1489,6 +1768,162 @@ One message, one sink receipt.)* **The gate: row 2 must become row 3.**
       — already written; verify the note still matches what you implemented and correct the ADR if it does not.
 - [ ] Update `divert`'s own godoc (`:747-762`): its first outcome is no longer *"nil sink → discarding IS the
       terminal invalid event"* unconditionally.
+
+#### D-P — the fallback is SINGLE-SHOT (round 8, amends D-N)
+
+> **Why this exists.** D-N said *where* the message goes and never said what happens when that target is
+> **down**. `divert`'s send-failure arm (`:774-782`) `Nack`s with `requeue=true`, so a **permanent** message
+> re-enters the flow forever. ADR 0007 D7 rejects exactly this in its own words: *"retrying anyway would only
+> convert a configuration gap (no sink configured) into an infinite-retry trap, which is **worse** than a
+> logged, observable discard."* **The class:** *a settlement path that is terminal by construction must not
+> become non-terminal without a bound.*
+
+**RED baseline for D-P, at THIS task's start.** D-N implemented exactly as specified, default configuration,
+dead-letter sink whose `Send` returns an error (measured in round 8):
+
+```
+BEFORE D-N: deliveries=1   acks=1  nacks=0   dlqSends=0   OnInvalid=1  OnDeadLetter=0  OnRetry=0
+AFTER  D-N: deliveries=41  acks=0  nacks=40  dlqSends=40  OnInvalid=0  OnDeadLetter=0  OnRetry=40
+```
+
+*(41 was the harness's redelivery cap, reached in under 10 ms; the loop is unbounded in reality. `OnRetry=40`
+is `divert`'s failure arm firing once per redelivery; `OnInvalid=0` because no terminal event ever happens.)*
+**The gate: with D-P, the same harness must read `deliveries=1 acks=1 nacks=0 dlqSends=1 OnInvalid=1
+OnRetry=0`** — one attempt at the sink, one WARN, one `Ack`.
+
+- [ ] **On the INVALID path, a failed sink `Send` must NOT `Nack`.** Settle it as ADR 0007 D7's discard: WARN
+      naming **both** the classification cause *and* the sink error, fire the terminal hook
+      (`OnInvalidMessage`), `Ack`, and evict gated on the `Ack` exactly as the other terminal arms do.
+      **`OnRetry` must not fire** — no retry follows.
+- [ ] **Scope it to the invalid path.** The dead-letter call site (`:726`) keeps D8's `Nack`-with-backoff on
+      send failure: that message is *transient* by classification, so requeueing it is a retry, not a loop.
+      Two shapes are viable — **pick one and say which in the commit body**:
+      1. **(recommended) split the function** — `divert` keeps the retryable contract for `:726`, and the two
+         invalid call sites (`:688`, `:716`) get a terminal sibling that has no `Nack` arm and no `attempt`
+         parameter at all. Smaller cognitive surface per function, and each one's godoc becomes true again
+         without a conditional.
+      2. a `singleShot bool` (or equivalent) parameter on `divert`. One function, but its three-outcome godoc
+         has to branch, and the `attempt` parameter becomes meaningless on one of the two paths — the shape
+         that produced the next finding.
+- [ ] **Delete the hard-coded `attempt` on the invalid path — do not leave a misleading `1`** (round-8 design
+      minor). Both invalid call sites pass `1` today (`:688`, `:716`), and `retryDelay(policy, 1)` is
+      `p.Backoff.Delay(0)` (`:948-953`) — the **first** backoff step, on every iteration, never escalating.
+      Under D-P that value is **unreachable**: the invalid path no longer `Nack`s, so nothing consumes it. It
+      must disappear with the branch, not survive as a constant a later reader has to reason about.
+- [ ] **Re-verify the [ADR 0007 D7](../adrs/0007-reliability-settlement-api.md#d7--no-invalid-sink-policy-tasks-45)
+      note** — the D-P amendment is already written there; confirm it matches what you implemented and correct
+      the ADR if it does not.
+
+**Godoc sweep for D-N/D-P — derived from the BEHAVIOR CHANGED, not from D-M's sentinel names** (round-8 A4).
+
+> **Class:** *a behavior change's godoc sweep must be derived from the behavior changed, not from the sentinels
+> that motivated it.* The sweep above this section greps `ErrNilFunc\|ErrNilSink`, which is right for D-M and
+> **structurally blind** to D-N/D-P: the one godoc that states the old behavior verbatim —
+> `endpoint/consumer.go:67`, *"If unset, such messages are logged and discarded (ADR 0007 D7)"*, which becomes
+> **false for every finite-retry consumer** — contains neither sentinel name. Three arms, because the behavior
+> moved in three ways: **where an invalid message goes**, **whether it is discarded**, and **what a failing
+> sink causes**. Output at `7ee3fd6`, pasted whole:
+
+```
+$ { grep -rnE '^[[:space:]]*//.*invalid[ -]?(message[ -]?)?(sink|channel)' --include='*.go' . ;
+    grep -rniE '^[[:space:]]*//.*discard' --include='*.go' . \
+      | grep -iE 'message|delivery|invalid event' | grep -viE 'discard(ing)? logger|discardLogger' ;
+    grep -rniE '^[[:space:]]*//.*(sink (failed|down)|retry forever|retried forever)' --include='*.go' . ;
+  } | grep -v '_test\.go' | sed 's,^\./,,' | sort -u
+adapter/database/sql/inbox_dedup.go:183:// prevent. Under the DEFAULT MaxAttempts==0 (retry forever) the redelivery
+adapter/database/sql/options.go:186:// # Do not use as a DLQ / invalid-message sink (LOW audit)
+adapter/database/sql/options.go:193:// divert would treat that as "sink failed" and retry forever — the poison
+adapter/database/sql/options.go:78://     DLQ/invalid sink's Send BEFORE it Acks (freeing the claim connection), so a
+adapter/database/sql/options.go:82://     deadline. A lock-strategy consumer whose DLQ/invalid sink is a sql adapter
+adapter/database/sql/source.go:16:// invalid-sink, because Poll drops it before building a Delivery. So the Source
+adapter/http/sseclient.go:69:// resume is not a redelivery guarantee — a server that discards its replay
+channel/pubsub.go:26:	// the WHOLE message to the invalid-message sink (observable, not retried);
+doc.go:15:// To(sink) or Consume, or its final message is discarded.
+doc.go:24:// routed to the invalid-message channel.
+endpoint/consumer.go:61:// WithRetryPolicy sets the settlement policy (default: retry forever, immediate).
+endpoint/consumer.go:67:// If unset, such messages are logged and discarded (ADR 0007 D7).
+endpoint/consumer.go:714:		// ErrPayloadDecode/ErrPayloadType) → invalid sink. Sink-attempt 1.
+endpoint/consumer.go:750://   - nil sink → discarding IS the terminal invalid event (ADR 0007 D7): log a
+endpoint/consumer.go:765:		// nil sink: discarding is the terminal invalid event (ADR 0007 D7).
+endpoint/consumer.go:775:		// Sink down (including a panicking sink, recovered by safeSend): the
+endpoint/consumer.go:841:	// is permanent (it will not shrink on redelivery) → invalid sink, not retried.
+endpoint/consumer.go:855:// failure: PERMANENT → invalid sink (never retried against a codec that will
+endpoint/consumer.go:875:// (an invalid-message sink or DeadLetter) cannot crash the process (fault
+endpoint/consumer.go:931:// (Nacked), not diverted to the invalid sink.
+endpoint/flowcontrol.go:99:// invalid-message sink like a decode failure, never retried — since an over-size
+endpoint/producer.go:233:// It exists because MaxAttempts == 0 means "retry forever", bounded otherwise
+errors.go:14:	// shrink on redelivery), so the message is diverted to the invalid sink like
+errors.go:184:	// routes it to the invalid-message channel rather than retrying.
+errors.go:46:	// that is unbounded in BOTH dimensions: MaxAttempts == 0 (retry forever) with
+errors.go:50:	// NewConsumer, where "retry forever, immediately" means broker redelivery,
+handler.go:28:// a producing flow MUST end in To or Consume, or its final message is discarded.
+handler.go:37:// no downstream terminal will DISCARD its final message silently. Always end a
+payload.go:8:// permanent, the driving Consumer routes it to the invalid-message channel (never
+reliability.go:17:// Permanent(err) sends the message to the invalid-message sink without
+reliability.go:9:// straight to the invalid-message sink instead of retrying. Wrapping is
+retry.go:15:// The zero value is valid and means "retry forever, immediately, no DLQ".
+retry.go:9://   - MaxAttempts == 0 : retry forever (no dead-letter).
+routing/aggregator.go:23:// correlation failure: the message is routed to the invalid-message channel
+routing/aggregator.go:61:// key is Permanent(ErrNoCorrelation) — routed to the invalid-message channel
+routing/doc.go:7:// [WithDiscardChannel]) a message that does not qualify. [Router] is the
+routing/filter.go:14:// WithDiscardChannel routes messages a Filter rejects (predicate false) to ch
+routing/splitter.go:12:// non-A payload yields ErrPayloadType (routed to the invalid-message channel);
+transform/transformer.go:13:// ErrPayloadType (routed to the invalid-message channel); an fn error propagates
+```
+
+> **39 lines, `sed`-normalized and `sort -u`-pinned.** The `sed 's,^\./,,'` is **not cosmetic**: a shell whose
+> `grep` is a `ugrep` wrapper (Claude Code installs one) omits the `./` prefix that system `grep -r .` emits,
+> so without it the pasted block does not reproduce across shells. Content was verified identical under both;
+> only the prefix differed. `sort -u` pins the order, which `grep -r` does not guarantee between runs.
+>
+> **This sweep is a class, so it must be TRIAGED, not blanket-edited. 39 lines = 13 triaged out + 3
+> verdict-only + 23 edited**, and the checkboxes below account for all 23 (1 + 2 + 12 + 8).
+> **Thirteen hits are a different feature and stay untouched:**
+> `routing/doc.go:7`, `routing/filter.go:14` (`WithDiscardChannel` — a Filter's rejection route),
+> `doc.go:15`, `handler.go:28`, `:37` (a Chain with no terminal), `adapter/http/sseclient.go:69` (SSE replay),
+> `retry.go:9`, `:15`, `endpoint/consumer.go:61`, `endpoint/producer.go:233`, `errors.go:46`, `:50`,
+> `adapter/database/sql/inbox_dedup.go:183` (`MaxAttempts == 0` — a *different* "retry forever").
+>
+> **Three more need a stated verdict rather than an edit, because they are about the sink's DEPLOYMENT, not
+> its selection:** `adapter/database/sql/options.go:78` + `:82` already say *"DLQ/invalid sink"* as one target,
+> so D-N does not falsify the separate-pool mandate — it makes it bind **more often** (a consumer with no
+> invalid sink now diverts invalid messages down the DLQ connection too); confirm the wording still reads
+> correctly and leave it if so. `adapter/database/sql/source.go:16` is unaffected: a corrupt row is dropped by
+> `Poll` before a `Delivery` exists, so it never reaches `divert` on any arm.
+
+- [ ] **`endpoint/consumer.go:67` — `WithInvalidMessageSink`'s godoc, the one this sweep exists to catch.**
+      Today: *"If unset, such messages are logged and discarded (ADR 0007 D7)."* That sentence becomes **false
+      for every finite-retry consumer** the moment D-N lands. It must state all three arms — dead-letter
+      fallback, single-shot discard when that sink fails, discard when neither is configured — **and** the
+      operational remedy from ADR 0029 §5.0b: configuring this sink is what lets an operator tell
+      *retries-exhausted* from *permanently-invalid* in a shared dead-letter store, because msgin stamps no
+      settlement-reason header.
+- [ ] **`adapter/database/sql/options.go:186` + `:193` — the `WithSharedTransaction` warning becomes half
+      false.** (`:186` is the heading of the same godoc block; edit them together.) `:193` reads *"the divert
+      would treat that as 'sink failed' and retry forever — the poison message never actually reaches the
+      dead-letter table."*
+      Under D-P that is no longer true on the **invalid** path (one attempt, then a logged discard); it stays
+      true on the **dead-letter** path. The advice — *"do not use a strict shared-transaction Outbound as a
+      DLQ/invalid sink"* — is unchanged and gets **stronger** under D-N, since a plain consumer's dead-letter
+      sink now receives invalid messages too. Correct the mechanism, keep the advice.
+- [ ] **The invalid-message destination is no longer unconditional** in `reliability.go:9` and `:17`
+      (`permanentError` / `Permanent` — *"routes it straight to the invalid-message sink"*), `errors.go:14`
+      (`ErrPayloadTooLarge`), `errors.go:184`, `payload.go:8`, `endpoint/flowcontrol.go:99`
+      (`WithMaxPayloadBytes`), `channel/pubsub.go:26`, `doc.go:24`, `routing/aggregator.go:23`, `:61`,
+      `routing/splitter.go:12`, `transform/transformer.go:13`. Each states or implies *the* invalid-message
+      sink; after D-N the destination is *the invalid-message sink, or the dead-letter sink when none is
+      configured*. **Twelve lines.** Prefer one canonical sentence, cross-referenced, over twelve paraphrases.
+- [ ] **`endpoint/flowcontrol.go:99` additionally carries an accepted cost** (ADR 0029 §5.0b): after D-N a
+      payload rejected by `WithMaxPayloadBytes` is **persisted** into the operator's durable dead-letter store
+      — msgin storing the very bytes the cap declared illegitimate. Say so on the option, with the two levers
+      (point `WithInvalidMessageSink` elsewhere; or reject oversize input at the adapter).
+- [ ] **`endpoint/consumer.go:714`, `:750`, `:765`, `:775`, `:841`, `:855`, `:875`, `:931`** — the internal
+      comments on the settlement path itself. `:750`/`:765` state the nil-sink discard as unconditional;
+      `:775`'s *"Sink down … the message was NOT diverted → retry it"* is the arm D-P removes from the invalid
+      path; `:714`'s *"Sink-attempt 1"* is the hard-coded `attempt` above.
+- [ ] **Re-run the sweep after the edits and paste it.** Like D-M's, this checkbox's gate is the grep's
+      **content**, not its exit status: the 39 lines must still be 39 (no site dropped) and every non-triaged
+      line must have changed.
 
 **Hot-path branches needing a case each** (fold into one `table-test` per package, `assert`-closure form):
 
@@ -1520,13 +1955,46 @@ One message, one sink receipt.)* **The gate: row 2 must become row 3.**
 - **the decode arm** with invalid sink nil and DeadLetter configured → the DeadLetter sink receives it, so
   `:688`'s change is covered too and not only `:716`'s.
 
+*D-P — the single shot (round 8, A1). This is the branch D-N created and left uncovered:*
+
+- **fallback target configured, its `Send` FAILS** → **the newly reachable state, which D-N's case list did
+  not contain at all.** Drive a real consumer with `invalidSink == nil` and a `DeadLetter` sink whose `Send`
+  returns an error, and assert **all five**: the original delivery is **`Ack`ed** (not `Nack`ed), the
+  source sees **exactly one** delivery (no redelivery loop), `OnInvalidMessage` fires **once**, **`OnRetry`
+  does not fire at all**, and the WARN names **both** the classification cause *and* the sink error (assert
+  both substrings against an injected `*slog.Logger` writing to a buffer). *Without the delivery-count and
+  `OnRetry` assertions this case passes against the very implementation D-P exists to forbid* — the round-8
+  measurement was `nacks=40 OnRetry=40 dlqSends=40` on a harness that capped redelivery at 41.
+- **the same failure on the DECODE arm** (`:688`) → identical outcome, so single-shot is not implemented at
+  one call site only.
+- **the negative that proves the scope:** the **dead-letter** call site (`:726`) with a `DeadLetter` sink
+  whose `Send` fails → **still `Nack`s with a non-zero backoff delay and fires `OnRetry`** (ADR 0007 D8,
+  unchanged). Without this case a later sweep "finishes the job" and makes the transient path terminal too.
+- **fallback WARN deduplication** → two invalid messages through one consumer with the fallback active emit
+  the fallback WARN **once**, while the per-message terminal records still appear (mirrors
+  `governorPanic`'s dedup test).
+
+*D-M's producer-side consequence (round 8, A5) — one case, in `endpoint`:*
+
+- a `Producer` over a `*channel.DirectChannel` whose subscriber returns `msgin.Permanent(msgin.ErrNilFunc)`,
+  with `RetryPolicy{MaxAttempts: 3, DeadLetter: dlq}` → the dead-letter sink receives **nothing**,
+  `OnDeadLetter` does **not** fire, `OnRetry` does **not** fire, and the returned error satisfies
+  `errors.Is(err, msgin.ErrNilFunc) == true` **and `errors.Is(err, msgin.ErrDeadLettered) == false`**. That
+  last assertion is the register row: it is the exported contract that flips, and gate 3 is its transcript.
+
 **Verify:**
 
 - **Gate 1 re-run**, now printing `OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1` on the two former RED rows.
 - **Gate 2 (the census) re-run, every row UNCHANGED** — a row that moved means `IsPermanent`'s enumeration was
   amended, which D-M rejects.
+- **Gate 3 (the producer path) re-run**, showing `dlqSends 1 → 0` and `Is(ErrDeadLettered) true → false`. It
+  is a **documented loss, not a regression** (Spec §2.1 row 8) — do not "fix" it; confirm the covering case
+  asserts it.
 - **D-N's gate re-run**, row 2 now reading row 3's values.
-- The class sweep and the godoc sweep re-run and pasted (their checkboxes above).
+- **D-P's gate re-run**: the D-N-only transcript `deliveries=41 acks=0 nacks=40 dlqSends=40 OnInvalid=0
+  OnRetry=40` must become `deliveries=1 acks=1 nacks=0 dlqSends=1 OnInvalid=1 OnRetry=0`.
+- The class sweep, D-M's godoc sweep, **and D-N/D-P's behavior-derived godoc sweep** re-run and pasted (their
+  checkboxes above).
 - `go test ./... -race -shuffle=on` green across all root packages; the **seven**-module `GOWORK=off` loop
   (not eight — `expr` does not exist until Task 10).
 - **`apidiff` is expected to report NOTHING for this task.** No exported symbol is added, removed or retyped;
@@ -1539,7 +2007,7 @@ One message, one sink receipt.)* **The gate: row 2 must become row 3.**
   > tree, so a floor expressed to one decimal fails on noise alone. The block-level criterion is stable and is
   > what AC-7 already uses.
 
-**Commit:** `fix(core,endpoint,routing,transform)!: classify deterministic endpoint faults as Permanent`
+**Commit:** `fix(core,endpoint,routing,transform,sql)!: classify deterministic endpoint faults as Permanent`
 
 ```
 Spec: 014
@@ -1554,6 +2022,12 @@ RFC: 0002
 > **missing** (`endpoint/helpers.go:21` is an edit site). Both are now earned: D-B1 adds `handler.go:55` and
 > its root `_test` case (**`core`**), and D-N adds `endpoint/consumer.go` on top of `endpoint/helpers.go`
 > (**`endpoint`**). `ADR: 0007` is new — D-N amends its D7.
+>
+> **`sql` was added in round 8 (A4).** D-N/D-P's behavior-derived godoc sweep reaches
+> `adapter/database/sql/options.go:186` + `:193`, whose `WithSharedTransaction` warning describes the
+> retry-forever mechanism D-P removes from the invalid path. `adapter/database/sql` is in the **root module**,
+> so this stays one commit and one `go test ./... -race` run — no extra module joins the loop. **ADR 0007 is
+> now amended TWICE by this commit** (D-N and D-P); the trailer already names it.
 
 The `!` is deliberate even though `apidiff` is empty: the change moves a message from the **dead-letter** sink
 to the **invalid-message** sink and stops it recording an unhealthy breaker signal
@@ -1733,8 +2207,10 @@ benefit.)*
          handler error. **Name the counterpart, and it is `msgin.ErrPayloadType`, not an `expr` sentinel**
          (revised D-K): an expression that evaluates to the wrong Go type returns
          `fmt.Errorf("%w: expr result %T is not %T", msgin.ErrPayloadType, got, want)`, which root's
-         `IsPermanent` already classifies, so it is diverted to the invalid-message sink rather than
-         retried.
+         `IsPermanent` already classifies, so it is **never retried** — diverted to the invalid-message sink
+         when one is configured, else single-shot to `RetryPolicy.DeadLetter`, else logged and discarded
+         (ADR 0007 D7 as amended by **D-N**/**D-P**). *(Round-8 B8: this said only "the invalid-message sink",
+         which is the non-default arm.)*
       3. **Why it is declared here and not in root** — the fault is the provider's; root has no notion of an
          expression and, after Task 1, no code that can produce one (D-I, §9.5.0). ADR 0019's
          *fail-at-construction* contract is about **where the error is raised**, not about who declares the
@@ -1886,8 +2362,9 @@ benefit.)*
       	// tell them apart:
       	//
       	//   - PAYLOAD SIDE (this module) — a Message[any] payload cannot be asserted
-      	//     to T: PayloadOf (payload.go) and the consumer's live-value and wire
-      	//     decode paths (endpoint/consumer.go). Wrapped as "want %T, got %T".
+      	//     to T: PayloadOf (payload.go), which wraps it as "want %T, got %T", and
+      	//     the consumer's live-value and wire type assertions
+      	//     (endpoint/consumer.go), which return it BARE.
       	//   - EXPRESSION SIDE (the msgin/expr provider module, and any future
       	//     CEL/starlark provider) — a compiled expression EVALUATED to a value
       	//     that is not the declared result type. Wrapped as
@@ -1895,17 +2372,53 @@ benefit.)*
       	//
       	// Both classes are deterministic: the same input yields the same wrong type
       	// on every redelivery. IsPermanent names this sentinel (reliability.go), so
-      	// either class is diverted to the invalid-message sink WITHOUT a Permanent
-      	// wrap. That is D-K's whole reason for reusing this sentinel.
+      	// neither is ever retried, and each is diverted WITHOUT a Permanent wrap —
+      	// to WithInvalidMessageSink if one is configured, else single-shot to
+      	// RetryPolicy.DeadLetter, else logged and discarded (ADR 0007 D7, as
+      	// amended by D-N and D-P). That is D-K's whole reason for reusing this
+      	// sentinel.
       	//
       	// ACCEPTED TRADE-OFF, not an absence: errors.Is(err, ErrPayloadType) does
       	// not separate the two, which buys callers ONE target instead of one per
       	// expression provider — but the two remedies are disjoint (fix the codec or
-      	// the producing adapter, versus fix the expression). The ERROR STRING
-      	// carries the discriminator errors.Is deliberately does not: match
-      	// "expr result" to tell them apart.
+      	// the producing adapter, versus fix the expression). Match the string
+      	// "expr result" to tell them apart: only the expression side carries a
+      	// discriminator, so its ABSENCE is what identifies the payload side.
       	ErrPayloadType = errors.New("msgin: payload is not of the expected type")
       ```
+
+      > **⛔ ROUND-8 CORRECTION (design B8) — the round-7 draft over-claimed on one clause and was falsified by
+      > a same-round decision on another.**
+      >
+      > **(i) "Wrapped as `want %T, got %T`" was attached to all three payload-side producers; only ONE of the
+      > three does it.** Verified at `7ee3fd6` (`grep -rn 'ErrPayloadType' --include='*.go' . | grep -v _test`,
+      > then read each site):
+      >
+      > ```
+      > payload.go:15:          return Message[T]{}, fmt.Errorf("%w: want %T, got %T", ErrPayloadType, *new(T), m.Payload())
+      > endpoint/consumer.go:831:                       return zero, msgin.ErrPayloadType
+      > endpoint/consumer.go:838:                       return zero, msgin.ErrPayloadType
+      > ```
+      >
+      > `:831` (live-value assertion) and `:838` (wire `[]byte` assertion) return the sentinel **bare**, and the
+      > trade-off's entire remedy is *"the error string carries the discriminator"*. A godoc promising a wrap
+      > that two of three producers do not perform is the same shape of false claim this whole audit program
+      > exists to catch. **RESOLUTION CHOSEN: narrow the sentence, do NOT wrap the two sites.** Wrapping them is
+      > a behavior change to shipped code — a new error string, its own cases, its own Spec §2.1 row — inside a
+      > task scoped to the `expr` module plus one root comment, and it buys D-K nothing: the discriminator that
+      > separates the two classes is `"expr result"`, whose **absence** identifies the payload side regardless of
+      > what the payload side wraps. *(Backlog, not silently absorbed: `consumer.go:831`/`:838` carry no type
+      > information at all in their error string, which is a pre-existing debuggability gap on the decode path —
+      > it predates D-K, is not created by it, and wants its own finding rather than a ride in this godoc.)*
+      >
+      > **(ii) "diverted to the invalid-message sink" is falsified by D-N, decided in the SAME round.** With no
+      > `WithInvalidMessageSink` — **the default** — the message goes to `RetryPolicy.DeadLetter`, **single-shot**
+      > under **D-P**, and only then to a logged discard ([ADR 0007 D7](../adrs/0007-reliability-settlement-api.md),
+      > amended twice). The sentence now names the full ladder. *A round-7-drafted godoc contradicting a
+      > round-7 decision — the join failure, now between two decisions inside one round.*
+      >
+      > **No gate moves.** All four gated phrases (`PAYLOAD SIDE`, `EXPRESSION SIDE`, `ACCEPTED TRADE-OFF`,
+      > `expr result`) survive verbatim and each still sits within a single godoc line — constraint 2 below.
 
       Four constraints on the text, each load-bearing:
       1. **It must not name `ErrExprResultType`** — Spec AC-10 arm 2 requires that identifier to be empty
@@ -1996,8 +2509,12 @@ surfacing through `Handle` rather than returning `false`; **`RouteFunc`'s two co
 **Verify:** ADR 0019's fail-at-construction contract holds — an invalid expression errors at the provider
 call, never at first message. All **eight** modules green standalone under `GOWORK=off`. **Spec 014 AC-10's
 four grep arms all pass**, including arm 2 (`ErrExprResultType` empty workspace-wide) — the arm the withdrawn
-verbatim-recovery instruction would have broken — plus AC-10's fifth arm, the three `go doc … ErrPayloadType`
-phrase gates. **Both arms of the §8.1 staleness sweep empty with the twelve-directory declared-side loop.**
+verbatim-recovery instruction would have broken — plus AC-10's fifth arm, the **four** `go doc … ErrPayloadType`
+phrase gates (`PAYLOAD SIDE`, `EXPRESSION SIDE`, `ACCEPTED TRADE-OFF`, `expr result`), each an independent
+`grep -q`, all four `exit=0`. *(Round-8, gate minor: this said **three**, while the checkbox above, the RED
+transcript beside it and Spec AC-10 all publish four. The fourth — `expr result` — is deliberately the
+error-string discriminator, i.e. the one a shortened list drops and the one the trade-off's remedy depends
+on.)* **Both arms of the §8.1 staleness sweep empty with the twelve-directory declared-side loop.**
 
 **Commit:** `feat(expr,core): expression providers as a separate module; widen ErrPayloadType's contract`
 
@@ -2025,7 +2542,13 @@ widened contract.)*
 > **This task grew in round 3.** Spec 014 **§8's nine godoc bullets** and **§10's four multi-instance godoc
 > obligations** were written in the indicative, as though they described the tree, and **had no owning task
 > at all** — so nothing in this plan was ever going to produce them. Audited against HEAD, **five of the nine
-> and two of the four were unmet.** They are Task 11 checkboxes now, each grep-verifiable.
+> and two of the four were unmet.** Every one now has an owning task and a `go doc` gate.
+>
+> **Round-8 C4 — Task 11 does NOT own all of them, and this task's checkbox list says which are its.** A godoc
+> obligation is owned by the task that **creates the symbol it documents**: §8's obligations **10, 11, 11a, 12,
+> 13** belong to **Task 9.6** and obligation **4's four new behavior types** to **Task 9**, both of which now
+> run those gates in their own Verify. Task 11 writes the seven whose symbols already exist and **re-verifies**
+> the other nine. Spec §8 carries the owner table; the §11 pinning table carries the same split by gate id.
 
 ### 11a — the five subpackage `doc.go` files · **DONE** (`1d7fc80`, F12.5)
 
@@ -2044,14 +2567,20 @@ would ever have flagged their absence.
 
 ### 11b — Spec 014 §8's unmet godoc bullets
 
-Each line pairs the edit with the command that proves it. **Every gate below is RED on the untouched tree, and
-the transcript proving it is in §11 RED baseline. Re-run the whole baseline block FIRST, paste it into the
-ledger, and only then start editing.**
+Each line pairs the edit with the **id of the gate** that proves it. **A checkbox never restates a command**
+— the [§11 gate block](#11-gate-block--the-one-source-for-every-11b11c-gate-red-at-each-gates-own-tasks-start)
+below is the single source, and every id cited here resolves there. *(Round-8 C1: the checkboxes used to carry
+their own `→ <command>` arrows, which made them a second, silently-diverging copy. Round 7 fixed the block and
+left five arrows on the pre-round-7 forms. Cite ids, never commands.)*
+
+**Run the §11 gate block FIRST and paste it into the ledger, then start editing** — but read the per-task
+pinning table under it before reading anything into a GREEN: eleven of the sixteen gates are turned green by
+Tasks 9 and 9.6, not here.
 
 > **TASK 11 MUST RUN AFTER TASK 9.6.** Spec §8 obligations **10–13** document symbols that do not exist until
 > 9.6 lands (`ExclusiveSubscribable`, `ErrSharedReplyChannel`, `WithSharedReplyChannel`). Ordering matters:
-> running 11 first leaves four obligations permanently unowned, which is the exact §8 failure this task exists
-> to close.
+> running 11 first leaves five obligations (10, 11, 11a, 12, 13) unverifiable — `go doc` cannot read a symbol
+> that has not been declared.
 
 > ## ⛔ ROUND-6 GATE REWRITE (D-B5 / E-B4 / E-B5) — the four D-J gates were DECORATIVE; three passed with zero
 > ## work done, and the fourth could not be satisfied by any correct edit.
@@ -2081,40 +2610,56 @@ ledger, and only then start editing.**
 > `go doc` also fails loudly (`doc: no symbol X in package Y`, exit 1) when the symbol is absent, which is the
 > correct RED for an obligation whose symbol Task 9.6 has not yet created.
 
-#### §11 RED baseline — run this BEFORE any edit; every line must print `RED`
+#### §11 gate block — the ONE source for every 11b/11c gate; RED at each gate's OWN task's start
+
+> **ROUND-8 CORRECTION (C5) — this heading used to read *"run this BEFORE any edit; every line must print
+> `RED`"*, which contradicts the per-task pinning table directly beneath it.** Eleven of the sixteen gates are
+> **not** Task 11's to turn green, and five of those (8.10–8.13) are **expected GREEN on arrival** — written by
+> Task 9.6. A worker taking "every line must print RED" literally at Task 11's start cannot proceed. The
+> all-16-RED transcript below is pinned to the **untouched** tree and is a historical baseline for the whole
+> program, not an entry condition for Task 11. **Read the pinning table below it before running anything.**
 
 ```bash
-g() { if eval "$2" >/dev/null 2>&1; then echo "GREEN(bad, no work needed): $1"; else echo "RED: $1"; fi; }
+# ==== CANONICAL GATE BLOCK (Global Constraint 10) — keep the six shared ids diff-identical to Spec 014 §8.0b
+g() { if eval "$2" >/dev/null 2>&1; then echo "GREEN: $1"; else echo "RED: $1"; fi; }
 M=github.com/kartaladev/msgin
-g 8.10 "go doc \$M.SubscribableChannel | grep -q ExclusiveSubscribable"
-g 8.11 "go doc \$M.ExclusiveSubscribable | grep -q 'MUST NOT compute it from a live subscriber count' && \
-        go doc \$M.ExclusiveSubscribable | grep -q 'reaches at most one recipient' && \
-        go doc \$M.ExclusiveSubscribable | grep -q 'any recipient other than the single subscriber registered on it' && \
-        go doc \$M.ExclusiveSubscribable | grep -q 'recipient in another process' && \
-        go doc \$M.ExclusiveSubscribable | grep -Eq 'constant for the lifetime' && \
-        go doc \$M.ExclusiveSubscribable | grep -Eq 'safe for concurrent use' && \
-        go doc \$M.ExclusiveSubscribable | grep -q 'MUST NOT block and MUST NOT panic'"
-g 8.11a "go doc \$M.ExclusiveSubscribable | grep -Eq 'promotion'"
-g 8.12 "go doc \$M/endpoint.NewChannelExchange | grep -q ErrSharedReplyChannel && \
-        go doc \$M/endpoint.NewChannelExchange | grep -q ErrChannelSubscribed && \
-        go doc \$M/endpoint.NewChannelExchange | grep -q 'does not implement' && \
-        go doc \$M/endpoint.NewChannelExchange | grep -q 'within this process'"
-g 8.13 "go doc \$M/endpoint.WithSharedReplyChannel | grep -qi suppress && \
-        go doc \$M/endpoint.WithSharedReplyChannel | grep -q ErrChannelSubscribed"
+# `d` NORMALIZES `go doc` output before matching, and it has to — measured, see ADR 0030 §1:
+#   * interface METHOD comments print VERBATIM, `//` markers and source line breaks intact;
+#   * func / type / var comments are RE-WRAPPED at ~76 columns, per block.
+# Either shape can split a gate phrase across a line, producing a FALSE RED. `d` strips the
+# markers and folds all whitespace to single spaces, so no phrase can be split by a line break.
+d() { go doc "$1" 2>/dev/null | sed 's,//, ,g' | tr -s '[:space:]' ' '; }
+g 8.10 "d \$M.SubscribableChannel | grep -q 'ExclusiveSubscribable'"
+g 8.11 "d \$M.ExclusiveSubscribable | grep -q 'MUST NOT compute it from a live subscriber count' && \
+        d \$M.ExclusiveSubscribable | grep -q 'reaches at most one recipient' && \
+        d \$M.ExclusiveSubscribable | grep -q 'any recipient other than the single subscriber registered on it' && \
+        d \$M.ExclusiveSubscribable | grep -q 'recipient in another process' && \
+        d \$M.ExclusiveSubscribable | grep -q 'constant for the lifetime' && \
+        d \$M.ExclusiveSubscribable | grep -q 'safe for concurrent use' && \
+        d \$M.ExclusiveSubscribable | grep -q 'MUST NOT block and MUST NOT panic'"
+g 8.11a "d \$M.ExclusiveSubscribable | grep -q 'promotion'"
+g 8.12 "d \$M/endpoint.NewChannelExchange | grep -q 'ErrSharedReplyChannel' && \
+        d \$M/endpoint.NewChannelExchange | grep -q 'ErrChannelSubscribed' && \
+        d \$M/endpoint.NewChannelExchange | grep -q 'does not implement' && \
+        d \$M/endpoint.NewChannelExchange | grep -q 'within this process'"
+g 8.13 "d \$M/endpoint.WithSharedReplyChannel | grep -qi 'suppress' && \
+        d \$M/endpoint.WithSharedReplyChannel | grep -q 'ErrChannelSubscribed'"
+g 11c1 "d \$M/channel.WithSingleSubscriber | grep -Eqi 'single-process|per-process'"
+# ---- the ten gates below are Plan-only (no Spec §8.0b counterpart); the six above are the shared set ----
 g 8.1  "grep -rn -i 'correlation identifier' --include='*.go' ."
 g 8.3  "grep -rn -i 'amqp' --include='*.go' . | grep -q 'spi.go'"
-g 8.4a "go doc \$M/routing.CorrelationStrategy | grep -qi spring"
-g 8.4b "go doc \$M/routing.ReleaseStrategy | grep -qi spring"
-g 8.4c "go doc \$M/routing.Predicate  | grep -qi spring"
-g 8.4d "go doc \$M/routing.RouteFunc  | grep -qi spring"
-g 8.4e "go doc \$M/routing.SplitFunc  | grep -qi spring"
-g 8.4f "go doc \$M/transform.Transformer | grep -qi spring"
+g 8.4a "d \$M/routing.CorrelationStrategy | grep -qi 'spring'"
+g 8.4b "d \$M/routing.ReleaseStrategy | grep -qi 'spring'"
+g 8.4c "d \$M/routing.Predicate | grep -qi 'spring'"
+g 8.4d "d \$M/routing.RouteFunc | grep -qi 'spring'"
+g 8.4e "d \$M/routing.SplitFunc | grep -qi 'spring'"
+g 8.4f "d \$M/transform.Transformer | grep -qi 'spring'"
 g 8.7  "grep -q -i QueueChannel adapter/http/inbound.go && grep -q -i QueueChannel adapter/http/stdlib/inbound.go"
-g 11c1 "go doc \$M/channel.WithSingleSubscriber | grep -Eqi 'single-process|per-process'"
-g 11c2 "go doc \$M.RetryPolicy | grep -Eq 'per instance|N × MaxAttempts'"
+g 11c2 "d \$M.RetryPolicy | grep -Eq 'per instance|N × MaxAttempts'"
 ```
 
-**Pasted output of exactly that block, run on the tree at `c4582ba`:**
+**Pasted output of exactly that block, re-run 2026-07-30 on the untouched tree at `7ee3fd6`** (code
+byte-identical to the `dadc775` pin) — the historical all-RED baseline, **not** Task 11's entry condition:
 
 ```
 RED: 8.10
@@ -2122,6 +2667,7 @@ RED: 8.11
 RED: 8.11a
 RED: 8.12
 RED: 8.13
+RED: 11c1
 RED: 8.1
 RED: 8.3
 RED: 8.4a
@@ -2131,9 +2677,40 @@ RED: 8.4d
 RED: 8.4e
 RED: 8.4f
 RED: 8.7
-RED: 11c1
 RED: 11c2
 ```
+
+> **ROUND-8 CORRECTION (C3) — the `d` normalizer is ADOPTED here and in Spec §8.0b, and ADR 0030's stated
+> reason for it is CORRECTED.** ADR 0030 §1 published this pipe as though both gate documents already used it;
+> neither did (one hit repo-wide: the sentence itself). It is adopted because **the first half of its reason is
+> true and measured**, and dropped-in it changes no verdict. Measured 2026-07-30 in a throwaway probe module
+> with ADR 0030 §1's godoc pasted verbatim and a four-outcome `NewChannelExchange` godoc written to satisfy
+> obligation 12 — **all 14 conjuncts of 8.10/8.11/8.11a/8.12/8.13 MATCH under BOTH forms**, so adopting it
+> flips nothing, while phrases that span a source line break match only under the pipe:
+>
+> ```
+> INCLUDING a recipient in another process     raw=NO     piped=MATCH     (interface method comment)
+> MUST therefore return false                  raw=NO     piped=MATCH     (interface method comment)
+> the probe at all; any wrapper                raw=NO     piped=MATCH     (func comment, re-wrapped)
+> ```
+>
+> **The ADR's stated trigger was half-wrong, and the corrected one is this:** it claimed a func-comment gate
+> *"flips MATCH→NO-MATCH when the **preceding sentence** changes length"*. `go doc` re-wraps **each block
+> independently**, so a length change in a preceding paragraph or list item cannot move the phrase's line
+> breaks — **0 of 46** perturbations of the intro paragraph flipped `grep -q 'does not implement'`, reproducing
+> round 8's measurement. Perturbing text **inside the phrase's own wrapped block** flips it **18 of 46**
+> (first at a 23-character shift). The hazard is real; it is *same-block* edits, not preceding ones. ADR 0030
+> §1 is corrected to say so.
+
+> **ROUND-8 CORRECTION (C1) — the per-checkbox gate arrows are DELETED; each checkbox now cites a gate id.**
+> Task 11b's preamble says *"each line pairs the edit with the command that proves it"*, so the arrows were the
+> **instruction** while this block was the transcript — **two copies of one artifact**, and round 7 fixed only
+> the copy it was looking at. The arrows were left on the pre-round-7 set: the line-counting obligation-12
+> form, 8.11 with **two** conjuncts where the obligation has **seven**, 8.13 missing `ErrChannelSubscribed`,
+> `grep -qi instance` for 11c2, and **no 8.11a checkbox at all**. None self-satisfied, so this was never a
+> false GREEN — it was a **weaker-instruction path**: write the two phrases the arrow names, then fail the
+> Verify with no diagnosis. **There is now exactly one source.** A checkbox cites `→ gate <id>, §11 block`;
+> it never restates a command.
 
 Most are RED for the *"symbol does not exist yet"* reason, which `go doc` reports explicitly —
 `doc: no symbol ExclusiveSubscribable in package github.com/kartaladev/msgin` (8.11, 8.11a),
@@ -2161,39 +2738,61 @@ Most are RED for the *"symbol does not exist yet"* reason, which `go doc` report
 >   instance"*. That is the exact class round 6 rejected for the old §8.11 ("concurrent" matching
 >   incidentally). Tightened to `per instance|N × MaxAttempts`, the phrase Spec §8.0a(d) already uses.
 >
-> **Standing check, now a Global Constraint:** this block and Spec §8.0b must stay **diff-identical in
-> coverage**. They diverged silently because both sets were RED, so nothing caught it until an auditor built
-> the comparison table by hand.
+> **Standing check — now [Global Constraint 10](#global-constraints), with an executable `diff`:** this block
+> and Spec §8.0b must stay **diff-identical on the six shared gate ids**. They diverged silently because both
+> sets were RED, so nothing caught it until an auditor built the comparison table by hand. *(Round-8 C2: the
+> round-7 pass wrote this sentence and never created the constraint — the list ran 0–9. It exists now, and it
+> carries the command.)*
 
-> **ROUND-7 CORRECTION (X-B8) — this baseline is pinned to the wrong tree for some of its gates.** The block
-> above is RED at `c4582ba`, the **untouched** tree. But Task 11 runs **after Task 9.6** (stated at the head of
-> this task), and Task 9.6 writes the very godoc that 8.10, 8.11, 8.11a, 8.12 and 8.13 check. **At Task 11's
-> actual start those five are expected to be GREEN**, and a worker following *"every line must print RED"*
-> literally cannot proceed.
+> **ROUND-7 CORRECTION (X-B8), AS AMENDED BY ROUND 8 (C4/C5) — the gates are pinned PER TASK, and the tasks
+> that turn them green are the tasks that WRITE the godoc.** The block above is RED on the untouched tree. But
+> Task 11 runs **after Task 9.6** (stated at the head of this task), and Task 9.6 writes the very godoc that
+> 8.10, 8.11, 8.11a, 8.12 and 8.13 check. **At Task 11's actual start those five are expected to be GREEN.**
 >
 > **The rule (round-7 counter-rule 8): a RED baseline is pinned to the tree at ITS OWN task's start, not to
-> the untouched tree.** Split accordingly:
+> the untouched tree.** Split accordingly — and note the **owner** column, which round 8 (C4) had to add
+> because four documents disagreed about who owns obligations 10–13:
 >
-> | Gate | RED at | Turned GREEN by |
-> |---|---|---|
-> | 8.10 · 8.11 · 8.11a · 8.12 · 8.13 | **Task 9.6's** start | Task 9.6 (it writes the godoc; §8 obligations 10–13 are its acceptance criteria) |
-> | 8.4c · 8.4d · 8.4e · 8.4f | **Task 9's** start | Task 9 (the four named behavior types do not exist before it) |
-> | 8.1 · 8.3 · 8.4a · 8.4b · 8.7 · 11c1 · 11c2 | **Task 11's** start | Task 11 — these are the only gates Task 11 itself turns green |
+> | Gate | RED at | Turned GREEN by — the task that WRITES the godoc | Task 11's role |
+> |---|---|---|---|
+> | 8.10 · 8.11 · 8.11a · 8.12 · 8.13 | **Task 9.6's** start | **Task 9.6** — it creates all three symbols and rewrites `NewChannelExchange`'s godoc; §8 obligations 10–13 are its acceptance criteria, and its Verify runs these five gates | re-run as a **no-regression check** |
+> | 8.4c · 8.4d · 8.4e · 8.4f | **Task 9's** start | **Task 9** — the four named behavior types do not exist before it, and its "every type's godoc names its Spring equivalent" checkbox is what writes them; its Verify runs these four gates | re-run as a **no-regression check** |
+> | 8.1 · 8.3 · 8.4a · 8.4b · 8.7 · 11c1 · 11c2 | **Task 11's** start | **Task 11** — the only gates Task 11 itself turns green | RED → GREEN, both transcripts |
 >
-> Task 11's own Verify asserts the **first two groups are already GREEN on arrival** (a regression check on
-> Tasks 9 and 9.6) and the **third group goes RED → GREEN** within Task 11.
+> **The ownership resolution (round-8 C4), stated once so every other document can cite it:** a godoc
+> obligation is owned by the task that **creates the symbol it documents**, because Go has no state in which an
+> exported symbol exists without its doc comment — Task 11 cannot be "the writer" of a godoc that Task 9.6 must
+> already have written in order to commit a green unit. Task 11 owns the obligations whose symbols **already
+> exist** (1, 3, 4-for-the-two-shipped-types, 7) plus §10's two, and **re-verifies** the rest. The structural
+> cause of the contradiction was that **Task 9.6's Verify contained no `go doc` gate at all**, so nothing
+> measured the two root symbols and the normative godoc it is the sole writer of; that is fixed in Task 9.6.
+
+> **OBLIGATIONS 10–13 ARE WRITTEN BY TASK 9.6, NOT HERE (round-8 C4).** The five checkboxes below are Task
+> 11's **no-regression re-verification** of godoc Task 9.6 already committed — the symbols cannot exist
+> without it. They are listed here because §8 is audited per obligation and this is where a reader looks for
+> the obligation set; the *writing* checkbox for each lives in Task 9.6, and its content spec is Spec §8
+> obligation 10/11/11a/12/13. **If a gate is RED on arrival, that is a Task 9.6 regression — do not write the
+> godoc here.** Task 11's own RED → GREEN work is the eight checkboxes under "§8.1" onward plus 11c.
 
 - [ ] **§8.10 — `SubscribableChannel`'s godoc cross-references `ExclusiveSubscribable`** (D-J). Without it the
       optional capability is undiscoverable from its own supertype, and a third-party channel author never
       learns the probe exists — leaving the accept-unknown arm permanent for exactly the fan-out-capable
       channels ADR 0030 §Topology's second topology describes.
-      → `go doc github.com/kartaladev/msgin.SubscribableChannel | grep -q ExclusiveSubscribable`
-- [ ] **§8.11 — `SingleSubscriber`'s godoc states the END-TO-END definition (D-L), requires INVARIANCE, and
-      requires concurrency safety.** All three, and the gate asserts two of them independently:
-      - it reports whether **this exchange will be the sole recipient of every message sent to this channel** —
-        a statement about the channel's **policy**, not its live subscriber count; an implementation **MUST
-        NOT** compute it from a subscriber count, and a channel whose deliveries reach other processes (a
-        broker subject, Redis pub/sub, an SSE stream) **MUST return `false`**;
+      **Written by Task 9.6** → verify with **gate 8.10, §11 block** (expected GREEN on arrival).
+- [ ] **§8.11 — `SingleSubscriber`'s godoc states the END-TO-END definition (D-L revised), requires
+      INVARIANCE, requires concurrency safety, and forbids blocking/panicking (D-O).** **Five parts (a)–(e)**,
+      per Spec §8 obligation 11; the gate asserts **seven phrases independently**. *(Round-8 correction: this
+      said "All three, and the gate asserts two of them" — a count left over from before D-L was revised and
+      D-O added. Cite the obligation, never a count.)*
+      - it reports whether **every message sent to this channel reaches at most one recipient, counted across
+        every process** — a statement about the channel's **policy**, not its live subscriber count; an
+        implementation **MUST NOT** compute it from a subscriber count. A channel **MUST return `false`**
+        whenever a message can be received by any recipient other than its single registered subscriber,
+        **including one in another process** — a broadcast broker subject, a Redis pub/sub channel or an SSE
+        stream fanned out to N instances therefore reports `false` even when its local handle admits one
+        subscriber. A broker-backed channel **MAY** report `true` only when the broker guarantees the
+        destination is private to this process's subscription (a per-instance NATS `_INBOX`, an exclusive
+        auto-delete AMQP reply queue) — that is Return Address, and it is what an honest `true` means;
       - the value **MUST be constant for the lifetime of the channel** — msgin calls it once, at construction,
         and treats it as an invariant. Concurrency-safety is the *weaker* property: a race-free
         `atomic.Load(&n) == 0` is concurrency-safe and still lies (TOCTOU). State **both**;
@@ -2205,8 +2804,17 @@ Most are RED for the *"symbol does not exist yet"* reason, which `go doc` report
         so promotion is a **hazard**, not only the remedy ADR 0030 §5 presents. Conversely, the idiomatic
         one-line decorator `struct{ msgin.SubscribableChannel }` promotes `Send` and `Subscribe` but **not**
         `SingleSubscriber`, so a wrapper silently opts out of the probe.
-      → `go doc …msgin.ExclusiveSubscribable | grep -Eq 'safe for concurrent use'` **AND**
-        `go doc …msgin.ExclusiveSubscribable | grep -Eq 'constant for the lifetime'`
+      **Written by Task 9.6** (verbatim from ADR 0030 §1) → verify with **gate 8.11, §11 block** — **seven**
+      conjuncts, expected GREEN on arrival.
+- [ ] **§8.11a — the same godoc states that EMBEDDING CUTS BOTH WAYS** (D-L; Spec §8 obligation **11a**).
+      Method promotion is the **hazard** as well as ADR 0030 §5's remedy: a type embedding
+      `*channel.DirectChannel` or `*channel.PublishSubscribeChannel` reports on the **embedded** channel even
+      when it overrides `Subscribe` with its own fan-out. Compile-proven: `struct{ *PublishSubscribeChannel }`
+      reports `true` while its own `Subscribe` fans out to 2.
+      **Written by Task 9.6** → verify with **gate 8.11a, §11 block** (expected GREEN on arrival).
+      *(Round-8 C1: this obligation had **no checkbox in this task at all**, while the Risks table claimed
+      Task 11 owned every one — §8's founding failure mode reproduced inside the fix for it. The gate existed
+      in the §11 block from round 7; only the checkbox was missing.)*
 - [ ] **§8.12 — `NewChannelExchange`'s godoc states FOUR outcomes and enumerates `ErrChannelSubscribed`.**
       rejected · accepted-exclusive · accepted-no-probe · **accepted but exclusive only within this process**.
       `ErrChannelSubscribed` is returned unwrapped from `reply.Subscribe` (`endpoint/exchange.go:250`) and is
@@ -2215,33 +2823,40 @@ Most are RED for the *"symbol does not exist yet"* reason, which `go doc` report
       The accepted-no-probe arm must also carry D-L's wrapper caveat: *a reply channel that wraps another by
       embedding the `msgin.SubscribableChannel` interface does not inherit `SingleSubscriber`, so it is
       accepted here even when the channel it wraps would be rejected.*
-      → `[ "$(go doc …/endpoint.NewChannelExchange | grep -c 'ErrSharedReplyChannel\|ErrChannelSubscribed\|does not implement\|within this process')" -ge 4 ]`
+      **Written by Task 9.6** → verify with **gate 8.12, §11 block** — **four** conjuncts, expected GREEN on
+      arrival. *(The arrow deleted here was the line-counting `grep -c … -ge 4` form that round 7 replaced in
+      the block and did not replace here — round-8 C1.)*
 - [ ] **§8.13 — `WithSharedReplyChannel`'s godoc says it SUPPRESSES THE PROBE, not that it confers
       shareability.** On a `DirectChannel` the second exchange still gets `ErrChannelSubscribed`; neither the
       option's name nor that sentinel's text hints the option cannot help. *(This wording is only true if the
       guard tests `cfg.allowShared` **first** — see the note in Task 9.6.)*
-      → `go doc …/endpoint.WithSharedReplyChannel | grep -qi suppress`
+      **Written by Task 9.6** → verify with **gate 8.13, §11 block** — **two** conjuncts (the arrow deleted
+      here named only `suppress` and dropped `ErrChannelSubscribed`), expected GREEN on arrival.
+
+**Task 11's own RED → GREEN work starts here.**
 
 - [ ] **§8.1 — name Correlation Identifier.** "Return Address" is present; the *in-process* pattern is never
       named. Add it to `endpoint`'s `ChannelExchange`/`doc.go` prose.
-      → `grep -rn -i 'correlation identifier' --include='*.go' .` must be **non-empty**.
+      → **gate 8.1, §11 block.**
 - [ ] **§8.3 — the AMQP disclaimer on `RequestReplyExchange`.** Currently **absent workspace-wide**, despite
-      Spec 014 §6 and ADR 0029 §2 both asserting in the present tense that it exists.
-      → `grep -rn -i 'amqp' --include='*.go' . | grep spi.go` must be **non-empty** (the earlier form only
-      required a hit *somewhere*, and separately asserted "must hit `spi.go`" in prose — fold the assertion
-      into the command).
+      Spec 014 §6 and ADR 0029 §2 both asserting in the present tense that it exists. The gate requires the hit
+      to be in `spi.go`, not merely *somewhere* — that assertion used to live in prose beside a weaker command.
+      → **gate 8.3, §11 block.**
 - [ ] **§8.4 — every named behavior type names its Spring equivalent, per type.** Currently only the *package*
       docs name Spring; `routing.CorrelationStrategy` and `routing.ReleaseStrategy` do not. This is the
       mitigation that justifies dropping the Spring names (ADR 0029 §4), so it is **not** discharged by a
-      package-level mention.
-      → for each of `CorrelationStrategy`, `ReleaseStrategy`, and Task 9's `Predicate`, `RouteFunc`,
-      `SplitFunc`, `Transformer`: `go doc github.com/kartaladev/msgin/<pkg>.<T> | grep -qi spring`.
-      *(Was `grep -B10 'type <T>' <file>` — a guessed window over a hand-named file; `go doc` needs neither.)*
+      package-level mention. **Task 11 writes the two shipped types** (`CorrelationStrategy`,
+      `ReleaseStrategy`); **Task 9 writes its own four** (`Predicate`, `RouteFunc`, `SplitFunc`,
+      `Transformer`) and its Verify runs their gates.
+      → **gates 8.4a–8.4b, §11 block** (this task) and **gates 8.4c–8.4f** (Task 9's, re-run here as a
+      no-regression check). *(The old arrow's `grep -B10 'type <T>' <file>` window is long gone; `go doc`
+      needs neither a file name nor a window.)*
 - [ ] **§8.7 — `msghttp.ServeAsync` and `stdlib.NewInbound` state the widened `target` contract.** Neither
       godoc mentions that any `MessageChannel` — a durable `QueueChannel`, a `PublishSubscribeChannel`, any
-      `OutboundAdapter` — now qualifies, which is the whole user-visible payoff of §5.0 rows 7–8.
-      → `grep -n -i 'QueueChannel' adapter/http/inbound.go adapter/http/stdlib/inbound.go` must hit **both**
-      files (check the file list of the output, not just its exit status).
+      `OutboundAdapter` — now qualifies, which is the whole user-visible payoff of §5.0 rows 7–8. The gate
+      requires **both** files to hit, which is why it is an `&&` of two file-scoped greps rather than one
+      `grep -rn`.
+      → **gate 8.7, §11 block.**
 
 ### 11c — Spec 014 §10's unmet multi-instance obligations (CLAUDE.md mandatory)
 
@@ -2249,7 +2864,9 @@ Most are RED for the *"symbol does not exist yet"* reason, which `go doc` report
       many words — *"must not be documented as a distributed exclusivity guarantee"* — and the godoc
       (`channel/pubsub.go:66-82`) never mentions the process boundary. Two instances each holding their own
       `PublishSubscribeChannel` still each accept a subscriber.
-      → `go doc github.com/kartaladev/msgin/channel.WithSingleSubscriber | grep -Eqi 'single-process|per-process'`
+      → **gate 11c1, §11 block** — the one gate id shared with Spec §8.0b's block that is *not* a D-J
+      obligation (there it is labelled §8.0a obligation (c); the id is the same in both, by Global
+      Constraint 10).
       *(Was `grep -A22 'func WithSingleSubscriber' channel/pubsub.go | grep -i …` — **unsatisfiable**: the
       body is one line, so `-A22` read 22 lines of the NEXT declarations. Also note the old text cited the
       godoc as `:69-83`; it is `:66-82`.)*
@@ -2259,7 +2876,9 @@ Most are RED for the *"symbol does not exist yet"* reason, which `go doc` report
       effective global bound is `N × MaxAttempts`; this applies **only** to sources without a native
       delivery-count header (a `NativeReliability` source is unaffected); the distributed answer is the
       broker's own redelivery count or a shared idempotency/dedup store.
-      → `go doc github.com/kartaladev/msgin.RetryPolicy | grep -qi instance` *(`go doc` on the struct prints
+      → **gate 11c2, §11 block** — `per instance|N × MaxAttempts`, **not** the old arrow's
+      `grep -qi instance`, which *"for instance"* or *"this instance"* satisfies incidentally (round-7 X-M7;
+      the tightening reached the block and not this checkbox — round-8 C1). *(`go doc` on the struct prints
       the field doc comments too — verified — so no `-B` window is needed.)*
 
 **Verify:**
@@ -2269,10 +2888,20 @@ for p in . endpoint routing transform channel resilience; do
   [ "$n" = 1 ] || { echo "FAIL $p has $n"; exit 1; }
 done                                   # silent — this is the check, NOT `go vet` (Global Constraint 3)
 ```
-Plus the **§11 RED baseline block re-run to all-GREEN**, with **both** transcripts (the RED before and the
-GREEN after) pasted into the ledger. A gate with only an "after" transcript proves nothing — that is
-round-6's counter-rule 4, and it is the reason three of these four gates shipped decorative.
-`go vet ./...` clean.
+Plus the **§11 gate block re-run to all-GREEN**, with **both** transcripts pasted into the ledger. Per the
+pinning table above, the two transcripts differ by group:
+
+| Group | Before Task 11 | After Task 11 |
+|---|---|---|
+| 8.10 · 8.11 · 8.11a · 8.12 · 8.13 (Task 9.6's) | **GREEN** — a RED here is a Task 9.6 regression, not work for this task | GREEN |
+| 8.4c · 8.4d · 8.4e · 8.4f (Task 9's) | **GREEN** — same | GREEN |
+| 8.1 · 8.3 · 8.4a · 8.4b · 8.7 · 11c1 · 11c2 (Task 11's own) | **RED** — this is Task 11's RED baseline | GREEN |
+
+*(Round-8 C5: this said *"the §11 RED baseline block re-run to all-GREEN … the RED before"*, i.e. all sixteen
+RED on arrival — which the pinning table directly above it contradicts. A "before" transcript still proves
+what round-6's counter-rule 4 wants it to prove; it just is not all-RED.)* A gate with only an "after"
+transcript proves nothing — that is round-6's counter-rule 4, and it is the reason three of these four gates
+shipped decorative. `go vet ./...` clean.
 
 **Commit:** `docs(core): package docs and the godoc obligations Spec 014 §8/§10 require`
 
@@ -2436,7 +3065,7 @@ including ADR 0007, which D-N amends. ADR 0007 declares no RFC; the other four c
 | `expr` cannot build standalone | Task 10 ships `require` + `replace` together, and CI gets all three edits |
 | `gopls` unavailable in a subagent | No task depends on it; `go vet ./...` is the authoritative reference-finder and `grep` the fallback |
 | Root loses its package doc | Done in Task 1's change; the five subpackage docs landed in the round-3 pass (F12.5). Task 11's verify **counts** them — `go vet` does NOT catch a duplicate (Global Constraint 3) |
-| A godoc obligation has no owning task | Spec 014 §8's nine bullets and §10's four obligations were unowned and six were unmet; **Task 11b/11c owns all thirteen** |
+| A godoc obligation has no owning task | Spec 014 §8's nine bullets and §10's four obligations were unowned and six were unmet. **Every one now has an owning task, and the owner is the task that CREATES the symbol** (round-8 C4, resolving a four-way contradiction): **Task 9.6** owns §8's 10, 11, 11a, 12, 13; **Task 9** owns obligation 4 for the four behavior types it creates; **Task 11b/11c** owns the remaining seven and **re-verifies** the other nine as no-regression checks. The owner mapping is stated in Spec §8's table, in the §11 pinning table, and in each task's Verify — and each is measured by a gate id from the one canonical block |
 | A godoc gate passes without the godoc being written | **Every 11b/11c godoc gate is a `go doc` command, not a `grep -A`/`-B` window** — a doc comment sits *above* its declaration, so `-A` reads the wrong lines and `-B` guesses a window size; `go doc` extracts the comment by construction. **And every gate is demonstrated RED before the edit** (§11 RED baseline), because a gate that is green on the untouched tree ticks with zero work. Round 6 found three of four D-J gates self-satisfying and the fourth unsatisfiable |
 | A number is pinned to an intermediate state | **Global Constraint 0** — every pasted command carries its commit range and module scope. This is the signature behind every round-3 defect |
 | Expression support absent mid-branch | Bounded to Tasks 1→10 within one branch. **Task 10's parity bar is git, not the ledger**: `git show ab233d9:expr_test.go` + `git show ab233d9:expr.go` *(round-6 C-B5 — this row said "Task 1 preserved the test cases in the ledger", which §Ledger and Task 10's own round-3 `CORRECTED` block each contradict: none of the twelve deleted test functions is recorded anywhere under `docs/`)* |

@@ -1,12 +1,15 @@
 # ADR 0007 — Reliability & settlement API
 
-- **Status:** Accepted (2026-07-17) · **D7 amended 2026-07-28 by decision D-N** — see the amendment note in
-  D7 below. The amendment is recorded here rather than by superseding this ADR: D7's reasoning stands
-  unchanged for the case it weighed (discard vs. keep-retrying); D-N adds a case it could not have weighed,
-  created by decision **D-M** in [ADR 0029 §5.0b](0029-eip-lexical-alignment.md).
+- **Status:** Accepted (2026-07-17) · **D7 amended 2026-07-28 by decision D-N, and again 2026-07-30 by
+  decision D-P** — see the amendment notes in D7 below. The amendments are recorded here rather than by
+  superseding this ADR: D7's reasoning stands unchanged for the case it weighed (discard vs. keep-retrying);
+  D-N adds a case it could not have weighed, created by decision **D-M** in
+  [ADR 0029 §5.0b](0029-eip-lexical-alignment.md), and **D-P makes D-N's fallback single-shot** so that a
+  **down** fallback sink falls through to D7's discard instead of re-creating the infinite-retry trap D7's own
+  sentence rejects.
 - **Context source:** [Spec 001 — Messaging core](../specs/001-messaging-core.md) §5–§8;
   [Plan 002 — Reliability](../plans/002-reliability.md)
-- **Amended by:** [ADR 0029 §5.0b](0029-eip-lexical-alignment.md) (D-N, D7 only) ·
+- **Amended by:** [ADR 0029 §5.0b](0029-eip-lexical-alignment.md) (D-N and D-P, D7 only) ·
   **Spec:** [014 §2.1](../specs/014-core-package-layout.md) · **Plan:** [027](../plans/027-core-package-layout.md)
   Task 9.7
 - **Related:** [ADR 0002 — Adapter SPI](0002-adapter-spi.md) (runtime-owned reliability, `Delivery`/
@@ -205,6 +208,68 @@ fixes the *policy* so Task 5 has nothing left to decide.
 > **Scope:** both invalid-message divert call sites — the decode-failure path and the permanent-handler-error
 > path. The decode arm's change (discard → dead-letter) is a behavior change in its own right and a strict
 > improvement over the discard; it is recorded rather than inherited silently.
+>
+> ---
+>
+> **AMENDED AGAIN 2026-07-30 by decision D-P — the fallback is SINGLE-SHOT** ([round 8 §1](../plans/027-audit-round-8.md),
+> [ADR 0029 §5.0b](0029-eip-lexical-alignment.md), [Spec 014 §2.1](../specs/014-core-package-layout.md#21-the-deliberate-behavior-changes-the-register)
+> row 7, realized by [Plan 027](../plans/027-core-package-layout.md) Task 9.7). **When the fallback target's
+> `Send` fails, this decision's discard is what happens next.**
+>
+> The amendment above said only *where* the message goes. It never said what happens when that target is
+> **down** — and D8's send-failure arm (`endpoint/consumer.go:774-782`) `Nack`s with `requeue=true`. A
+> **permanent** message therefore re-entered the flow, forever, and **every bound this library owns is
+> structurally blind to that loop**:
+>
+> - **MaxAttempts** — never consulted. The permanent arm deliberately bypasses `c.attempts(d)` (M8) and passes
+>   `attempt = 1`.
+> - **Backoff** — `retryDelay(policy, 1)` is `p.Backoff.Delay(0)` (`endpoint/consumer.go:948-953`), the *first*
+>   step, on every iteration. It never escalates.
+> - **Circuit breaker** — `endpoint/consumer.go:614` records `err == nil || msgin.IsPermanent(err)` as
+>   **healthy**, so the breaker is told the flow is fine while the message spins.
+>
+> Measured in round 8 in the default configuration, against a dead-letter sink whose `Send` returns an error:
+>
+> ```
+> BEFORE D-N: deliveries=1   acks=1  nacks=0   dlqSends=0   OnInvalid=1  OnDeadLetter=0  OnRetry=0
+> AFTER  D-N: deliveries=41  acks=0  nacks=40  dlqSends=40  OnInvalid=0  OnDeadLetter=0  OnRetry=40
+> ```
+>
+> (41 was the harness's redelivery cap, reached in under 10 ms. The loop is **unbounded** in reality.)
+>
+> **This is the trap D7's own sentence rejects,** verbatim: *"retrying anyway would only convert a
+> configuration gap (no sink configured) into an infinite-retry trap, which is **worse** than a logged,
+> observable discard."* D-N re-created it because its note argued only the discard-vs-durable-sink axis and
+> never re-weighed the axis D7 had actually decided.
+>
+> **The amended behavior, stated in full.** On an invalid-message divert with `invalidSink == nil`:
+>
+> 1. `policy.DeadLetter != nil` → send there (**D-N**). On success: fire `OnInvalidMessage`, `Ack`. This is
+>    **one** attempt — there is no second.
+> 2. That `Send` **fails** → **do not `Nack`.** Log a WARN naming **both** the classification cause *and* the
+>    sink error, fire `OnInvalidMessage`, and `Ack` — i.e. fall through to this decision's discard (**D-P**).
+> 3. Neither sink configured → the original D7 discard, unchanged.
+>
+> D-N's gain (a reachable dead-letter sink captures the message) is kept; D7's guarantee (**an invalid message
+> always terminates**) is not surrendered. The rejected alternative — threading a real attempt count into the
+> invalid-path `divert` to bound the loop — is more code and more state, and still spends retry budget on a
+> fault that cannot resolve.
+>
+> **This does NOT change D8** for the dead-letter and transient paths: a `divert` whose sink is
+> `c.policy.DeadLetter` (`endpoint/consumer.go:726`) still `Nack`s with backoff on send failure, because that
+> message is retryable and requeueing it is not a loop. The single-shot rule is specific to the **invalid**
+> path, whose messages are permanent by classification.
+>
+> **The class this violated — record it, not just the instance:** *a settlement path that is terminal by
+> construction must not become non-terminal without a bound.* Before D-N the no-invalid-sink path had exactly
+> one outcome (Ack); D-N gave it a retry loop that no counter, no backoff and no breaker could observe. Any
+> future amendment that adds a `Send` to a terminal path must state what happens when that `Send` fails.
+>
+> **Operational disclosure (D-N/D-P consequence):** a dead-letter sink now receives **two operationally
+> distinct classes** — retries-exhausted (may be replayable) and permanently-invalid (replaying is pointless) —
+> and msgin stamps **no settlement-reason header**, so the distinction does not survive the process. See
+> [ADR 0029 §5.0b](0029-eip-lexical-alignment.md) (decision D-N's Consequences) for the full record and the
+> remedy available to operators today.
 
 ### D8 — `divert` settlement contract (Task 5)
 

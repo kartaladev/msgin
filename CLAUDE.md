@@ -99,6 +99,45 @@ To survive context limits without hallucinating, hand off through a written docu
 
 Begin the document with an explicit instruction to the next session: *read CLAUDE.md and the referenced spec/plan/ADR before acting, and trust those files over any memory.*
 
+## Reporting to the user (mandatory format)
+
+This project generates a lot of coded shorthand — decisions (`D-J`…`D-O`), audit findings (`R-B3`, `X-B2`,
+`D-B4`), lenses, gates, joins, rounds. **That shorthand is for the documents, not for the user.** A reply the
+user cannot follow has not communicated anything, however accurate it is. These rules are as binding as the
+technical ones.
+
+**Use ONE structure, every time.** Do not invent a new shape per message — a format that changes each turn
+forces the user to re-learn how to read every reply. The default skeleton, with `##`-numbered sections:
+
+1. **What happened** — the outcome, in plain language, first.
+2. **What it means** — why it matters; the consequence, not the mechanism.
+3. **What needs a decision** — explicitly separated, with options and a recommendation. If nothing needs a
+   decision, say so in one line rather than omitting the section.
+4. **What happens next** — the concrete next step.
+
+**Define every code before using it, in the reply that uses it.** Never write `D-N` or `X-B7` bare. Either
+gloss it inline (*"**D-N** — dead-letter instead of discard"*) or open with a short vocabulary table when a
+reply carries more than two or three codes. Assume the user has not memorised the audit records.
+
+**Lead with the point; put the evidence after it.** Commands, transcripts, `file:line` citations and diff
+stats are *support*, not the headline. The reader should never have to parse a transcript to discover the
+conclusion. (This is the opposite of the rule for the audit records themselves, where evidence is primary —
+know which artifact you are writing.)
+
+**Keep detail proportionate to the medium.** One or two sentences per finding in a chat reply; the exhaustive
+record belongs in `docs/plans/027-audit-round-*.md` and its equivalents. Volume is not rigor — if a summary
+needs a page per finding, the summary is wrong, not the finding.
+
+**Formatting conventions:**
+- **Numbered lists** for sequence, status and steps. **Tables** for per-item comparison. Do not use both for
+  the same purpose in one reply.
+- Bold the load-bearing claim in a paragraph, not every third phrase — emphasis everywhere is emphasis nowhere.
+- Prefer a table over a wall of prose whenever there are ≥3 items with the same shape (findings, commits,
+  modules, options).
+
+**When the user says they cannot follow a reply, that is a defect report — fix the format, not the wording.**
+Re-explain from the beginning with the structure above; do not simply restate the same content more slowly.
+
 ## Commit discipline
 
 Commit **completed, green units of work** — a coherent increment whose tests pass (and that has cleared the **pre-commit gate**, Development workflow §5). No WIP or broken-build commits.

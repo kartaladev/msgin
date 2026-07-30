@@ -19,6 +19,13 @@
   panic by recovering it and **failing closed** (§3a); the blocking case is undefendable and is a stated MUST
   (round 7 §1, design B3, compile-proven). **D-M5** — the wrapper invariant is stated **by shape**, not by
   mechanism (§4). **D-M6** — the soft opt-in alternative is weighed and rejected in the Alternatives table.
+- **Decisions folded in 2026-07-30 (round 8):** **D-O2** — `safeSingleSubscriber` returns `(bool, error)` and
+  the guard wraps the recovered panic into `ErrSharedReplyChannel`, because D-O as recorded **destroyed the
+  evidence of the fault it recovers from and reported a false diagnosis**: a genuinely exclusive channel whose
+  probe panics was rejected with *"it is not exclusive to this exchange"* and, under the default discard
+  logger, nothing survived at all ([round 8 §2](../plans/027-audit-round-8.md), design B1, compile-proven).
+  §3a carries the measurement, the fix, and the proof that **no gate moves**; §3's guard snippet and
+  `ErrSharedReplyChannel`'s godoc (a **third** cause) are updated to match.
 - **Amends** [ADR 0028 §6.2](0028-channel-interface-segregation.md) (decision D-F). It does **not** supersede
   ADR 0028: §6.2's channel-local `channel.WithSingleSubscriber()` is the mechanism this ADR makes
   load-bearing, and §6.2's rejection of a cross-exchange **registry** stands unchanged and unweakened. What
@@ -188,18 +195,41 @@ type ExclusiveSubscribable interface {
 }
 ```
 
-**That godoc text is normative, down to its line breaks**, not illustrative: Plan 027 Task 9.6 writes it
-verbatim and Task 11b gates it with `go doc`-extracted property assertions (a `grep -A`/`-B` gate on a doc
-comment reads the wrong lines — [round 6 §0](../plans/027-audit-round-6.md), counter-rule 3).
+**That godoc text is normative and must be copied VERBATIM**, not paraphrased: Plan 027 Task 9.6 writes it
+and gates it with `go doc`-extracted property assertions (a `grep -A`/`-B` gate on a doc comment reads the
+wrong lines — [round 6 §0](../plans/027-audit-round-6.md), counter-rule 3). **Its line breaks are no longer
+load-bearing for the gate** — see the normalizer below — but its *wording* is: every conjunct of gate 8.11 is
+a literal span of the text above.
 
-> **The gate normalizes `go doc`'s output before matching, and it has to.** Measured in a probe module at
-> `c4582ba`: interface **method** comments print **verbatim**, `//` markers and source line breaks intact, so
-> `grep -q 'INCLUDING a recipient in another process'` fails on the text above (it reads
-> `… INCLUDING a // recipient in another process`); **func** and **type** comments are **re-wrapped** at ~76
-> columns, so `grep -q 'does not implement'` flips MATCH→NO-MATCH when the preceding sentence changes length.
-> Both are **false REDs**. The canonical gate block (Spec 014 §8.0b ≡ Plan 027 §11) therefore pipes every
-> `go doc` through `sed 's,//, ,g' | tr -s '[:space:]' ' '` first. *(Round-7 owner 1; generalizes D-M1/R-M5,
-> which had corrected only the count-lines-not-matches shape of obligation 12's gate.)*
+> **The gate normalizes `go doc`'s output before matching, and it has to.** Measured in a probe module,
+> re-measured 2026-07-30: interface **method** comments print **verbatim**, `//` markers and source line breaks
+> intact, so `grep -q 'INCLUDING a recipient in another process'` fails on the text above (it reads
+> `… INCLUDING a // recipient in another process`); **func**, **type** and **var** comments are **re-wrapped**
+> at ~76 columns. Both can split a gate phrase and produce a **false RED**. The canonical gate block
+> (Spec 014 §8.0b ≡ Plan 027 §11) therefore pipes every `go doc` through
+> `sed 's,//, ,g' | tr -s '[:space:]' ' '` first. *(Round-7 owner 1; generalizes D-M1/R-M5, which had
+> corrected only the count-lines-not-matches shape of obligation 12's gate.)*
+>
+> > **ROUND-8 CORRECTION (C3) — the pipe is now ACTUALLY IN both gate blocks, and half of the reason above was
+> > wrong.** When round 8 audited this sentence it had **one hit repo-wide: itself.** Neither gate document
+> > used the form the ADR published as canonical, and the sentence read as though they did. It has been
+> > **adopted** in both blocks rather than dropped, because the interface-method half is real and measured, and
+> > because adopting it flips no verdict: with ADR 0030 §1's godoc pasted verbatim into a probe module,
+> > **all 14 conjuncts of gates 8.10/8.11/8.11a/8.12/8.13 MATCH under both the piped and the un-piped form**,
+> > while line-break-spanning phrases match only under the pipe:
+> >
+> > ```
+> > INCLUDING a recipient in another process     raw=NO     piped=MATCH     (interface method comment)
+> > MUST therefore return false                  raw=NO     piped=MATCH     (interface method comment)
+> > the probe at all; any wrapper                raw=NO     piped=MATCH     (func comment, re-wrapped)
+> > ```
+> >
+> > **The func/type half's stated trigger was half-wrong.** It claimed the gate *"flips MATCH→NO-MATCH when the
+> > **preceding sentence** changes length"*. `go doc` re-wraps **each block independently**, so a length change
+> > in a preceding paragraph or list item cannot move a later phrase's line breaks: **0 of 46** perturbations of
+> > the intro paragraph flipped `grep -q 'does not implement'`. Perturbing text **inside the phrase's own
+> > wrapped block** flips it **18 of 46** (first at a 23-character shift). The hazard is real and the pipe is
+> > the right fix; the trigger is *same-block* edits, not preceding ones.
 
 **Invariance and concurrency-safety are two requirements, and neither replaces the other.** Concurrency-safety
 is the *weaker* property: a race-free `atomic.Load(&n) == 0` is concurrency-safe and still lies, because the
@@ -242,13 +272,20 @@ count. D-L constrains third-party implementations, not these two.
 
 ```go
 if !cfg.allowShared {
-	if ex, ok := reply.(msgin.ExclusiveSubscribable); ok && !safeSingleSubscriber(ex, cfg.logger) {
-		return nil, msgin.ErrSharedReplyChannel
+	if ex, ok := reply.(msgin.ExclusiveSubscribable); ok {
+		single, cause := safeSingleSubscriber(ex, cfg.logger)
+		if !single {
+			if cause != nil {
+				return nil, fmt.Errorf("%w: %w", msgin.ErrSharedReplyChannel, cause)
+			}
+			return nil, msgin.ErrSharedReplyChannel
+		}
 	}
 }
 ```
 
-*(The call goes through `safeSingleSubscriber` — §3a, decision **D-O**. Everything else about the guard,
+*(The call goes through `safeSingleSubscriber` — §3a, decision **D-O**, amended by **D-O2** (round 8, B1) to
+return `(bool, error)` so a recovered panic survives in the returned error. Everything else about the guard,
 including D-M2's ordering below, is unchanged.)*
 
 > **The opt-out is tested FIRST, and the order is decided — decision D-M2 (round 6).** An earlier draft wrote
@@ -270,6 +307,14 @@ with a new root sentinel:
 // other processes alike. Such a channel delivers a full copy of every reply to
 // every other recipient. Pass channel.WithSingleSubscriber() to the channel, or
 // endpoint.WithSharedReplyChannel() to accept the fan-out deliberately.
+//
+// THERE IS A THIRD CAUSE, and it is not a policy report at all: the channel's
+// SingleSubscriber PANICKED. msgin recovers it and fails closed (the probe
+// proved nothing, so the conservative answer is non-exclusive), and the
+// recovered value is WRAPPED INTO THIS ERROR — read err.Error(), or errors.As
+// past this sentinel, before hunting for a second subscriber. The channel may
+// well be exclusive; what failed is the probe. See ExclusiveSubscribable's
+// "MUST NOT block and MUST NOT panic" clause.
 ErrSharedReplyChannel = errors.New("msgin: reply channel permits multiple subscribers; it is not exclusive to this exchange")
 ```
 
@@ -338,20 +383,78 @@ value is `false` — CLAUDE.md's *"default to the safe, conservative value, not 
 channel is then rejected with `ErrSharedReplyChannel`, which is the honest outcome: msgin could not obtain an
 exclusivity report.
 
+> ### D-O2 (round 8, design B1, compile-proven) — the recovered panic RIDES IN THE ERROR, not only in a log
+>
+> D-O as recorded in round 7 returned a bare `bool` and surfaced `r` **only** through `cfg.logger`. Measured
+> in a throwaway worktree at `7ee3fd6`, with that helper implemented exactly as it was written and a
+> **genuinely exclusive** channel (embedding `*channel.DirectChannel`, whose second `Subscribe` returns
+> `ErrChannelSubscribed`) whose `SingleSubscriber` panics:
+>
+> ```
+> channel is genuinely exclusive: second Subscribe -> msgin: channel already has a subscriber (Is ErrChannelSubscribed=true)
+>
+> err                                      = "msgin: reply channel permits multiple subscribers; it is not exclusive to this exchange"
+> errors.Is(err, ErrSharedReplyChannel)    = true
+> panic value recoverable from err         = false
+> errors.Unwrap(err)                       = <nil>
+> anything on stderr/stdout from the logger= (nothing: cfg.logger defaults to io.Discard)
+> ```
+>
+> **The error states the opposite of the truth and the evidence is gone.** The channel *is* exclusive; the
+> error says *"it is not exclusive to this exchange"*; and under `NewChannelExchange`'s **default** logger —
+> `slog.New(slog.NewTextHandler(io.Discard, nil))`, `exchange.go:232` — the panic value survives nowhere at
+> all. That is a direct hit on CLAUDE.md's debuggability criterion (*"prefer typed, wrapping errors that name
+> the offending field/input over opaque failures"*).
+>
+> **The repo already states the rule this violated**, in the godoc of the one `safeX` member that deliberately
+> does *not* log (`endpoint/poller.go:100-105`): *"safePoll does NOT log — pollLoop's existing error path
+> already logs … with this error, **whose text carries the recovered panic value**"*. The log is allowed to be
+> redundant with the error; it is not allowed to be the error's only carrier. Measured across the workspace,
+> **every** recover-wrapper around caller code that returns an error embeds `%v` of the recovered value in it —
+> eight of eight: `endpoint/consumer.go:863` (`safeDecode`), `:885` (`safeSend`), `:909` (`safeAck`), `:921`
+> (`safeNack`), `:935` (`safeHandle`), `endpoint/poller.go:109` (`safePoll`), `endpoint/producer.go:563`
+> (`safeDeadLetter`), `channel/pubsub.go:203` (`safeFanOut`). The ninth, `safeLimiterWait`
+> (`endpoint/consumer.go:514`), returns `err = nil` **deliberately** (fail *open*, unpaced) and surfaces `r`
+> through `governorPanic`; it is the exception that has no error to carry anything. Round-7's
+> `safeSingleSubscriber` would have been the only member that **has** an error path and discards the cause.
+>
+> **Decision.** `safeSingleSubscriber` returns `(bool, error)`; the guard wraps with
+> `fmt.Errorf("%w: %w", msgin.ErrSharedReplyChannel, cause)`. Re-measured with the fix applied, same worktree,
+> same channel:
+>
+> ```
+> err                                      = "msgin: reply channel permits multiple subscribers; it is not exclusive to this exchange: SingleSubscriber panicked: probe: nil map read in tenantExclusivity[tenant]"
+> errors.Is(err, ErrSharedReplyChannel)    = true
+> panic value recoverable from err         = true
+> ```
+>
+> **Fail-closed is unchanged, no new sentinel is introduced, the WARN stays, and NO GATE MOVES** — `errors.Is`
+> still reports `true` (the double-`%w` wrap keeps the sentinel in the chain), `safeSingleSubscriber` is
+> unexported so no `go doc` gate can see its signature, and the five D-J/D-L/D-O gates (§8.10, 8.11, 8.11a,
+> 8.12, 8.13) were run against **both** implementations in that worktree with §1's godoc pasted verbatim and
+> printed `GREEN` five-for-five under each. *(One caveat for a future gate author: `errors.Unwrap(err)`
+> returns `nil` on a two-verb `%w` wrap — the chain is `Unwrap() []error`. Assert with `errors.Is` /
+> `errors.As`, never `errors.Unwrap`.)*
+
 ```go
 // safeSingleSubscriber invokes the caller-supplied probe, recovering a panic to
-// FAIL CLOSED (report non-exclusive). A probe that panics has not proven
-// exclusivity, so the conservative answer is false and the exchange is rejected
-// with ErrSharedReplyChannel. Mirrors the eleven safeX wrappers in consumer.go.
-func safeSingleSubscriber(ex msgin.ExclusiveSubscribable, log *slog.Logger) (b bool) {
+// FAIL CLOSED (report non-exclusive) AND returning the recovered value as an
+// error so the guard can wrap it into ErrSharedReplyChannel. A probe that
+// panics has not proven exclusivity, so the conservative answer is false and
+// the exchange is rejected — but the panic is what the caller has to fix, and a
+// channel that is genuinely exclusive would otherwise be reported as "not
+// exclusive to this exchange" with the cause discarded. Mirrors the eight
+// recover-wrappers that embed %v of the recovered value in the error they
+// return (consumer.go, poller.go, producer.go, channel/pubsub.go).
+func safeSingleSubscriber(ex msgin.ExclusiveSubscribable, log *slog.Logger) (b bool, cause error) {
 	defer func() {
 		if r := recover(); r != nil {
-			b = false
+			b, cause = false, fmt.Errorf("SingleSubscriber panicked: %v", r)
 			log.Warn("msgin: reply channel's SingleSubscriber panicked; treating it as non-exclusive",
 				"panic", r)
 		}
 	}()
-	return ex.SingleSubscriber()
+	return ex.SingleSubscriber(), nil
 }
 ```
 
@@ -360,7 +463,8 @@ func safeSingleSubscriber(ex msgin.ExclusiveSubscribable, log *slog.Logger) (b b
 > has nowhere to surface `r`. `cfg.logger` is already populated at this point in `NewChannelExchange`
 > (`exchange.go:232` defaults it to a discard handler) and `WithExchangeLogger`'s godoc already requires that
 > the logger neither panic nor block, so no new constraint is introduced. Recorded as a deliberate,
-> one-parameter deviation rather than applied silently.*
+> one-parameter deviation rather than applied silently. **The WARN is retained under D-O2 and is now
+> redundant-by-design rather than load-bearing** — exactly the relationship `safePoll`'s godoc describes.*
 
 **(b) Blocking cannot be defended against — it is a stated MUST.** Moving the probe onto a goroutine with a
 timeout would leak that goroutine for the process's lifetime (the blocked call never returns) and would trade
@@ -529,10 +633,13 @@ it is the correct remedy for the wrapper case. *(Round-4 design audit, MINOR 3.)
 - **Hot-path branches this adds** (each needs a case, per CLAUDE.md's coverage gate), in the order §3's guard
   evaluates them under **D-M2**: `WithSharedReplyChannel()` set → accepted, **probe not consulted**; otherwise
   probe absent → accepted; probe present and `true` → accepted; probe present and `false` →
-  `ErrSharedReplyChannel`; **probe present and PANICKING → recovered as `false` → `ErrSharedReplyChannel`**
-  (decision **D-O**, §3a). The five are a truth table, not a list. Plan 027 Task 9.6 carries them as rows
-  1–4 plus a **sixth** row; its fifth row is the ordering assertion (no subscription left behind after a
-  rejection), which is not a truth-table arm.
+  `ErrSharedReplyChannel`; **probe present and PANICKING → recovered as `false` → `ErrSharedReplyChannel`
+  WRAPPING the recovered value** (decision **D-O**, amended by **D-O2**, §3a). The five are a truth table, not
+  a list. Plan 027 Task 9.6 carries them as rows 1–4 plus a **sixth** row; its fifth row is the ordering
+  assertion (no subscription left behind after a rejection), which is not a truth-table arm. **The sixth row
+  must assert the panic text is in `err.Error()`, not merely that `errors.Is` matches the sentinel** — the
+  sentinel-only assertion passes against the diagnosis-losing implementation D-O2 replaces, which is how that
+  defect would have shipped green.
 - The probe is a **report, not a proof**, and D-L narrows what it reports on rather than widening it. The core's
   claim is bounded to: *it will not silently accept a channel that has told it sharing is permitted*. A channel
   can still be shared in ways the probe never sees — an interface-embedding decorator strips it (§4), a caller

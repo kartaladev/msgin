@@ -154,8 +154,9 @@ behavior changes" cites the table, never its length.**
 | 3 | `channel.WithSingleSubscriber()` — opt-in, **off by default**, so zero change to any existing flow | ADR 0028 §6.2 (D-F) | §4.1, F10.9 |
 | 4 | `WithReleaseStrategy` takes the named `ReleaseStrategy` (fallible); the bool-only sugar becomes `WithReleaseWhen` | ADR 0029 §3 (D-E) | §6, F3 |
 | 5 | `NewChannelExchange` **probes** `ExclusiveSubscribable` and **rejects** a reply channel that reports non-exclusive with `ErrSharedReplyChannel`, unless `endpoint.WithSharedReplyChannel()` is passed. A program that today builds two exchanges over one plain `PublishSubscribeChannel` stops compiling green: it now returns an error | ADR 0030 §3 (D-J), amended by **D-L** | §5.1, §9 AC-9, §10 |
-| 6 | **A deterministic endpoint fault carries its own retry classification.** *Invariant:* **every deterministic typed error msgin returns from inside a `MessageHandler` body is `Permanent`; every one returned from a constructor is bare.** Applied, each flow-path producer returns `msgin.Permanent(<sentinel>)` wrapped with positional context, so a mis-wired step is **diverted to the invalid-message channel** instead of consuming the retry budget, landing in the dead-letter sink and recording an unhealthy signal that trips the circuit breaker. Covers `ErrNilFunc` **and `ErrNilSink`** (`handler.go:55`, `msgin.To`); **excludes** `routing/aggregator.go:251` (`NewAggregator` — a constructor) and `ErrNoRoute` (evaluated per message) | ADR 0029 §5.0b (**D-M**, scope-corrected in round 7) | §7; **Plan 027 Task 9.7** (shipped producers) + **Task 9** (combinators); precedent `routing/aggregator.go:151-160` |
-| 7 | **`divert` falls back to the dead-letter sink before discarding.** When no invalid-message sink is configured but a `DeadLetter` sink is, an invalid message is routed there rather than discarded; the discard remains only when **neither** sink is configured. `OnInvalidMessage` fires either way. Without it, row 6 would turn a message the library previously captured durably into a **dropped** one, in the default configuration of every finite-retry consumer | ADR 0029 §5.0b (**D-N**), amending [ADR 0007 D7](../adrs/0007-reliability-settlement-api.md#d7--no-invalid-sink-policy-tasks-45) | §7; **Plan 027 Task 9.7**, same commit as row 6 |
+| 6 | **A deterministic endpoint fault carries its own retry classification.** *Invariant (corrected in round 8, B7 — the round-7 form was compile-proven FALSE; see ADR 0029 §5.0b):* **every typed error msgin returns from inside a `MessageHandler` body msgin itself constructs, whose cause was fixed at construction and cannot change for the message's lifetime, is `Permanent`; a fault a later `Subscribe`, config reload or drain could resolve stays bare and transient; every one returned from a constructor is bare, because construction never reaches a `RetryPolicy`; everything else — handed to a caller from a non-constructor API — is bare too.** Applied, each flow-path producer returns `msgin.Permanent(<sentinel>)` wrapped with positional context, so a mis-wired step is **diverted to the invalid-message channel** instead of consuming the retry budget, landing in the dead-letter sink and recording an unhealthy signal that trips the circuit breaker. Covers `ErrNilFunc` **and `ErrNilSink`** (`handler.go:55`, `msgin.To`); **excludes** `routing/aggregator.go:251` (`NewAggregator` — a constructor) and `ErrNoRoute` (evaluated per message) | ADR 0029 §5.0b (**D-M**, scope-corrected in round 7) | §7; **Plan 027 Task 9.7** (shipped producers) + **Task 9** (combinators); precedent `routing/aggregator.go:151-160` |
+| 7 | **`divert` falls back to the dead-letter sink before discarding — and the fallback is SINGLE-SHOT.** When no invalid-message sink is configured but a `DeadLetter` sink is, an invalid message is routed there rather than discarded; the discard remains when **neither** sink is configured **and when the fallback target's own `Send` fails** — that failure is settled by a WARN naming **both** the classification cause and the sink error, then an `Ack`, never a `Nack` with requeue (**D-P**). `OnInvalidMessage` fires on every arm; `OnRetry` fires on none of them. Without the fallback, row 6 would turn a message the library previously captured durably into a **dropped** one, in the default configuration of every finite-retry consumer; without the single shot, a **permanent** message would loop through redelivery unboundedly, invisible to `MaxAttempts`, to `Backoff` and to the circuit breaker. **Two consequences are accepted and recorded, not absent:** an oversize payload rejected by `WithMaxPayloadBytes` is now **persisted** into the operator's durable dead-letter store, and a poison storm becomes durable writes rather than log lines. **Disclosed limitation (CLAUDE.md's multi-instance rule):** the dead-letter sink now carries two operationally distinct classes — retries-exhausted and permanently-invalid — with **no settlement-reason header** to tell them apart in another process; an operator who needs the distinction must configure `WithInvalidMessageSink` | ADR 0029 §5.0b (**D-N**, amended by **D-P**), amending [ADR 0007 D7](../adrs/0007-reliability-settlement-api.md#d7--no-invalid-sink-policy-tasks-45) twice | §7; **Plan 027 Task 9.7**, same commit as row 6 |
+| 8 | **`Producer.Send` returns a permanent outbound error to the caller WITHOUT dead-lettering it.** This is not a new code path — `endpoint/producer.go:453-455` already returns on `IsPermanent` before `p.deadLetter(...)` — it is row 6 reaching the producer: a mis-wired step downstream of a producer over a `*channel.DirectChannel` (`channel/direct.go:89` returns the handler's error verbatim) now classifies `Permanent`, so **the producer's dead-letter sink stops receiving it** and **`errors.Is(err, msgin.ErrDeadLettered)` flips `true` → `false`** on the error `Send` returns. `OnDeadLetter` stops firing for this class. The behavior is correct and deliberate — `Send` is synchronous, the caller receives the error, there is no message to lose, which is why row 7's fallback does **not** extend to the producer (there is no `WithInvalidMessageSink` on the producer) — but it is an observable change to an **exported error contract** and rides in this register rather than silently. Round 7 recorded row 7's premise as *"no configuration that previously captured a message starts dropping it"*: true of the consumer, **false here** | ADR 0029 §5.0b (**D-M**, producer-side blast radius, round 8) | §7; **Plan 027 Task 9.7**, same commit as rows 6 and 7 |
 
 > **Row 6 is stated as an INVARIANT, not as a quantifier over a sentinel name** (round-7 D-B7/X-B3). It
 > previously read *"**Every** producer of `ErrNilFunc` returns `Permanent`"* — a universal quantifier that
@@ -164,7 +165,10 @@ behavior changes" cites the table, never its length.**
 > replaced, because a list is at least checkable against the tree. The same wording is why `ErrNilSink`
 > survived four rounds: a rule phrased over one sentinel name cannot see a second member of its own class.
 >
-> **Rows 5 and 6 were added in the round-6 fix pass (E-B6); row 7 in round 7.** D-J was propagated into twelve
+> **Rows 5 and 6 were added in the round-6 fix pass (E-B6); row 7 in round 7; row 8 in round 8, when D-M's
+> blast radius was finally measured on the producer as well as the consumer.** Row 7 was amended in round 8 by
+> **D-P** rather than given a row of its own: D-P completes D-N's settlement rule (what happens when the
+> fallback target is down) rather than moving a different observable. D-J was propagated into twelve
 > other spec locations and skipped this table, while `:109` and AC-5 both told an implementer that anything
 > outside *"§2.1's four exceptions"* is a defect to **stop and report** — which is exactly what Task 9.6
 > instructs them to do. **The lesson taken is that the count was load-bearing and should never have been
@@ -1351,8 +1355,14 @@ reply to its `WithUnmatchedReplySink` — typically a dead-letter or audit sink.
 
    ```go
    if !cfg.allowShared {
-   	if ex, ok := reply.(msgin.ExclusiveSubscribable); ok && !safeSingleSubscriber(ex, cfg.logger) {
-   		return nil, msgin.ErrSharedReplyChannel
+   	if ex, ok := reply.(msgin.ExclusiveSubscribable); ok {
+   		single, cause := safeSingleSubscriber(ex, cfg.logger)
+   		if !single {
+   			if cause != nil {
+   				return nil, fmt.Errorf("%w: %w", msgin.ErrSharedReplyChannel, cause)
+   			}
+   			return nil, msgin.ErrSharedReplyChannel
+   		}
    	}
    }
    ```
@@ -1366,6 +1376,18 @@ reply to its `WithUnmatchedReplySink` — typically a dead-letter or audit sink.
    (`errors.go:53-56`) exists to forbid exactly the unguarded form. Blocking is undefendable and is a stated
    **MUST NOT** on `SingleSubscriber`'s godoc. Full rationale and the helper:
    [ADR 0030 §3a](../adrs/0030-reply-channel-exclusivity-probe.md).
+
+   **The recovered panic RIDES IN THE ERROR — decision D-O2 (round 8, design B1, compile-proven).** D-O as
+   recorded returned a bare `bool` and surfaced the panic only through `cfg.logger`, so a **genuinely
+   exclusive** channel whose probe panicked was rejected with *"it is not exclusive to this exchange"* — a
+   false diagnosis — while the panic value was unrecoverable from the error and, under the **default** discard
+   logger (`exchange.go:232`), survived nowhere. `safeSingleSubscriber` therefore returns `(bool, error)` and
+   the guard wraps: `fmt.Errorf("%w: %w", msgin.ErrSharedReplyChannel, cause)`. `errors.Is` is unchanged, no
+   new sentinel is added, fail-closed is unchanged, and **no §8.0b gate moves** (the helper is unexported;
+   §8.10–8.13 print GREEN five-for-five under both implementations — measured). The rule this restores is
+   stated in-repo at `endpoint/poller.go:100-105`: the error text carries the recovered panic value, and the
+   log is redundant with it rather than its only carrier. `ErrSharedReplyChannel`'s godoc gains this as a
+   **third** cause. [ADR 0030 §3a](../adrs/0030-reply-channel-exclusivity-probe.md).
 
    **The opt-out is tested FIRST — decision D-M2 (round 6).** The earlier conjunction
    `ok && !ex.SingleSubscriber() && !cfg.allowShared` calls `SingleSubscriber()` **before** consulting the
@@ -1406,9 +1428,11 @@ reply to its `WithUnmatchedReplySink` — typically a dead-letter or audit sink.
 
    **Normative branch set** (five arms, a truth table — each needs a case): probe absent → accept; probe
    `true` → accept; probe `false` → `ErrSharedReplyChannel`; probe `false` + opt-out → accept; **probe panics
-   → recovered as `false` → `ErrSharedReplyChannel`** (D-O). Plan 027 Task 9.6 carries these as table rows
-   1–4 and 6; its row 5 is the ordering assertion required by AC-9 (no subscription left behind after a
-   rejection), which is not a truth-table arm.
+   → recovered as `false` → `ErrSharedReplyChannel` WRAPPING the recovered value** (D-O, amended by **D-O2**).
+   Plan 027 Task 9.6 carries these as table rows 1–4 and 6; its row 5 is the ordering assertion required by
+   AC-9 (no subscription left behind after a rejection), which is not a truth-table arm. **Row 6 asserts the
+   panic text is present in `err.Error()`, not merely that `errors.Is` matches the sentinel** — a
+   sentinel-only assertion passes against the diagnosis-losing implementation D-O2 replaces.
 3. The **two-exchanges-over-one-`PublishSubscribeChannel`** case is a test asserting the documented fan-out
    behavior, so the trade-off is pinned rather than discovered later. **Under D-J that test must pass
    `endpoint.WithSharedReplyChannel()` on BOTH of its constructions** —
@@ -1754,7 +1778,10 @@ return zero, fmt.Errorf("%w: expr result %T is not %T", msgin.ErrPayloadType, go
   recorded that cost and offered two escapes, neither of which was *"wrap the twin"*).
 - **The retry classification comes for free, and that is the point.** `ErrPayloadType` is already inside
   `IsPermanent`'s closed enumeration (§4.1), so the fault is classified **permanent** and diverted to the
-  invalid-message channel without a `msgin.Permanent` wrap. A freshly-minted `expr.ErrExprResultType` would
+  invalid-message channel without a `msgin.Permanent` wrap — or, when no invalid-message sink is configured
+  (**the default**), single-shot to the dead-letter sink and then to a logged discard (**D-N**/**D-P**, row 7).
+  *(Round-8 B8: the invalid-sink-only phrasing named the non-default arm.)* A freshly-minted
+  `expr.ErrExprResultType` would
   have fallen outside that enumeration and been **retried** — the same defect **D-M** (§2.1 row 6) fixes for
   `ErrNilFunc`. The two decisions are one rule read from two directions: *a deterministic fault must not be
   retried*.
@@ -1771,10 +1798,19 @@ return zero, fmt.Errorf("%w: expr result %T is not %T", msgin.ErrPayloadType, go
 
   An expression's evaluated **result** is not a `Message[any]` payload, so D-K stretches the sentinel past
   its stated contract. **Plan 027 Task 10 owns widening it** to name both producer classes, the permanence,
-  and the fact that the error *string* — `"want %T, got %T"` versus `"expr result %T is not %T"` — carries
-  the discriminator `errors.Is` deliberately does not. The two faults have **disjoint remedies** (fix the
-  codec/producing adapter, versus fix the expression) and one target; that is the price of the shared target
-  and it is stated rather than discovered.
+  and the fact that the error *string* carries the discriminator `errors.Is` deliberately does not: match
+  `"expr result"` for the expression side, whose **absence** identifies the payload side. The two faults have
+  **disjoint remedies** (fix the codec/producing adapter, versus fix the expression) and one target; that is
+  the price of the shared target and it is stated rather than discovered.
+
+  > **ROUND-8 CORRECTION (design B8).** This read *"the error string — `"want %T, got %T"` versus
+  > `"expr result %T is not %T"` — carries the discriminator"*, which attributes the `want/got` wrap to the
+  > whole payload side. **Only `payload.go:15` wraps**; `endpoint/consumer.go:831` and `:838` return the
+  > sentinel **bare** (verified at `7ee3fd6`). The discriminator is therefore one-sided by construction —
+  > `"expr result"` present or absent — and Plan Task 10's godoc draft is corrected to match rather than
+  > wrapping two shipped producers to make a comment true. *(The bare decode-path strings carry no type
+  > information at all; that is a pre-existing debuggability gap, backlogged in Task 10's correction block, not
+  > created by D-K.)*
 
   > **ROUND-7 CORRECTION (D-B8).** This bullet read *"**Cost:** none to root's surface"* and the bullet above
   > it asserted the godoc *"is already domain-generic"* — quoting the line while drawing the opposite
@@ -1854,7 +1890,9 @@ optional polish.
 
 > **These nine bullets had NO OWNING TASK, and five were unmet.** They were written in the indicative ("carries
 > the line", "state the widened contract") as though they described the tree, so nothing in Plan 027 was ever
-> going to produce them. **Plan 027 Task 11 now owns all nine**, each with a grep-verifiable checkbox. The
+> going to produce them. **Every one now has an owning task and a `go doc` gate** — Task 11b for the four
+> whose symbols already exist, Task 9 and Task 9.6 for the five whose symbols they create (the owner table
+> below the status table; round-8 C4 — this said *"Task 11 now owns all nine"*). The
 > status column below was measured at `dadc775`, after the five subpackage `doc.go` files landed (F12.5).
 
 | # | Obligation | Status at `dadc775` | Evidence |
@@ -1862,21 +1900,37 @@ optional polish.
 | 1 | Name the in-process request-reply pattern **Correlation Identifier**, with **Return Address** as the distributed seam (§10) | ⚠️ **HALF** — "Return Address" is present (`channel.go:38`, `endpoint/doc.go:19`); **"Correlation Identifier" appears in no `.go` file** | `grep -rn -i 'correlation identifier' --include='*.go' .` → exit 1 |
 | 2 | `DirectChannel`'s deliberate single-subscriber restriction vs Spring's load-balanced multi-subscriber; competing consumers come from the worker pool | ✅ **MET** | `channel/direct.go:15,17` |
 | 3 | `RequestReplyExchange` carries the line disclaiming AMQP's broker-side-routing-table meaning | ❌ **UNMET** | `grep -rn -i 'amqp' --include='*.go' .` → exit 1, workspace-wide |
-| 4 | Every named behavior type in §6 names its Spring equivalent — verified **per type**, not sampled | ❌ **UNMET for the two shipped types.** `routing.CorrelationStrategy` and `routing.ReleaseStrategy` name no Spring counterpart; only `routing/doc.go` and `transform/doc.go` do, at package level | `grep -n -B8 'type CorrelationStrategy' routing/aggregator.go \| grep -i spring` → exit 1 (same for `ReleaseStrategy`) |
+| 4 | Every named behavior type in §6 names its Spring equivalent — verified **per type**, not sampled | ❌ **UNMET for the two shipped types.** `routing.CorrelationStrategy` and `routing.ReleaseStrategy` name no Spring counterpart; only `routing/doc.go` and `transform/doc.go` do, at package level | **gates 8.4a / 8.4b** — re-run 2026-07-30: `go doc …/routing.CorrelationStrategy \| grep -qi spring` → **exit 1**, same for `ReleaseStrategy`. *(Round-8 gate minor: this cell used `grep -n -B8 'type CorrelationStrategy' routing/aggregator.go \| grep -i spring` — a **guessed window** over a hand-named file, the exact shape §8.0b's round-6 rewrite eliminated everywhere else. `go doc` needs neither the file name nor a window size, and the same command is the gate.)* |
 | 5 | `MessageChannel` and `OutboundAdapter` each state they are method-identical **by design** (§5.3) | ✅ **MET** | `channel.go:12-19` (the `METHOD-IDENTICAL … BY DESIGN` paragraph starts at `:12`), `spi.go:48-51` |
 | 6 | Root's `doc.go` states the Pipes-and-Filters model in §3.5's terms | ✅ **MET** | `doc.go:5-14` — Pipe / filter / `Chain` all named |
 | 7 | `msghttp.ServeAsync` and `stdlib.NewInbound` state the **widened `target` contract** (§5.0 rows 7–8) | ❌ **UNMET.** Both godocs discuss nil-ness and method filtering; neither says any `MessageChannel` — including a durable `QueueChannel`, a `PublishSubscribeChannel`, or any `OutboundAdapter` — now qualifies | `adapter/http/inbound.go:110-116`, `adapter/http/stdlib/inbound.go:32-33` |
 | 8 | `ChannelExchange.Close` states the post-`Close` reply behavior change (§5.2a) | ✅ **MET** | `endpoint/exchange.go:363-369` (`BEHAVIOR AFTER CLOSE`) |
 | 9 | `IsPermanent` documents its **classifier policy**, not merely that it twins `Permanent` (§4.1) | ✅ **MET** | `reliability.go:33-37` — enumerates the three sentinels and the `ErrHandlerPanic` exclusion |
 | **10** | **`SubscribableChannel`'s godoc cross-references `ExclusiveSubscribable`** (D-J) | ⛔ **N/A until Task 9.6** | Without it the optional capability is **undiscoverable from its own supertype**, so the accept-unknown arm becomes permanent for exactly the third-party channels most likely to fan out |
-| **11** | **`ExclusiveSubscribable.SingleSubscriber`'s godoc states the predicate END-TO-END and requires INVARIANCE** (D-J as amended by **D-L**, **revised** in round 7, and by **D-O**), in five parts: (a) it reports whether **every message sent to this channel reaches at most one recipient, counted across every process** — a statement about the channel's **policy**, not its current subscriber count, and an implementation **MUST NOT** compute it from a live subscriber count; (b) **verbatim, and normative down to its line breaks** — *"A channel MUST return false whenever a message sent to it can be received by any recipient other than the single subscriber registered on it — INCLUDING a recipient in another process. A broadcast broker subject, a Redis pub/sub channel, or an SSE stream fanned out to N instances MUST therefore return false even when its local handle admits one subscriber. A broker-backed channel MAY return true only when the broker guarantees the destination is private to this process's subscription — a per-instance NATS `_INBOX` reply subject, an exclusive auto-delete AMQP reply queue. That is the Return Address pattern, and it is what an honest true means here."*; (c) the value **MUST be constant for the channel's lifetime** — msgin calls it once, at construction, and treats it as an invariant; (d) implementations must **also** be safe for concurrent use; (e) it **MUST NOT block and MUST NOT panic** — msgin calls it inside `NewChannelExchange`, on the caller's goroutine, with no context and no timeout, so it must be a constant-time accessor over state fixed at construction (**D-O**) | ⛔ **N/A until Task 9.6** | **Invariance and concurrency-safety are different requirements and neither replaces the other.** A race-free `atomic.Load(&n) == 0` is concurrency-safe and still lies; the failure mode a bare concurrency clause leaves open is TOCTOU. Compile-proven in D-L: a state-reading probe answers `true` at construction, then admits N subscribers with **no error at all**. **Part (b) is D-L REVISED** — the round-6 wording (*"a channel whose deliveries reach other processes … MUST return false"*) measured **processes traversed** and therefore answered `false` for a per-instance NATS `_INBOX`, **the canonical Return Address channel**, while its own first sentence (*"THIS exchange will be the sole recipient"*) answered `true` for the same channel. Two normative sentences, opposite answers, and the correct implementation unrepresentable ([ADR 0030 §1](../adrs/0030-reply-channel-exclusivity-probe.md) carries the labelled withdrawal). **Part (e) is D-O**, compile-proven: `D1 panicking probe -> PANIC ESCAPES NewChannelExchange`, `D2 blocking probe -> NewChannelExchange HUNG` |
+| **11** | **`ExclusiveSubscribable.SingleSubscriber`'s godoc states the predicate END-TO-END and requires INVARIANCE** (D-J as amended by **D-L**, **revised** in round 7, and by **D-O**), in five parts: (a) it reports whether **every message sent to this channel reaches at most one recipient, counted across every process** — a statement about the channel's **policy**, not its current subscriber count, and an implementation **MUST NOT** compute it from a live subscriber count; (b) **verbatim** (its *wording* is normative; since round 8 adopted the `d` normalizer its line breaks are not — §8.0b) — *"A channel MUST return false whenever a message sent to it can be received by any recipient other than the single subscriber registered on it — INCLUDING a recipient in another process. A broadcast broker subject, a Redis pub/sub channel, or an SSE stream fanned out to N instances MUST therefore return false even when its local handle admits one subscriber. A broker-backed channel MAY return true only when the broker guarantees the destination is private to this process's subscription — a per-instance NATS `_INBOX` reply subject, an exclusive auto-delete AMQP reply queue. That is the Return Address pattern, and it is what an honest true means here."*; (c) the value **MUST be constant for the channel's lifetime** — msgin calls it once, at construction, and treats it as an invariant; (d) implementations must **also** be safe for concurrent use; (e) it **MUST NOT block and MUST NOT panic** — msgin calls it inside `NewChannelExchange`, on the caller's goroutine, with no context and no timeout, so it must be a constant-time accessor over state fixed at construction (**D-O**) | ⛔ **N/A until Task 9.6** | **Invariance and concurrency-safety are different requirements and neither replaces the other.** A race-free `atomic.Load(&n) == 0` is concurrency-safe and still lies; the failure mode a bare concurrency clause leaves open is TOCTOU. Compile-proven in D-L: a state-reading probe answers `true` at construction, then admits N subscribers with **no error at all**. **Part (b) is D-L REVISED** — the round-6 wording (*"a channel whose deliveries reach other processes … MUST return false"*) measured **processes traversed** and therefore answered `false` for a per-instance NATS `_INBOX`, **the canonical Return Address channel**, while its own first sentence (*"THIS exchange will be the sole recipient"*) answered `true` for the same channel. Two normative sentences, opposite answers, and the correct implementation unrepresentable ([ADR 0030 §1](../adrs/0030-reply-channel-exclusivity-probe.md) carries the labelled withdrawal). **Part (e) is D-O**, compile-proven: `D1 panicking probe -> PANIC ESCAPES NewChannelExchange`, `D2 blocking probe -> NewChannelExchange HUNG` |
 | **11a** | **The same godoc states that EMBEDDING CUTS BOTH WAYS** (**D-L**): a type embedding `*channel.DirectChannel` or `*channel.PublishSubscribeChannel` **inherits `SingleSubscriber` by method promotion**, so it reports on the *embedded* channel even when it overrides `Subscribe` with its own multi-subscriber dispatch; a wrapper that changes subscription behavior **MUST declare its own `SingleSubscriber`** | ⛔ **N/A until Task 9.6** | ADR 0030 §5 presents embed-and-shadow as the **remedy** and never says promotion is also the **hazard**. Compile-proven: `struct{ *PublishSubscribeChannel }` reports `true` while its own `Subscribe` fans out to 2 |
 | **12** | **`NewChannelExchange`'s godoc states FOUR outcomes** — rejected · accepted-exclusive · accepted-no-probe · **accepted-but-only-exclusive-within-this-process** — and enumerates **`ErrChannelSubscribed`**, which it returns unwrapped from `reply.Subscribe` (`exchange.go:250`) and which its error list (`exchange.go:221-224`, naming only `ErrNilChannel`/`ErrInvalidReplyTimeout`/`ErrNilSubscription`) omits today. The **accepted-no-probe** arm additionally carries the **wrapper hole** (**D-L**), which must be stated **BY SHAPE, NOT BY MECHANISM**: ***any* wrapper that does not itself declare `SingleSubscriber` is accepted under this arm, however it holds the channel it wraps** — so it is accepted even when the channel it wraps would be rejected, and a decorator over a fan-out channel must declare or forward `SingleSubscriber` explicitly. The two-line-decorator case (`struct{ msgin.SubscribableChannel }`, which promotes `Send`/`Subscribe` but not `SingleSubscriber`) is the *commonest* instance, not the boundary | ⛔ **N/A until Task 9.6** | ADR 0030 §Topology. The fourth outcome is the one a caller assumes away, because "the core rejects a shared reply channel" reads as a guarantee. The wrapper hole falsifies ADR 0030 §4's *"only a third-party implementation can be unknown to it"* — `struct{ msgin.SubscribableChannel }` is the idiomatic one-line logging/metrics decorator, and it makes the **in-tree** fan-out channel pass. **Round-7 correction (design M5): this obligation named only interface embedding.** Compile-proven that a generic wrapper holding the **concrete** type in a named field with hand-written `Send`/`Subscribe` forwarders strips the probe identically — `D3 generic wrapper[*PubSubChannel] -> <nil>` (accepted) where the bare channel is rejected. Naming one mechanism invites a reader to conclude the other is safe, so the obligation states the **invariant** |
 | **13** | **`endpoint.WithSharedReplyChannel`'s godoc states it SUPPRESSES THE PROBE and does not confer shareability** — on a `DirectChannel` the second exchange still gets `ErrChannelSubscribed` | ⛔ **N/A until Task 9.6** | CLAUDE.md's sensible-defaults rule names option godoc specifically; this is the one new symbol the plan left undocumented |
 
 **Three unmet (3, 4, 7), one half-met (1), and five more (10, 11, 11a, 12, 13) that arrive with Task 9.6 —
-nine Task 11 checkboxes in total. All are Plan 027 Task 11 checkboxes** — 10–13 are gated on 9.6 having
-landed, so Task 11 must run after it.
+nine open obligations in total, split across two owning tasks:**
+
+| Obligation | Owned by — the task that WRITES the godoc | Gate |
+|---|---|---|
+| 1, 3, 7, and 4 **for the two shipped types** (`CorrelationStrategy`, `ReleaseStrategy`) | **Plan 027 Task 11b** | 8.1, 8.3, 8.7, 8.4a–8.4b |
+| 4 **for the four types Task 9 creates** (`Predicate`, `RouteFunc`, `SplitFunc`, `Transformer`) | **Plan 027 Task 9** — its *"every type's godoc names its Spring equivalent"* checkbox | 8.4c–8.4f |
+| **10, 11, 11a, 12, 13** | **Plan 027 Task 9.6** — it declares `ExclusiveSubscribable`, `ErrSharedReplyChannel` and `WithSharedReplyChannel` and rewrites `NewChannelExchange`'s godoc | 8.10, 8.11, 8.11a, 8.12, 8.13 |
+
+> **ROUND-8 CORRECTION (C4) — this paragraph used to read *"All are Plan 027 Task 11 checkboxes"*, and four
+> documents disagreed.** Plan 027's per-task RED-pinning table pinned 8.10–8.13 to Task 9.6, its Risks table
+> said *"Task 11b/11c owns all thirteen"*, Task 11 carried unchecked write-items for all of them, and Task
+> 9.6's own godoc checkbox deferred the wording to Task 11b — while **Task 9.6's Verify contained no `go doc`
+> gate at all**, so nothing measured the two root symbols and the normative godoc it is the sole writer of.
+> **The resolution, stated once:** a godoc obligation is owned by the task that **creates the symbol it
+> documents**, because Go has no state in which an exported symbol exists without its doc comment — a task
+> cannot commit a green unit that declares `ExclusiveSubscribable` and leaves obligation 11 for later. **Task
+> 11 re-verifies 8.10–8.13 and 8.4c–8.4f as no-regression checks** and owns the seven gates whose symbols
+> already exist. Task 11 must still run **after** Task 9.6: `go doc` cannot read an undeclared symbol.
 
 > **Obligations 10–13 are round-4 additions** (design audit BLOCKER 1 consequence 2, MINOR 2, MINOR 3,
 > MINOR 7). They exist because D-J adds three exported symbols and a new acceptance outcome, and the
@@ -1905,45 +1959,77 @@ landed, so Task 11 must run after it.
 > `dadc775`) and **confirmed RED** — a gate that is already green on the untouched tree ticks with zero work.
 
 ```bash
-# ── obligation 10 ─────────────────────────────────────────── RED today: exit 1
-go doc github.com/kartaladev/msgin.SubscribableChannel | grep -q ExclusiveSubscribable
-
-# ── obligation 11 (a+b+c+d+e) ─── RED today: "doc: no symbol ExclusiveSubscribable in package …"
-#    Each conjunct must be a phrase that sits WITHIN ONE LINE of ADR 0030 §1's godoc:
-#    `go doc` reproduces the comment's own line breaks, so a phrase spanning one
-#    can never match. That is why part (b) is anchored on two short spans and not
-#    on the sentence. NOTE the round-7 correction: this gate previously grepped
-#    'reach other processes', which is D-L's SUPERSEDED wording — after D-L was
-#    revised that phrase survives only inside ADR 0030's labelled withdrawal
-#    blocks, so the gate had become UNSATISFIABLE by any correct godoc.
-go doc github.com/kartaladev/msgin.ExclusiveSubscribable | grep -q 'MUST NOT compute it from a live subscriber count' &&
-go doc github.com/kartaladev/msgin.ExclusiveSubscribable | grep -q 'reaches at most one recipient' &&
-go doc github.com/kartaladev/msgin.ExclusiveSubscribable | grep -q 'any recipient other than the single subscriber registered on it' &&
-go doc github.com/kartaladev/msgin.ExclusiveSubscribable | grep -q 'recipient in another process' &&
-go doc github.com/kartaladev/msgin.ExclusiveSubscribable | grep -Eq 'constant for the lifetime' &&
-go doc github.com/kartaladev/msgin.ExclusiveSubscribable | grep -Eq 'safe for concurrent use' &&
-go doc github.com/kartaladev/msgin.ExclusiveSubscribable | grep -q 'MUST NOT block and MUST NOT panic'
-
-# ── obligation 11a ────────────────────────────────────────── RED today: exit 1
-go doc github.com/kartaladev/msgin.ExclusiveSubscribable | grep -Eq 'promotion'
-
-# ── obligation 12 ──────────── RED today: 'does not implement' and 'within this process' are absent;
-#    the pre-existing ErrChannelSubscribed prose at exchange.go:210-211 satisfies only one conjunct.
-#    ROUND-7 CORRECTION (D-M1 / R-M5): this was `grep -c '…\|…\|…\|…' -ge 4`, which counts LINES, not
-#    matches — a FALSE RED whenever two of the four phrases wrap onto one `go doc` line, and a FALSE
-#    GREEN if a single phrase happens to appear on four. Obligation 11 already used the correct shape.
-go doc github.com/kartaladev/msgin/endpoint.NewChannelExchange | grep -q 'ErrSharedReplyChannel' &&
-go doc github.com/kartaladev/msgin/endpoint.NewChannelExchange | grep -q 'ErrChannelSubscribed' &&
-go doc github.com/kartaladev/msgin/endpoint.NewChannelExchange | grep -q 'does not implement' &&
-go doc github.com/kartaladev/msgin/endpoint.NewChannelExchange | grep -q 'within this process'
-
-# ── obligation 13 ───── RED today: "doc: no symbol WithSharedReplyChannel in package …/endpoint"
-go doc github.com/kartaladev/msgin/endpoint.WithSharedReplyChannel | grep -Eiq 'suppress' &&
-go doc github.com/kartaladev/msgin/endpoint.WithSharedReplyChannel | grep -q 'ErrChannelSubscribed'
-
-# ── §8.0a obligation (c), the WithSingleSubscriber gate the same pass broke ─ RED today: exit 1
-go doc github.com/kartaladev/msgin/channel.WithSingleSubscriber | grep -Eiq 'single-process|per-process'
+# ==== CANONICAL GATE BLOCK (Plan 027 Global Constraint 10) — keep diff-identical to Plan 027 §11
+g() { if eval "$2" >/dev/null 2>&1; then echo "GREEN: $1"; else echo "RED: $1"; fi; }
+M=github.com/kartaladev/msgin
+# `d` NORMALIZES `go doc` output before matching, and it has to — measured, see ADR 0030 §1:
+#   * interface METHOD comments print VERBATIM, `//` markers and source line breaks intact;
+#   * func / type / var comments are RE-WRAPPED at ~76 columns, per block.
+# Either shape can split a gate phrase across a line, producing a FALSE RED. `d` strips the
+# markers and folds all whitespace to single spaces, so no phrase can be split by a line break.
+d() { go doc "$1" 2>/dev/null | sed 's,//, ,g' | tr -s '[:space:]' ' '; }
+g 8.10 "d \$M.SubscribableChannel | grep -q 'ExclusiveSubscribable'"
+g 8.11 "d \$M.ExclusiveSubscribable | grep -q 'MUST NOT compute it from a live subscriber count' && \
+        d \$M.ExclusiveSubscribable | grep -q 'reaches at most one recipient' && \
+        d \$M.ExclusiveSubscribable | grep -q 'any recipient other than the single subscriber registered on it' && \
+        d \$M.ExclusiveSubscribable | grep -q 'recipient in another process' && \
+        d \$M.ExclusiveSubscribable | grep -q 'constant for the lifetime' && \
+        d \$M.ExclusiveSubscribable | grep -q 'safe for concurrent use' && \
+        d \$M.ExclusiveSubscribable | grep -q 'MUST NOT block and MUST NOT panic'"
+g 8.11a "d \$M.ExclusiveSubscribable | grep -q 'promotion'"
+g 8.12 "d \$M/endpoint.NewChannelExchange | grep -q 'ErrSharedReplyChannel' && \
+        d \$M/endpoint.NewChannelExchange | grep -q 'ErrChannelSubscribed' && \
+        d \$M/endpoint.NewChannelExchange | grep -q 'does not implement' && \
+        d \$M/endpoint.NewChannelExchange | grep -q 'within this process'"
+g 8.13 "d \$M/endpoint.WithSharedReplyChannel | grep -qi 'suppress' && \
+        d \$M/endpoint.WithSharedReplyChannel | grep -q 'ErrChannelSubscribed'"
+g 11c1 "d \$M/channel.WithSingleSubscriber | grep -Eqi 'single-process|per-process'"
 ```
+
+**Pasted output of exactly that block, re-run 2026-07-30 on the untouched tree at `7ee3fd6`** (code
+byte-identical to the `dadc775` pin). All six RED, each for the reason named below it:
+
+```
+RED: 8.10
+RED: 8.11
+RED: 8.11a
+RED: 8.12
+RED: 8.13
+RED: 11c1
+```
+
+**Why each is RED, stated per gate — a gate that is RED for the wrong reason is not a baseline:**
+
+| Gate | Obligation | RED because |
+|---|---|---|
+| 8.10 | 10 | `SubscribableChannel` exists; its godoc does not name `ExclusiveSubscribable` (exit 1) |
+| 8.11 | 11 (a–e) | **symbol absent** — `doc: no symbol ExclusiveSubscribable in package …` |
+| 8.11a | 11a | symbol absent, same message |
+| 8.12 | 12 | symbol **present**; `does not implement` and `within this process` are absent. The pre-existing `ErrChannelSubscribed` prose at `exchange.go:210-211` satisfies one conjunct only |
+| 8.13 | 13 | **symbol absent** — `doc: no symbol WithSharedReplyChannel in package …/endpoint` |
+| 11c1 | §8.0a (c) | symbol **present**; the godoc (`channel/pubsub.go:66-82`) never states the process boundary |
+
+**Notes on the gate forms, kept out of the block so the block stays literally diffable:**
+
+- **The `d` normalizer is round-8's adoption of the form ADR 0030 §1 had already published** (C3). Measured
+  2026-07-30 in a probe module with ADR 0030 §1's godoc pasted verbatim: **all 14 conjuncts above match under
+  both the piped and the un-piped form**, so adopting it flips no verdict — while `INCLUDING a recipient in
+  another process` and `MUST therefore return false`, which span source line breaks in that godoc, match
+  **only** under the pipe. ADR 0030's *reason* is corrected there: `go doc` re-wraps **each block
+  independently**, so a preceding paragraph's length cannot move a phrase's line breaks (**0 of 46**
+  perturbations flipped `does not implement`); an edit **inside the phrase's own block** flips it **18 of 46**.
+- **Obligation 11's part (b) is anchored on two short spans rather than the whole sentence.** With `d` in
+  place that is no longer forced by line breaks, but it is kept: two independent anchors fail more
+  informatively than one long one, and the round-7 correction that produced them still stands — this gate
+  previously grepped `reach other processes`, D-L's **superseded** wording, which after the revision survives
+  only inside ADR 0030's labelled withdrawal blocks and had made the gate **unsatisfiable by any correct
+  godoc**.
+- **Obligation 12 is an AND of four independent `grep -q`s, not a line count** (round-7 D-M1/R-M5). The old
+  `grep -c '…\|…\|…\|…' … -ge 4` counted **lines**: a false RED whenever two phrases wrapped onto one line,
+  and a false GREEN if one phrase appeared on four.
+- **Gate ids are shared with Plan 027 §11 and are the only handle a checkbox may cite.** `11c1` is this
+  block's label for §8.0a obligation (c); the Plan calls the same gate `11c1` because it is that document's
+  Task 11c first checkbox. One id space, by Plan 027 Global Constraint 10.
 
 > Obligation 13's gate is **new in round 6**: the replacement set proposed by the audit covered obligations
 > 10, 11, 12 and §8.0a(c) but silently dropped 13, which is the same omission-with-no-owner shape §8 exists
@@ -1958,7 +2044,7 @@ CLAUDE.md's multi-instance rule makes these normative too, and they were equally
 |---|---|---|---|
 | a | `DirectChannel` / `PublishSubscribeChannel` / the exchange correlator are **in-process only**, with **Return Address** named as the distributed answer | ✅ **MET** | `channel.go:38`, `channel/doc.go` (*"every channel here is IN-PROCESS ONLY"*), `endpoint/doc.go:19` |
 | b | `channel.PubSub` is an in-process registry, naming the root `TopicPublisher`/`TopicSubscriber` SPI as the distributed answer | ✅ **MET at package level** — `channel/doc.go` names both. The `PubSub` **type** godoc (`channel/pubsub_registry.go:10`) still says only "in-process topic registry"; folding one clause into it is optional polish, not a gap | `channel/doc.go` |
-| c | `channel.WithSingleSubscriber()` is a **single-process** guard and must never read as a distributed exclusivity guarantee | ❌ **UNMET.** The godoc (`channel/pubsub.go:66-82`; the one-line body is `:83`) covers what it does, why it is off by default, and the exchange mis-wiring — but never states the process boundary, which ADR 0028 §6.2 explicitly requires | `go doc github.com/kartaladev/msgin/channel.WithSingleSubscriber \| grep -Eiq 'single-process\|per-process'` → **exit 1**. *(Round-6: the previous `grep -n -A20 'func WithSingleSubscriber' channel/pubsub.go` form was **unsatisfiable** — the godoc is `:66-82` and the one-line body is `:83`, so `-A22` read `:83-105`; see §8.0b.)* |
+| c | `channel.WithSingleSubscriber()` is a **single-process** guard and must never read as a distributed exclusivity guarantee | ❌ **UNMET.** The godoc (`channel/pubsub.go:66-82`; the one-line body is `:83`) covers what it does, why it is off by default, and the exchange mis-wiring — but never states the process boundary, which ADR 0028 §6.2 explicitly requires | **gate 11c1** (§8.0b's canonical block) → **RED**, re-run 2026-07-30. *(Round-8 gate minor: this cell wrote the flags as `-Eiq` where the canonical block writes `-Eqi`, and spelled the command out instead of citing the gate — two sources for one command, and a cosmetic divergence that defeats Global Constraint 10's literal `diff`. Cite the gate id.)* *(Round-6: the previous `grep -n -A20 'func WithSingleSubscriber' channel/pubsub.go` form was **unsatisfiable** — the godoc is `:66-82` and the one-line body is `:83`, so `-A22` read `:83-105`; see §8.0b.)* |
 | d | `RetryPolicy.MaxAttempts` is **per-instance**, so the effective global bound behind a load balancer is `N × MaxAttempts` | ❌ **UNMET.** `retry.go:37-41` says nothing about topology. (`endpoint/producer.go:201` and `adapter/http/outbound.go:288` discuss per-instance *Retry-After*, a different thing) | `grep -rn 'N × MaxAttempts' --include='*.go' .` → exit 1 |
 
 **Two of four unmet.** Both are Plan 027 Task 11 checkboxes.
@@ -2153,14 +2239,26 @@ Both arms must be empty (arm 2 modulo the allow-list above). Run the sweep **aft
    same commit; `MESSAGING.md` reconciled; §3.5's package docs complete (**all six present** — the five
    subpackage `doc.go` files landed in the round-3 pass, F12.5); §8's **nine** godoc bullets and §10's **four**
    multi-instance obligations complete — audited per bullet in §8/§8.0a, **six of the thirteen unmet at `dadc775`** (plus obligations **10, 11, 11a, 12, 13**, which arrive with Task 9.6 and carry D-L's end-to-end predicate),
-   all owned by Plan 027 Task 11; §8's godoc
+   owned per the table in §8 — **Task 9.6** writes 10–13, **Task 9** writes obligation 4's four new types,
+   **Task 11** writes the rest and re-verifies the others (round-8 C4); §8's godoc
    alignment complete, **every §8.0b gate green after having been demonstrated RED first**, and
    **§8.1's two-arm staleness sweep empty**.
 9. **Reply-channel exclusivity (D-J, §5.1, [ADR 0030](../adrs/0030-reply-channel-exclusivity-probe.md))** — a
-   table test covers **all four arms** of the probe truth table (probe absent → accepted; `true` → accepted;
-   `false` → `ErrSharedReplyChannel`; `false` + `WithSharedReplyChannel()` → accepted), and the
-   probe-absent arm is driven by a **test-local `SubscribableChannel` that omits the method**, since no
-   in-tree type can produce that arm. `NewChannelExchange`'s reply godoc states the outcome set **§8
+   table test carries **SIX rows** — the **four truth-table arms** (probe absent → accepted; `true` →
+   accepted; `false` → `ErrSharedReplyChannel`; `false` + `WithSharedReplyChannel()` → accepted), **plus the
+   ordering row** below (a fifth, not a fourth), **plus D-O's panicking-probe row**: a probe that panics is
+   recovered, read as `false` (fail closed), and yields `ErrSharedReplyChannel` **wrapping the recovered
+   value**, asserted with `require.ErrorIs` **and** `require.ErrorContains` on a distinctive panic literal —
+   a sentinel-only assertion passes against a diagnosis-losing implementation (D-O2). The probe-absent arm is
+   driven by a **test-local `SubscribableChannel` that omits the method**, since no in-tree type can produce
+   that arm.
+
+   > **ROUND-8 CORRECTION (C6, Spec half).** This read *"a table test covers **all four arms**"*, while §5.1
+   > and Plan 027 Task 9.6 both carry six rows. The two it dropped are exactly the two that exist because
+   > nothing else observes them — the ordering assertion (added below in round 6) and D-O's panicking probe
+   > (added in round 7). Plan Task 9.6's Verify carried the identical defect and is corrected in the same pass.
+
+   `NewChannelExchange`'s reply godoc states the outcome set **§8
    obligation 12 defines** — four outcomes, of which three are acceptances, including that an unknown
    channel is **accepted**; obligation 12 is the single normative statement of that wording, and no other
    document restates the cardinality.
@@ -2284,11 +2382,25 @@ topology statements it must **preserve and state explicitly in godoc**:
   of a local handle onto shared external state**. Under the earlier **handle-local** definition such an
   adapter's *honest* answer was `true` — its local handle does admit one local subscriber — so every probe
   passed and the failure was **endorsed** by them; the design could not tell a truthful local answer from a
-  safe one. **D-L redefines the predicate end-to-end**: `SingleSubscriber()` reports whether *this exchange
-  will be the sole recipient of every message sent to this channel*, and a channel whose deliveries reach other
-  processes **MUST return `false`**. A broker-backed adapter's honest answer is therefore `false`,
-  `NewChannelExchange` returns `ErrSharedReplyChannel`, and Topology 2 is caught at construction — with the
-  same two in-tree implementations answering the same way and no added cost.
+  safe one. **D-L redefines the predicate end-to-end**: `SingleSubscriber()` reports whether **every message
+  sent to this channel reaches at most one recipient, counted across every process**, and a channel **MUST
+  return `false` whenever a message sent to it can be received by any recipient other than the single
+  subscriber registered on it — including one in another process**. A **broadcast** broker-backed adapter's
+  honest answer is therefore `false`, `NewChannelExchange` returns `ErrSharedReplyChannel`, and Topology 2 is
+  caught at construction — with the same two in-tree implementations answering the same way and no added cost.
+  A **per-instance** broker destination (a NATS `_INBOX` reply subject, an exclusive auto-delete AMQP reply
+  queue) may honestly answer `true`: it is the Return Address pattern, and it is not Topology 2.
+
+  > **ROUND-8 (gate minor) — this bullet carried D-L's SUPERSEDED wording.** It read *"reports whether **this
+  > exchange** will be the sole recipient … and a channel whose **deliveries reach other processes** MUST
+  > return `false`"* — both halves of the sentence pair round 7 withdrew. The second measures **processes
+  > traversed**, so it answers `false` for a per-instance NATS `_INBOX` — **the canonical Return Address
+  > channel**, and the same channel the first half answers `true` for; revised D-L measures **recipients
+  > reached**. The first half is additionally unanswerable by the method it describes: `SingleSubscriber()` is
+  > nullary, lives on the **channel**, and is called **before** the exchange subscribes, so no implementation
+  > can observe which exchange is asking. [Round 7 §5](../plans/027-audit-round-7.md) logged this bullet as
+  > still open (*"narrow the reversal claim to the broadcast case per D-L revised"*); ADR 0030 §Topology and
+  > §8 obligation 11 already carried the narrowing, and this was the last live site.
 
   **What is detected is honesty, not topology.** The core still observes no other instance; it relies on the
   adapter answering its own contract truthfully, exactly as `NativeReliability` and `ScheduledSender` do

@@ -8,7 +8,7 @@ found three blockers because nothing compared them.
 """
 import re, sys, glob, os, collections
 
-DECISIONS = ["D-J", "D-K", "D-L", "D-M", "D-N", "D-O"]
+DECISIONS = ["D-J", "D-K", "D-L", "D-M", "D-N", "D-O", "D-P"]
 WINDOW = 200  # chars after a mention in which a "Task N" citation counts as attached
 
 def load(d):
@@ -76,14 +76,16 @@ def main():
             union.update(t)
             shown = ", ".join(f"Task {k}({v})" for k, v in sorted(t.items())) or "— no task cited"
             print(f"    {name:<46} mentions={n:<3} {shown}")
-        # disagreement: a task cited for this decision in one doc but not another that mentions it
-        cited = set(union)
-        if len(cited) > 1:
-            for name, n, t in rows:
-                missing = cited - set(t)
-                if missing and n >= 2:
-                    problems.append(
-                        f"{dec}: {name} cites {sorted(set(t)) or '[]'} but the bundle also cites {sorted(missing)}")
+        # A decision that resolves to NO owning task anywhere is a real defect: it
+        # means no task produces the work. That is the D-O case round 7 missed.
+        #
+        # Deliberately NOT flagged: one document citing fewer tasks than another.
+        # An ADR legitimately states a decision without naming a task, and the Plan
+        # legitimately names several. An earlier version flagged those and produced
+        # ~12 false alarms per run, which is worse than silence — a checker nobody
+        # trusts is a checker nobody reads.
+        if not union:
+            problems.append(f"{dec}: mentioned in {len(rows)} document(s) but resolves to NO owning task")
         print()
     print("=" * 72)
     if problems:

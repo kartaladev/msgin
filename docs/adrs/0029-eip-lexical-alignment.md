@@ -35,6 +35,24 @@
   data-loss path D-M would otherwise open in every finite-retry consumer's *default* configuration (§5.0b).
   D-N **amends [ADR 0007 D7](0007-reliability-settlement-api.md#d7--no-invalid-sink-policy-tasks-45)**. Both
   from [round 7 §1](../plans/027-audit-round-7.md).
+- **Decisions folded in 2026-07-30 (round 8):** **D-P** — **the invalid-path fallback is SINGLE-SHOT**: when
+  the fallback target's `Send` fails, the settlement falls through to D7's discard (WARN naming both the
+  classification cause and the sink error, then `Ack`) instead of `Nack`ing with requeue, which D-N as first
+  recorded turned into an unbounded redelivery loop no counter, backoff or breaker could observe (§5.0b).
+  D-P **amends D-N** and **re-amends [ADR 0007 D7](0007-reliability-settlement-api.md#d7--no-invalid-sink-policy-tasks-45)**.
+  Recorded in the same pass: **D-N's two accepted costs** (dead-letter amplification of `ErrPayloadTooLarge`;
+  poison-storm volume), **the DLQ's missing settlement-reason discriminator** (a multi-instance disclosure per
+  CLAUDE.md), and **D-M's producer-side blast radius** (`endpoint/producer.go:453-455` —
+  `errors.Is(err, ErrDeadLettered)` flips `true` → `false`; Spec §2.1 **row 8**). All from
+  [round 8 §1–§2](../plans/027-audit-round-8.md).
+- **Also folded 2026-07-30 (round 8, design B7): D-M's INVARIANT IS CORRECTED — the round-7 wording was
+  compile-proven FALSE**, and Plan 027 Task 9.7 was about to write it verbatim into `errors.go:152`, a public
+  godoc. `Chain(To(*DirectChannel)).Handle` → `ErrNoSubscriber` and `Chain(To(*QueueChannel[reject])).Handle`
+  → `ErrOverflowDropped` are both typed errors msgin returns **from inside a `MessageHandler` body it
+  constructs**, and both are correctly **not** `Permanent`. The discriminator is **immutability of the cause at
+  construction**, not the undefined word *"deterministic"*; the corrected invariant has **four** arms and is
+  checked line-by-line against all twelve swept sites (§5.0b). Three of the seven bare triages had their
+  rationale corrected — *"no `MessageHandler` body"* → **mutability** — with **no conclusion changed**.
 - **Cites:** [ADR 0002 — Adapter SPI](0002-adapter-spi.md), which defined the `StreamingSource` name that §1
   renames and the `PollingSource`/`Delivery` contracts that stay put.
 - **Amends:** [ADR 0019 — Runtime expression evaluation](0019-runtime-expression-evaluation.md) — its decision
@@ -474,6 +492,47 @@ instead of the **invalid-message** sink, and, via
 `endpoint/consumer.go:733`, **records an unhealthy signal that trips the circuit breaker**. One mis-wired
 `Filter(nil)` opens the circuit for the whole consumer.
 
+**The PRODUCER loses a durable capture — the same reclassification, the opposite sign** (round-8 A5). D-M's
+blast radius above was measured on the consumer only. `endpoint/producer.go:453-455` returns on `IsPermanent`
+**before** `p.deadLetter(...)`:
+
+```go
+// Permanent wins over every other classification, including RetryAfter:
+// a delay is meaningless when the answer is "do not retry".
+if msgin.IsPermanent(err) {
+    return err
+}
+if p.retry.MaxAttempts > 0 && attempt >= p.retry.MaxAttempts {
+    return p.deadLetter(ctx, boxed, err)
+}
+```
+
+A `Producer` over a `*channel.DirectChannel` gets the subscriber's error back verbatim (`channel/direct.go:89`
+returns `h.Handle(ctx, msg)`), so a mis-wired step downstream of a producer is exactly this error. Measured
+(one message, `RetryPolicy{MaxAttempts: 3, DeadLetter: dlq}`, hooks and sink receipts counted; the AFTER rows
+substitute the post-edit error shape, so the target is measured rather than predicted):
+
+```
+BEFORE D-M transform.Transform(nil) OnRetry=2 OnDeadLetter=1 | dlqSends=1 | Is(ErrDeadLettered)=true  Is(ErrNilFunc)=true  Is(ErrNilSink)=false IsPermanent=false
+AFTER  D-M Permanent(ErrNilFunc)   OnRetry=0 OnDeadLetter=0 | dlqSends=0 | Is(ErrDeadLettered)=false Is(ErrNilFunc)=true  Is(ErrNilSink)=false IsPermanent=true
+BEFORE D-M msgin.To(nil)           OnRetry=2 OnDeadLetter=1 | dlqSends=1 | Is(ErrDeadLettered)=true  Is(ErrNilFunc)=false Is(ErrNilSink)=true  IsPermanent=false
+AFTER  D-M Permanent(ErrNilSink)   OnRetry=0 OnDeadLetter=0 | dlqSends=0 | Is(ErrDeadLettered)=false Is(ErrNilFunc)=false Is(ErrNilSink)=true  IsPermanent=true
+```
+
+**Two observable changes, one of them on an exported error contract:** `dlqSends` **1 → 0** (the producer's
+dead-letter sink stops receiving these) and `errors.Is(err, msgin.ErrDeadLettered)` **`true` → `false`** on the
+error `Producer.Send` returns. `OnDeadLetter` stops firing for this class too.
+
+**Disposition — the new behavior is CORRECT and is kept; what was missing is the record.** Returning a
+permanent fault to the caller *without* spending three attempts and *without* a dead-letter round-trip is the
+right answer: `Producer.Send` is synchronous and hands the error back to caller code that can act on it, so
+there is no message to lose — which is precisely why **D-N does not extend to the producer** and why the
+producer has no `WithInvalidMessageSink` (`grep -n 'InvalidMessageSink\|invalidSink' endpoint/producer.go` →
+no output). **But D-N's premise as recorded in round 7 — *"no configuration that previously captured a message
+starts dropping it"* — is true of the consumer and FALSE of the producer**, and `errors.Is(err,
+ErrDeadLettered)` flipping is exactly the kind of change the §2.1 register exists so that none rides in
+silently. It is therefore recorded as **Spec 014 §2.1 row 8**, with a covering case in Plan 027 Task 9.7.
+
 **The tree already contains the correct precedent, with D-K's exact rationale, written before this window.**
 `routing/aggregator.go:151-160` wraps `ErrNoCorrelation`:
 
@@ -506,16 +565,78 @@ as well as includes, so this reads as a classification rule rather than a sweep 
 
 **The invariant — sentinel-agnostic, and it is the contract. Not a list, and not a quantifier over one name:**
 
-> **Every deterministic typed error msgin returns from inside a `MessageHandler` body is `Permanent`; every
-> one returned from a constructor is bare.**
+> **Every typed error msgin returns from inside a `MessageHandler` body msgin itself constructs, *whose cause
+> was fixed at construction and cannot change for the message's lifetime*, is `Permanent`; a fault that a
+> later `Subscribe`, config reload or drain could resolve stays bare and transient; every typed error returned
+> from a constructor is bare, because construction never reaches a `RetryPolicy`; and everything else — a
+> typed error handed to a *caller* from a non-constructor API — is bare for the same reason.**
 
-Two round-7 findings forced this wording. **D-B7/X-B3:** an earlier Spec §2.1 row read *"**Every** producer of
-`ErrNilFunc` returns `Permanent`"* — a universal quantifier over a sentinel name, which flatly contradicts the
-deliberate exclusion of `routing/aggregator.go:251` two paragraphs below. **D-B1:** the invariant's previous
-form was also phrased over `ErrNilFunc` alone, and the derivation command under it greped
-`msgin\.ErrNilFunc` — scoped to **one name** *and* to the **qualified** form — so it was structurally blind to
-a producer inside package `msgin`. That is exactly how `handler.go:55`'s bare `ErrNilSink` survived four audit
-rounds. *(Counter-rule 9: a derivation command scoped to one name or one qualified form is not a class sweep.)*
+> ## ⛔ ROUND-8 CORRECTION (design B1/B7 — the D-M invariant as recorded in round 7 was FALSE)
+>
+> The withdrawn wording was: *"**Every deterministic typed error msgin returns from inside a `MessageHandler`
+> body is `Permanent`; every one returned from a constructor is bare.**"* It is falsified by **two
+> compile-proven counter-examples, both reachable from inside a `MessageHandler` body msgin constructs, in the
+> tree as it stands** (`go run` in a throwaway worktree at `7ee3fd6`, output pasted whole):
+>
+> ```
+> Chain(To(*DirectChannel)).Handle       err=msgin: channel has no subscriber
+>   errors.Is(err, msgin.ErrNoSubscriber)=true  msgin.IsPermanent(err)=false
+> Chain(To(*QueueChannel[reject])).Handle err=msgin: message dropped by overflow policy
+>   errors.Is(err, msgin.ErrOverflowDropped)=true  msgin.IsPermanent(err)=false
+> ```
+>
+> `To(sink)` returns a `Step` whose `HandlerFunc` body msgin owns (`handler.go:52-59`); `Chain` composes it
+> into a `MessageHandler`. Both errors are therefore returned by msgin **from inside a `MessageHandler` body**,
+> both are typed, both are as "deterministic" as the word can be made to mean without a definition — and
+> neither is `Permanent`. **Both are also correct as they stand**, which is the point: the withdrawn invariant
+> did not merely mis-describe an edge, it demanded a wrap that would be *wrong*.
+>
+> **The wording over-reached twice.** *"Deterministic"* was never defined and was carrying the whole load; the
+> property that actually discriminates is **immutability of the cause at construction**, which is what the
+> classification table two paragraphs above has said all along (*"Fixed at construction … it cannot change on
+> redelivery"* vs *"Evaluated per message against caller-supplied, possibly-mutable state"*). And the two arms
+> did **not partition the space** — the largest class, a typed error handed to a *caller* from a
+> non-constructor API, fell through both while the paragraph below instructs a maintainer to *"triage the 63"*
+> against it. The corrected form adds a mutability qualifier to arm 1, promotes the transient case to its own
+> arm, and closes the space with a fourth.
+>
+> **The fourth arm is this pass's own addition** (round 8 §2's corrected wording carried three). Checking the
+> three-arm form against all twelve swept lines left `endpoint/producer.go:589` outside every arm: it is not in
+> a `MessageHandler` body, it is not resolved by a `Subscribe`/reload/drain, and `SendAfter` is not a
+> constructor. Recorded as a deliberate one-clause extension rather than applied silently.
+>
+> **The conclusions of the seven bare triages all survive; three of them rested on a rationale that does not.**
+> `queuestore.go:146`/`:151` and `direct.go:87` were triaged *"no `MessageHandler` body"* — false, as the
+> transcript above shows. Their cells now cite **mutability**, which is both true and the actual reason.
+
+**The corrected invariant, checked against all twelve swept lines** (the sweep is two paragraphs below):
+
+| Line | Sentinel | Arm | Verdict | Matches the tree |
+|---|---|---|---|---|
+| `endpoint/helpers.go:21` | `ErrNilFunc` | 1 — handler body, nil captured at construction | **`Permanent`** | ✅ (Task 9.7 edit site) |
+| `routing/helpers.go:23` | `ErrNilFunc` | 1 | **`Permanent`** | ✅ (edit site) |
+| `transform/transformer.go:38` | `ErrNilFunc` | 1 | **`Permanent`** | ✅ (edit site) |
+| `routing/router.go:48` | `ErrNilFunc` | 1 — `r.pick` set once in `NewRouter` | **`Permanent`** | ✅ (edit site) |
+| `handler.go:55` | `ErrNilSink` | 1 — `sink` captured by `To`'s closure | **`Permanent`** | ✅ (edit site) |
+| `routing/router.go:56` | `ErrNoRoute` | 2 — per-message, caller-supplied `pick` | bare/transient | ✅ |
+| `channel/direct.go:87` | `ErrNoSubscriber` | 2 — a later `Subscribe` resolves it | bare/transient | ✅ |
+| `adapter/memory/queuestore.go:146` | `ErrOverflowDropped` | 2 — a drain frees capacity | bare/transient | ✅ |
+| `adapter/memory/queuestore.go:151` | `ErrOverflowDropped` | 2 — same | bare/transient | ✅ |
+| `retry.go:48` | `ErrInvalidMaxAttempts` | 3 — `Validate`, reached only from `NewConsumer` | bare | ✅ |
+| `retry.go:51` | `ErrNoDeadLetter` | 3 — same | bare | ✅ |
+| `endpoint/producer.go:589` | `ErrScheduledSendUnsupported` | **4** — handed to the caller from `SendAfter` | bare | ✅ |
+
+**Twelve for twelve, and no arm is vacuous.** Arm 2 is what the counter-examples above exercise; arm 4 exists
+only because the check found `:589` unclassified.
+
+Two round-7 findings forced the sentinel-agnostic *shape* of this wording (the round-8 correction above fixes
+its *content*). **D-B7/X-B3:** an earlier Spec §2.1 row read *"**Every** producer of `ErrNilFunc` returns
+`Permanent`"* — a universal quantifier over a sentinel name, which flatly contradicts the deliberate exclusion
+of `routing/aggregator.go:251` two paragraphs below. **D-B1:** the invariant's previous form was also phrased
+over `ErrNilFunc` alone, and the derivation command under it greped `msgin\.ErrNilFunc` — scoped to **one
+name** *and* to the **qualified** form — so it was structurally blind to a producer inside package `msgin`.
+That is exactly how `handler.go:55`'s bare `ErrNilSink` survived four audit rounds. *(Counter-rule 9: a
+derivation command scoped to one name or one qualified form is not a class sweep.)*
 
 **Scope — the flow-path producers that become `Permanent(…)`** (verified at the `dadc775` code pin, re-derived
 at `fe86a12`):
@@ -541,7 +662,7 @@ producer *inside* package `msgin` cannot hide; and the trailing class admits the
 
 ```
 $ sentinels=$(grep -oE '^\s*Err[A-Za-z]+ =' errors.go | tr -d ' \t=' | paste -sd'|' -)   # 43 sentinels
-$ grep -rnE "return (msgin\.)?($sentinels)[ })]*(//.*)?$" --include='*.go' . \
+$ grep -rnE "return (msgin\.)?($sentinels)[ })]*(//.*)?$" --include='*.go' . | sed 's,^\./,,' \
     | grep -v '_test\.go' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -v 'Permanent(' | sort
 adapter/memory/queuestore.go:146:		return msgin.ErrOverflowDropped // nothing evictable (all in-flight) → drop
 adapter/memory/queuestore.go:151:	return msgin.ErrOverflowDropped // OverflowReject
@@ -557,20 +678,35 @@ routing/router.go:56:			return msgin.ErrNoRoute
 transform/transformer.go:38:		return msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { return msgin.ErrNilFunc })
 ```
 
-> **The trailing `| sort` is load-bearing, not tidiness.** `grep -r`'s directory traversal order is **not
-> stable between runs** — three consecutive runs of this command on the *unchanged* tree at `fe86a12` emitted
-> the same twelve lines in two different orders (`routing/helpers.go:23` moved across the two
-> `routing/router.go` lines). Any gate that diffs this block against a re-run would fail on that alone. With
-> `sort`, three consecutive runs are byte-identical.
+> **Both `| sort` and `| sed 's,^\./,,'` are load-bearing, not tidiness** (Plan 027 Global Constraint 9).
+> - **Order:** `grep -r`'s directory traversal order is **not stable between runs** — three consecutive runs of
+>   this command on the *unchanged* tree at `fe86a12` emitted the same twelve lines in two different orders
+>   (`routing/helpers.go:23` moved across the two `routing/router.go` lines). Any gate that diffs this block
+>   against a re-run would fail on that alone. With `sort`, three consecutive runs are byte-identical.
+> - **Path prefix (round 8):** system `grep -rn … .` prefixes every path with `./`; the **ugrep** wrapper on at
+>   least one machine used for this bundle strips it, and the twelve lines above are pasted in the **stripped**
+>   form. Without the `sed`, a diff against a re-run on a normal shell fails on **all twelve** lines for a
+>   reason unrelated to the code. Re-verified 2026-07-30 with `/usr/bin/grep`: the sed-pinned form reproduces
+>   this block byte-for-byte. Plan 027 Task 9.7 publishes the identical command and was corrected in the same
+>   pass, so the two copies stay diffable against each other.
 
 **Twelve lines. Five are the flow-path producers above; seven are triaged and stay bare:**
 
 | Line | Why it stays bare |
 |---|---|
 | `retry.go:48`, `:51` | `RetryPolicy.Validate` — construction-time validation, returned to `NewConsumer`, never to a consumer's settlement path |
-| `adapter/memory/queuestore.go:146`, `:151` | Returned to the **sender** from `Add`, on the store side of a channel. No `MessageHandler` body, no `RetryPolicy` |
-| `channel/direct.go:87` | `Send` with no subscriber — sender-side, same reason |
-| `endpoint/producer.go:589` | `SendAt` on an adapter with no scheduled-send capability — producer-side, returned to the caller |
+| `adapter/memory/queuestore.go:146`, `:151` | **MUTABLE cause — arm 2.** The store is at capacity *right now*; a drain frees a slot and the very next redelivery succeeds. Nothing about it is fixed at construction |
+| `channel/direct.go:87` | **MUTABLE cause — arm 2.** `Send` with no subscriber: a later `Subscribe` resolves it, and a startup-order race is the commonest way to hit it. Retrying is the correct response |
+| `endpoint/producer.go:589` | **Arm 4** — `SendAfter` (and `SendAt`, its sugar) on an adapter with no scheduled-send capability; handed to the caller, never through a `RetryPolicy` |
+
+> **ROUND-8 CORRECTION (design B7).** The first two cells read *"Returned to the **sender** … **No
+> `MessageHandler` body**, no `RetryPolicy`"* and *"sender-side, same reason"*. **The stated reason is false**
+> — `Chain(To(ch))` puts both sentinels inside a `MessageHandler` body msgin constructs, compile-proven in the
+> block above ( `ErrNoSubscriber` and `ErrOverflowDropped`, `IsPermanent=false` for both). Their
+> **conclusions** are unchanged and correct; only the rationale moves, from a structural claim that does not
+> hold to the mutability test that does. *(Third cell: `:589` sits in `SendAfter`, not `SendAt` — verified,
+> `awk` on the enclosing `func` at `7ee3fd6` → `586: func (p *producer[T]) SendAfter(…)`. `SendAt` is
+> one-line sugar over it at `:602`, so the fault surfaces through both; the site is `SendAfter`.)*
 | `routing/router.go:56` | **`ErrNoRoute` — the load-bearing exclusion.** Evaluated per message against caller-supplied `pick`; see the classification table above |
 
 **The narrowing to single-result returns is a shortlist, not the class.** The complete sweep — every `return`
@@ -578,7 +714,9 @@ of a root sentinel in non-test, non-comment source, without a `Permanent` wrap �
 the trailing `[ })]*(//.*)?$` anchor; it reports **63 lines** at `fe86a12`, the extra 51 being two-result
 constructor returns of the `return nil, msgin.ErrX` shape. *(Derived summary; the command is the one above
 with `return .*\b(msgin\.)?($sentinels)\b` as the pattern.)* Constructor arity is a strong proxy for the
-invariant's second arm but it is **not** the invariant — when a new sentinel lands, triage the 63, not the 12.
+invariant's **third** arm but it is **not** the invariant — when a new sentinel lands, triage the 63, not the
+12, and triage them against the four arms above, not against arity. *(Round-8 B7: this said "second arm"
+against the two-arm form; the constructor arm is now the third of four.)*
 
 The two sites already compliant, for completeness:
 
@@ -681,17 +819,155 @@ prior decision — the plan cannot be executed without them)*:
    different fallback behavior, which is incoherent. The decode arm's change is discard → DeadLetter, a strict
    improvement over D7's discard, and it is **a behavior change in its own right** — recorded here rather than
    inherited silently.
-3. **The fallback is announced, not silent.** The existing loud WARN at `endpoint/consumer.go:766` is kept in
-   the neither-sink case and joined by a WARN on the fallback case naming both facts — that no invalid-message
-   sink is configured and that the message went to the dead-letter sink instead. A caller must not discover by
-   inspection that their DLQ is receiving invalid messages.
+3. **The fallback is announced, not silent — and the announcement is DEDUPLICATED.** The existing loud WARN at
+   `endpoint/consumer.go:766` is kept in the neither-sink case and joined by a WARN on the fallback case naming
+   both facts — that no invalid-message sink is configured and that the message went to the dead-letter sink
+   instead. A caller must not discover by inspection that their DLQ is receiving invalid messages.
+   *Round-8 correction:* that condition is **constant for the consumer's lifetime**, so an undeduplicated WARN
+   emits one identical line per invalid message and a poison storm floods the log. The in-tree precedent is
+   `governorPanic` (`endpoint/consumer.go:573-585`), which deduplicates via a `sync.Map` `LoadOrStore` for
+   exactly this reason and says so in the message itself. The per-message WARN at `:766` is **not**
+   deduplicated: it is a terminal discard, and its message id is the only record that the message existed.
 
-**Consequences.** No configuration that previously captured a message starts dropping it. This joins the
-register Spec 014 §2.1 keeps, as **row 7**, and lands in **Plan 027 Task 9.7**, in the same commit as the
-reclassification —
-splitting them would leave a tree between commits with the loss path live. It needs its own covering case
-**and** a case for the neither-sink-configured discard that remains, so a later sweep cannot delete the
-discard arm as dead code.
+**Consequences.** On the **consumer** path, no configuration that previously captured a message starts
+dropping it. This joins the register Spec 014 §2.1 keeps, as **row 7**, and lands in **Plan 027 Task 9.7**, in
+the same commit as the reclassification — splitting them would leave a tree between commits with the loss path
+live. It needs its own covering case **and** a case for the neither-sink-configured discard that remains, so a
+later sweep cannot delete the discard arm as dead code.
+
+> **That sentence is scoped to the CONSUMER, and the scope is load-bearing** (round-8 A5). D-M's blast radius
+> was measured on the consumer only; on the **producer** path the same reclassification *does* remove a durable
+> capture, because `endpoint/producer.go:453-455` returns on `IsPermanent` **before** `p.deadLetter(...)`. See
+> the producer-side consequence recorded under **D-M** above and Spec 014 §2.1 **row 8**. Read unqualified,
+> *"no configuration that previously captured a message starts dropping it"* is false.
+
+**Two countervailing costs, ACCEPTED and stated — not absent** (round-8 A2). The Consequences above weigh only
+the data-loss axis. The trade is still worth taking, but silence about its costs is the same defect round 7
+ruled on for D-K, so both are recorded with their disposition:
+
+1. **`ErrPayloadTooLarge` becomes dead-letter amplification.** `WithMaxPayloadBytes` exists to stop the runtime
+   *decoding* untrusted oversize bytes (`endpoint/flowcontrol.go:95-108`, ADR 0009 D5). `divert` sends
+   **`d.Msg`** — the message with those bytes — so after D-N msgin **persists into the operator's durable
+   dead-letter store exactly the bytes the cap declared illegitimate**, where before it logged and dropped
+   them. CLAUDE.md names this shape verbatim: *"a wrong default could … be a DoS lever"*.
+   **Disposition — accepted, with a named remedy.** The cap's purpose is bounding *decode-time memory*, not
+   bounding storage, and the alternative (silently dropping the payload D-N exists to preserve) re-opens the
+   loss path. An operator who must not durably store oversize input has two in-tree levers today:
+   `endpoint.WithInvalidMessageSink` pointed at a bounded or truncating sink, which takes the dead-letter sink
+   out of the path entirely, or leaving `WithMaxPayloadBytes` off and rejecting oversize input at the adapter.
+   Both are stated on the option's godoc by Task 9.7's sweep.
+2. **Poison-storm volume.** A mis-configured codec, or a mis-wired step under D-M, turns **100% of the stream**
+   into durable dead-letter writes where it was previously N log lines. The volume is bounded only by the
+   source's throughput.
+   **Disposition — accepted.** The pre-D-N behavior for the same storm was *silent loss at the same volume*,
+   which is strictly worse operationally, and the fallback is announced by its own WARN so the condition is
+   visible on the first message rather than discovered in a storage bill. **D-P** additionally bounds what the
+   storm costs when the sink itself gives way: the fallback is single-shot, so a failing dead-letter sink
+   degrades to a logged discard instead of an unbounded redelivery loop.
+
+**Operational limitation — the dead-letter sink now carries two classes with no discriminator that survives
+the process** (round-8 A3). After D-N a single sink receives both *"retries exhausted, may be replayable"* and
+*"permanently invalid, replaying is pointless"*. The only discriminator is **which in-process hook fired**
+(`OnDeadLetter` vs `OnInvalidMessage`), and msgin stamps **no settlement-reason header** — the reserved header
+namespace declares seven keys and none of them is one:
+
+```
+$ grep -n 'Header[A-Za-z]* *=' message.go
+15:	HeaderMessageID     = "msgin.message-id"
+16:	HeaderTimestamp     = "msgin.timestamp"
+17:	HeaderContentType   = "msgin.content-type"
+18:	HeaderCorrelationID = "msgin.correlation-id"
+19:	HeaderDeliveryCount = "msgin.delivery-count"
+23:	HeaderSequenceNumber = "msgin.sequence-number"
+24:	HeaderSequenceSize   = "msgin.sequence-size"
+```
+
+**CLAUDE.md's multi-instance rule applies directly:** the classification lives in **one process's memory** (a
+hook closure) while the artifact lives in a **store another process reads**. A replay tool written against the
+pre-D-N assumption — *"everything in the DLQ was retried to exhaustion, so re-submitting it is reasonable"* —
+will re-submit poison forever.
+
+**Disposition — the limitation is DISCLOSED, and stamping a header is deliberately NOT taken in this window.**
+Stamping a `HeaderSettlementReason` would add a new exported root symbol **and** make `divert` rewrite the
+diverted message's headers — a second behavior change, on the message contract, in a restructure window whose
+scope §2.1 fixes; it needs its own decision, its own audit and its own covering cases, and it belongs with the
+Resequencer/settlement increment that will have a real consumer to pin its vocabulary. Until then:
+
+- **What operators get today:** an operator who needs the distinction **must configure
+  `endpoint.WithInvalidMessageSink`** — with an invalid sink present the two classes go to two different
+  destinations and the discriminator is the destination itself. This is the documented remedy and it must
+  appear on `WithInvalidMessageSink`'s godoc (Task 9.7).
+- **What is recorded for the next increment:** a durable settlement-reason marker is the missing piece; the SPI
+  seam that would carry it is the message headers, not a `Delivery` field, because it must survive the store.
+
+---
+
+**Decision D-P (round 8): the invalid-path fallback is SINGLE-SHOT. Amends D-N; re-amends
+[ADR 0007 D7](0007-reliability-settlement-api.md#d7--no-invalid-sink-policy-tasks-45).**
+
+D-N settled *where* an invalid message goes when no invalid sink is configured. It never settled what happens
+when that destination is **down** — and `divert`'s send-failure arm (ADR 0007 D8, `endpoint/consumer.go:774-782`)
+`Nack`s with `requeue=true`. Implemented exactly as D-N specified and run in the **default** configuration
+against a dead-letter sink whose `Send` returns an error (round 8, compile-proven):
+
+```
+BEFORE D-N: deliveries=1   acks=1  nacks=0   dlqSends=0   OnInvalid=1  OnDeadLetter=0  OnRetry=0
+AFTER  D-N: deliveries=41  acks=0  nacks=40  dlqSends=40  OnInvalid=0  OnDeadLetter=0  OnRetry=40
+```
+
+(41 was the harness's redelivery cap, reached in under 10 ms. The loop is **unbounded** in reality.)
+
+A **permanent** message re-enters the flow forever, and **every bound this library owns is structurally blind
+to it**:
+
+- **MaxAttempts** — never consulted: the permanent arm deliberately bypasses `c.attempts(d)` (M8) and passes
+  `attempt = 1`.
+- **Backoff** — `retryDelay(policy, 1)` is `p.Backoff.Delay(0)` (`endpoint/consumer.go:948-953`), the *first*
+  step, on every iteration. It never escalates.
+- **Circuit breaker** — `endpoint/consumer.go:614` records `err == nil || msgin.IsPermanent(err)` as
+  **healthy**, so the breaker is told the flow is fine while the message spins.
+
+**ADR 0007 D7 is the authority D-N violated**, in D7's own words: *"retrying anyway would only convert a
+configuration gap (no sink configured) into an infinite-retry trap, which is **worse** than a logged,
+observable discard."* D-N's amendment note argued only the discard-vs-durable-sink axis and never re-weighed
+the axis D7 had actually decided.
+
+**Decision.** The fallback is **single-shot**. If the fallback target's `Send` fails, **fall through to D7's
+discard**: WARN naming **both** the classification cause *and* the sink error, fire `OnInvalidMessage`, `Ack`.
+Do **not** `Nack`. This keeps D-N's gain (a reachable dead-letter sink captures the message) without
+surrendering D7's guarantee (**an invalid message always terminates**). One extra branch, one extra covering
+case.
+
+**Scope — the INVALID path only.** A `divert` whose sink is `c.policy.DeadLetter` at the dead-letter call site
+(`endpoint/consumer.go:726`) keeps D8's `Nack`-with-backoff on send failure: that message is *transient* by
+classification, so requeueing it is a retry, not a loop. Single-shot applies where the message is permanent by
+construction.
+
+**Rejected alternative.** Bounding the loop by threading a real attempt count into the invalid-path `divert`:
+more code, more state, and it still leaves a permanent fault consuming retry budget for no benefit.
+
+**The class violated — recorded as a class, not as an instance:** *a settlement path that is terminal by
+construction must not become non-terminal without a bound.* Pre-D-N the no-invalid-sink path had exactly one
+outcome (Ack); D-N gave it a retry loop no counter, backoff or breaker could see. **Any future amendment that
+introduces a `Send` onto a terminal path must state what happens when that `Send` fails** — the omission, not
+the fallback, was the defect.
+
+**D-N item (b) — the decode-arm widening — is CONFIRMED and kept as specified**, conditional on D-P and on the
+consequence records above. Scoping it back is not cleanly implementable: `endpoint/consumer.go:716` receives
+*any* `IsPermanent` error, so restricting the fallback to nil-endpoint faults would require an `errors.Is`
+against a **closed list** of endpoint sentinels — exactly the closed-enumeration anti-pattern D-M rejects — and
+`WithInvalidMessageSink`'s own godoc already unifies the two arms (*"where permanent/undecodable messages are
+diverted"*), so honoring it for one arm and not the other makes that option's godoc unwritable. **But (b) is a
+NEW policy, not a restoration:** D-N's justification (*"D-M moved messages off a path that used to reach the
+dead-letter sink"*) is true only of `:716`. The decode arm was **never** on that path — it discarded before
+D-M and it discards today. It must be justified on its own merits (a durable capture beats a discard), never
+by D-M's premise.
+
+**Consequences of D-P.** One added branch in the invalid-path settlement, one added WARN carrying two facts,
+and one added covering case — *"fallback target configured, its `Send` fails"* — which is the **newly reachable
+state** and which D-N's own case list did not contain. It joins Spec 014 §2.1 **row 7** (amended, not a new
+row: D-P completes D-N rather than changing a different observable) and lands in **Plan 027 Task 9.7**, in the
+same commit as D-N. `OnRetry` must **not** fire on this arm — no retry follows it.
 
 #### 5.0c A second expression provider would mint a third `ErrInvalidExpression` — recorded, not solved
 
