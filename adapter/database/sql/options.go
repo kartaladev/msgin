@@ -190,10 +190,14 @@ type TransactionResolver func(ctx context.Context) (Querier, error)
 // runtime's divert path calls Send on a settlement-scoped context that never
 // carries the caller's business transaction, so r would report (nil, nil) on
 // every poison message, Send would return ErrNoSharedTransaction, and the
-// divert would treat that as "sink failed" and retry forever — the poison
-// message never actually reaches the dead-letter table. Use a plain,
-// non-shared-transaction Outbound (built without this option) as a DLQ/invalid
-// sink.
+// divert would treat that as "sink failed" — and the poison message never
+// actually reaches the dead-letter table. On the DEAD-LETTER path that failure
+// is retried forever; on the INVALID-message path the divert is single-shot, so
+// the message is logged and DISCARDED instead. Neither outcome is what you
+// wanted. Use a plain, non-shared-transaction Outbound (built without this
+// option) as a DLQ/invalid sink — and note the advice binds MORE often now that
+// a consumer with no invalid-message sink diverts invalid messages down its
+// dead-letter sink too.
 func WithSharedTransaction(r TransactionResolver) Option {
 	return func(c *config) {
 		c.txResolver = r

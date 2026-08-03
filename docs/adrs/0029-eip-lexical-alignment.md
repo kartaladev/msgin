@@ -938,6 +938,16 @@ Do **not** `Nack`. This keeps D-N's gain (a reachable dead-letter sink captures 
 surrendering D7's guarantee (**an invalid message always terminates**). One extra branch, one extra covering
 case.
 
+> **Amended by the Task 9.7 code review — one exception: shutdown cancellation.** A `Send` that fails only
+> because the consumer's **settle context was already cancelled** by the shutdown deadline (D9/C1) proved
+> nothing about the sink — a *healthy* sink returns an error there too — so it is `Nack`ed with requeue, fires
+> no terminal hook, and keeps its tracker entry. Without it the discard arm `Ack`s a message the sink may
+> never have seen, and since a `Delivery.Ack` may ignore its context (`adapter/memory`'s does), that `Ack`
+> succeeds and the message is **lost with the sink healthy**. In normal operation `ctx.Err()` is `nil`, so the
+> single shot above is unchanged; the arm is reachable only inside a shutdown D9 bounds, so it cannot loop.
+> Normative statement: [ADR 0007 D7](0007-reliability-settlement-api.md#d7--no-invalid-sink-policy-tasks-45)'s
+> shutdown-exception note.
+
 **Scope — the INVALID path only.** A `divert` whose sink is `c.policy.DeadLetter` at the dead-letter call site
 (`endpoint/consumer.go:726`) keeps D8's `Nack`-with-backoff on send failure: that message is *transient* by
 classification, so requeueing it is a retry, not a loop. Single-shot applies where the message is permanent by

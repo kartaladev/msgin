@@ -23,10 +23,13 @@ func WithDiscardChannel(ch msgin.MessageChannel) FilterOption {
 // pred, and forwards downstream when true. When false the message is dropped —
 // silently by default, or sent to WithDiscardChannel if set. A predicate error
 // (or a discard-channel send error) propagates; a non-A payload yields
-// ErrPayloadType; a nil pred yields ErrNilFunc.
+// ErrPayloadType; a nil pred yields ErrNilFunc naming its position — PERMANENT
+// (D-M): routed to the invalid-message channel rather than retried to the
+// dead-letter sink, with errors.Is(err, msgin.ErrNilFunc) still matching (see
+// [msgin.ErrNilFunc]).
 func Filter[A any](pred func(ctx context.Context, m msgin.Message[A]) (bool, error), opts ...FilterOption) msgin.Step {
 	if pred == nil {
-		return nilFuncStep()
+		return nilFuncStep("routing.Filter: nil pred")
 	}
 	var cfg filterConfig
 	for _, opt := range opts {

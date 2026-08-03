@@ -95,9 +95,17 @@ func WithAttemptTTL[T any](d time.Duration) ConsumerOption[T] {
 // WithMaxPayloadBytes caps the size of an externally-sourced wire payload
 // ([]byte) BEFORE it is handed to the PayloadCodec for decoding (ADR 0009 D5,
 // spec §7 untrusted-input defense). A payload whose length exceeds n is settled
-// as a PERMANENT invalid message (ErrPayloadTooLarge) — diverted to the
-// invalid-message sink like a decode failure, never retried — since an over-size
-// payload will not shrink on redelivery.
+// as a PERMANENT invalid message (ErrPayloadTooLarge) — diverted like a decode
+// failure, never retried — since an over-size payload will not shrink on
+// redelivery. The destination is the invalid-message sink, or the dead-letter
+// sink when none is configured ([msgin.Permanent] states all three arms).
+//
+// ACCEPTED COST of that fallback: a consumer with a DeadLetter sink but no
+// WithInvalidMessageSink now PERSISTS the very bytes this cap declared
+// illegitimate into the operator's durable dead-letter store. Two levers, if
+// that is unacceptable: point WithInvalidMessageSink somewhere cheap and
+// bounded, or reject over-size input at the adapter before it becomes a
+// Delivery.
 //
 // n <= 0 disables the cap (the default): a library cannot guess a caller's
 // legitimate maximum, so the cap is opt-in. Wire adapters consuming UNTRUSTED

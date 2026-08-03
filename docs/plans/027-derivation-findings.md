@@ -2483,3 +2483,581 @@ total: (statements) 93.4%                                          # unchanged f
    the F14.1 fix. **They must be staged with the commit or M1 does not land.**
 2. **Task 12 / Spec 014 §4.1's contingent counts are now stale by one** (F14.4): 102 / 43, not 101 / 42.
 3. **Task 9.5.0 is still undecided** (F14.3), deliberately.
+
+---
+
+### F15 — Task 9.7 (D-M / D-N / D-P): execution record
+
+**Execution order actually run:** Task **9.7 FIRST**, before Task 9 — as pinned by the round-7 correction
+(D-M2/X-M2) and ADR 0029 §5.0b. Nothing in 9.7 depended on 9/9.5/9.6. Task numbers unchanged.
+
+#### F15.1 — the RED baselines reproduced byte-for-byte at `1c4f73e`
+
+The three published sweeps reproduce exactly (class sweep 12 lines / 43 sentinels; D-M godoc sweep 15 lines;
+D-N/D-P behavior-derived sweep 39 lines). Gate transcripts, throwaway `package msgin_test` harness at the
+repo root, deleted before the commit:
+
+```
+$ go test -run 'TestR7ProducerPath|TestR7SentinelCensus|TestR8ProducerConsequence|TestR8DPGate' -v .
+--- GATE 1 (RED) ---
+transform.Transform(nil)      [dlq, no invalid sink] OnRetry=2 OnDeadLetter=1 OnInvalidMessage=0 | dlqSink=1 invalidSink=0 discarded=false
+transform.Transform(nil)      [dlq + invalid sink]   OnRetry=2 OnDeadLetter=1 OnInvalidMessage=0 | dlqSink=1 invalidSink=0 discarded=false
+msgin.To(nil)                 [dlq, no invalid sink] OnRetry=2 OnDeadLetter=1 OnInvalidMessage=0 | dlqSink=1 invalidSink=0 discarded=false
+msgin.To(nil)                 [dlq + invalid sink]   OnRetry=2 OnDeadLetter=1 OnInvalidMessage=0 | dlqSink=1 invalidSink=0 discarded=false
+--- GATE 2 (census, RED == GREEN by design) ---
+IsPermanent(msgin: nil endpoint function              ) = false
+IsPermanent(msgin: no route for message               ) = false
+IsPermanent(msgin: payload is not of the expected type) = true
+IsPermanent(msgin: message has no correlation key     ) = false
+IsPermanent(msgin: nil outbound sink                  ) = false
+--- GATE 3 (producer, RED) ---
+transform.Transform(nil) OnRetry=2 OnDeadLetter=1 | dlqSends=1 | Is(ErrDeadLettered)=true  Is(ErrNilFunc)=true  Is(ErrNilSink)=false IsPermanent=false
+msgin.To(nil)            OnRetry=2 OnDeadLetter=1 | dlqSends=1 | Is(ErrDeadLettered)=true  Is(ErrNilFunc)=false Is(ErrNilSink)=true  IsPermanent=false
+--- D-P gate (RED; row 1 is the plan's "BEFORE D-N") ---
+permanent, dlq OK     : deliveries=1   acks=1  nacks=0   dlqSends=0   OnInvalid=1  OnDeadLetter=0  OnRetry=0
+permanent, dlq FAILS  : deliveries=1   acks=1  nacks=0   dlqSends=0   OnInvalid=1  OnDeadLetter=0  OnRetry=0
+transient, dlq FAILS  : deliveries=41  acks=0  nacks=41  dlqSends=39  OnInvalid=0  OnDeadLetter=0  OnRetry=41
+```
+
+#### F15.2 — the GREEN gates, same harness, after the edit
+
+```
+--- GATE 1 (GREEN) ---
+transform.Transform(nil)      [dlq, no invalid sink] OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1 | dlqSink=1 invalidSink=0 discarded=false
+transform.Transform(nil)      [dlq + invalid sink]   OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1 | dlqSink=0 invalidSink=1 discarded=false
+msgin.To(nil)                 [dlq, no invalid sink] OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1 | dlqSink=1 invalidSink=0 discarded=false
+msgin.To(nil)                 [dlq + invalid sink]   OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1 | dlqSink=0 invalidSink=1 discarded=false
+--- GATE 2 (every row UNCHANGED — IsPermanent's enumeration was not amended) ---
+IsPermanent(msgin: nil endpoint function              ) = false
+IsPermanent(msgin: no route for message               ) = false
+IsPermanent(msgin: payload is not of the expected type) = true
+IsPermanent(msgin: message has no correlation key     ) = false
+IsPermanent(msgin: nil outbound sink                  ) = false
+--- GATE 3 (GREEN — a DOCUMENTED LOSS: dlqSends 1 -> 0, Is(ErrDeadLettered) true -> false) ---
+transform.Transform(nil) OnRetry=0 OnDeadLetter=0 | dlqSends=0 | Is(ErrDeadLettered)=false Is(ErrNilFunc)=true  Is(ErrNilSink)=false IsPermanent=true
+msgin.To(nil)            OnRetry=0 OnDeadLetter=0 | dlqSends=0 | Is(ErrDeadLettered)=false Is(ErrNilFunc)=false Is(ErrNilSink)=true  IsPermanent=true
+--- D-P gate (GREEN) ---
+permanent, dlq OK     : deliveries=1   acks=1  nacks=0   dlqSends=1   OnInvalid=1  OnDeadLetter=0  OnRetry=0
+permanent, dlq FAILS  : deliveries=1   acks=1  nacks=0   dlqSends=1   OnInvalid=1  OnDeadLetter=0  OnRetry=0
+transient, dlq FAILS  : deliveries=41  acks=0  nacks=41  dlqSends=39  OnInvalid=0  OnDeadLetter=0  OnRetry=41   <- D8 UNCHANGED
+```
+
+**Gate 1 rows 1 and 3 read `dlqSink=1 discarded=false`, not the plan's `dlqSink=0 discarded=true`** — exactly
+as the plan's ROUND-8 gate-minor box predicted: those rows publish a D-M-only intermediate this commit never
+leaves behind, because D-N routes them to the dead-letter sink in the same commit.
+
+#### F15.3 — the D-P gate is not vacuous (mutation check)
+
+The Nack arm D-P forbids was temporarily re-inserted into `divertTerminal` and both the gate and the unit
+test caught it. Reverted immediately; the tree is clean of it.
+
+```
+--- with the forbidden Nack arm restored ---
+permanent, dlq FAILS  : deliveries=41  acks=0  nacks=41  dlqSends=41  OnInvalid=0  OnDeadLetter=0  OnRetry=41
+--- FAIL: TestDivertInvalidFallback/fallback_sink_Send_FAILS_—_single_shot,_no_redelivery_loop
+        the original delivery is Acked, never Nacked / exactly one delivery — no redelivery loop
+        ONE attempt at the sink — there is no second / OnRetry must not fire — no retry follows
+--- FAIL: TestDivertInvalidFallback/decode_failure_with_a_failing_fallback_sink_is_single_shot_too
+```
+
+#### F15.4 — the class sweep after the edit: 5 edit-site lines gone, 7 survivors byte-identical
+
+```
+$ sentinels=$(grep -oE '^\s*Err[A-Za-z]+ =' errors.go | tr -d ' \t=' | paste -sd'|' -)
+$ grep -rnE "return (msgin\.)?($sentinels)[ })]*(//.*)?$" --include='*.go' . | sed 's,^\./,,' \
+    | grep -v '_test\.go' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -v 'Permanent(' | sort
+adapter/memory/queuestore.go:146:		return msgin.ErrOverflowDropped // nothing evictable (all in-flight) → drop
+adapter/memory/queuestore.go:151:	return msgin.ErrOverflowDropped // OverflowReject
+channel/direct.go:87:		return msgin.ErrNoSubscriber
+endpoint/producer.go:589:		return msgin.ErrScheduledSendUnsupported
+retry.go:48:		return ErrInvalidMaxAttempts
+retry.go:51:		return ErrNoDeadLetter
+routing/router.go:59:			return msgin.ErrNoRoute
+```
+
+Only `routing/router.go`'s ErrNoRoute line NUMBER moved (56 → 59), from the three lines added above it. Text
+identical on all seven.
+
+#### F15.5 — D-P's shape: option 1 (split the function), and its one consequence
+
+`divert` was **split**, per the plan's recommendation. The invalid path (`consumer.go` decode arm and
+permanent arm) now calls a terminal sibling `divertTerminal(ctx, sink, d, terminalHook, cause)` with **no
+`attempt` parameter and no `Nack` arm**; the dead-letter call site keeps `divert(..., attempt)` and ADR 0007
+D8's Nack-with-backoff unchanged. The hard-coded `attempt = 1` disappeared with the branch.
+
+**Consequence, decided rather than left silent:** `divert`'s `sink == nil` arm became **unreachable** once the
+two invalid call sites stopped using it — `RetryPolicy.Validate` rejects a finite `MaxAttempts` without a
+`DeadLetter`, so the only remaining caller's sink is never nil. Leaving it would have created a NEW uncovered
+block, which this task's Verify forbids. It was therefore **removed from `divert` and kept on
+`divertTerminal`**, the only path that can reach it, with the precondition stated in `divert`'s godoc.
+
+#### F15.6 — the fallback WARN uses a `sync.Once`, not `panicLogged`'s `sync.Map`
+
+The plan offered both (*"if a new field reads clearer, say so"*). A new field
+`consumer.invalidFallbackLogged sync.Once` was added: there is exactly **one** such event and no key to
+deduplicate by, so `LoadOrStore` on a map keyed by a constant string would be a keyed structure with one key.
+Same rationale, same one-line-per-consumer outcome, same "further occurrences suppressed" wording.
+`panicLogged` is untouched. The neither-sink WARN at `divertTerminal` stays **one line per message** — there
+the id is the only record the message existed.
+
+#### F15.7 — two SHIPPED tests asserted the behavior D-P changes and were retargeted
+
+Not enumerated by the plan; found by running the suite. Both are in `endpoint/consumer_test.go`.
+
+1. `TestConsumer_DivertSendFailure_NacksNotAcks` drove the **invalid** sink and asserted Nack-with-backoff +
+   `OnRetry` + no terminal hook. That is precisely what D-P removes from the invalid path. It was
+   **retargeted to the DEAD-LETTER path** (transient handler error, `MaxAttempts: 1`, failing `DeadLetter`),
+   where the contract is unchanged — so both I6 backoff arms (non-nil → non-zero, nil → 0) keep a covering
+   case. Its godoc now says why.
+2. `TestConsumer_SafeSend_SinkPanicRetriesInsteadOfLosingMessage` asserted that a **panicking invalid sink**
+   Nacks. Renamed `TestConsumer_SafeSend_SinkPanicIsRoutedLikeASendError` and re-pointed at what it actually
+   proves — a recovered panic is routed identically to a returned error — with the outcome now the
+   single-shot terminal discard.
+
+#### F15.8 — the two godoc sweeps after the edit
+
+**D-M sweep** (`grep -rn 'ErrNilFunc\|ErrNilSink' --include='*.go' . | grep -v '_test\.go' | grep '//' | sort`):
+all **15** original lines edited, none dropped; the sweep now returns 31 lines because the replacement godocs
+are longer. `errors.go`'s two sentinel godocs carry the round-8 invariant **verbatim as a phrase match** (not
+the withdrawn round-7 "deterministic" wording); `routing/aggregator.go` states the `NewAggregator` exclusion
+as a decision.
+
+**D-N/D-P behavior-derived sweep** — all **39** original sites still present (verified per file: every file
+in the original 39 appears with at least its original hit count), 13 triaged untouched, 3 verdict-only
+confirmed, 23 edited. It now returns **57** lines, because D-M's own godoc edits added phrases this class
+sweep matches too. Four sites needed a second pass after the first edit **dropped them out of the sweep** —
+`reliability.go`'s `permanentError`, `consumer.go`'s `safeHandle` comment (both had lost the matching
+phrase), `consumer.go`'s over-long `safeDecode` line, and `divert`'s send-failure comment (unchanged text).
+
+`adapter/database/sql/options.go:186` is the **heading** of the block whose body (`:193`) was corrected; the
+heading itself is still accurate and was left as the plan's "edit them together" intends.
+
+**Canonical destination sentence:** `msgin.Permanent`'s godoc now carries the three arms in full, and the
+other eleven shorthand sites cross-reference it rather than paraphrasing.
+
+#### F15.9 — Task 9 census note (plan line 722): the number is **16**, unchanged
+
+This task retypes **neither** `Router.pick` (the field) **nor** `NewRouter`'s parameter, so Spec §5.0's census
+is untouched by 9.7. Task 9 still owns that decision (16 → 15 → 14).
+
+```
+$ grep -rn "msgin\.MessageChannel\|MessageChannel interface" --include="*.go" . | grep -v "_test.go" \
+    | grep -v "^./docs" | grep -v '// ' | wc -l
+16
+```
+
+#### F15.10 — verification of this task
+
+```
+$ go test ./... -race -shuffle=on                    # 11/11 packages
+ok github.com/kartaladev/msgin  ok .../adapter/cron  ok .../adapter/database/sql  ok .../adapter/http
+ok .../adapter/http/stdlib      ok .../adapter/memory ok .../channel  ok .../endpoint
+ok .../resilience               ok .../routing        ok .../transform
+
+$ for d in . adapter/database/sql/{harness,postgres,mysql,sqlite,dbtest} adapter/cron/crontest; do
+    (cd "$d" && GOWORK=off go test ./... -race -shuffle=on); done
+OK: .  harness  postgres  mysql  sqlite  dbtest  crontest            # 7/7 (Docker up)
+
+$ gofmt -l . ; go vet ./... ; golangci-lint run ./... ; govulncheck ./...
+(no files)  OK  0 issues.  No vulnerabilities found.
+
+$ go mod tidy && git diff --exit-code -- go.mod go.sum ; go mod verify ; CGO_ENABLED=0 go build ./...
+NO CHANGE   all modules verified   OK
+
+$ apidiff -w <HEAD snapshot> {.,./endpoint,./routing,./transform} && apidiff <snapshot> <working tree>
+(empty for all four — the change is BEHAVIORAL; verified non-vacuous by diffing the root
+ snapshot against ./endpoint, which reports "BackoffStrategy: removed / Chain: removed / …")
+
+$ go test ./... -coverpkg=./... -coverprofile=… && go tool cover -func=… | tail -1
+before (HEAD worktree): total 93.4%      after: total 93.5%
+uncovered blocks in root+endpoint+routing+transform: 5 before, 5 after.
+The one diff is `endpoint/consumer.go:467.20,469.15` -> `:494.20,496.15` — the SAME pre-existing
+uncovered block (ingest's ctx.Done arm), shifted 27 lines by the additions. ZERO net-new.
+```
+
+---
+
+### F15.11 — Task 9.7 adversarial-review fix pass (uncommitted; D-P scope ruling)
+
+An adversarial review of the uncommitted Task 9.7 tree returned nine findings. **The governing question it
+raised was a scope question, and the user ruled on it before any fix was written.**
+
+#### F15.11.0 — THE RULING: D-P's single shot is the WHOLE invalid path, not the D-N fallback
+
+The review observed a mismatch: `divertTerminal` settles a failed `Send` single-shot **regardless of which
+sink failed**, while D7's amendment, Spec §2.1 row 7 and `WithInvalidMessageSink`'s godoc all described the
+single shot as a property of the **D-N fallback**. Two ways to close it — narrow the code to the fallback, or
+widen the documents to the path.
+
+**User ruling: the CODE IS CORRECT; the DOCUMENTS ARE WRONG.** The single shot is a property of the
+**message** (permanent by classification), not of which sink refused it. Rationale, to be preserved wherever
+this is restated:
+
+- The invalid path deliberately **never consults the attempt tracker** (M8), so a `Nack` there is invisible to
+  `MaxAttempts`.
+- `IsPermanent` records **healthy** on the breaker (`endpoint/consumer.go:614`), so the breaker cannot see it.
+- With the default `nil` `Backoff`, `retryDelay` never escalates — it **hot-spins**.
+- Worst of the four: the redelivery **holds its `WithMaxInFlight` credit indefinitely**, so a down invalid
+  sink starves **valid** traffic.
+
+A permanent message cannot succeed on redelivery, so the loop buys nothing to pay for any of that.
+
+**The accepted cost is now DISCLOSED, not implicit:** a *transient* outage of a **configured**
+`WithInvalidMessageSink` discards that window's invalid messages. Loudly — a WARN per message naming the id,
+the classification cause and the sink error, plus `OnInvalidMessage`. The documented remedy is to point the
+option at a **durable-on-write** target (a spool, an outbox table), not a remote service.
+
+#### F15.11.1 — disposition of all nine findings
+
+| # | Finding | Disposition | Where |
+|---|---|---|---|
+| 1 | D7 amendment / D8 / Spec row 7 / `WithInvalidMessageSink` godoc all scope the single shot to the **fallback** | **FIXED** — all four widened to the whole invalid path per F15.11.0 | ADR 0007 D7 + D8; Spec §2.1 row 7; `endpoint/consumer.go` |
+| 1b | **D8 was STALE** — *"otherwise it fires the relevant hook and `Nack`s the original (never Ack-and-lose)"* is FALSE for the invalid path since 9.7 split `divert`/`divertTerminal`. Missed because the plan's checkbox only required re-verifying **D7** | **FIXED** — D8 scoped explicitly to `divert` (dead-letter), with `divertTerminal` named as the exception | ADR 0007 D8 |
+| 2 | No case anywhere drives a **CONFIGURED** invalid sink whose `Send` fails | **FIXED** — new table case; non-vacuity proven (F15.11.2) | `endpoint/divert_fallback_test.go` |
+| 3 | Retargeting the safeSend panic test onto the terminal arm left the **retryable** arm unpinned — no consumer-side test drove a panicking **dead-letter** sink, though `safeSend`'s godoc claims both routings | **FIXED** — new table case; `recordingSink` gained a `panicWith` field so a panic is accounted exactly like a returned error | `endpoint/divert_fallback_test.go`, `endpoint/settlement_doubles_test.go` |
+| 4 | `endpoint/permanent_classification_test.go` used a `position string` **want-field** (CLAUDE.md + `table-test` hard rule) | **FIXED** — converted to `assert` closures. The other three new test files were swept: `routing/` and `divert_fallback` already comply; `transform/` is a single non-table case | `endpoint/permanent_classification_test.go` |
+| 5 | `"cause", cause` may disclose payload bytes on the decode arm | **FIXED** (not triaged — see F15.11.3) | `endpoint/consumer.go` `causeForLog` |
+| 6 | The "proves the scope" dead-letter case never asserted `dlqSends > 0`, and `assert.Positive(delays[last])` could not tell a divert-failure `Nack` from an ordinary transient one | **FIXED** — shared `assertDeadLetterSendFailureNacks` helper; non-vacuity proven (F15.11.2) | `endpoint/divert_fallback_test.go` |
+| 7 | `warnInvalidFallback`'s *"The per-message record is the terminal WARN/hook"* is false on `divertTerminal`'s **success** arm | **FIXED** — corrected, and the "exactly one line for the whole lifetime" case stated as intended, not accidental | `endpoint/consumer.go` |
+| 8 | `routing/aggregator.go` godoc left a dangling `// WithGroupTimeout without a` mid-paragraph | **FIXED** — clause returned to the first paragraph | `routing/aggregator.go` |
+| 9 | Doubled-prefix error string `msgin: permanent: msgin: nil endpoint function: …` | **TRIAGED, NO ACTION** — a property of `Permanent` itself, recorded by the plan (~line 697) as *"recorded, not repaired here"*. Repairing it is a change to `permanentError.Error()`, outside 9.7 | — |
+
+#### F15.11.2 — non-vacuity: four mutations, each reverted after measurement
+
+Every new or strengthened assertion was proven to **fail** against the implementation it exists to forbid.
+
+```
+M1  divertTerminal's send-failure arm → Nack (the pre-D-P shape)
+    FAIL  fallback sink Send FAILS — single shot, no redelivery loop
+    FAIL  CONFIGURED invalid sink Send FAILS — single shot too, not just the fallback   <- finding 2
+    FAIL  decode failure with a failing fallback sink is single shot too
+
+M2  dead-letter branch made unreachable (`case false && …`)
+    FAIL  dead-letter call site still Nacks with backoff when its sink fails            <- finding 6
+    FAIL  dead-letter call site Nacks with backoff when its sink PANICS                 <- finding 3
+
+M3  safeSend's recovered panic → err = nil (panicking sink treated as a successful divert)
+    FAIL  dead-letter call site Nacks with backoff when its sink PANICS
+          Error: Should be zero, but was 1        (acks)
+          Error: "2" is not greater than "2"      (nacks past the transient budget)
+
+M4  causeForLog removed (log the raw cause)
+    FAIL  decode failure with a failing fallback sink is single shot too                <- finding 5
+          Error: … cause="msgin: payload decode failed: invalid character '}' looking
+                 for beginning of value" … should not contain "invalid character"
+```
+
+M4 is also the **proof that finding 5 was a real disclosure**, not a theoretical one: the unredacted line
+quotes a payload byte, verbatim, from `encoding/json`.
+
+The finding-6 helper is deliberately arithmetic rather than a bare `Positive`: exactly `divertMaxAttempts-1`
+`Nack`s precede budget exhaustion, so `nacks-(divertMaxAttempts-1) == dlqSends` asserts that **every** `Nack`
+past the budget came from the divert arm, one per `Send` attempt. Only then is a positive delay evidence of
+**D8/I6's send-failure backoff** rather than of the ordinary retry backoff.
+
+#### F15.11.3 — finding 5: FIX, not triage. The evidence that decided it
+
+The finding allowed a triage **if `safeDecode` already logged `codecErr`**. It does not:
+
+```
+$ sed -n '/func (c \*consumer\[T\]) safeDecode/,/^}/p' endpoint/consumer.go
+    ... c.logger.Error("msgin: PayloadCodec.Decode panicked", "id", id, "panic", r)   # panic arm only
+    ... v, err = c.codec.Decode(b); if err != nil { return zero, fmt.Errorf(...) }     # NOT logged
+```
+
+The returned codec error is wrapped and returned, never logged. So `"cause", cause` at the D-P WARN was a
+**new** disclosure surface, and M4 above measured it leaking a payload byte. **FIXED.**
+
+The fix keeps what D-P asks for and drops only what it does not:
+
+```go
+func causeForLog(cause error) string {
+	if errors.Is(cause, msgin.ErrPayloadDecode) {
+		return msgin.ErrPayloadDecode.Error()
+	}
+	return fmt.Sprintf("%v", cause)
+}
+```
+
+Three design points, each load-bearing:
+
+1. **It returns a `string`, not an `error`** — the value is for display and must never be mistaken for
+   something to `errors.Is` against. This is also what keeps it OUT of the class sweep: `return
+   msgin.ErrPayloadDecode` (an `error`) would have become an **8th survivor** in a gate whose contract is
+   *"the seven survivors are unchanged"*, and it is not a flow-path return at all — triaging it would have
+   meant adding a fifth arm to a ratified invariant. `.Error()` dodges the sweep's `[ })]*(//.*)?$` anchor for
+   the right reason, not by accident.
+2. **Only the `ErrPayloadDecode` class is redacted.** It is the sole cause msgin builds around
+   caller-supplied free text. `ErrPayloadType`, `ErrPayloadTooLarge` and `Permanent(...)` carry no
+   msgin-extracted payload and render in full.
+3. **`%v`, not `.Error()`, on the default arm** — a nil cause renders `<nil>` rather than panicking. No call
+   site passes nil today; this must not be the reason a future one may.
+
+The codec detail is not lost to the caller, only to the log: `OnInvalidMessage` still receives the
+**unredacted** cause, so an operator who wants it takes it under their own disclosure policy.
+
+#### F15.11.4 — what the review MISSED (found during the pass)
+
+**(a) A fifth doc site with the same fallback-only scoping — `reliability.go`'s `Permanent` godoc.** The
+review named four places. `Permanent`'s canonical three-arm block — the one every other *"routed to the
+invalid-message sink"* statement in msgin is shorthand for — attached the SINGLE-SHOT sentence to **arm 2
+only**. Left alone, the canonical statement would have contradicted the four widened ones. Fixed the class,
+not the instance: swept every `single-shot` godoc site in the tree —
+
+```
+$ grep -rn "SINGLE-SHOT\|single-shot\|single shot" --include='*.go' . | grep -v '_test\.go'
+reliability.go:31              <- WAS fallback-scoped; FIXED
+endpoint/consumer.go:69,95,863,889,903,1060
+adapter/database/sql/options.go:195   <- already correct ("on the INVALID-message path")
+```
+
+**(b) A failed DEAD-LETTER `Send` emits NO log line at all.** Discovered when a first draft of the
+finding-6 helper asserted the sink error appeared in the log and the buffer came back **empty**. `divert`
+reports the failure only through `OnRetry`, and `OnRetry` carries the **classification cause**, never the
+sink error — that is D8's own contract (no terminal event happened, so no terminal record is made). The
+consequence: **an operator with no hooks wired sees nothing when their dead-letter sink is down**, while the
+invalid path is loud about exactly the same failure. This is **pre-existing D8 behavior, not introduced by
+9.7**, so it is triaged here rather than changed; the helper's godoc records why it asserts nothing about the
+log. **Worth a decision in a later increment.**
+
+**(c) The review's own finding-6 wording was slightly off.** It asked to assert `dlqSends > 0`, which is
+necessary but not sufficient — `dlqSends > 0` alone still cannot separate a divert-failure `Nack` from a
+transient one. The arithmetic relation in F15.11.2 is what actually closes it.
+
+#### F15.11.5 — verification of this fix pass
+
+```
+$ go test ./... -race -shuffle=on                    # 11/11 root packages
+ok msgin  ok .../adapter/cron  ok .../adapter/database/sql  ok .../adapter/http
+ok .../adapter/http/stdlib  ok .../adapter/memory  ok .../channel  ok .../endpoint
+ok .../resilience  ok .../routing  ok .../transform
+
+$ for d in . adapter/database/sql/{harness,postgres,mysql,sqlite,dbtest} adapter/cron/crontest; do
+    (cd "$d" && GOWORK=off go test ./... -race -shuffle=on); done
+OK  .   harness   postgres   mysql   sqlite   dbtest   crontest              # 7/7 (Docker up)
+
+$ gofmt -l . ; go vet ./... ; golangci-lint run ./... ; govulncheck ./...
+(no files)   OK   0 issues.   No vulnerabilities found.
+
+$ go mod tidy && git diff --exit-code -- go.mod go.sum ; CGO_ENABLED=0 go build ./...
+NO CHANGE   OK
+```
+
+**Class sweep — the seven survivors, byte-identical to F15's post-edit state (nothing added, nothing lost):**
+
+```
+adapter/memory/queuestore.go:146   adapter/memory/queuestore.go:151   channel/direct.go:87
+endpoint/producer.go:589           retry.go:48                        retry.go:51
+routing/router.go:66
+```
+
+**Sentinel census unchanged** — `IsPermanent`'s enumeration was not touched by this pass
+(`git diff reliability.go` shows no change inside `func IsPermanent`); it still reads
+`errors.As(*permanentError) || Is(ErrPayloadType) || Is(ErrPayloadDecode) || Is(ErrPayloadTooLarge)`.
+
+**Both godoc sweeps re-run; NO site dropped.**
+
+- *D-M's sweep* (`ErrNilFunc|ErrNilSink`): all **15** original sites still present, every one expanded
+  (`endpoint/activator.go` 13→13+16, 37→40+42; `helpers.go` 16→18+28; `errors.go` 150→152+159, 152→162+179;
+  `handler.go` 50→53+56+57; `routing/aggregator.go` 239→241+248; `filter.go` 26→26+28+29; `routing/helpers.go`
+  18→20, 20→22+31; `router.go` 25→26+28+29, 36→42; `splitter.go` 13→14+17; `transform/transformer.go` 14→16+19,
+  35→40+50).
+- *D-N/D-P's behavior-derived sweep*: **39 → 61 lines**, growth only. Per-file minimums all met; the two files
+  this pass touched are `endpoint/consumer.go` (10 → 19, additions only) and `routing/aggregator.go`
+  (**2 → 2**, unchanged — the repaired godoc block is not a sweep site).
+
+**Coverage — ZERO net-new uncovered blocks.**
+
+```
+$ go test ./... -coverpkg=./... -coverprofile=… && go tool cover -func=… | tail -1
+total: 93.5%          # identical to F15.10's post-Task-9.7 figure
+
+$ awk 'NR>1 {c[$1]+=$NF} END{for(k in c) if(c[k]==0) print k}' … | grep -v '^…/(adapter|channel|resilience)/'
+endpoint/consumer.go:515.20,517.15      # was :494.20,496.15 — SAME block, shifted 21 lines by the godoc
+endpoint/gateway.go:30.27,32.3
+endpoint/nativereliability.go:9.52,9.68
+endpoint/poller.go:152.11,153.80
+endpoint/poller.go:164.12,166.3
+```
+
+Five before, five after — the same five. `causeForLog`'s two branches are both covered: the redacted arm by
+the decode case, the pass-through arm by every permanent-handler case.
+
+**Docs-link gate (both arms):** arm 2 clean; arm 1 reports only the **two documented parser false positives**
+(`docs/plans/016-aggregator.md -> docs/plans/m`, `docs/specs/006-cron-source.md -> docs/specs/factory(fireTime`)
+— both are wrapped Go identifiers, not links, exactly as CLAUDE.md's "Known limitation" records.
+
+**Nothing was committed.** The whole pass is additive on top of the uncommitted Task 9.7 tree.
+
+---
+
+### F15.12 — Task 9.7 `/code-review` pass: five findings, all resolved
+
+`/code-review` over the uncommitted Task 9.7 tree returned five findings. One was a **real defect** (a message
+loss); one was a **doc-only correction of an over-claim**; three were **hygiene**. Dispositions and evidence
+below. Nothing committed; this pass is additive on the same uncommitted tree.
+
+| # | Finding | Disposition | Where |
+|---|---|---|---|
+| 1 | `divertTerminal` misreads shutdown cancellation as a sink refusal and loses the message | **FIXED** (code + test) | `endpoint/consumer.go` `divertTerminal`; `endpoint/divert_fallback_test.go` |
+| 2 | `invalidTarget` omits the `!NativeDeadLetter()` guard the transient arm applies | **NO CODE CHANGE** — the omission is correct; godoc + test added so a sweep cannot "restore" it | `endpoint/consumer.go` `invalidTarget` |
+| 3 | `causeForLog`'s comment implies non-decode causes carry no payload; a caller-composed `Permanent` error is logged verbatim | **BEHAVIOR KEPT, CLAIM CORRECTED** | `causeForLog`, `WithInvalidMessageSink`, `msgin.Permanent` godoc |
+| 4 | Stale `consumer.go:NNN` citations in test comments | **FIXED** — re-anchored on branch predicates | `divert_fallback_test.go`, `settlement_doubles_test.go` |
+| 5 | Dead `policy` field in a table; the constructor discards its `MaxAttempts` | **FIXED** — narrowed to `backoff` | `consumer_test.go` |
+
+#### F15.12.1 — Finding 1, the defect: shutdown cancellation was Ack-and-lose
+
+`divertTerminal` called `c.safeSend(ctx, …)` with `ctx == settleCtx`. `drainWorkers` calls `cancelSettle()`
+when the shutdown deadline expires (D9/C1), so a **healthy** sink's `Send` returns `context.Canceled` — and
+that took D-P's discard arm: WARN → `OnInvalidMessage` → `safeAck`. Because `adapter/memory`'s `Ack` is
+`func(context.Context) error { return nil }` and ignores its context, the `Ack` **succeeded** and the tracker
+evicted. **The message was gone with the sink up.** It is a regression introduced by D-P: before 9.7 this arm
+`Nack`ed with requeue and the message survived.
+
+**Fix:** when `ctx.Err() != nil`, `Nack(requeue=true)`, fire **no** terminal hook, return `false` (not settled
+— the tracker entry is kept). Recorded normatively in [ADR 0007 D7](../adrs/0007-reliability-settlement-api.md)
+(shutdown-exception note), [ADR 0029 §5.0b](../adrs/0029-eip-lexical-alignment.md) and
+[Spec 014 §2.1 row 7](../specs/014-core-package-layout.md).
+
+**D-P is NOT weakened**, and the D-P gate below proves it: in normal operation `ctx.Err()` is `nil`, so the
+single shot is byte-identical; the `Nack` is reachable only inside a shutdown D9 already bounds.
+
+**Mutation proof — the new test is not vacuous.** The `ctx.Err() != nil` branch was deleted and the test run:
+
+```
+--- MUTATION APPLIED: ctx-done arm removed ---
+--- FAIL: TestDivertTerminalShutdownCancellationNacks
+    the Nack REQUEUES; a non-requeue Nack would drop it just as surely
+        expected: []bool{true}   actual: []bool(nil)
+    OnInvalidMessage must NOT fire — no terminal event happened
+        Should be zero, but was 1
+    the WARN says the divert was cut short, not refused
+        log contains "discarding invalid message; the sink rejected it and the divert is single-shot"
+          … err="context canceled"          <- the defect, verbatim
+    the single-shot discard WARN must not claim a refusal the sink never made
+FAIL	github.com/kartaladev/msgin/endpoint	0.466s
+```
+
+Reverted immediately; the tree is clean of the mutation.
+
+#### F15.12.2 — Finding 2, a deliberate negative that needed a stated verdict
+
+The review asked why `invalidTarget` lacks the `!c.native.NativeDeadLetter()` guard that dispatch's transient
+dead-letter arm applies. **The guard would be wrong here.** The discriminator is `Nack`-vs-`Ack`:
+
+- the **transient** path `Nack`s, so a native-DLQ broker dead-letters the message itself and a runtime write
+  would **double-write** it — hence the guard there;
+- the **invalid** path `Ack`s on *every* arm (`divertTerminal` always settles with `safeAck`), so a native-DLQ
+  broker **never sees a `Nack`** for it and never dead-letters it. The fallback write is the message's **only**
+  capture; adding the guard would return a `nil` sink and silently restore D7's discard.
+
+No code change. The verdict is now stated in `invalidTarget`'s godoc (the "deliberate negative needs a stated
+verdict" pattern already used for `ErrNoRoute`) and pinned by
+`TestDivertInvalidFallbackUnderNativeDeadLetter`. **Mutation-proved:**
+
+```
+--- MUTATION APPLIED: !NativeDeadLetter() guard "restored" on invalidTarget ---
+--- FAIL: TestDivertInvalidFallbackUnderNativeDeadLetter
+    the D-N fallback still writes under a native DLQ …
+        expected: 1   actual: 0
+```
+
+#### F15.12.3 — Finding 3, the over-claim (documentation fixed, behavior kept)
+
+`causeForLog` redacts only the `ErrPayloadDecode` class, while its own comment invoked the *"message id only,
+never the payload"* contract — implying every other cause is payload-free. It is not: a handler returning
+`msgin.Permanent(fmt.Errorf("invalid email %q", m.Payload().Email))` — an ordinary validation shape — has that
+text written to the WARN. This is the first point on the settlement path where a **caller-composed** error's
+text reaches the log.
+
+**Behavior kept.** Redacting every cause would erase the classification detail D-P *requires* the WARN to name,
+and a caller-authored error is the caller's own text, not payload msgin extracted. The distinction being drawn
+is **authorship, not sensitivity** — so the contract is stated on the caller's side instead: `causeForLog`'s
+comment is narrowed, and both `WithInvalidMessageSink` and `msgin.Permanent` now say plainly which class **is**
+redacted (`ErrPayloadDecode`, and only it), that everything else is logged **verbatim**, and that sensitive
+detail belongs behind `OnInvalidMessage`, which always receives the unredacted cause.
+
+#### F15.12.4 — Finding 4, stale citations: fixed as a CLASS
+
+`divert_fallback_test.go` and `settlement_doubles_test.go` cited `consumer.go:688` (decode arm), `:716`
+(permanent arm) and `:726` (dead-letter arm). All three had drifted — **`:688` had landed inside
+`handlerContext`**, i.e. the citation pointed at unrelated code.
+
+Re-deriving the numbers would have gone stale again *in this very pass*: the `WithInvalidMessageSink` godoc
+added for finding 3 shifted `dispatch` down 19 lines. So the citations are **re-anchored on the branch
+predicate** (`dispatch`'s `derr != nil` / `msgin.IsPermanent(err)` / finite-exhausted `MaxAttempts` case),
+which cannot drift, with a one-time note in `divert_fallback_test.go` recording why. This is *fix the class,
+not the instance*.
+
+Sweep of the rest of the working-tree diff for the same class: the only other `consumer.go:NNN` citations added
+this session are the two **command transcripts** in this ledger, refreshed below. (`docs/adrs/0029`'s `:716`
+/`:726` are **pre-existing and committed**, outside this diff — logged as backlog, not silently absorbed.)
+
+#### F15.12.5 — Finding 5, dead table field
+
+`TestConsumer_DivertSendFailure_NacksNotAcks`'s table declared a full `msgin.RetryPolicy` per case, but the
+constructor was rewritten to `msgin.RetryPolicy{MaxAttempts: 1, DeadLetter: sink, Backoff: tc.policy.Backoff}`
+— so each case's `MaxAttempts` was silently discarded while the table still presented it as meaningful. The
+field is narrowed to `backoff msgin.BackoffStrategy` (the only thing the cases vary) and the godoc now says
+`n == 1` comes from the constructor's one-attempt budget, not from the table.
+
+#### F15.12.6 — verification
+
+**Refreshed transcripts** (the two this pass's edits shifted):
+
+```
+$ grep -rn "SINGLE-SHOT\|single-shot\|single shot" --include='*.go' . | grep -v '_test\.go'
+reliability.go:31
+adapter/database/sql/options.go:195
+endpoint/consumer.go:69,95,110,903,927,954,968,1137      # was :69,95,863,889,903,1060 — +2 sites, both
+                                                          # from the shutdown-exception godoc
+```
+
+**Class sweep — the seven survivors, unchanged; 43 sentinels, unchanged:**
+
+```
+adapter/memory/queuestore.go:146,151   channel/direct.go:87   endpoint/producer.go:589
+retry.go:48,51                         routing/router.go:66
+```
+
+`IsPermanent`'s enumeration is untouched (`ErrPayloadType` / `ErrPayloadDecode` / `ErrPayloadTooLarge`).
+
+**D-P gate — re-run, byte-identical to F15.2's GREEN transcript:**
+
+```
+permanent, dlq OK   : deliveries=1   acks=1 nacks=0   dlqSends=1   OnInvalid=1 OnDeadLetter=0 OnRetry=0
+permanent, dlq FAILS: deliveries=1   acks=1 nacks=0   dlqSends=1   OnInvalid=1 OnDeadLetter=0 OnRetry=0
+transient, dlq FAILS: deliveries=41  acks=0 nacks=41  dlqSends=39  OnInvalid=0 OnDeadLetter=0 OnRetry=41
+```
+
+The single shot is unchanged in normal operation, which is the whole claim finding 1's fix had to preserve.
+
+**Suites and gates:**
+
+```
+$ go test ./... -race -shuffle=on                    # 11/11 root packages ok
+$ for d in . adapter/database/sql/{harness,postgres,mysql,sqlite,dbtest} adapter/cron/crontest; do
+    (cd $d && GOWORK=off go test ./... -race -shuffle=on); done      # 7/7 OK
+$ for d in <same seven>; do (cd $d && go build ./...); done          # 7/7 OK (workspace)
+$ gofmt -l .                                         # empty
+$ go vet ./...                                       # clean
+$ golangci-lint run ./...                            # 0 issues.
+$ govulncheck ./...                                  # No vulnerabilities found.
+$ go mod tidy && git diff --exit-code -- go.mod go.sum ; go mod verify ; CGO_ENABLED=0 go build ./...
+```
+
+**Coverage — ZERO net-new uncovered blocks; total unchanged at 93.5%.**
+
+```
+endpoint/consumer.go:534.20,536.15      # was :515.20,517.15 — SAME admit ctx-done block, shifted 19 lines
+endpoint/gateway.go:30.27,32.3
+endpoint/nativereliability.go:9.52,9.68
+endpoint/poller.go:152.11,153.80
+endpoint/poller.go:164.12,166.3
+```
+
+Five before, five after — the same five. Per-package: root 95.3%, `endpoint` 99.1%, `routing` 100%,
+`transform` 100%. `divertTerminal`'s **new** `ctx.Err() != nil` branch is covered (by
+`TestDivertTerminalShutdownCancellationNacks`) and so is not among them.
+
+**Nothing was committed.**

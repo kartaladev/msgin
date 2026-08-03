@@ -1,6 +1,9 @@
 package msgin
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // MessageHandler is one processing step in an in-process flow: it consumes a
 // message and MAY forward a (possibly transformed) message onward. For a
@@ -47,12 +50,19 @@ func Chain(steps ...Step) MessageHandler {
 
 // To is a terminal Step that sends the message to sink (any OutboundAdapter — a
 // *DirectChannel, a *memory.Broker, or a real outbound adapter) and ignores next.
-// A nil sink yields ErrNilSink at send time (no panic on caller input).
+// A nil sink yields ErrNilSink at send time (no panic on caller input), named
+// with its position. sink is captured here at construction, so that fault is
+// PERMANENT (D-M): the message is routed to the invalid-message channel rather
+// than retried to the dead-letter sink, and errors.Is(err, ErrNilSink) still
+// matches. See [ErrNilFunc] for the governing invariant.
 func To(sink OutboundAdapter) Step {
 	return func(MessageHandler) MessageHandler {
 		return HandlerFunc(func(ctx context.Context, m Message[any]) error {
 			if sink == nil {
-				return ErrNilSink
+				// D-M (ADR 0029 §5.0b): sink is captured by this closure at
+				// construction, so the fault cannot change for the message's
+				// lifetime — permanent, not retried.
+				return fmt.Errorf("%w: msgin.To: nil sink", Permanent(ErrNilSink))
 			}
 			return sink.Send(ctx, m)
 		})

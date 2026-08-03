@@ -29,16 +29,27 @@ func (b *lockedBuffer) String() string {
 	return b.buf.String()
 }
 
-// recordingSink is an OutboundAdapter that records sends and can be forced to fail.
+// recordingSink is an OutboundAdapter that records sends and can be forced to
+// fail (failWith) or to panic (panicWith). The panic variant exists so a table
+// case can drive safeSend's recovery through the SAME accounting as a returned
+// error — attempts is incremented before the panic, so a single-shot or
+// retry-count assertion reads the same field either way (panicSendSink, by
+// contrast, records nothing).
 type recordingSink struct {
-	mu       sync.Mutex
-	sent     []msgin.Message[any]
-	failWith error
+	mu        sync.Mutex
+	sent      []msgin.Message[any]
+	attempts  int // every Send call, including the ones failWith rejects
+	failWith  error
+	panicWith string
 }
 
 func (s *recordingSink) Send(_ context.Context, m msgin.Message[any]) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.attempts++
+	if s.panicWith != "" {
+		panic(s.panicWith)
+	}
 	if s.failWith != nil {
 		return s.failWith
 	}
@@ -47,6 +58,10 @@ func (s *recordingSink) Send(_ context.Context, m msgin.Message[any]) error {
 }
 
 func (s *recordingSink) count() int { s.mu.Lock(); defer s.mu.Unlock(); return len(s.sent) }
+
+// attemptCount reports Send CALLS, so a single-shot assertion can tell "tried
+// once and failed" from "retried the failing sink" (D-P).
+func (s *recordingSink) attemptCount() int { s.mu.Lock(); defer s.mu.Unlock(); return s.attempts }
 
 // settle records how a Delivery was settled.
 type settle struct {
@@ -77,6 +92,15 @@ func (s *settle) snapshot() (acks, nacks int, delays []time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.acks, s.nacks, append([]time.Duration(nil), s.delays...)
+}
+
+// requeues reports the requeue flag of every recorded Nack, in order. A Nack
+// that does NOT requeue is a genuine drop (the shed policies), so a test that
+// asserts a message SURVIVED has to check this and not merely the Nack count.
+func (s *settle) requeues() []bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]bool(nil), s.requeue...)
 }
 
 // scriptedSource is a EventDrivenSource that emits preset deliveries once, then
@@ -147,6 +171,86 @@ func (s *reemittingSource) Stream(ctx context.Context, out chan<- msgin.Delivery
 			return ctx.Err()
 		}
 	}
+}
+
+// redeliverSource emits one delivery at a time and re-emits it after every
+// Nack, stopping once it is Acked or max deliveries have been emitted. The cap
+// is what makes a FORBIDDEN redelivery loop terminate the test instead of
+// hanging it, and deliveryCount is what a single-shot assertion checks (D-P):
+// a Nack-based implementation reads max, a terminal one reads 1.
+type redeliverSource struct {
+	st  *settle
+	id  string
+	max int
+
+	mu         sync.Mutex
+	deliveries int
+}
+
+func (s *redeliverSource) deliveryCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.deliveries
+}
+
+// stream is shared by the live-value and wire variants; payload differs only in
+// what the source puts on the wire.
+func (s *redeliverSource) stream(ctx context.Context, out chan<- msgin.Delivery, payload any) error {
+	for {
+		a0, n0, _ := s.st.snapshot()
+		s.mu.Lock()
+		stop := a0 > 0 || s.deliveries >= s.max
+		if !stop {
+			s.deliveries++
+		}
+		s.mu.Unlock()
+		if stop {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		d := msgin.Delivery{
+			Msg:  msgin.New[any](payload, msgin.WithID(s.id)),
+			Ack:  s.st.ack,
+			Nack: s.st.nack,
+		}
+		select {
+		case out <- d:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		for { // wait for this delivery to be settled before re-emitting
+			a, n, _ := s.st.snapshot()
+			if a > a0 || n > n0 {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}
+}
+
+// liveRedeliverSource is the LiveValueSource variant: the payload is a live
+// order value, so the runtime skips the codec and the handler error decides
+// the settlement (dispatch's permanent-handler arm, its `msgin.IsPermanent(err)`
+// branch).
+type liveRedeliverSource struct{ *redeliverSource }
+
+func (*liveRedeliverSource) EmitsLiveValue() bool { return true }
+
+func (s *liveRedeliverSource) Stream(ctx context.Context, out chan<- msgin.Delivery) error {
+	return s.stream(ctx, out, order{ID: "a"})
+}
+
+// wireRedeliverSource is the WIRE variant: it emits undecodable []byte, so the
+// runtime settles on dispatch's DECODE arm (its `derr != nil` branch) before the
+// handler runs.
+type wireRedeliverSource struct{ *redeliverSource }
+
+func (s *wireRedeliverSource) Stream(ctx context.Context, out chan<- msgin.Delivery) error {
+	return s.stream(ctx, out, []byte("}not json{"))
 }
 
 // controllableSource is a EventDrivenSource the test drives one delivery at a
@@ -417,6 +521,38 @@ type panicDecodeCodec struct{}
 
 func (panicDecodeCodec) Encode(order) ([]byte, error) { return nil, nil }
 func (panicDecodeCodec) Decode([]byte) (order, error) { panic("panicDecodeCodec.Decode boom") }
+
+// ctxBlockingSink is an OutboundAdapter whose Send parks until its context is
+// cancelled and then returns that context's error. It is a HEALTHY-but-slow
+// sink, not a refusing one: the error it returns is caused entirely by the
+// caller's own cancellation, which is exactly the shape divertTerminal must not
+// mistake for a sink refusal when Run's shutdown deadline cancels settleCtx.
+//
+// entered closes on the first Send, giving a test a happens-before handle on
+// "the divert is parked inside the sink" so it can start the shutdown at a
+// deterministic point instead of polling.
+type ctxBlockingSink struct {
+	once    sync.Once
+	entered chan struct{}
+
+	mu    sync.Mutex
+	sends int
+}
+
+func newCtxBlockingSink() *ctxBlockingSink {
+	return &ctxBlockingSink{entered: make(chan struct{})}
+}
+
+func (s *ctxBlockingSink) Send(ctx context.Context, _ msgin.Message[any]) error {
+	s.mu.Lock()
+	s.sends++
+	s.mu.Unlock()
+	s.once.Do(func() { close(s.entered) })
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (s *ctxBlockingSink) sendCount() int { s.mu.Lock(); defer s.mu.Unlock(); return s.sends }
 
 // panicSendSink is an OutboundAdapter whose Send always panics — used to
 // prove safeSend's panic recovery (ADR 0010 D6): a panicking invalid/DLQ

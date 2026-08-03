@@ -22,8 +22,10 @@ const (
 	//
 	// The fan-out settles as ONE unit: the joined error's classification follows
 	// the runtime's rules, so if any subscriber returns a permanent error (e.g.
-	// ErrPayloadType — errors.Join propagates it), a Consumer-driven publish routes
-	// the WHOLE message to the invalid-message sink (observable, not retried);
+	// ErrPayloadType — errors.Join propagates it), a Consumer-driven publish diverts
+	// the WHOLE message to the invalid-message sink — or the dead-letter sink when
+	// none is configured ([msgin.Permanent] states all three arms) — observable,
+	// not retried;
 	// otherwise it is transient and the whole fan-out retries. A subscriber whose
 	// permanent failure must NOT affect the others' redelivery needs per-subscriber
 	// independent settlement — a durable adapter concern, out of scope here.

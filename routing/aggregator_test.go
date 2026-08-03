@@ -235,12 +235,18 @@ func TestNewAggregator_Validation(t *testing.T) {
 			},
 		},
 		{
-			name: "nil fn is ErrNilFunc",
+			// The CONSTRUCTOR arm of D-M's invariant (ADR 0029 §5.0b): unlike the
+			// flow-path producers, NewAggregator returns ErrNilFunc BARE and
+			// deliberately transient — construction never reaches a RetryPolicy, so
+			// a retry classification would be meaningless on it. The exclusion is a
+			// decision, not an omission; a later sweep must not "finish the job".
+			name: "nil fn is a BARE, non-permanent ErrNilFunc (construction-time)",
 			build: func(t *testing.T) (*routing.Aggregator, error) {
 				return routing.NewAggregator[int, int](newIntStore(t), nil, routing.WithOutputChannel(&fakeAggChannel{}))
 			},
 			assert: func(t *testing.T, agg *routing.Aggregator, err error) {
 				assert.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.False(t, msgin.IsPermanent(err), "construction-time ErrNilFunc must stay bare")
 				assert.Nil(t, agg)
 			},
 		},

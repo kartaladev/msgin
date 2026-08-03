@@ -389,7 +389,7 @@ and defined nowhere; it is defined here.
 | **9** | Named behavior types + combinators | **PARTIAL** — `CorrelationStrategy`/`ReleaseStrategy` shipped; 4 types + combinators remain |
 | **9.5** | Residual cleanups the migration left behind | **PARTIAL** — the dead-helper deletion and the article sweep landed in the round-3 pass; **the sentinel decision is now CLOSED (D-I: they leave root)**, its `errors.go` deletion, the two-arm sweep, and the capability-test widening remain |
 | **9.6** | Reply-channel exclusivity probe (**D-J**, ADR 0030) | **NOT STARTED** — added in the D-I/D-J pass (`aae6160`); closes the residual three review lenses converged on |
-| **9.7** | Classify the four shipped `ErrNilFunc` producers as `Permanent` (**D-M**) | **NOT STARTED** — added in the round-6 pass; the class Task 9's combinators are the newest members of |
+| **9.7** | Classify the **five** shipped producers (`ErrNilFunc` ×4 + `ErrNilSink`) as `Permanent` (**D-M**), add the dead-letter fallback (**D-N**) and make it single-shot (**D-P**) | **DONE** — this commit, ledger §F15. Ran **FIRST**, before Task 9, per the round-7 correction. All five gates green; `apidiff` empty on all four packages; zero net-new uncovered blocks |
 | **10** | The `expr` provider module | **NOT STARTED** |
 | **11** | Package docs + Spec 014 §8/§10 godoc obligations | **PARTIAL** — 11a (`doc.go` × 5) done; 11b/11c not started |
 | **12** | `MIGRATION.md`, doc sync, whole-branch gate | **NOT STARTED** |
@@ -1378,7 +1378,7 @@ RFC: 0002
 
 ---
 
-## Task 9.7 — Classify the shipped deterministic endpoint faults as `Permanent`, and stop discarding them (decisions D-M, D-N, D-P) · **M** · NOT STARTED
+## Task 9.7 — Classify the shipped deterministic endpoint faults as `Permanent`, and stop discarding them (decisions D-M, D-N, D-P) · **M** · DONE — this commit; execution record and every gate transcript in ledger §F15
 
 > **RE-SIZED S → M in the round-7 pass (X-M1).** The `S` label covered "wrap four producers". It does not cover
 > the round-7 scope: **five** producers (D-B1 adds root's `handler.go:55`), the **D-N** fallback in
@@ -1530,7 +1530,7 @@ is synchronous and hands the error to caller code that can act on it, so nothing
 change **observable and covered** (Spec §2.1 row 8), because round 7 recorded D-N's premise as *"no
 configuration that previously captured a message starts dropping it"* — true of the consumer, false here.
 
-- [ ] **Five edit sites — three `nilFuncStep` copies, `Router.Handle`, and `msgin.To`.** Re-derived at
+- [x] **Five edit sites — three `nilFuncStep` copies, `Router.Handle`, and `msgin.To`.** Re-derived at
       `fe86a12` by the class sweep below (**not** by grepping a sentinel name):
 
       | Site | What it is | Sentinel |
@@ -1560,7 +1560,7 @@ configuration that previously captured a message starts dropping it"* — true o
       > discriminator arm as `nilFuncStep`, and gate 1 above measures the **byte-identical** RED line for it.
       > *(Counter-rule 9.)*
 
-- [ ] **Re-derive the site list with the class sweep, not with a sentinel name.** Run this before editing and
+- [x] **Re-derive the site list with the class sweep, not with a sentinel name.** Run this before editing and
       again after; the alternation is generated from `errors.go`, the `(msgin\.)?` prefix is optional so an
       unqualified root producer cannot hide, and the trailing class admits the `}` / `)` a one-line
       `HandlerFunc` body ends with. Output at `fe86a12`, pasted whole:
@@ -1610,13 +1610,13 @@ configuration that previously captured a message starts dropping it"* — true o
       one above with that pattern.)* Constructor arity is a strong proxy for the invariant's **third** arm but
       is **not** the invariant: when a new sentinel lands, triage the 63 against all four arms.
       *(Round-8 B7: "second arm" was written against the withdrawn two-arm form.)*
-- [ ] **`ErrNoRoute` is NOT wrapped — this is a decision, not an omission.** `routing/router.go:48-56`'s
+- [x] **`ErrNoRoute` is NOT wrapped — this is a decision, not an omission.** `routing/router.go:48-56`'s
       `pick` is caller-supplied and evaluated **per message**; it may consult a routing table, feature flag or
       lookup service, so a message unroutable now may be routable after a config reload. `WithDefaultChannel`
       is the documented way to make that outcome deterministic. Leave it transient and add a **regression
       case** asserting `msgin.IsPermanent(err) == false` for `ErrNoRoute`, so a later sweep cannot "finish the
       job" by wrapping it.
-- [ ] **Update every godoc that promises the old behavior.** Each says *"a nil X yields `ErrNilFunc`"* with no
+- [x] **Update every godoc that promises the old behavior.** Each says *"a nil X yields `ErrNilFunc`"* with no
       classification. The list is derived by an **unrestricted** sweep — round-7 X-B4: the previous form
       hard-coded five filenames and thereby missed two sites, one of them `ErrNilFunc`'s **own sentinel
       godoc**. Output at `fe86a12`, pasted whole:
@@ -1646,7 +1646,7 @@ configuration that previously captured a message starts dropping it"* — true o
 
       Explicit checkboxes, because two of these are the sites the hard-coded grep could not see:
 
-      - [ ] **`errors.go:152` — `ErrNilFunc`'s own sentinel godoc.** The single statement every caller reads,
+      - [x] **`errors.go:152` — `ErrNilFunc`'s own sentinel godoc.** The single statement every caller reads,
             and the natural home for the governing invariant, which the godoc states in these words
             (ADR 0029 §5.0b, Spec §2.1 row 6 — a phrase match, so do not paraphrase):
 
@@ -1679,17 +1679,17 @@ configuration that previously captured a message starts dropping it"* — true o
             > not merely mis-describe an edge — it demanded a wrap that would be wrong. *"Deterministic"* was
             > undefined and carried the whole load; the discriminator is **immutability of the cause at
             > construction**. ADR 0029 §5.0b carries the correction and the twelve-line check.
-      - [ ] **`errors.go:150` — `ErrNilSink`'s sentinel godoc**, same treatment (D-B1).
-      - [ ] **`routing/aggregator.go:239` — the deliberate EXCLUSION.** Say so explicitly: `NewAggregator`
+      - [x] **`errors.go:150` — `ErrNilSink`'s sentinel godoc**, same treatment (D-B1).
+      - [x] **`routing/aggregator.go:239` — the deliberate EXCLUSION.** Say so explicitly: `NewAggregator`
             returns `ErrNilFunc` bare because it is construction-time and never reaches a `RetryPolicy`. Left
             unsaid, the next sweep reads it as an omission and "finishes the job".
-      - [ ] `handler.go:50` (`To`), `endpoint/activator.go:13` + `:37` (`Activate`, `Consume`),
+      - [x] `handler.go:50` (`To`), `endpoint/activator.go:13` + `:37` (`Activate`, `Consume`),
             `routing/splitter.go:13` (`Split`), `routing/filter.go:26` (`Filter`),
             `routing/router.go:25` + `:36` (`Router`, `NewRouter`), `transform/transformer.go:14`
             (`Transform`) — each states that the error is **permanent**, routed to the **invalid-message**
             channel rather than retried to the dead-letter sink, and that `errors.Is(err, msgin.ErrNilFunc)`
             (resp. `ErrNilSink`) still matches.
-      - [ ] The three `nilFuncStep` internal comments (`endpoint/helpers.go:16`, `routing/helpers.go:18` +
+      - [x] The three `nilFuncStep` internal comments (`endpoint/helpers.go:16`, `routing/helpers.go:18` +
             `:20`, `transform/transformer.go:35`) move with them, and gain the position parameter's meaning.
 
       Re-run the sweep after the edit and paste it: the godoc gate here is the grep's *content*, not its exit
@@ -1719,10 +1719,10 @@ AFTER  D-M+D-N Permanent(ErrNilFunc) [dlq only, fallback] OnRetry=0 OnDeadLetter
 *(Row 3's `invalidSink=1` is the same counter as `dlqSink` — one sink instance, counted twice by the harness.
 One message, one sink receipt.)* **The gate: row 2 must become row 3.**
 
-- [ ] **Read `endpoint/consumer.go`'s `divert` path before writing anything** — `:747-791` (the three-outcome
+- [x] **Read `endpoint/consumer.go`'s `divert` path before writing anything** — `:747-791` (the three-outcome
       contract) and its two invalid-path call sites, `:688` (decode failure) and `:716` (permanent handler
       error). The dead-letter call site is `:726`.
-- [ ] **Implement the fallback at the CALL SITES, not inside `divert`.** `divert` is shared by all three
+- [x] **Implement the fallback at the CALL SITES, not inside `divert`.** `divert` is shared by all three
       paths; putting the fallback in its `sink == nil` arm would make the dead-letter call site
       (`:726`, whose `sink` *is* `c.policy.DeadLetter`) fall back to itself — a no-op today, but a trap for the
       next reader. Add one small accessor and use it at `:688` and `:716`:
@@ -1742,10 +1742,10 @@ One message, one sink receipt.)* **The gate: row 2 must become row 3.**
       > `"id", d.Msg.ID()` — and `invalidTarget()` returning only the sink leaves the call site unable to tell
       > *"the caller configured this sink"* from *"we fell back to it"*. The `fellBack` bool is the smallest fix
       > and keeps the accessor a pure config read, with `d` staying at the call site where it already is.
-- [ ] **`OnInvalidMessage` fires, NOT `OnDeadLetter`** — the hook reports the **classification**, the sink is
+- [x] **`OnInvalidMessage` fires, NOT `OnDeadLetter`** — the hook reports the **classification**, the sink is
       only the **destination**. Firing `OnDeadLetter` would assert the message exhausted its retry budget,
       which under D-M it explicitly did not. No change to `divert`'s `terminalHook` argument at either site.
-- [ ] **Announce the fallback, and DEDUPLICATE it.** Keep the existing loud WARN at
+- [x] **Announce the fallback, and DEDUPLICATE it.** Keep the existing loud WARN at
       `endpoint/consumer.go:766` for the neither-sink case, and add a WARN on the fallback naming **both**
       facts — no invalid-message sink configured, message sent to the dead-letter sink instead — plus
       `"id", d.Msg.ID()`. A caller must not discover by inspection that their DLQ has started receiving
@@ -1760,13 +1760,13 @@ One message, one sink receipt.)* **The gate: row 2 must become row 3.**
       > (e.g. `"divert.fallback"`) needs no new field; if a new field reads clearer, say so in the commit body.
       > **The one-line-per-message form is only correct for the neither-sink WARN at `:766`**, which is a
       > terminal discard and whose per-message id is the only record that the message existed.
-- [ ] **Both invalid-path call sites, not just the permanent one.** `:688` (decode failure) gets the fallback
+- [x] **Both invalid-path call sites, not just the permanent one.** `:688` (decode failure) gets the fallback
       too; two invalid-message paths with different fallback behavior would be incoherent. The decode arm's
       change is **discard → dead-letter**, a strict improvement over ADR 0007 D7's discard and a behavior
       change in its own right — say so in the commit body rather than letting it ride in silently.
-- [ ] **Amend [ADR 0007 D7](../adrs/0007-reliability-settlement-api.md#d7--no-invalid-sink-policy-tasks-45)**
+- [x] **Amend [ADR 0007 D7](../adrs/0007-reliability-settlement-api.md#d7--no-invalid-sink-policy-tasks-45)**
       — already written; verify the note still matches what you implemented and correct the ADR if it does not.
-- [ ] Update `divert`'s own godoc (`:747-762`): its first outcome is no longer *"nil sink → discarding IS the
+- [x] Update `divert`'s own godoc (`:747-762`): its first outcome is no longer *"nil sink → discarding IS the
       terminal invalid event"* unconditionally.
 
 #### D-P — the fallback is SINGLE-SHOT (round 8, amends D-N)
@@ -1791,11 +1791,11 @@ is `divert`'s failure arm firing once per redelivery; `OnInvalid=0` because no t
 **The gate: with D-P, the same harness must read `deliveries=1 acks=1 nacks=0 dlqSends=1 OnInvalid=1
 OnRetry=0`** — one attempt at the sink, one WARN, one `Ack`.
 
-- [ ] **On the INVALID path, a failed sink `Send` must NOT `Nack`.** Settle it as ADR 0007 D7's discard: WARN
+- [x] **On the INVALID path, a failed sink `Send` must NOT `Nack`.** Settle it as ADR 0007 D7's discard: WARN
       naming **both** the classification cause *and* the sink error, fire the terminal hook
       (`OnInvalidMessage`), `Ack`, and evict gated on the `Ack` exactly as the other terminal arms do.
       **`OnRetry` must not fire** — no retry follows.
-- [ ] **Scope it to the invalid path.** The dead-letter call site (`:726`) keeps D8's `Nack`-with-backoff on
+- [x] **Scope it to the invalid path.** The dead-letter call site (`:726`) keeps D8's `Nack`-with-backoff on
       send failure: that message is *transient* by classification, so requeueing it is a retry, not a loop.
       Two shapes are viable — **pick one and say which in the commit body**:
       1. **(recommended) split the function** — `divert` keeps the retryable contract for `:726`, and the two
@@ -1805,12 +1805,12 @@ OnRetry=0`** — one attempt at the sink, one WARN, one `Ack`.
       2. a `singleShot bool` (or equivalent) parameter on `divert`. One function, but its three-outcome godoc
          has to branch, and the `attempt` parameter becomes meaningless on one of the two paths — the shape
          that produced the next finding.
-- [ ] **Delete the hard-coded `attempt` on the invalid path — do not leave a misleading `1`** (round-8 design
+- [x] **Delete the hard-coded `attempt` on the invalid path — do not leave a misleading `1`** (round-8 design
       minor). Both invalid call sites pass `1` today (`:688`, `:716`), and `retryDelay(policy, 1)` is
       `p.Backoff.Delay(0)` (`:948-953`) — the **first** backoff step, on every iteration, never escalating.
       Under D-P that value is **unreachable**: the invalid path no longer `Nack`s, so nothing consumes it. It
       must disappear with the branch, not survive as a constant a later reader has to reason about.
-- [ ] **Re-verify the [ADR 0007 D7](../adrs/0007-reliability-settlement-api.md#d7--no-invalid-sink-policy-tasks-45)
+- [x] **Re-verify the [ADR 0007 D7](../adrs/0007-reliability-settlement-api.md#d7--no-invalid-sink-policy-tasks-45)
       note** — the D-P amendment is already written there; confirm it matches what you implemented and correct
       the ADR if it does not.
 
@@ -1891,14 +1891,14 @@ transform/transformer.go:13:// ErrPayloadType (routed to the invalid-message cha
 > correctly and leave it if so. `adapter/database/sql/source.go:16` is unaffected: a corrupt row is dropped by
 > `Poll` before a `Delivery` exists, so it never reaches `divert` on any arm.
 
-- [ ] **`endpoint/consumer.go:67` — `WithInvalidMessageSink`'s godoc, the one this sweep exists to catch.**
+- [x] **`endpoint/consumer.go:67` — `WithInvalidMessageSink`'s godoc, the one this sweep exists to catch.**
       Today: *"If unset, such messages are logged and discarded (ADR 0007 D7)."* That sentence becomes **false
       for every finite-retry consumer** the moment D-N lands. It must state all three arms — dead-letter
       fallback, single-shot discard when that sink fails, discard when neither is configured — **and** the
       operational remedy from ADR 0029 §5.0b: configuring this sink is what lets an operator tell
       *retries-exhausted* from *permanently-invalid* in a shared dead-letter store, because msgin stamps no
       settlement-reason header.
-- [ ] **`adapter/database/sql/options.go:186` + `:193` — the `WithSharedTransaction` warning becomes half
+- [x] **`adapter/database/sql/options.go:186` + `:193` — the `WithSharedTransaction` warning becomes half
       false.** (`:186` is the heading of the same godoc block; edit them together.) `:193` reads *"the divert
       would treat that as 'sink failed' and retry forever — the poison message never actually reaches the
       dead-letter table."*
@@ -1906,22 +1906,22 @@ transform/transformer.go:13:// ErrPayloadType (routed to the invalid-message cha
       true on the **dead-letter** path. The advice — *"do not use a strict shared-transaction Outbound as a
       DLQ/invalid sink"* — is unchanged and gets **stronger** under D-N, since a plain consumer's dead-letter
       sink now receives invalid messages too. Correct the mechanism, keep the advice.
-- [ ] **The invalid-message destination is no longer unconditional** in `reliability.go:9` and `:17`
+- [x] **The invalid-message destination is no longer unconditional** in `reliability.go:9` and `:17`
       (`permanentError` / `Permanent` — *"routes it straight to the invalid-message sink"*), `errors.go:14`
       (`ErrPayloadTooLarge`), `errors.go:184`, `payload.go:8`, `endpoint/flowcontrol.go:99`
       (`WithMaxPayloadBytes`), `channel/pubsub.go:26`, `doc.go:24`, `routing/aggregator.go:23`, `:61`,
       `routing/splitter.go:12`, `transform/transformer.go:13`. Each states or implies *the* invalid-message
       sink; after D-N the destination is *the invalid-message sink, or the dead-letter sink when none is
       configured*. **Twelve lines.** Prefer one canonical sentence, cross-referenced, over twelve paraphrases.
-- [ ] **`endpoint/flowcontrol.go:99` additionally carries an accepted cost** (ADR 0029 §5.0b): after D-N a
+- [x] **`endpoint/flowcontrol.go:99` additionally carries an accepted cost** (ADR 0029 §5.0b): after D-N a
       payload rejected by `WithMaxPayloadBytes` is **persisted** into the operator's durable dead-letter store
       — msgin storing the very bytes the cap declared illegitimate. Say so on the option, with the two levers
       (point `WithInvalidMessageSink` elsewhere; or reject oversize input at the adapter).
-- [ ] **`endpoint/consumer.go:714`, `:750`, `:765`, `:775`, `:841`, `:855`, `:875`, `:931`** — the internal
+- [x] **`endpoint/consumer.go:714`, `:750`, `:765`, `:775`, `:841`, `:855`, `:875`, `:931`** — the internal
       comments on the settlement path itself. `:750`/`:765` state the nil-sink discard as unconditional;
       `:775`'s *"Sink down … the message was NOT diverted → retry it"* is the arm D-P removes from the invalid
       path; `:714`'s *"Sink-attempt 1"* is the hard-coded `attempt` above.
-- [ ] **Re-run the sweep after the edits and paste it.** Like D-M's, this checkbox's gate is the grep's
+- [x] **Re-run the sweep after the edits and paste it.** Like D-M's, this checkbox's gate is the grep's
       **content**, not its exit status: the 39 lines must still be 39 (no site dropped) and every non-triaged
       line must have changed.
 

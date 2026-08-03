@@ -85,9 +85,16 @@ func TestTo(t *testing.T) {
 			assert: func(t *testing.T, err error) { require.NoError(t, err) },
 		},
 		{
-			name:   "To(nil) is ErrNilSink",
-			run:    func(t *testing.T) error { return msgin.Chain(msgin.To(nil)).Handle(t.Context(), msgin.New[any](1)) },
-			assert: func(t *testing.T, err error) { assert.ErrorIs(t, err, msgin.ErrNilSink) },
+			// Spec 014 §2.1 row 6 (decision D-M): sink is captured by To's closure
+			// at construction, so the fault cannot change for the message's
+			// lifetime — it is Permanent and names its position.
+			name: "To(nil) is a permanent ErrNilSink naming its position",
+			run:  func(t *testing.T) error { return msgin.Chain(msgin.To(nil)).Handle(t.Context(), msgin.New[any](1)) },
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilSink)
+				assert.True(t, msgin.IsPermanent(err), "must be permanent")
+				assert.Contains(t, err.Error(), "msgin.To: nil sink")
+			},
 		},
 		{
 			name: "To propagates the sink send error",

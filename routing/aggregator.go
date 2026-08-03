@@ -20,8 +20,9 @@ type aggregatorConfig struct {
 }
 
 // CorrelationStrategy derives a message's group key. A returned error is a
-// correlation failure: the message is routed to the invalid-message channel
-// rather than grouped.
+// correlation failure: the message is routed to the invalid-message channel — or
+// to the dead-letter sink when none is configured ([msgin.Permanent] states all
+// three arms) — rather than grouped.
 type CorrelationStrategy func(m msgin.Message[any]) (string, error)
 
 // ReleaseStrategy decides whether a group is complete and ready to aggregate.
@@ -58,9 +59,10 @@ func WithOutputChannel(ch msgin.MessageChannel) AggregatorOption {
 
 // WithCorrelationStrategy overrides how a message's group key is derived. The
 // default (defaultCorrelate) reads HeaderCorrelationID; a missing or empty
-// key is Permanent(ErrNoCorrelation) — routed to the invalid-message channel
-// rather than retried, since a missing correlation id will not appear on
-// redelivery.
+// key is Permanent(ErrNoCorrelation) — routed to the invalid-message channel, or
+// to the dead-letter sink when none is configured ([msgin.Permanent] states all
+// three arms), rather than retried, since a missing correlation id will not
+// appear on redelivery.
 func WithCorrelationStrategy(fn CorrelationStrategy) AggregatorOption {
 	return func(c *aggregatorConfig) { c.correlate = fn }
 }
@@ -236,9 +238,16 @@ var _ msgin.MessageHandler = (*Aggregator)(nil)
 
 // NewAggregator builds an Aggregator from store, the typed aggregate function
 // fn, and opts. store and an output channel (WithOutputChannel) are required;
-// a nil store is ErrNilStore, a nil fn is ErrNilFunc, and no WithOutputChannel
-// is ErrNilOutput — no panic on caller input. WithGroupTimeout without a
-// paired WithExpiredGroupChannel is ErrExpiryChannelRequired.
+// a nil store is ErrNilStore, a nil fn is a BARE ErrNilFunc, and no
+// WithOutputChannel is ErrNilOutput — no panic on caller input. WithGroupTimeout
+// without a paired WithExpiredGroupChannel is ErrExpiryChannelRequired.
+//
+// These are CONSTRUCTION-time errors and are returned BARE, deliberately: they
+// are handed to the caller here and never carried through Handle, so they never
+// reach a RetryPolicy and a retry classification would be meaningless on them.
+// This is the constructor arm of the invariant on [msgin.ErrNilFunc] — the
+// exclusion is a decision, not an omission, so do not wrap them in
+// [msgin.Permanent] to match the flow-path producers.
 func NewAggregator[A, B any](
 	store msgin.MessageGroupStore,
 	fn func(ctx context.Context, group []msgin.Message[A]) (msgin.Message[B], error),

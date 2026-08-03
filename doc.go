@@ -21,7 +21,8 @@
 // map[string]any, so decode to the concrete type in the first endpoint (a
 // bytes-passthrough WithConsumerCodec[any] + Transform[[]byte, T]). Endpoint
 // errors propagate into the runtime; a payload-type mismatch is [ErrPayloadType],
-// routed to the invalid-message channel.
+// routed to the invalid-message channel — or to the dead-letter sink when none is
+// configured ([Permanent] states all three arms).
 //
 // # Package layout
 //

@@ -11,8 +11,10 @@ var (
 	ErrNilAdapter = errors.New("msgin: adapter is nil")
 	// ErrPayloadTooLarge is returned when a wire payload ([]byte) exceeds the
 	// WithMaxPayloadBytes cap. It is PERMANENT (an over-size payload will not
-	// shrink on redelivery), so the message is diverted to the invalid sink like
-	// a decode failure rather than retried (ADR 0009 D5).
+	// shrink on redelivery), so the message is diverted like a decode failure
+	// rather than retried (ADR 0009 D5) — to the invalid-message sink, or the
+	// dead-letter sink when none is configured ([Permanent] states all three
+	// arms).
 	ErrPayloadTooLarge = errors.New("msgin: payload exceeds the configured maximum size")
 	// ErrUnexpectedCodec is returned when a live-value source (memory) is given a codec.
 	ErrUnexpectedCodec = errors.New("msgin: live-value source must not have a payload codec")
@@ -147,10 +149,36 @@ var (
 	// subscription. Constructors that own a subscription for their lifetime (e.g.
 	// NewChannelExchange) return it.
 	ErrNilSubscription = errors.New("msgin: channel returned a nil subscription")
-	// ErrNilSink is returned by To when its OutboundAdapter sink is nil.
+	// ErrNilSink is returned, wrapped in [Permanent], by To when its
+	// OutboundAdapter sink is nil.
+	//
+	// To captures sink at construction, so the fault cannot change for the
+	// message's lifetime: the handler returns it wrapped in [Permanent] with the
+	// position ("msgin.To: nil sink"), and the driving Consumer routes the
+	// message to the invalid-message channel rather than retrying it to the
+	// dead-letter sink. errors.Is(err, ErrNilSink) still matches; the sentinel
+	// itself stays bare, so [IsPermanent] on the bare value reports false.
 	ErrNilSink = errors.New("msgin: nil outbound sink")
-	// ErrNilFunc is returned by an endpoint (Transform/Filter/Activate/Consume/
-	// Router) constructed with a nil function, instead of panicking at dispatch.
+	// ErrNilFunc is returned, wrapped in [Permanent], by an endpoint
+	// (Transform/Filter/Activate/Consume/Router/Split) constructed with a nil
+	// function, instead of panicking at dispatch.
+	//
+	// The governing invariant, which decides whether any msgin sentinel is
+	// wrapped in [Permanent] at the point it is produced:
+	//
+	// every typed error msgin returns from inside a MessageHandler body msgin
+	// itself constructs, whose cause was fixed at construction and cannot change
+	// for the message's lifetime, is Permanent; a fault a later Subscribe, config
+	// reload or drain could resolve stays bare and transient; every one returned
+	// from a constructor is bare, because construction never reaches a
+	// RetryPolicy; and everything else — handed to a caller from a
+	// non-constructor API — is bare too.
+	//
+	// Applied here: an endpoint's handler returns it wrapped in [Permanent] with
+	// the position that names the mis-wired constructor (e.g.
+	// "transform.Transform: nil fn"), errors.Is(err, ErrNilFunc) still matches,
+	// and a CONSTRUCTOR — routing.NewAggregator — returns it bare. The sentinel
+	// itself is never wrapped, so [IsPermanent] on the bare value reports false.
 	ErrNilFunc = errors.New("msgin: nil endpoint function")
 	// ErrNoRoute is returned by a Router when pick resolves no destination and no
 	// WithDefaultChannel is configured (Spring resolutionRequired=true).
@@ -181,7 +209,9 @@ var (
 	// ErrNoCorrelation is returned when an Aggregator's correlation strategy
 	// yields no key for a message. It is always wrapped with Permanent (a
 	// missing correlation id will not appear on redelivery), so the runtime
-	// routes it to the invalid-message channel rather than retrying.
+	// diverts it rather than retrying — to the invalid-message channel, or the
+	// dead-letter sink when none is configured ([Permanent] states all three
+	// arms).
 	ErrNoCorrelation = errors.New("msgin: message has no correlation key")
 	// ErrNilOutput is returned by NewAggregator when no output channel is set
 	// (WithOutputChannel is required).

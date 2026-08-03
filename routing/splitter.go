@@ -9,9 +9,13 @@ import (
 
 // Split is a Splitter endpoint (EIP): it asserts the input payload to A, calls
 // fn to produce N child messages, and forwards each downstream IN ORDER. A
-// non-A payload yields ErrPayloadType (routed to the invalid-message channel);
-// an fn error propagates without forwarding; a nil fn yields ErrNilFunc (no
-// panic on caller input). An empty/nil result forwards nothing and returns nil
+// non-A payload yields ErrPayloadType (routed to the invalid-message channel, or
+// the dead-letter sink when none is configured — see [msgin.Permanent]);
+// an fn error propagates without forwarding; a nil fn yields ErrNilFunc naming
+// its position (no panic on caller input) — PERMANENT (D-M): routed to the
+// invalid-message channel rather than retried to the dead-letter sink, with
+// errors.Is(err, msgin.ErrNilFunc) still matching (see [msgin.ErrNilFunc]). An
+// empty/nil result forwards nothing and returns nil
 // (a valid "nothing to split", like a Filter drop).
 //
 // Each child is stamped for reassembly by a downstream Aggregator:
@@ -29,7 +33,7 @@ import (
 // redelivered — children must be idempotent downstream.
 func Split[A, B any](fn func(ctx context.Context, m msgin.Message[A]) ([]msgin.Message[B], error)) msgin.Step {
 	if fn == nil {
-		return nilFuncStep()
+		return nilFuncStep("routing.Split: nil fn")
 	}
 	return func(next msgin.MessageHandler) msgin.MessageHandler {
 		return msgin.HandlerFunc(func(ctx context.Context, msg msgin.Message[any]) error {

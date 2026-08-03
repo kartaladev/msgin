@@ -5,8 +5,9 @@ import "fmt"
 // PayloadOf asserts m's payload to T, returning a typed Message[T] with the same
 // headers (no re-stamp). On mismatch it wraps the package sentinel ErrPayloadType
 // with the wanted/actual types; because IsPermanent classifies ErrPayloadType as
-// permanent, the driving Consumer routes it to the invalid-message channel (never
-// a panic). PayloadOf[any] succeeds for any non-nil payload. An untyped-nil
+// permanent, the driving Consumer diverts it to the invalid-message channel — or
+// to the dead-letter sink when none is configured ([Permanent] states all three
+// arms) — never a panic. PayloadOf[any] succeeds for any non-nil payload. An untyped-nil
 // payload (a message built with New[any](nil)) has no dynamic type, so the
 // assertion fails and PayloadOf returns ErrPayloadType — even for T = any.
 func PayloadOf[T any](m Message[any]) (Message[T], error) {

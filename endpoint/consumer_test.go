@@ -549,31 +549,41 @@ func TestConsumer_Settlement_PermanentAndTransient(t *testing.T) {
 }
 
 // TestConsumer_DivertSendFailure_NacksNotAcks proves NF-3/I6 and the ADR 0007 D6
-// deviation: when the invalid sink rejects the send, the message was NOT
+// deviation: when the DEAD-LETTER sink rejects the send, the message was NOT
 // diverted, so it is Nacked for retry (never Ack-and-lost) and the TERMINAL hook
-// (OnInvalidMessage) must NOT fire — a false terminal-event signal. Instead
+// (OnDeadLetter) must NOT fire — a false terminal-event signal. Instead
 // OnRetry fires carrying the CLASSIFICATION cause (not the send error). The Nack
-// carries the backoff delay for sink-attempt 1: retryDelay(policy, 1) = Backoff.Delay(0).
-// A non-nil Backoff yields a non-zero delay (so a down sink is not hammered); a
-// nil Backoff (zero-value policy) yields 0 (immediate) — both arms of
-// the retry-delay computation on the divert-failure path. Nack-not-Ack also evidences
-// the not-settled return that keeps the caller's tracker entry (Fix 2/3).
+// carries the backoff delay for the sink attempt: the consumer is built with a
+// one-attempt budget below, so n == 1 and the delay is retryDelay(policy, 1) =
+// Backoff.Delay(0). The BACKOFF STRATEGY is the only thing each case varies —
+// hence the table's single `backoff` field rather than a whole RetryPolicy the
+// constructor would then discard. A non-nil Backoff yields a non-zero delay (so
+// a down sink is not hammered); a nil Backoff yields 0 (immediate) — both arms
+// of the retry-delay computation on the divert-failure path. Nack-not-Ack also
+// evidences the not-settled return that keeps the caller's tracker entry
+// (Fix 2/3).
+//
+// It drives the DEAD-LETTER path deliberately. Decision D-P (ADR 0007 D7 as
+// amended, Spec 014 §2.1 row 7) made the INVALID path single-shot — a permanent
+// message is discarded, not requeued, when its sink is down — so this retry
+// contract now lives only here, on the transient side. See
+// TestDivertInvalidFallback for the invalid path's terminal counterpart.
 func TestConsumer_DivertSendFailure_NacksNotAcks(t *testing.T) {
 	const initial = 250 * time.Millisecond
 
 	tests := []struct {
-		name   string
-		policy msgin.RetryPolicy
-		assert func(t *testing.T, acks, nacks int, delays []time.Duration)
+		name    string
+		backoff msgin.BackoffStrategy // the ONLY per-case knob; nil means immediate
+		assert  func(t *testing.T, acks, nacks int, delays []time.Duration)
 	}{
 		{"non-nil backoff => non-zero delay (I6)",
-			msgin.RetryPolicy{Backoff: resilience.ExponentialBackoff{Initial: initial, Mult: 2}},
+			resilience.ExponentialBackoff{Initial: initial, Mult: 2},
 			func(t *testing.T, acks, nacks int, delays []time.Duration) {
 				require.NotEmpty(t, delays)
 				assert.Equal(t, initial, delays[0], "divert-send-failure Nack must carry a non-zero backoff delay (I6)")
 			}},
 		{"nil backoff => immediate (delay 0)",
-			msgin.RetryPolicy{},
+			nil,
 			func(t *testing.T, acks, nacks int, delays []time.Duration) {
 				require.NotEmpty(t, delays)
 				assert.Equal(t, time.Duration(0), delays[0], "nil Backoff => immediate redelivery")
@@ -584,13 +594,15 @@ func TestConsumer_DivertSendFailure_NacksNotAcks(t *testing.T) {
 			st := &settle{}
 			src := &scriptedSource{deliveries: []msgin.Delivery{newSettleDelivery(order{ID: "o"}, "m1", st)}}
 			sink := &recordingSink{failWith: errors.New("sink down")}
-			h := func(context.Context, msgin.Message[order]) error { return msgin.Permanent(errors.New("bad")) }
+			// Transient, with a one-attempt budget: the first failure exhausts it,
+			// so settlement lands on the dead-letter divert.
+			h := func(context.Context, msgin.Message[order]) error { return errors.New("bad") }
 
 			var (
-				mu           sync.Mutex
-				retryFired   int
-				retryCause   error
-				invalidFired int
+				mu              sync.Mutex
+				retryFired      int
+				retryCause      error
+				deadLetterFired int
 			)
 			hooks := msgin.Hooks{
 				OnRetry: func(_ context.Context, _ msgin.Message[any], err error) {
@@ -599,17 +611,18 @@ func TestConsumer_DivertSendFailure_NacksNotAcks(t *testing.T) {
 					retryCause = err
 					mu.Unlock()
 				},
-				OnInvalidMessage: func(context.Context, msgin.Message[any], error) {
+				OnDeadLetter: func(context.Context, msgin.Message[any], error) {
 					mu.Lock()
-					invalidFired++
+					deadLetterFired++
 					mu.Unlock()
 				},
 			}
 
 			c, err := endpoint.NewConsumer[order](src, h,
-				endpoint.WithInvalidMessageSink[order](sink),
 				endpoint.WithHooks[order](hooks),
-				endpoint.WithRetryPolicy[order](tc.policy))
+				endpoint.WithRetryPolicy[order](msgin.RetryPolicy{
+					MaxAttempts: 1, DeadLetter: sink, Backoff: tc.backoff,
+				}))
 			require.NoError(t, err)
 
 			ctx, cancel := context.WithCancel(t.Context())
@@ -625,7 +638,7 @@ func TestConsumer_DivertSendFailure_NacksNotAcks(t *testing.T) {
 
 			mu.Lock()
 			defer mu.Unlock()
-			assert.Equal(t, 0, invalidFired, "terminal OnInvalidMessage must NOT fire on a sink-send failure (no terminal event happened)")
+			assert.Equal(t, 0, deadLetterFired, "terminal OnDeadLetter must NOT fire on a sink-send failure (no terminal event happened)")
 			assert.GreaterOrEqual(t, retryFired, 1, "OnRetry must fire on a sink-send failure")
 			require.Error(t, retryCause, "OnRetry carries the classification cause, not nil")
 			assert.Contains(t, retryCause.Error(), "bad", "OnRetry carries the classification cause")
@@ -2379,11 +2392,17 @@ func TestConsumer_SafeDecode_CodecPanicRoutesToInvalidWithErrPayloadDecode(t *te
 	assert.Contains(t, logged, "id=x", "the ERROR log names the message id, never the payload")
 }
 
-// TestConsumer_SafeSend_SinkPanicRetriesInsteadOfLosingMessage proves
-// safeSend's panic recovery (ADR 0010 D6): a configured invalid-message sink
-// whose Send panics must be routed EXACTLY as a real sink.Send error is today
-// — the message was NOT diverted, so it is retried (Nack), never lost.
-func TestConsumer_SafeSend_SinkPanicRetriesInsteadOfLosingMessage(t *testing.T) {
+// TestConsumer_SafeSend_SinkPanicIsRoutedLikeASendError proves safeSend's panic
+// recovery (ADR 0010 D6): a configured invalid-message sink whose Send panics
+// must be routed EXACTLY as a real sink.Send error is — the panic never unwinds
+// past the settlement, and the message reaches the same outcome.
+//
+// Under decision D-P (ADR 0007 D7 as amended, Spec 014 §2.1 row 7) that outcome
+// is the SINGLE-SHOT discard: a permanent message whose sink refuses it is
+// logged, reported through OnInvalidMessage and Acked, never Nacked back into
+// an unbounded redelivery loop. The equivalence with a returned error is what
+// this test pins; the outcome itself is TestDivertInvalidFallback's.
+func TestConsumer_SafeSend_SinkPanicIsRoutedLikeASendError(t *testing.T) {
 	buf := &lockedBuffer{}
 	st := &settle{}
 	src := &scriptedSource{deliveries: []msgin.Delivery{newSettleDelivery(order{ID: "bad"}, "x", st)}}
@@ -2397,15 +2416,16 @@ func TestConsumer_SafeSend_SinkPanicRetriesInsteadOfLosingMessage(t *testing.T) 
 	stop := runConsumer(t, c)
 	defer stop()
 
-	require.Eventually(t, func() bool { _, nacks, _ := st.snapshot(); return nacks >= 1 }, time.Second, 5*time.Millisecond,
-		"a panicking sink must retry (Nack) the message, not lose it")
+	require.Eventually(t, func() bool { acks, _, _ := st.snapshot(); return acks >= 1 }, time.Second, 5*time.Millisecond,
+		"a panicking sink must still settle the message, not crash or hang the flow")
 
 	acks, nacks, _ := st.snapshot()
-	assert.Equal(t, 0, acks, "the message was never terminally diverted (sink panicked, not accepted)")
-	assert.GreaterOrEqual(t, nacks, 1)
+	assert.Equal(t, 1, acks, "the divert is single-shot: settle terminally rather than requeue a permanent message (D-P)")
+	assert.Equal(t, 0, nacks)
 
 	logged := buf.String()
 	assert.Contains(t, logged, "OutboundAdapter.Send panicked", "the panic is logged")
+	assert.Contains(t, logged, "single-shot", "the discard names why there is no retry")
 	assert.Contains(t, logged, "id=x", "the ERROR log names the message id, never the payload")
 }
 

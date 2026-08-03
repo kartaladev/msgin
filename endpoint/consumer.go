@@ -2,6 +2,7 @@ package endpoint
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -64,7 +65,68 @@ func WithRetryPolicy[T any](p msgin.RetryPolicy) ConsumerOption[T] {
 }
 
 // WithInvalidMessageSink sets where permanent/undecodable messages are diverted.
-// If unset, such messages are logged and discarded (ADR 0007 D7).
+//
+// EVERY arm of the invalid path is SINGLE-SHOT (ADR 0007 D7 as amended by
+// decisions D-N and D-P): one attempt at one sink, then a terminal Ack. An
+// invalid message is never Nacked back into the flow, whichever sink it was
+// headed for and whether or not one is configured.
+//
+// WHEN IT IS SET, and the sink is healthy: the message is sent there,
+// OnInvalidMessage fires, the delivery is Acked.
+//
+// WHEN IT IS SET AND THE SINK IS DOWN — the case an operator most needs to
+// know: that Send is NOT retried. The message is logged at WARN (naming the
+// message id, the classification cause and the sink error), OnInvalidMessage
+// fires, and the delivery is Acked — i.e. the message is DISCARDED for the
+// duration of the outage. The trade-off is deliberate: this path never consults
+// the attempt tracker, so a requeue here is invisible to MaxAttempts, records
+// HEALTHY on the circuit breaker, hot-spins when Backoff is nil (the default),
+// and holds its WithMaxInFlight credit indefinitely — a down invalid sink would
+// starve VALID traffic while a permanent message that cannot succeed on
+// redelivery cycles forever. Terminating is the lesser loss, and it is loud. If
+// that window matters, point this option at a durable-on-write sink (a local
+// spool, an outbox table) rather than a remote service.
+//
+// WHEN IT IS UNSET the divert still happens, in three arms:
+//
+//  1. RetryPolicy.DeadLetter is configured → the message goes THERE. A finite
+//     MaxAttempts requires a DeadLetter sink, so this is the default shape of
+//     every finite-retry consumer that has not opted in.
+//  2. That sink's Send fails → same single-shot discard as above (WARN naming
+//     both the classification cause and the sink error, then Ack).
+//  3. Neither sink is configured → logged at WARN and discarded (the original
+//     ADR 0007 D7 behavior).
+//
+// OnInvalidMessage fires on every arm; OnRetry and OnDeadLetter fire on none.
+// The DEAD-LETTER path is the opposite and unchanged (ADR 0007 D8): a
+// retry-exhausted message IS transient, so a failed dead-letter Send is Nacked
+// with backoff, never discarded.
+//
+// THE ONE EXCEPTION TO "NEVER NACKED" IS SHUTDOWN. If the Send fails only
+// because the consumer's settle context was already cancelled by the shutdown
+// deadline, nothing was learned about the sink, so the message is Nacked for
+// redelivery instead of Acked away, and OnInvalidMessage does NOT fire. This is
+// bounded by the shutdown deadline and cannot loop; in normal operation the
+// single shot above is exactly as described.
+//
+// THE CLASSIFICATION CAUSE IS LOGGED VERBATIM — keep payload and PII out of it.
+// The WARN on the sink-down arm renders the cause in full for every class
+// except one, so a handler returning
+// msgin.Permanent(fmt.Errorf("invalid email %q", m.Payload().Email)) puts that
+// email in the log. The SOLE redacted class is the payload-decode one
+// (ErrPayloadDecode, where msgin would otherwise leak a caller-supplied codec's
+// quoting of untrusted wire bytes); it renders as its bare sentinel text.
+// Nothing else is scrubbed: msgin extracts no payload into that string, but it
+// does not inspect the error you compose either. If a fault must carry
+// sensitive detail, put the detail behind OnInvalidMessage — which always
+// receives the UNREDACTED cause — and keep the error's own message generic.
+//
+// CONFIGURE IT when your dead-letter store is operationally meaningful: msgin
+// stamps no settlement-reason header, so once an invalid message lands in the
+// same store as a retries-exhausted one, nothing downstream can tell them
+// apart — and they need opposite handling (replaying a permanently-invalid
+// message is pointless). A separate invalid-message sink is what preserves the
+// distinction.
 func WithInvalidMessageSink[T any](out msgin.OutboundAdapter) ConsumerOption[T] {
 	return func(o *consumerConfig[T]) { o.invalidSink = out }
 }
@@ -129,6 +191,11 @@ type consumer[T any] struct {
 	// per method, so a deterministic panic under fail-open cannot flood the log
 	// (ADR 0009 D1). Keyed by method name.
 	panicLogged sync.Map
+	// invalidFallbackLogged deduplicates D-N's fallback WARN, which reports a
+	// configuration fact constant for this consumer's lifetime (ADR 0007 D7 as
+	// amended). Same rationale as panicLogged; a Once rather than a keyed map
+	// because there is exactly one such event.
+	invalidFallbackLogged sync.Once
 }
 
 // defaultShutdownTimeout bounds the drain when WithShutdownTimeout is unset or
@@ -684,8 +751,14 @@ func (c *consumer[T]) dispatch(ctx, settleCtx context.Context, d msgin.Delivery)
 
 	payload, derr := c.decode(d.Msg)
 	if derr != nil {
-		// Decode failure = permanent invalid message. Sink-attempt 1.
-		if c.divert(settleCtx, c.invalidSink, d, c.hooks.OnInvalidMessage, derr, 1) {
+		// Decode failure = permanent invalid message → the invalid-message sink,
+		// or the dead-letter sink when none is configured (D-N). Settled
+		// TERMINALLY: one attempt at the sink, never a Nack (D-P).
+		sink, fellBack := c.invalidTarget()
+		if fellBack {
+			c.warnInvalidFallback(id)
+		}
+		if c.divertTerminal(settleCtx, sink, d, c.hooks.OnInvalidMessage, derr) {
 			c.tracker.evict(id)
 		}
 		return derr // permanent (IsPermanent) → healthy signal (M4)
@@ -711,9 +784,15 @@ func (c *consumer[T]) dispatch(ctx, settleCtx context.Context, d msgin.Delivery)
 	}
 	if msgin.IsPermanent(err) {
 		// Permanent (Permanent(err), or a handler that returned
-		// ErrPayloadDecode/ErrPayloadType) → invalid sink. Sink-attempt 1.
+		// ErrPayloadDecode/ErrPayloadType) → the invalid-message sink, or the
+		// dead-letter sink when none is configured (D-N). Settled TERMINALLY:
+		// one attempt at the sink, never a Nack (D-P).
 		// Note (M8): the attempt tracker is deliberately NOT consulted here.
-		if c.divert(settleCtx, c.invalidSink, d, c.hooks.OnInvalidMessage, err, 1) {
+		sink, fellBack := c.invalidTarget()
+		if fellBack {
+			c.warnInvalidFallback(id)
+		}
+		if c.divertTerminal(settleCtx, sink, d, c.hooks.OnInvalidMessage, err) {
 			c.tracker.evict(id)
 		}
 		return err // permanent (IsPermanent) → healthy signal (M4)
@@ -744,11 +823,194 @@ func (c *consumer[T]) attempts(d msgin.Delivery) int {
 	return c.tracker.observe(d.Msg.ID())
 }
 
-// divert sends d.Msg to sink and settles it safely, upholding NF-3 (no message
-// loss). Three outcomes:
+// invalidTarget returns where an invalid message is diverted: the configured
+// invalid-message sink, or — when none is configured (D-N) — the dead-letter
+// sink, so a fault previously captured durably is never downgraded to a
+// discard by D-M's reclassification. fellBack reports the second case, so the
+// call site can emit D-N's WARN with the message id. Both are nil/false only
+// when neither sink is configured, where ADR 0007 D7's logged discard remains
+// the terminal behavior.
 //
-//   - nil sink → discarding IS the terminal invalid event (ADR 0007 D7): log a
-//     loud WARN, fire terminalHook, Ack. Eviction is gated on the Ack succeeding.
+// It is a pure config read and is deliberately NOT folded into divertTerminal:
+// the dead-letter call site's sink IS c.policy.DeadLetter, so a fallback inside
+// the settlement helper would make that site fall back to itself.
+//
+// THE MISSING !c.native.NativeDeadLetter() GUARD IS DELIBERATE — do not "restore"
+// it. The transient dead-letter arm in dispatch does apply that guard, and the
+// discriminator is Nack-vs-Ack, not which sink is being written to:
+//
+//   - The TRANSIENT path NACKS on exhaustion, so a source with a native
+//     dead-letter pipeline captures the message itself. Writing to
+//     c.policy.DeadLetter as well would DOUBLE-WRITE it, which is why that arm
+//     is guarded.
+//   - The INVALID path ACKS — divertTerminal always settles with safeAck, on
+//     every arm — so a native-DLQ source never sees a Nack for this message and
+//     never dead-letters it. The fallback write here is the message's ONLY
+//     capture; there is nothing to double-write, and adding the guard would
+//     silently return a nil sink and restore ADR 0007 D7's discard for exactly
+//     the callers whose broker looked most capable of retaining it.
+//
+// TestDivertInvalidFallbackUnderNativeDeadLetter pins this: a native-DLQ source
+// with no invalid sink must still reach c.policy.DeadLetter.
+func (c *consumer[T]) invalidTarget() (sink msgin.OutboundAdapter, fellBack bool) {
+	if c.invalidSink != nil {
+		return c.invalidSink, false
+	}
+	return c.policy.DeadLetter, c.policy.DeadLetter != nil
+}
+
+// warnInvalidFallback announces D-N's fallback — no invalid-message sink is
+// configured, so the invalid message was sent to the dead-letter sink instead —
+// so a caller never discovers by inspection that their DLQ started receiving
+// invalid messages.
+//
+// It fires ONCE per consumer. "No invalid-message sink is configured" is
+// constant for the consumer's lifetime, so an undeduplicated WARN would emit
+// one identical line per invalid message and a poison storm would flood the
+// log. This is governorPanic's rationale; sync.Once is used instead of its
+// panicLogged sync.Map because there is exactly one event and no key to
+// deduplicate by. Suppressing it costs nothing an operator needs: the fact it
+// reports is about the CONFIGURATION, identical for every message, and the
+// per-message record — where one is warranted — is the terminal hook
+// (OnInvalidMessage), which fires unsuppressed on every invalid message.
+//
+// Note that on the HEALTHY fallback (the sink accepts) that hook is the ONLY
+// per-message record: divertTerminal emits no WARN when the send succeeds, and
+// OnInvalidMessage is nil by default — so a consumer with a reachable
+// dead-letter sink and no hooks wired emits exactly this one line for its whole
+// lifetime. That is the intended volume, not an oversight; the messages
+// themselves are in the dead-letter sink. divertTerminal's two FAILURE arms
+// (sink down, and neither sink configured) do log one line per message, because
+// there the log is the only record the message ever existed.
+func (c *consumer[T]) warnInvalidFallback(id string) {
+	c.invalidFallbackLogged.Do(func() {
+		c.logger.Warn("msgin: no invalid-message sink configured; sending the invalid message to the dead-letter sink instead (further occurrences suppressed)",
+			"id", id)
+	})
+}
+
+// divertTerminal sends d.Msg to sink and settles it TERMINALLY, upholding NF-3
+// (no message loss). It is the INVALID-message path's settlement: its messages
+// are permanent by classification, so every outcome ends in a terminal event
+// and an Ack and none of them re-enters the flow. Four outcomes:
+//
+//   - nil sink (neither an invalid-message sink nor a DeadLetter is configured)
+//     → discarding IS the terminal invalid event (ADR 0007 D7): log a loud
+//     WARN, fire terminalHook, Ack.
+//   - sink.Send FAILS WHILE ctx IS ALREADY DONE → this is SHUTDOWN, not a sink
+//     refusal, and it is the ONE arm that does not settle terminally. See the
+//     dedicated paragraph below.
+//   - sink.Send FAILS (ctx still live) → the attempt is SINGLE-SHOT (D-P): log
+//     a WARN naming BOTH the classification cause (via causeForLog, which keeps
+//     a caller-supplied codec's free text out of the log) and the sink error,
+//     fire terminalHook with the UNREDACTED cause, Ack
+//     — i.e. fall through to ADR 0007 D7's discard. There is deliberately no
+//     Nack and no OnRetry: requeueing a permanent message against a down sink
+//     is the unbounded-redelivery trap D7's own reasoning rejects, and no
+//     counter, backoff or breaker can observe it (MaxAttempts is bypassed on
+//     this path, retryDelay never escalates, and IsPermanent records healthy).
+//   - sink accepts → the terminal divert happened: fire terminalHook with
+//     cause, Ack.
+//
+// THE ctx-DONE ARM IS NOT A D-P EXCEPTION. ctx here is Run's settleCtx, which
+// drainWorkers cancels when the shutdown deadline expires (C1). A Send that
+// returns once that happens has learned NOTHING about the sink — a healthy sink
+// whose Send merely observed the cancelled context returns an error
+// indistinguishable, at this call site, from a refusal. Taking D-P's discard
+// arm there would Ack a message the sink may never have received, and — because
+// a Delivery.Ack is free to ignore its context (adapter/memory's does) — that
+// Ack can SUCCEED and evict the tracker entry, losing the message with the sink
+// perfectly healthy. So this arm Nacks with requeue and returns false (not
+// settled, tracker entry kept), leaving redelivery to the source on the next
+// run, exactly as every other ctx-done settle arm in this file does (see I4 on
+// admit). It does NOT weaken D-P: during normal operation ctx.Err() is nil, so
+// the single shot is untouched; the Nack happens only while the consumer is
+// already shutting down, which is bounded by C1 and cannot loop. terminalHook
+// deliberately does not fire — no terminal event happened.
+//
+// The bool return gates the caller's tracker eviction (D8) and is therefore
+// gated on the Ack succeeding in every settling arm, mirroring the dispatch
+// success path: a failed source-Ack must not drop the attempt count.
+func (c *consumer[T]) divertTerminal(ctx context.Context, sink msgin.OutboundAdapter, d msgin.Delivery, terminalHook func(context.Context, msgin.Message[any], error), cause error) bool {
+	if sink == nil {
+		// Neither sink configured: discarding is the terminal invalid event
+		// (ADR 0007 D7). One line per message — the id is the only record the
+		// message ever existed.
+		c.logger.Warn("msgin: discarding message; no invalid-message sink configured", "id", d.Msg.ID())
+	} else if err := c.safeSend(ctx, sink, d.Msg); err != nil {
+		if ctx.Err() != nil {
+			// Shutdown, not a sink refusal (see the paragraph above): keep the
+			// message rather than Ack it away on a sink that was never proven
+			// down. No terminal hook, no eviction — the source redelivers.
+			c.logger.Warn("msgin: invalid-message divert aborted by shutdown; Nacking for redelivery",
+				"id", d.Msg.ID(), "cause", causeForLog(cause), "err", err)
+			c.finish(c.safeNack(ctx, d, true, 0))
+			return false
+		}
+		// Sink down (including a panicking sink, recovered by safeSend). The
+		// message is permanent, so there is no second attempt (D-P) — it is
+		// discarded, loudly, naming both why it was invalid and why the sink
+		// refused it.
+		c.logger.Warn("msgin: discarding invalid message; the sink rejected it and the divert is single-shot",
+			"id", d.Msg.ID(), "cause", causeForLog(cause), "err", err)
+	}
+	c.safeFire(terminalHook, ctx, d.Msg, cause)
+	ackErr := c.safeAck(ctx, d)
+	c.finish(ackErr)
+	return ackErr == nil
+}
+
+// causeForLog RENDERS a settlement's classification cause for the log — it
+// returns a string, not an error, precisely because the value is for display
+// only and must never be mistaken for something to errors.Is against or to
+// settle on.
+//
+// D-P requires the single-shot discard WARN to name the classification cause,
+// and every cause is safe to render verbatim EXCEPT one: safeDecode builds a
+// decode failure as fmt.Errorf("%w: %v", msgin.ErrPayloadDecode, err) around a
+// CALLER-SUPPLIED PayloadCodec's error, and such an error is free to quote the
+// bytes it choked on (encoding/json quotes the offending character; a custom
+// codec may quote far more). Rendering it would contradict the contract
+// safeDecode and safeSend both state for their OWN logs — "the message id only,
+// never the payload" — and would do so on untrusted wire input, the one place
+// it matters. So the ErrPayloadDecode class renders as its BARE SENTINEL text:
+// the classification survives (that is what D-P asks the WARN to name, and what
+// an operator triages on), the codec's free text does not.
+//
+// EXACTLY ONE CLASS IS REDACTED, AND THAT IS THE WHOLE CONTRACT. Every other
+// cause — Permanent(...) from a handler, ErrPayloadType, ErrPayloadTooLarge —
+// is rendered IN FULL, verbatim. For msgin's own sentinels that is trivially
+// safe (they are fixed strings). For a CALLER-COMPOSED cause it is not a claim
+// about content at all: a handler is free to write
+// Permanent(fmt.Errorf("invalid email %q", m.Payload().Email)), an ordinary
+// validation shape, and that text — payload and all — reaches the WARN. The
+// distinction being drawn is authorship, not sensitivity: msgin does not
+// EXTRACT payload into this string, but it does not scrub what the caller chose
+// to put in their own error either. Redacting every cause is not the fix — it
+// would erase the classification detail D-P requires the WARN to name. The
+// contract is stated on the caller's side instead, on WithInvalidMessageSink
+// and msgin.Permanent: an error you hand to msgin is logged as written, so keep
+// payload and PII out of it.
+//
+// The codec detail is not lost to the caller, only to the log: the UNREDACTED
+// cause is still what OnInvalidMessage receives, so an operator who wants it can
+// take it under their own disclosure policy.
+//
+// %v (not .Error()) so a nil cause renders "<nil>" instead of panicking; this
+// helper is never called with nil today, and must not become the reason a
+// future call site does.
+func causeForLog(cause error) string {
+	if errors.Is(cause, msgin.ErrPayloadDecode) {
+		return msgin.ErrPayloadDecode.Error()
+	}
+	return fmt.Sprintf("%v", cause)
+}
+
+// divert sends d.Msg to the DEAD-LETTER sink and settles it safely, upholding
+// NF-3 (no message loss). Its messages are TRANSIENT by classification — they
+// exhausted a finite retry budget — so, unlike divertTerminal, a failed send is
+// retried rather than discarded. Two outcomes:
+//
 //   - sink.Send FAILS → the message was NOT diverted, so it is retried, not
 //     terminally settled: fire OnRetry (with the CLASSIFICATION cause, never the
 //     terminal hook and never the send error — no terminal event happened) and
@@ -758,22 +1020,17 @@ func (c *consumer[T]) attempts(d msgin.Delivery) int {
 //   - sink accepts → the terminal divert happened: fire terminalHook with cause,
 //     Ack. Eviction is gated on the Ack succeeding.
 //
+// sink is never nil here: it is c.policy.DeadLetter, and RetryPolicy.Validate
+// rejects a finite MaxAttempts without one — so the nil-sink discard lives on
+// divertTerminal, the only path that can reach it.
+//
 // The bool return gates the caller's tracker eviction (D8): true = terminally
 // settled AND source-Acked, false = still in flight (kept for redelivery).
 func (c *consumer[T]) divert(ctx context.Context, sink msgin.OutboundAdapter, d msgin.Delivery, terminalHook func(context.Context, msgin.Message[any], error), cause error, attempt int) bool {
-	if sink == nil {
-		// nil sink: discarding is the terminal invalid event (ADR 0007 D7).
-		c.logger.Warn("msgin: discarding message; no invalid-message sink configured", "id", d.Msg.ID())
-		c.safeFire(terminalHook, ctx, d.Msg, cause)
-		ackErr := c.safeAck(ctx, d)
-		c.finish(ackErr)
-		// Gate eviction on the Ack, mirroring the dispatch success-path Ack-gating:
-		// a failed source-Ack must not drop the attempt count.
-		return ackErr == nil
-	}
 	if err := c.safeSend(ctx, sink, d.Msg); err != nil {
-		// Sink down (including a panicking sink, recovered by safeSend): the
-		// message was NOT diverted → retry it. Do NOT fire the terminal hook (no
+		// Sink down (including a panicking sink, recovered by safeSend): on THIS,
+		// the dead-letter path, the message was NOT diverted → retry it. (The
+		// invalid path settles the same failure terminally — see divertTerminal.) Do NOT fire the terminal hook (no
 		// terminal event happened) and do NOT surface the send error to a hook;
 		// fire OnRetry with the classification cause instead.
 		c.safeFire(c.hooks.OnRetry, ctx, d.Msg, cause)
@@ -838,7 +1095,8 @@ func (c *consumer[T]) decode(m msgin.Message[any]) (T, error) {
 		return zero, msgin.ErrPayloadType
 	}
 	// ADR 0009 D5: cap untrusted wire bytes BEFORE decoding. An over-size payload
-	// is permanent (it will not shrink on redelivery) → invalid sink, not retried.
+	// is permanent (it will not shrink on redelivery) → invalid divert (invalid
+	// sink, else DeadLetter, else discard), not retried.
 	if c.maxPayloadBytes > 0 && len(b) > c.maxPayloadBytes {
 		var zero T
 		return zero, msgin.ErrPayloadTooLarge
@@ -852,9 +1110,9 @@ func (c *consumer[T]) decode(m msgin.Message[any]) (T, error) {
 // recovered panic is mapped to the SAME classification a returned decode
 // error already gets — ErrPayloadDecode wrapping the cause — so the
 // settlement switch treats a panicking codec exactly like a real decode
-// failure: PERMANENT → invalid sink (never retried against a codec that will
-// panic again on redelivery). Logs ERROR with the message id only, never the
-// payload.
+// failure: PERMANENT → the invalid divert (invalid sink, else DeadLetter, else
+// discard), never retried against a codec that will panic again on redelivery.
+// Logs ERROR with the message id only, never the payload.
 func (c *consumer[T]) safeDecode(id string, b []byte) (v T, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -874,9 +1132,10 @@ func (c *consumer[T]) safeDecode(id string, b []byte) (v T, err error) {
 // safeSend invokes sink.Send, recovering a panic so a faulty outbound adapter
 // (an invalid-message sink or DeadLetter) cannot crash the process (fault
 // isolation, ADR 0010 D6). A recovered panic is synthesized into an error and
-// routed by divert EXACTLY as a real sink.Send error is today: the message
-// was NOT diverted, so divert retries it (OnRetry + Nack with backoff) rather
-// than treating it as lost. Logs ERROR with the message id only, never the
+// routed EXACTLY as a real sink.Send error is: the message was NOT diverted, so
+// divert retries it (OnRetry + Nack with backoff) on the dead-letter path, and
+// divertTerminal discards it single-shot on the invalid path (D-P) — never
+// treating it as silently lost on either. Logs ERROR with the message id only, never the
 // payload.
 func (c *consumer[T]) safeSend(ctx context.Context, sink msgin.OutboundAdapter, msg msgin.Message[any]) (err error) {
 	defer func() {
@@ -928,7 +1187,8 @@ func (c *consumer[T]) safeNack(ctx context.Context, d msgin.Delivery, requeue bo
 // takes down the flow (fault isolation, CLAUDE.md's mandatory robustness
 // constraint). The recovered value is wrapped in ErrHandlerPanic, which the
 // settlement switch classifies as TRANSIENT — a panicking handler is retried
-// (Nacked), not diverted to the invalid sink.
+// (Nacked), never diverted to the invalid-message sink (nor to the dead-letter
+// sink standing in for it).
 func (c *consumer[T]) safeHandle(ctx context.Context, msg msgin.Message[T]) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
