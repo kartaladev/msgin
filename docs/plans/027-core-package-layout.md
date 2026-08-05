@@ -610,7 +610,7 @@ satellite already `require`s and `replace`s the root module (F9.6). All seven mo
 
 ---
 
-## Task 9 — Named behavior types and combinators · **M** · PARTIAL
+## Task 9 — Named behavior types and combinators · **M** · DONE (uncommitted)
 
 > **EXECUTE TASK 9.7 FIRST** (round-7 D-M2/X-M2). Task 9.7 classifies the **shipped** producers; this task
 > authors three **new** producers under the same rule. Running this task first creates, across three commits,
@@ -624,7 +624,12 @@ satellite already `require`s and `replace`s the root module (F9.6). All seven mo
 (`routing/aggregator.go:25`), `routing.ReleaseStrategy` (`:35`), `WithReleaseStrategy(ReleaseStrategy)`
 (`:82`), `WithReleaseWhen(func(MessageGroup) bool)` (`:89`).
 
-- [ ] Declare the remaining four types and type their base constructors:
+> **EXECUTED after Task 9.7 (`64963ad`), as pinned.** Execution record, with every transcript this task's
+> Verify calls for: [`027-derivation-findings.md` §F16](027-derivation-findings.md). **Two plan defects found
+> and corrected in place below** — the census arithmetic (§F16.2) and the `Not` fixture orientation that made
+> the plan's own trap case vacuous until mutation testing caught it (§F16.4).
+
+- [x] Declare the remaining four types and type their base constructors:
       ```go
       // package routing
       type Predicate[A any]    func(ctx context.Context, m msgin.Message[A]) (bool, error)
@@ -633,7 +638,7 @@ satellite already `require`s and `replace`s the root module (F9.6). All seven mo
       // package transform
       type Transformer[A, B any] func(ctx context.Context, m msgin.Message[A]) (msgin.Message[B], error)
       ```
-- [ ] Add `Predicate.And` / `Or` / `Not` — **with nil semantics specified, because the naive version panics.**
+- [x] Add `Predicate.And` / `Or` / `Not` — **with nil semantics specified, because the naive version panics.**
 
       > **`p.And(nil)` would panic on caller input**, which CLAUDE.md forbids outright (*"library code … must
       > not `panic` on caller input — return errors instead"*) and which contradicts this package's own
@@ -713,20 +718,37 @@ satellite already `require`s and `replace`s the root module (F9.6). All seven mo
       the nil check**: `p.Or(nil)` must not silently return `(true, nil)` when `p` is true — a nil operand is
       a programming error and must surface even when the short-circuit would hide it. State this on each
       combinator's godoc.
-- [ ] Every type's godoc **names its Spring equivalent** — this is the mitigation that justifies dropping the
+- [x] Every type's godoc **names its Spring equivalent** — this is the mitigation that justifies dropping the
       Spring names (ADR 0029 §4), so verify it **per type**, not sampled. **This task owns Spec §8 obligation
       4 for the four types it creates** (`Predicate`, `RouteFunc`, `SplitFunc`, `Transformer`); the two shipped
       types are Task 11b's. → **gates 8.4c–8.4f, §11 block**, RED at this task's start and GREEN at its end.
       *(Round-8 C4, same class: the §11 pinning table already pinned these four to Task 9 while Task 9's Verify
       never ran them. An obligation is owned by the task that creates the symbol.)*
-- [ ] **Note for Task 12 (E-M8): this task changes the expected shape of Spec §5.0's census.** Measured on the
+- [x] **Note for Task 12 (E-M8): this task changes the expected shape of Spec §5.0's census.** Measured on the
       untouched tree, `grep -rn "msgin\.MessageChannel\|MessageChannel interface" --include="*.go" . | grep -v
-      "_test.go" | grep -v "^./docs" | grep -v '// '` → **16 lines**, of which **two** are
-      `routing/router.go:29` (the `Router.pick` **field**) and `:37` (the `NewRouter` **parameter**). Retyping
-      the parameter to `RouteFunc` drops `:37` → **15**; retyping the field as well drops `:29` too → **14**.
-      Decide which you are doing, record it in the ledger with the re-run command, and say so here — Task 12
-      re-measures this census and, without this note, would report a correct new number as a regression.
-- [ ] **`apidiff`: snapshot `./routing` and `./transform` BEFORE the edit, then diff.** The committed baseline
+      "_test.go" | grep -v "^./docs" | grep -v '// '` → **16 lines**, of which **two** are the `Router.pick`
+      **field** and the `NewRouter` **parameter**.
+
+      > ⛔ **CORRECTED AT EXECUTION — the census is 15, and the 14 below was arithmetically unreachable**
+      > (ledger [§F16.2](027-derivation-findings.md)). **Decision taken: retype BOTH** the field and the
+      > parameter to `RouteFunc`. **Task 12 must expect 15**, re-measured with the command above:
+      >
+      > ```
+      > 16    # BEFORE
+      > 15    # AFTER — two lines removed, ONE ADDED
+      > ```
+      >
+      > The plan predicted 14 by counting only removals. It missed that **the `RouteFunc` declaration is
+      > itself a census line** — `type RouteFunc func(…) (msgin.MessageChannel, error)` — and necessarily so:
+      > the type exists to return a `msgin.MessageChannel`, so no declaration of it can avoid the token the
+      > census greps for. 16 − 2 + 1 = 15. The census counts **occurrences of the token**, not anonymous
+      > signatures; naming a type **relocates** an occurrence rather than eliminating it. 14 is reachable only
+      > by declaring `RouteFunc` outside the census's file set, which no layout in this plan does.
+      >
+      > *Also stale:* this checkbox cited the two lines as `routing/router.go:29` and `:37`; at `64963ad` they
+      > were **`:35`** and **`:45`** (Task 9.7's D-M godoc paragraph shifted them). The two lines identified
+      > are the right two — only the numbers drifted.
+- [x] **`apidiff`: snapshot `./routing` and `./transform` BEFORE the edit, then diff.** The committed baseline
       at `docs/plans/027-root-api-baseline.txt` is **root-only** (`apidiff -w … .`; its header line is
       `github.com/kartaladev/msgin` and `grep -c 'routing\|transform'` over it → exit 1), and every symbol this
       task retypes lives in `routing`/`transform` and is already inside the window's 95 root removals. **Root
@@ -752,6 +774,26 @@ the nil (the case a naive short-circuit gets wrong, and the reason the nil check
 mirror, `And` with a nil argument when the left side is `false`** — a naive `And` short-circuits on `false`
 and never sees the nil, which is the identical trap. *(Round-4 exec-M5: only the `Or` half was enumerated,
 so the `And` half had no covering case under CLAUDE.md's hard gate.)*
+
+> ⚠️ **EXECUTION CORRECTION — EVERY error case needs its FIXTURE ORIENTATION pinned, or it is vacuous**
+> (ledger [§F16.4](027-derivation-findings.md), [§F16.8](027-derivation-findings.md)). *"propagates an error"*
+> does not constrain what the failing predicate returns **alongside** its error, and for each combinator one
+> of the two choices makes the case pass against the very implementation it exists to reject. **Stated as the
+> invariant, because pinning it per-instance is what let the defect through:** *the failing fixture must be
+> oriented so that the naive implementation and the correct one disagree on the BOOL, then killed by
+> mutation.* Per combinator:
+>
+> | Case | Naive implementation | Fixture that discriminates | Why the other orientation is vacuous |
+> |---|---|---|---|
+> | `Not` propagates | `return !ok, err` | **`(false, err)`** | with `(true, err)` the naive yields `(false, err)` — exactly what the case asserts |
+> | `And`/`Or` propagate a **right**-side error | `return q(ctx, m)` (bare tail call) | **`(true, err)`** | with `(false, err)` the assertion checks False against a value that was already false |
+> | `And`/`Or` propagate a **left**-side error | `ok` tested before `err` | **`(true, err)`** | with `(false, err)` a swallowed error still yields false and only `ErrorIs` fires |
+>
+> Same class as the `measure-interleaving-tests` lesson: a covering case is not a discriminating one.
+> **Verify by mutation**, not by inspection. *(Round-9 review: the first execution pinned only the `Not` row
+> and left the `And`/`Or` rows driven by the `Not` fixture, so both right-side cases shipped green and
+> vacuous over a real defect — the bare `return q(ctx, m)` leaked the right operand's `true` alongside its
+> error, contradicting these combinators' own godoc. Fixed in code, not in the godoc; see §F16.8.)*
 **NEW in round 6 (D-M / D-B4):** a case asserting **`msgin.IsPermanent(err) == true`** on a combinator's nil
 result, and — in the same case — that **`errors.Is(err, msgin.ErrNilFunc)` still matches** through both the
 `msgin.Permanent` wrap and the positional `fmt.Errorf`. The classification *is* the behavior change; an

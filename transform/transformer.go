@@ -7,6 +7,37 @@ import (
 	"github.com/kartaladev/msgin"
 )
 
+// Transformer maps a message of one payload type to another. It is the named
+// behavior type behind the Message Translator pattern (EIP ch. 8); Spring
+// Integration calls the equivalent contract
+// org.springframework.integration.transformer.Transformer (its typed form,
+// GenericTransformer<S, T>, is the closer analogue).
+//
+// It is fallible: a translation that parses, validates or enriches from an
+// external source can fail on the message's data, and an error propagates
+// without forwarding anything.
+//
+// An implementation MUST return a NEW message and owns header propagation — use
+// [msgin.WithPayload] (which keeps id and correlation) rather than a bare
+// msgin.New, which would stamp a fresh id and break correlation downstream.
+//
+// The name drops the qualifier the package already carries (ADR 0029 §4) and has
+// direct precedent in golang.org/x/text/transform.
+//
+// ASSIGNABILITY — what naming the type does and does not accept. These call
+// shapes all still work at [Transform]: a bare closure literal (which infers A
+// and B), a variable or field of the equivalent UNNAMED func type, a func
+// returning that unnamed type, a method value, and a plain top-level func
+// declaration. The one shape that does NOT work is a caller's OWN NAMED func
+// type: Go converts implicitly between two func types only when at least one
+// side is unnamed, so `var x MyXform; Transform(x)` is rejected. Because
+// Transformer is generic the rejection surfaces as an INFERENCE failure —
+// "type MyXform of x does not match transform.Transformer[A, B] (cannot infer A
+// and B)" — rather than a plain assignability error, and supplying explicit type
+// arguments does not help. Convert at the call site:
+// Transform(Transformer[A, B](x)).
+type Transformer[A, B any] func(ctx context.Context, m msgin.Message[A]) (msgin.Message[B], error)
+
 // Transform is a Message Translator endpoint: it asserts the input payload to A,
 // applies fn to produce a Message[B], and forwards it downstream. fn MUST return
 // a new message and is responsible for header propagation — use WithPayload
@@ -17,7 +48,7 @@ import (
 // on caller input) — PERMANENT (D-M): routed to the invalid-message channel
 // rather than retried to the dead-letter sink, with
 // errors.Is(err, msgin.ErrNilFunc) still matching (see [msgin.ErrNilFunc]).
-func Transform[A, B any](fn func(ctx context.Context, m msgin.Message[A]) (msgin.Message[B], error)) msgin.Step {
+func Transform[A, B any](fn Transformer[A, B]) msgin.Step {
 	if fn == nil {
 		return nilFuncStep("transform.Transform: nil fn")
 	}

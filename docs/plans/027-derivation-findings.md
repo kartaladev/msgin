@@ -3061,3 +3061,577 @@ Five before, five after — the same five. Per-package: root 95.3%, `endpoint` 9
 `TestDivertTerminalShutdownCancellationNacks`) and so is not among them.
 
 **Nothing was committed.**
+
+---
+
+## F16 — Task 9 (named behavior types + `Predicate` combinators): execution record
+
+**Execution order actually run:** Task **9.7 first** (committed at `64963ad`), then Task **9** — the order the
+round-7 correction (D-M2/X-M2) pinned. The tree was therefore already uniform when this task started: the five
+shipped producers wrap `msgin.Permanent(sentinel)` with a position, so the combinators copied that convention
+rather than inventing one. Run from `64963ad`, clean tree. **Nothing was committed.**
+
+### F16.1 — gates 8.4c–8.4f: RED before, GREEN after
+
+Run via the plan's own extraction command (Task 9 Verify, plan lines 781–784), so the gate text is the §11
+canonical block's, not a retyped copy:
+
+```
+$ eval "$(sed -n '/^# ==== CANONICAL GATE BLOCK/,/^```$/p' \
+            docs/plans/027-core-package-layout.md | grep -v '^```')" | grep '8\.4[cdef]'
+--- BEFORE (RED) ---            --- AFTER (GREEN) ---
+RED: 8.4c                       GREEN: 8.4c
+RED: 8.4d                       GREEN: 8.4d
+RED: 8.4e                       GREEN: 8.4e
+RED: 8.4f                       GREEN: 8.4f
+```
+
+The RED is the plan's predicted shape — the symbols did not exist:
+
+```
+$ go doc github.com/kartaladev/msgin/routing.Predicate
+doc: no symbol Predicate in package github.com/kartaladev/msgin/routing        (exit 1)
+    … identically for routing.RouteFunc, routing.SplitFunc, transform.Transformer
+```
+
+GREEN, verified **per type** (ADR 0029 §4's mitigation is load-bearing, so this is not sampled):
+
+| Type | Spring equivalent named in its godoc |
+|---|---|
+| `routing.Predicate[A]` | `org.springframework.integration.core.MessageSelector` |
+| `routing.RouteFunc` | `org.springframework.integration.router.AbstractMessageRouter#determineTargetChannels` |
+| `routing.SplitFunc[A,B]` | `org.springframework.integration.splitter.AbstractMessageSplitter#splitMessage` |
+| `transform.Transformer[A,B]` | `org.springframework.integration.transformer.Transformer` (typed form `GenericTransformer<S,T>`) |
+
+This discharges **Spec §8 obligation 4 for the four types Task 9 creates**. The two shipped types
+(`CorrelationStrategy`, `ReleaseStrategy`, gates **8.4a/8.4b**) are **still RED** — they are Task 11b's, and
+this task deliberately did not touch them.
+
+### F16.2 — the census is **15**, NOT 14 — the plan's arithmetic is wrong, and 14 is unreachable
+
+Task 9's Note-for-Task-12 checkbox (plan lines 722–728) offers three outcomes: leave both → 16, retype the
+parameter → 15, retype the field as well → **14**. The decision taken was **retype BOTH**. The measured result
+is **15**, and the plan's 14 is **not achievable by any choice** in this task:
+
+```
+$ grep -rn "msgin\.MessageChannel\|MessageChannel interface" --include="*.go" . \
+    | grep -v "_test.go" | grep -v "^./docs" | grep -v '// ' | wc -l
+      16        # BEFORE
+      15        # AFTER
+```
+
+Two census lines were removed and **one was added**, which the plan did not account for:
+
+```
+REMOVED  routing/router.go:35  pick func(ctx context.Context, m msgin.Message[any]) (msgin.MessageChannel, error)
+REMOVED  routing/router.go:45  func NewRouter(pick func(… ) (msgin.MessageChannel, error), opts ...RouterOption)
+ADDED    routing/router.go:39  type RouteFunc func(ctx context.Context, m msgin.Message[any]) (msgin.MessageChannel, error)
+```
+
+**The `RouteFunc` declaration is itself a census line**, and necessarily so — the type exists precisely to
+return a `msgin.MessageChannel`, so no declaration of it can avoid the token the census greps for. 16 − 2 + 1 =
+15. The census counts *occurrences of the token*, not *anonymous signatures*, so naming a type relocates one
+occurrence rather than eliminating it. **Task 12 must expect 15.**
+
+*(Second plan defect, same checkbox: it cites the two lines as `routing/router.go:29` and `:37`. They were
+`:35` and `:45` at `64963ad` — the numbers drifted when Task 9.7 added the D-M godoc paragraph to `Router`.
+The two lines the plan identifies are the right two; only the line numbers are stale.)*
+
+### F16.3 — `apidiff`, `./routing` and `./transform`
+
+Task-local scratch snapshots (not a gate input — the committed root baseline is untouched and root `apidiff`
+for this task is legitimately zero, since every symbol retyped here lives in `routing`/`transform` and is
+already inside the window's 95 root removals):
+
+```
+$ apidiff -w $SP/task9-routing.api ./routing && apidiff -w $SP/task9-transform.api ./transform   # BEFORE
+$ apidiff $SP/task9-routing.api ./routing                                                        # AFTER
+Incompatible changes:
+- Filter: changed from func(func(ctx context.Context, m msgin.Message[A]) (bool, error), ...FilterOption) msgin.Step
+                   to func(Predicate[A], ...FilterOption) msgin.Step
+- NewRouter: changed from func(func(ctx context.Context, m msgin.Message[any]) (msgin.MessageChannel, error), ...RouterOption) *Router
+                      to func(RouteFunc, ...RouterOption) *Router
+- Split: changed from func(func(ctx context.Context, m msgin.Message[A]) ([]msgin.Message[B], error)) msgin.Step
+                  to func(SplitFunc[A, B]) msgin.Step
+Compatible changes:
+- Predicate: added
+- RouteFunc: added
+- SplitFunc: added
+
+$ apidiff $SP/task9-transform.api ./transform                                                    # AFTER
+Incompatible changes:
+- Transform: changed from func(func(ctx context.Context, m msgin.Message[A]) (msgin.Message[B], error)) msgin.Step
+                     to func(Transformer[A, B]) msgin.Step
+Compatible changes:
+- Transformer: added
+```
+
+**Reviewed: four `apidiff`-incompatible parameter-type changes, source-compatible FOR EVERY CALL SHAPE EXCEPT
+A CALLER'S OWN NAMED FUNC TYPE.** `apidiff` reports a parameter retyped to a named defined type as
+incompatible because it compares type identity, not assignability; Go still infers a bare closure literal
+against a named generic func type. Demonstrated, not assumed (F16.5). Four types added, all compatible.
+Nothing removed.
+
+> ⛔ **QUALIFIED at review (round 9) — the unqualified "SOURCE-COMPATIBLE" above was over-broad, and so was
+> F16.5's "both directions … pinned".** One shape genuinely breaks: a **downstream caller's own named func
+> type**. `var p MyPred` no longer compiles against any of the four constructors, and for the three generic
+> ones inference fails outright with an opaque message rather than a plain assignability error. Measured, all
+> four, one call per package build:
+>
+> ```
+> type MyPred  func(ctx context.Context, m msgin.Message[int]) (bool, error)
+> type MyRoute func(ctx context.Context, m msgin.Message[any]) (msgin.MessageChannel, error)
+> type MySplit func(ctx context.Context, m msgin.Message[int]) ([]msgin.Message[int], error)
+> type MyXform func(ctx context.Context, m msgin.Message[int]) (msgin.Message[int], error)
+>
+> routing.Filter(p)       vet: in call to routing.Filter, type MyPred of p does not match
+>                              routing.Predicate[A] (cannot infer A)
+> routing.NewRouter(r)    vet: cannot use r (variable of func type MyRoute) as routing.RouteFunc
+>                              value in argument to routing.NewRouter
+> routing.Split(s)        vet: in call to routing.Split, type MySplit of s does not match
+>                              routing.SplitFunc[A, B] (cannot infer A and B)
+> transform.Transform(x)  vet: in call to transform.Transform, type MyXform of x does not match
+>                              transform.Transformer[A, B] (cannot infer A and B)
+> ```
+>
+> `NewRouter` — the non-generic one — at least names the two types. The three generic ones report an
+> **inference** failure, which reads as a mystery unless you already know the cause.
+>
+> **Everything else still compiles**, verified in the same throwaway package (removed after measurement):
+> bare closure literal · variable of the **unnamed** func type · func **returning** the unnamed type ·
+> **method value** · plain top-level func declaration. All five, all four constructors where applicable →
+> `ALL FIVE SHAPES COMPILE CLEAN`.
+>
+> **The design artifacts were already correct** — Spec 014, RFC 0003 and ADR 0029 each scope the claim to
+> *"a bare closure remains assignable"*. Only this execution ledger overstated it. **Impact is theoretical:
+> msgin is unreleased with zero consumers, so no such named type exists anywhere. Code unchanged —
+> documentation only.**
+
+### F16.4 — mutation testing: the three trap cases are non-vacuous, and one caught a defect **in the test**
+
+Each mutant is the naive implementation the plan warns about; each was applied to `routing/predicate.go`, the
+suite run, then the file restored from a byte-identical copy.
+
+| # | Mutant | Killed by | Result |
+|---|---|---|---|
+| 1 | `Not` returns `!ok, err` (inverts instead of propagating) | `Not propagates an error rather than inverting the result` | FAIL — `Should be false` |
+| 2 | `And` checks the nil argument **after** the `!ok` short-circuit | `And with a nil argument surfaces even when the left is FALSE` | FAIL |
+| 3 | `Or` checks the nil argument **after** the `ok` short-circuit | `Or with a nil argument surfaces even when the left is TRUE`, and `NilPositionsAreDistinct` | FAIL |
+
+**Mutant 1 initially did NOT fail, and that was a defect in the test, not the mutant.** The first draft drove
+the `Not` error case with a predicate returning `(true, err)`; the naive `return !ok, err` then yields
+`(false, err)` — which is exactly what the case asserted, so the trap case passed against the code it exists to
+reject. The fixture was re-oriented to `(false, err)`, where correct yields `false` and naive yields `true`.
+Without the mutation run this case would have shipped green and vacuous — the same class as
+`measure-interleaving-tests`.
+
+### F16.5 — source compatibility, demonstrated rather than assumed
+
+The claim is that existing call sites passing **bare closures** compile unchanged against the named parameter
+types. Evidence: **no pre-existing test was edited.**
+
+```
+$ git diff --stat -- '*_test.go'
+ transform/transformer_test.go | 19 +++++++++++++++++++       # purely ADDITIVE — a new func
+ 1 file changed, 19 insertions(+)
+$ git diff -- transform/transformer_test.go | grep -cE '^-[^-]'
+0                                                            # zero lines deleted or changed
+```
+
+The whole suite — including bare-closure call sites in `example_composition_test.go:26-27`,
+`endpoint/composition_integration_test.go:31-32`, `routing/filter_test.go:85`,
+`routing/example_splitter_test.go:17`, `routing/aggregator_settlement_test.go:194` and
+`routing/permanent_classification_test.go:67`, none of which were touched — compiles and passes. Both
+directions are additionally pinned by new explicit cases
+(`TestBehaviorTypes_SourceCompatibility`, `TestTransformerType_SourceCompatibility`): each constructor is
+called once with a bare closure and once with a value of the named type.
+
+> ⛔ **QUALIFIED at review (round 9): "both directions … pinned" means MSGIN'S OWN named type and the bare
+> closure — NOT a caller's named func type,** which is the one shape that breaks. See the qualifying block in
+> §F16.3 for the four measured error messages and the five shapes that still compile. The tests named here
+> pin exactly what they say they pin; the summary sentence was the part that generalized too far.
+
+### F16.6 — suites, gates and coverage
+
+```
+$ go test ./... -race -shuffle=on                     # 11/11 root packages ok
+$ for d in . adapter/database/sql/{harness,postgres,mysql,sqlite,dbtest} adapter/cron/crontest; do
+    (cd $d && GOWORK=off go test ./... -race -shuffle=on); done    # 7/7 ok (dbtest 114s, crontest 78s — real Docker)
+$ for d in <same seven>; do (cd $d && go build ./...); done        # 7/7 ok (workspace)
+$ gofmt -l .                                          # empty
+$ go vet ./...                                        # clean
+$ golangci-lint run ./...                             # 0 issues.
+$ govulncheck ./...                                   # No vulnerabilities found.
+$ go mod tidy && git diff --exit-code -- go.mod go.sum # no diff
+$ go mod verify                                       # all modules verified
+$ CGO_ENABLED=0 go build ./...                        # ok
+```
+
+**Coverage — both packages held at 100%; every new branch has a covering case.**
+
+> ⛔ **TRANSCRIPT CORRECTED at review (round 9).** Task 9's Verify (plan line 808) requires **`-coverpkg=./...`
+> on both sides**; this section originally recorded the plain `-cover` form, so the checkbox and the evidence
+> did not match. Re-run in the required form below. **The numbers did not change** — nothing was hiding — but
+> a transcript that does not match its own gate is not evidence.
+
+**Run per package in ISOLATION**, so neither package's test binary can credit the other's statements
+(the merged two-package invocation cross-credits, which would mask a gap — the
+`package-split-breaks-coverage-attribution` hazard):
+
+```
+$ go test ./routing/   -coverpkg=./... -coverprofile=$SP/routing.cov
+ok  github.com/kartaladev/msgin/routing     coverage: 58.2% of statements in ./...
+      routing/ functions in profile: 35 ; below 100.0%: 0
+
+$ go test ./transform/ -coverpkg=./... -coverprofile=$SP/transform.cov
+ok  github.com/kartaladev/msgin/transform   coverage: 36.4% of statements in ./...
+      transform/ functions in profile: 3 ; below 100.0%: 0
+```
+
+**Read the headline number correctly.** Under `-coverpkg=./...` the `58.2%` / `36.4%` are *"of statements in
+`./...`"* — the whole 11-package root module as measured by that one package's tests — **not** the package's
+own coverage. The gate *"`routing` and `transform` stay at 100.0%"* is discharged by the per-function
+breakdown, which reports **zero** functions below 100.0% in either package. The plain `-cover` form, which
+reports per-package attribution, agrees: `routing` 100.0%, `transform` 100.0%.
+
+```
+$ go tool cover -func=$SP/routing.cov | grep predicate.go
+routing/predicate.go:43:   nilPredicate  100.0%
+routing/predicate.go:65:   And           100.0%
+routing/predicate.go:104:  Or            100.0%
+routing/predicate.go:137:  Not           100.0%
+```
+
+*(Line numbers shifted from `:61`/`:92`/`:121` — the §F16.8 fix added the right-operand error branch and the
+godoc paragraph stating the invariant.)*
+
+### F16.7 — what was added
+
+| File | Symbol | Note |
+|---|---|---|
+| `routing/predicate.go` (new, 148 lines) | `Predicate[A]`, `And`, `Or`, `Not`, unexported `nilPredicate` | `nilPredicate` mirrors `nilFuncStep`'s position-parameter shape; 129 → 148 lines in the §F16.8 fix pass |
+| `routing/router.go:39` | `RouteFunc` | `Router.pick` **and** `NewRouter`'s parameter both retyped (F16.2) |
+| `routing/splitter.go:10` | `SplitFunc[A,B]` | `Split`'s parameter retyped |
+| `routing/filter.go:30` | — | `Filter`'s parameter retyped to `Predicate[A]` |
+| `transform/transformer.go:10` | `Transformer[A,B]` | `Transform`'s parameter retyped |
+| `routing/predicate_test.go` (new) | 21-case table + 2 focused tests | assert-closure form throughout; 19 → 21 cases in the §F16.8 fix pass |
+| `routing/example_predicate_test.go` (new, 68 lines) | `ExamplePredicate_And` | added in the §F16.8 fix pass; runnable, real `// Output:` |
+| `transform/transformer_test.go` | `TestTransformerType_SourceCompatibility` | additive only |
+
+**The nil checks live in the combinator body, before the returned closure is built** — which is *why* no
+short-circuit can skip them: when an operand is nil the composing closure is never constructed at all, so
+there is no evaluation path on which the short-circuit could run first. The error still surfaces at
+**evaluation**, since `nilPredicate` returns a `Predicate` and combinators stay pure (`Predicate`, not
+`(Predicate, error)`).
+
+**Nothing was committed.**
+
+---
+
+### F16.8 — Task 9 adversarial-review fix pass (uncommitted): four findings, all fixed
+
+Review of the uncommitted Task 9 work returned four findings. **All four fixed — none triaged.** Still
+uncommitted; the tree at the end of this pass is the tree §F16 describes plus the deltas below.
+
+| # | Finding | Disposition | Where |
+|---|---|---|---|
+| 1 | **BLOCKER** — `And`/`Or` leaked the right operand's `true` alongside its error | **FIXED IN CODE** (not in the godoc) + both covering tests de-vacuumed | `routing/predicate.go:80-84` (`And`), `:119-123` (`Or`); `routing/predicate_test.go` |
+| 2 | `SOURCE-COMPATIBLE` claim over-broad | **FIXED** — qualifying blocks added, code untouched | §F16.3, §F16.5 |
+| 3 | Coverage transcript used plain `-cover`, not the required `-coverpkg=./...` | **FIXED** — re-run and re-recorded | §F16.6 |
+| 4 | No runnable example for the three new exported combinators | **DONE** | `routing/example_predicate_test.go` |
+
+#### F16.8.1 — Finding 1, the defect: a bare tail call leaked a truthy decision from a failed evaluation
+
+`And` and `Or` both ended in `return q(ctx, m)`, so **whatever bool the right operand returned alongside its
+error passed straight through**. Measured before the fix, with a `badTrue` predicate that computes `true` and
+then fails — an ordinary shape for a service-backed predicate that records a decision and then errors:
+
+```
+BEFORE                                    AFTER
+TRUE.And(badTrue)   ok=true  err=boom     ok=false err=boom
+FALSE.Or(badTrue)   ok=true  err=boom     ok=false err=boom
+badTrue.Not()       ok=false err=boom     ok=false err=boom   (already correct)
+```
+
+**The godoc was right and the code was wrong**, so the code moved. *(Line numbers in this paragraph are the
+PRE-fix ones the review cited.)* `And`'s godoc at `:51` already said *"the result is false"* and `Or`'s at
+`:82` said the same; `Not` (`:113` — *"never (true, err)"*), `nilPredicate` (`:45`) and the test's own
+`nilAssert` (*"a degraded predicate must not report true"*) all already guaranteed the invariant. `And`/`Or`
+were the two outliers. `Filter` happens to check `err` first (`routing/filter.go:44-48`), but `Predicate` is
+public API and composition happens outside `Filter` — so the leak was reachable by any caller composing
+combinators directly.
+
+Fix, applied to both (post-fix `routing/predicate.go:80-84` and `:119-123`), matching the shape the left
+operand already used:
+
+```go
+ok, err = q(ctx, m)
+if err != nil {
+    return false, err
+}
+return ok, nil
+```
+
+**The LEFT operand was checked, not assumed** (the review asked for this explicitly). It already did
+`if err != nil { return false, err }`, so no code change was needed there — and two new table rows
+(`And`/`Or` *"propagates a left-side error that arrived with a true result"*, driven by `badTrue`) now **pin**
+that, where before nothing did. Both passed on the very first RED run, which is the evidence that the left
+side never had the defect.
+
+**Class sweep.** Every `(bool, error)` producer in this change was re-read for the same shape:
+`grep -n '(bool, error)' routing/{predicate,filter,router,splitter}.go transform/transformer.go` → the only
+producers are the four in `predicate.go`; the other four files contain **no** `(bool, error)` signature at all.
+`Filter` is the only *consumer* in the change and reads `err` before `pass`. **No other instance.**
+
+#### F16.8.2 — Finding 1's tests were vacuous, and the vacuity is proven by mutation
+
+`predicate_test.go:104-110` and `:145-151` *(pre-fix line numbers)* asserted `assert.False(t, got)` while
+driving the right operand with the shared `bad` fixture — which returns `(false, errBoom)`. **They asserted False against a value that
+was already false, so they passed regardless of what the combinator did with it.** This is the *same class*
+§F16.4 caught for `Not` and fixed there as an instance, leaving `And`/`Or` unexamined — so the plan's
+correction block has been rewritten to state the **invariant** rather than the `Not` row (plan, Task 9).
+
+A second fixture was added — `badTrue`, returning `(true, errBoom)` — and both right-side rows re-driven by
+it. Both orientations are now load-bearing and neither is redundant: swap them and the corresponding case
+goes vacuous.
+
+**Mutation proof — the fix restored, the defect re-introduced, the suite run, the file restored
+byte-identical each time:**
+
+```
+########## MUTANT 4 — And ends in a bare `return q(ctx, m)` (the reviewed defect) ##########
+--- FAIL: TestPredicateCombinators/And_propagates_a_right-side_error_without_leaking_its_true_result
+        Error:     Should be false
+        Messages:  an errored And must report false, not the right operand's result
+FAIL    github.com/kartaladev/msgin/routing
+
+########## MUTANT 5 — Or ends in a bare `return q(ctx, m)` ##########
+--- FAIL: TestPredicateCombinators/Or_propagates_a_right-side_error_without_leaking_its_true_result
+        Error:     Should be false
+        Messages:  an errored Or must report false, not the right operand's result
+FAIL    github.com/kartaladev/msgin/routing
+
+########## RESTORED — byte-identical? ##########
+IDENTICAL
+ok      github.com/kartaladev/msgin/routing
+```
+
+**And the converse — proof the OLD fixture could not have caught it.** Mutants 4+5 applied *and* both rows
+reverted to the old `bad` fixture:
+
+```
+--- PASS: .../And_propagates_a_right-side_error_without_leaking_its_true_result
+--- PASS: .../Or_propagates_a_right-side_error_without_leaking_its_true_result
+ok      github.com/kartaladev/msgin/routing
+^^^ the broken code PASSES with the old fixture — that is the vacuity, demonstrated rather than argued.
+```
+
+The mutants are numbered 4 and 5 to continue §F16.4's series (1–3).
+
+#### F16.8.3 — the nil contract and the two short-circuit traps survived the finding-1 edit
+
+Finding 1 touched the same code paths, so all five nil positions and both traps were re-measured after the
+fix (throwaway harness, removed after the run):
+
+```
+ok.And(nil)       bool=false Is=true IsPermanent=true "msgin: permanent: msgin: nil endpoint function: routing.Predicate.And: nil argument"
+nilPred.And(ok)   bool=false Is=true IsPermanent=true "msgin: permanent: msgin: nil endpoint function: routing.Predicate.And: nil receiver"
+ok.Or(nil)        bool=false Is=true IsPermanent=true "msgin: permanent: msgin: nil endpoint function: routing.Predicate.Or: nil argument"
+nilPred.Or(ok)    bool=false Is=true IsPermanent=true "msgin: permanent: msgin: nil endpoint function: routing.Predicate.Or: nil receiver"
+nilPred.Not()     bool=false Is=true IsPermanent=true "msgin: permanent: msgin: nil endpoint function: routing.Predicate.Not: nil receiver"
+--- the two short-circuit traps ---
+TRUE.Or(nil)      bool=false err=true
+FALSE.And(nil)    bool=false err=true
+```
+
+Five distinct strings, `errors.Is` and `IsPermanent` intact on all five, both traps still surfacing the nil.
+Unchanged from §F16 — as expected, since the nil checks run before the returned closure is ever built.
+
+#### F16.8.4 — Finding 4: the example
+
+`routing` shipped `ExampleSplit` and `ExampleAggregator` but nothing for the three new exported combinators,
+against CLAUDE.md's *"exported behavior is covered by `Example…` tests"*. Added `ExamplePredicate_And`
+(`routing/example_predicate_test.go`, `_test` package, real `// Output:`): it composes all three —
+`paid.And(isTest.Not()).Or(priority)` — into one `Filter`, and its last row exercises the error contract, so
+the example documents *"(false, err), never (true, err)"* rather than only asserting it in a table.
+
+#### F16.8.5 — verification of this fix pass
+
+```
+$ go test ./... -race -shuffle=on                        # 11/11 root packages ok
+$ go list ./... | wc -l                                  # 11
+$ for d in . adapter/database/sql/{harness,postgres,mysql,sqlite,dbtest} adapter/cron/crontest; do
+    (cd $d && GOWORK=off go test ./... -race -shuffle=on); done      # 7/7 OK (dbtest, crontest on real Docker)
+$ for d in <same seven>; do (cd $d && go build ./...); done          # 7/7 OK (workspace)
+$ go test -run '^Example' ./...                          # 11/11 ok
+$ gofmt -l .                                             # empty
+$ go vet ./...                                           # clean
+$ golangci-lint run ./...                                # 0 issues.
+$ govulncheck ./...                                      # No vulnerabilities found.
+$ go mod tidy && git diff --exit-code -- go.mod go.sum   # no diff
+$ go mod verify                                          # all modules verified
+$ CGO_ENABLED=0 go build ./...                           # ok
+$ eval "$(sed -n '/^# ==== CANONICAL GATE BLOCK/,/^```$/p' \
+            docs/plans/027-core-package-layout.md | grep -v '^```')" | grep '8\.4[cdef]'
+GREEN: 8.4c   GREEN: 8.4d   GREEN: 8.4e   GREEN: 8.4f
+```
+
+Coverage in the plan's required `-coverpkg=./...` form is recorded in **§F16.6** (re-run for finding 3):
+`routing` 35/35 functions and `transform` 3/3 functions at 100.0%, including the two branches finding 1 added.
+
+**Nothing was committed.**
+
+### F16.9 — whole-branch `/code-review` pass: three findings, all fixed (uncommitted)
+
+A whole-branch `/code-review` returned three findings. **All three fixed — none triaged.** Two of them are
+**outside Task 9's surface** (pre-existing shipped code) and are scoped to land in their own commit; the third
+is Task 9's own and rides in Task 9's commit.
+
+| # | Sev | Finding | Disposition | Commit group |
+|---|---|---|---|---|
+| 1 | HIGH | `WithLogger[T](nil)` stored the nil, then nil-deref'd on the first settlement that logs — on a WORKER goroutine, where `safeHandle` does NOT recover, so the PROCESS DIES | **FIXED** — nil guard, matching the sibling `WithProducerLogger` | **A** (outside Task 9) |
+| 2 | MED | `WithCorrelationStrategy(nil)` / `WithReleaseStrategy(nil)` / `WithReleaseWhen(nil)` were accepted, then panicked in `Handle`; inside a Consumer that panic classifies `ErrHandlerPanic` → **transient**, so a pure misconfiguration retries forever | **FIXED** — rejected at the constructor, bare `ErrNilFunc` naming its position | **A** (outside Task 9) |
+| 3 | — | The `source-compatible` claim was still over-broad in the godoc and in the two test names | **FIXED** — precise property stated; tests renamed + extended | **B** (Task 9's own) |
+
+Finding 3's ledger text was already qualified in the previous pass (§F16.3, §F16.5); what this pass fixed is
+the **godoc and the tests**, which that pass did not reach.
+
+#### F16.9.1 — the two nil-option defects were an INCONSISTENCY, not a new policy
+
+CLAUDE.md: *"Library code must not call `os.Exit`, `log.Fatal`, or `panic` on caller input (return errors
+instead)."* In both cases a **sibling option in the very same file already did the right thing** —
+`WithProducerLogger` (`endpoint/producer.go:313`) guards, and `WithConsumerClock` / `WithAggregatorClock`
+guard — so both findings closed a gap in an established pattern rather than introducing one.
+
+The two fixes deliberately use **different mechanisms**, because the right answer differs:
+
+- **A logger has a safe default** (the discard logger), so `WithLogger(nil)` is a **no-op** — the option
+  pattern already used by `WithProducerLogger`, `WithConsumerClock`, `WithAggregatorClock`.
+- **A strategy has no safe substitute** for what the caller meant, so a nil one is **rejected at
+  `NewAggregator`**, not silently swapped for the default: silently defaulting would run a DIFFERENT
+  aggregation policy than the caller wrote, which is worse than a construction error.
+
+`NewAggregator`'s three `ErrNilFunc` arms are returned **BARE**, preserving the constructor arm of D-M's
+invariant (ADR 0029 §5.0b) — construction never reaches a `RetryPolicy`, so a `Permanent` wrap would be
+meaningless. New unexported helper `nilFuncAt` (`routing/helpers.go`) is the construction-time counterpart of
+`nilFuncStep`, and its doc says explicitly that the missing `Permanent` is a decision, not an omission.
+
+**One deliberate extension beyond the review's literal ask:** the review asked for a position only on the two
+NEW arms. The pre-existing nil-`fn` arm was also given one (`routing.NewAggregator: nil fn`), because with
+three `ErrNilFunc` sources in one constructor a bare sentinel no longer tells the caller which one is
+mis-wired — which is the entire point of the change. `errors.Is` and `IsPermanent` behavior are unchanged, so
+this breaks nothing; the existing test's assertions still hold and gained a position check.
+
+#### F16.9.2 — the `WithReleaseWhen(nil)` wrinkle
+
+`WithReleaseWhen(nil)` used to wrap the nil `fn` inside a new `bool -> (bool, error)` closure, so `c.release`
+came out **NON-nil** and a constructor nil-check would NOT have caught it — the deref would still have
+happened at release time. The fix leaves `c.release` **unset** when `fn == nil`, so the constructor's single
+check catches every path uniformly. This is proven independently by mutant 2b below.
+
+#### F16.9.3 — mutation proofs: all three guards are non-vacuous
+
+Each guard was removed, the suite re-run, then the file restored from a byte-identical copy.
+
+| # | Mutant | Result |
+|---|---|---|
+| 1 | `WithLogger` guard removed (`o.logger = l`) | **FAIL** — `panic: nil pointer dereference` at `endpoint/consumer.go:946` (`divertTerminal`'s `c.logger.Warn`), raised in `startWorkers.func1` — an **unrecovered worker goroutine**, so the test BINARY dies rather than the case merely failing. Exactly the reported defect. |
+| 2a | Both `NewAggregator` strategy checks removed | **FAIL** — `Expected error … but got nil` on the nil-`WithCorrelationStrategy` case |
+| 2b | `WithReleaseWhen(nil)` rebuilds the wrapper (constructor checks KEPT) | **FAIL** — `Expected error … but got nil` on the nil-`WithReleaseWhen` case only. Proves the wrinkle case is load-bearing on its own: the constructor check alone does NOT cover it. |
+
+#### F16.9.4 — finding 1's class sweep: no other unguarded option exists
+
+Every `With*` option in the workspace taking a **pointer, interface, func, map or channel** was traced to its
+config field and to **every read** of that field. **Zero further violations.** Dispositions:
+
+| Disposition | Count | Examples |
+|---|---|---|
+| GUARDED (`if v != nil` in the option) | 17 | `WithProducerClock`, `WithAggregatorClock`, all four `*Logger`s, `WithRateLimit`, `WithCircuitBreaker`, `WithHTTPClient`, `WithLocation` |
+| CONSTRUCTOR-REJECTED / re-defaulted | 8 | `WithOutputChannel` (`ErrNilOutput`), `WithSharedTransaction` (`ErrNilResolver`), both codecs, `WithRetryPolicy` |
+| NIL-SAFE AT USE | 9 | `WithHooks` (fired via `safeFire`, which nil-checks AND recovers), `WithInvalidMessageSink`, `WithDiscardChannel`, `WithDefaultChannel`, `WithElector`, `WithLocker` |
+| Not nilable (scalar/struct) | 5 | `WithFanOut`, both `WithOverflow`s, `WithStrategy`, `WithSlowClientPolicy` — all `int` |
+
+**One coupling worth recording (NOT a defect today).** `consumer.go` `divert` calls
+`c.safeSend(ctx, sink, …)` where `sink` is `c.policy.DeadLetter`, **unconditionally**. It is safe only
+transitively: `RetryPolicy.Validate` (`retry.go:50`) rejects `MaxAttempts > 0` with a nil `DeadLetter`, and the
+sole call site is itself gated on `MaxAttempts > 0`. The invariant is documented at the call site, but it is a
+**cross-file coupling** — the one place in the audited set where a future edit could turn a caller's nil into
+a panic. Recorded for a future increment; no change made.
+
+#### F16.9.5 — finding 3: the precise property, measured then documented
+
+The claim *"naming the type is source-compatible"* was stated without qualification on all four behavior
+types' godoc and embedded in two test NAMES. The precise property was re-measured from scratch in a throwaway
+package (`ztmpcompat`, deleted after measurement — not left in the tree):
+
+**REJECTED — a caller's OWN NAMED func type**, all four, one call per build:
+
+```
+routing.Filter(p)       in call to routing.Filter, type MyPred of p does not match
+                        routing.Predicate[A] (cannot infer A)
+routing.NewRouter(r)    cannot use r (variable of func type MyRoute) as routing.RouteFunc
+                        value in argument to routing.NewRouter
+routing.Split(s)        in call to routing.Split, type MySplit of s does not match
+                        routing.SplitFunc[A, B] (cannot infer A and B)
+transform.Transform(x)  in call to transform.Transform, type MyXform of x does not match
+                        transform.Transformer[A, B] (cannot infer A and B)
+```
+
+**NEW this pass, and not previously measured:** explicit type arguments do **not** rescue it —
+`routing.Filter[int](p)` fails too (`cannot use p (variable of func type MyPred) as routing.Predicate[int]
+value`), which confirms the cause is **assignability** (Go requires at least one side unnamed), with the
+inference failure merely being how a generic call site reports it. The **remedy** — an explicit conversion,
+`Filter(Predicate[int](p))` — was verified to compile for all four.
+
+**ACCEPTED — six shapes, verified compiling for all four types:** bare closure literal · variable of the
+UNNAMED func type · func returning that unnamed type · method value · plain top-level func declaration ·
+msgin's own named type.
+
+Fixes, code unchanged (the named types stay — they carry the EIP/Spring documentation value):
+
+- Each of the four types' godoc gained an `ASSIGNABILITY` paragraph naming the accepted shapes, the one
+  rejected shape, why (at least one side must be unnamed), how the rejection READS at a generic vs a
+  non-generic call site, that explicit type args do not help, and the conversion remedy.
+- `TestBehaviorTypes_SourceCompatibility` → **`TestBehaviorTypes_AcceptedCallShapes`**, and
+  `TestTransformerType_SourceCompatibility` → **`TestTransformerType_AcceptedCallShapes`**. Names now match
+  what the tests assert. Both were extended from 2 shapes to **all six**, across all four constructors —
+  **24 subtests**. Each test's doc records that the rejected shape CANNOT be pinned by a test (a test
+  asserting it would not compile) and points at the godoc.
+
+#### F16.9.6 — verification of this pass
+
+```
+$ go test ./... -race -shuffle=on                        # 11/11 root packages ok
+$ go list ./... | wc -l                                  # 11
+$ for d in . adapter/database/sql/{harness,postgres,mysql,sqlite,dbtest} adapter/cron/crontest; do
+    (cd $d && GOWORK=off go test ./... -race -shuffle=on); done      # 7/7 OK (real Docker for dbtest/crontest)
+$ for d in <same seven>; do (cd $d && go build ./...); done          # 7/7 OK (workspace)
+$ go test -run '^Example' ./...                          # 11/11 ok
+$ gofmt -l .                                             # empty
+$ go vet ./...                                           # clean
+$ golangci-lint run ./...                                # 0 issues.
+$ govulncheck ./...                                      # No vulnerabilities found.
+$ go mod tidy && git diff --exit-code -- go.mod go.sum   # no diff
+$ go mod verify                                          # all modules verified
+$ CGO_ENABLED=0 go build ./...                           # ok
+$ <canonical gate block>                                 # GREEN: 8.4c 8.4d 8.4e 8.4f
+```
+
+Coverage, measured **per package in isolation** (note `-coverpkg=./...` reports "of statements in ./…", a
+WHOLE-MODULE figure, and is not a per-package number):
+
+```
+$ go test ./routing/ ./transform/ ./endpoint/ -cover -count=1
+routing    100.0%        (unchanged — the new nilFuncAt helper is covered)
+transform  100.0%        (unchanged)
+endpoint    99.2%        (UP from 99.1% — the nil-logger case added coverage; nothing lost)
+```
+
+Task 9's own properties re-confirmed after the changes: the **five** nil combinator positions are still
+distinct, both short-circuit traps (`And` with a FALSE left, `Or` with a TRUE left) still surface the nil, and
+neither operand leaks `(true, err)`.
+
+**Nothing was committed.** The tree splits into two commit groups: **A** — `endpoint/consumer.go`,
+`endpoint/consumer_test.go`, `routing/aggregator.go`, `routing/aggregator_test.go`, `routing/helpers.go`
+(shipped code, outside Task 9); **B** — `routing/predicate.go`, `routing/router.go`, `routing/splitter.go`,
+`transform/transformer.go` and their tests (Task 9's own surface).

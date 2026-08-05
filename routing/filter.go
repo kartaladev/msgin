@@ -27,7 +27,7 @@ func WithDiscardChannel(ch msgin.MessageChannel) FilterOption {
 // (D-M): routed to the invalid-message channel rather than retried to the
 // dead-letter sink, with errors.Is(err, msgin.ErrNilFunc) still matching (see
 // [msgin.ErrNilFunc]).
-func Filter[A any](pred func(ctx context.Context, m msgin.Message[A]) (bool, error), opts ...FilterOption) msgin.Step {
+func Filter[A any](pred Predicate[A], opts ...FilterOption) msgin.Step {
 	if pred == nil {
 		return nilFuncStep("routing.Filter: nil pred")
 	}

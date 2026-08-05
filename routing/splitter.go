@@ -7,6 +7,31 @@ import (
 	"github.com/kartaladev/msgin"
 )
 
+// SplitFunc produces the child messages a [Split] endpoint forwards. It is the
+// named behavior type behind the Splitter pattern (EIP ch. 7); Spring
+// Integration calls the equivalent contract
+// org.springframework.integration.splitter.AbstractMessageSplitter#splitMessage.
+//
+// It is fallible: a split that parses the payload or fans out over a
+// runtime-defined rule can fail on the message's data, and an error propagates
+// without forwarding any child. An empty or nil result is a valid "nothing to
+// split" and forwards nothing.
+//
+// The name drops the qualifier the package already carries (ADR 0029 §4).
+//
+// ASSIGNABILITY — what naming the type does and does not accept. These call
+// shapes all still work at [Split]: a bare closure literal (which infers A and
+// B), a variable or field of the equivalent UNNAMED func type, a func returning
+// that unnamed type, a method value, and a plain top-level func declaration.
+// The one shape that does NOT work is a caller's OWN NAMED func type: Go
+// converts implicitly between two func types only when at least one side is
+// unnamed, so `var s MySplit; Split(s)` is rejected. Because SplitFunc is
+// generic the rejection surfaces as an INFERENCE failure — "type MySplit of s
+// does not match routing.SplitFunc[A, B] (cannot infer A and B)" — rather than
+// a plain assignability error, and supplying explicit type arguments does not
+// help. Convert at the call site: Split(SplitFunc[A, B](s)).
+type SplitFunc[A, B any] func(ctx context.Context, m msgin.Message[A]) ([]msgin.Message[B], error)
+
 // Split is a Splitter endpoint (EIP): it asserts the input payload to A, calls
 // fn to produce N child messages, and forwards each downstream IN ORDER. A
 // non-A payload yields ErrPayloadType (routed to the invalid-message channel, or
@@ -31,7 +56,7 @@ import (
 // child succeeds (end-to-end at-least-once, exactly like Chain). A child error
 // aborts the remaining children and propagates, so the whole parent is
 // redelivered — children must be idempotent downstream.
-func Split[A, B any](fn func(ctx context.Context, m msgin.Message[A]) ([]msgin.Message[B], error)) msgin.Step {
+func Split[A, B any](fn SplitFunc[A, B]) msgin.Step {
 	if fn == nil {
 		return nilFuncStep("routing.Split: nil fn")
 	}
