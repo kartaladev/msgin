@@ -257,28 +257,77 @@ func TestNewConsumer_Validation(t *testing.T) {
 	}
 }
 
-// TestConsumer_WithConsumerClockNil_IsNoOpNotPanic proves a nil
-// WithConsumerClock is a no-op (the real-clock default stays in place) rather
-// than a caller-triggered nil-panic once Run reaches its first clock use (the
-// shutdown-timeout c.clock.After call) — no panic on caller input.
-func TestConsumer_WithConsumerClockNil_IsNoOpNotPanic(t *testing.T) {
-	b := memory.New()
-	h := func(context.Context, msgin.Message[order]) error { return nil }
-	c, err := endpoint.NewConsumer[order](b, h,
-		endpoint.WithConsumerClock[order](nil),
-		endpoint.WithShutdownTimeout[order](10*time.Millisecond))
-	require.NoError(t, err)
+// TestConsumer_NilOptionValues_AreNoOpsNotPanics proves that passing nil to a
+// ConsumerOption carrying a pointer/interface leaves the option's default in
+// place rather than arming a nil-deref at the first use — the "no panic on
+// caller input" rule (CLAUDE.md). Both arms would otherwise panic on a WORKER
+// goroutine, where safeHandle does not recover, killing the process.
+//
+//   - WithConsumerClock(nil): the first clock use is the shutdown-timeout
+//     c.clock.After call, reached on cancel.
+//   - WithLogger(nil): the first logger use is a settlement that logs —
+//     divertTerminal's c.logger.Warn on the no-sink-configured arm, reached by
+//     a handler returning a Permanent error with neither sink configured.
+func TestConsumer_NilOptionValues_AreNoOpsNotPanics(t *testing.T) {
+	tests := []struct {
+		name string
+		opts []endpoint.ConsumerOption[order]
+		// src and handler drive the option's first use. A nil src means "an
+		// idle memory buffer" (nothing needs to flow to reach the clock).
+		src     func(st *settle) any
+		handler endpoint.Handler[order]
+		// ready gates cancel until the option's first use has happened; nil
+		// means the use is on the cancel path itself.
+		ready func(st *settle) bool
+	}{
+		{
+			name: "nil clock keeps the real-clock default",
+			opts: []endpoint.ConsumerOption[order]{
+				endpoint.WithConsumerClock[order](nil),
+				endpoint.WithShutdownTimeout[order](10 * time.Millisecond),
+			},
+			handler: func(context.Context, msgin.Message[order]) error { return nil },
+		},
+		{
+			name: "nil logger keeps the discard-logger default",
+			opts: []endpoint.ConsumerOption[order]{endpoint.WithLogger[order](nil)},
+			src: func(st *settle) any {
+				return &liveRedeliverSource{redeliverSource: &redeliverSource{st: st, id: "m1", max: 1}}
+			},
+			// Permanent + no invalid sink + no dead-letter sink is the arm that
+			// logs "discarding message; no invalid-message sink configured".
+			handler: func(context.Context, msgin.Message[order]) error {
+				return msgin.Permanent(errors.New("boom"))
+			},
+			ready: func(st *settle) bool { acks, _, _ := st.snapshot(); return acks > 0 },
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &settle{}
+			var src any = memory.New()
+			if tc.src != nil {
+				src = tc.src(st)
+			}
+			c, err := endpoint.NewConsumer[order](src, tc.handler, tc.opts...)
+			require.NoError(t, err)
 
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() { done <- c.Run(ctx) }()
-	cancel()
+			ctx, cancel := context.WithCancel(t.Context())
+			done := make(chan error, 1)
+			go func() { done <- c.Run(ctx) }()
+			if tc.ready != nil {
+				require.Eventually(t, func() bool { return tc.ready(st) }, 3*time.Second, 2*time.Millisecond,
+					"the option's first use was never reached")
+			}
+			cancel()
 
-	select {
-	case err := <-done:
-		assert.ErrorIs(t, err, context.Canceled)
-	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not return; a nil clock may have panicked instead of falling back to the real clock")
+			select {
+			case err := <-done:
+				assert.ErrorIs(t, err, context.Canceled)
+			case <-time.After(2 * time.Second):
+				t.Fatal("Run did not return; the nil option value may have panicked instead of falling back to its default")
+			}
+		})
 	}
 }
 

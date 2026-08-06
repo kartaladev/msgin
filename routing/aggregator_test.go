@@ -247,7 +247,90 @@ func TestNewAggregator_Validation(t *testing.T) {
 			assert: func(t *testing.T, agg *routing.Aggregator, err error) {
 				assert.ErrorIs(t, err, msgin.ErrNilFunc)
 				assert.False(t, msgin.IsPermanent(err), "construction-time ErrNilFunc must stay bare")
+				assert.Contains(t, err.Error(), "routing.NewAggregator: nil fn")
 				assert.Nil(t, agg)
+			},
+		},
+		{
+			// A nil STRATEGY is rejected here rather than at the option, and
+			// rather than being left to deref inside Handle: a nil correlate/
+			// release would panic on the first message, and inside a Consumer
+			// safeHandle classifies that panic as ErrHandlerPanic — TRANSIENT —
+			// so a pure misconfiguration would retry forever instead of
+			// surfacing. Same bare, non-permanent shape as the nil-fn arm above.
+			name: "nil WithCorrelationStrategy is a BARE ErrNilFunc naming its position",
+			build: func(t *testing.T) (*routing.Aggregator, error) {
+				return routing.NewAggregator[int, int](newIntStore(t), validFn,
+					routing.WithOutputChannel(&fakeAggChannel{}),
+					routing.WithCorrelationStrategy(nil))
+			},
+			assert: func(t *testing.T, agg *routing.Aggregator, err error) {
+				assert.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.False(t, msgin.IsPermanent(err), "construction-time ErrNilFunc must stay bare")
+				assert.Contains(t, err.Error(), "routing.NewAggregator: nil correlation strategy")
+				assert.Nil(t, agg)
+			},
+		},
+		{
+			name: "nil WithReleaseStrategy is a BARE ErrNilFunc naming its position",
+			build: func(t *testing.T) (*routing.Aggregator, error) {
+				return routing.NewAggregator[int, int](newIntStore(t), validFn,
+					routing.WithOutputChannel(&fakeAggChannel{}),
+					routing.WithReleaseStrategy(nil))
+			},
+			assert: func(t *testing.T, agg *routing.Aggregator, err error) {
+				assert.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.False(t, msgin.IsPermanent(err), "construction-time ErrNilFunc must stay bare")
+				assert.Contains(t, err.Error(), "routing.NewAggregator: nil release strategy")
+				assert.Nil(t, agg)
+			},
+		},
+		{
+			// WithReleaseWhen(nil) must NOT build its bool->(bool, error)
+			// wrapper around the nil fn: a non-nil wrapper would slip past the
+			// constructor check and deref the nil at release time instead.
+			name: "nil WithReleaseWhen is rejected too (no wrapper is built around the nil)",
+			build: func(t *testing.T) (*routing.Aggregator, error) {
+				return routing.NewAggregator[int, int](newIntStore(t), validFn,
+					routing.WithOutputChannel(&fakeAggChannel{}),
+					routing.WithReleaseWhen(nil))
+			},
+			assert: func(t *testing.T, agg *routing.Aggregator, err error) {
+				assert.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.False(t, msgin.IsPermanent(err), "construction-time ErrNilFunc must stay bare")
+				assert.Contains(t, err.Error(), "routing.NewAggregator: nil release strategy")
+				assert.Nil(t, agg)
+			},
+		},
+		{
+			// The default arm of the same check: passing NO strategy option
+			// leaves defaultCorrelate/defaultRelease in place, both non-nil, so
+			// the new checks must not reject the default configuration.
+			name: "no strategy option leaves the non-nil defaults in place",
+			build: func(t *testing.T) (*routing.Aggregator, error) {
+				return routing.NewAggregator[int, int](newIntStore(t), validFn,
+					routing.WithOutputChannel(&fakeAggChannel{}))
+			},
+			assert: func(t *testing.T, agg *routing.Aggregator, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, agg)
+				// Non-vacuous: drive a message through so the default correlate
+				// and release are actually CALLED, not merely stored.
+				assert.NoError(t, agg.Handle(t.Context(), corrMsg(1, "m1", "k1", nil)))
+			},
+		},
+		{
+			name: "explicit non-nil strategies construct cleanly",
+			build: func(t *testing.T) (*routing.Aggregator, error) {
+				return routing.NewAggregator[int, int](newIntStore(t), validFn,
+					routing.WithOutputChannel(&fakeAggChannel{}),
+					routing.WithCorrelationStrategy(func(msgin.Message[any]) (string, error) { return "k", nil }),
+					routing.WithReleaseWhen(func(msgin.MessageGroup) bool { return false }))
+			},
+			assert: func(t *testing.T, agg *routing.Aggregator, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, agg)
+				assert.NoError(t, agg.Handle(t.Context(), corrMsg(1, "m1", "k1", nil)))
 			},
 		},
 		{

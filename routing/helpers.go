@@ -37,3 +37,18 @@ func nilFuncStep(position string) msgin.Step {
 		})
 	}
 }
+
+// nilFuncAt is the CONSTRUCTION-time counterpart of nilFuncStep: an ErrNilFunc
+// naming which of a constructor's several function arguments was nil, returned
+// straight to the caller. position names the site exactly as nilFuncStep's does
+// (e.g. "routing.NewAggregator: nil release strategy").
+//
+// It is deliberately NOT wrapped in msgin.Permanent, unlike nilFuncStep. That
+// is the constructor arm of the invariant on [msgin.ErrNilFunc]: the error is
+// handed back here and never carried through a handler, so it never reaches a
+// RetryPolicy and a retry classification would be meaningless on it. The
+// exclusion is a decision, not an omission — do not "finish the job" by
+// wrapping it. errors.Is(err, msgin.ErrNilFunc) matches either way.
+func nilFuncAt(position string) error {
+	return fmt.Errorf("%w: %s", msgin.ErrNilFunc, position)
+}

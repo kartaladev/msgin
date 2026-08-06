@@ -63,6 +63,12 @@ func WithOutputChannel(ch msgin.MessageChannel) AggregatorOption {
 // to the dead-letter sink when none is configured ([msgin.Permanent] states all
 // three arms), rather than retried, since a missing correlation id will not
 // appear on redelivery.
+//
+// A nil fn is REJECTED BY [NewAggregator] (a bare ErrNilFunc naming its
+// position), not silently accepted: Handle calls the strategy unconditionally,
+// so a nil one would panic on the first message — and inside a Consumer that
+// panic is classified ErrHandlerPanic, i.e. TRANSIENT, so a pure
+// misconfiguration would retry forever instead of surfacing.
 func WithCorrelationStrategy(fn CorrelationStrategy) AggregatorOption {
 	return func(c *aggregatorConfig) { c.correlate = fn }
 }
@@ -81,6 +87,10 @@ func WithCorrelationStrategy(fn CorrelationStrategy) AggregatorOption {
 // accumulate), but a non-monotonic strategy may end up aggregating a
 // slightly different member set than the one it decided on. Prefer a
 // monotonic strategy (e.g. >=, never <) for this reason.
+//
+// A nil fn is REJECTED BY [NewAggregator] (a bare ErrNilFunc naming its
+// position) for the same reason as [WithCorrelationStrategy]: Handle calls the
+// strategy unconditionally.
 func WithReleaseStrategy(fn ReleaseStrategy) AggregatorOption {
 	return func(c *aggregatorConfig) { c.release = fn }
 }
@@ -88,8 +98,17 @@ func WithReleaseStrategy(fn ReleaseStrategy) AggregatorOption {
 // WithReleaseWhen overrides when a group is complete, for a decision that
 // cannot fail — sugar over [WithReleaseStrategy] wrapping fn to return a nil
 // error. The monotonicity guidance on WithReleaseStrategy applies unchanged.
+//
+// A nil fn leaves the release strategy UNSET rather than wrapping the nil, so
+// [NewAggregator] rejects it exactly as it rejects WithReleaseStrategy(nil).
+// Building the wrapper around a nil fn would produce a non-nil c.release that
+// slips past the constructor and defers the nil-deref to release time.
 func WithReleaseWhen(fn func(msgin.MessageGroup) bool) AggregatorOption {
 	return func(c *aggregatorConfig) {
+		if fn == nil {
+			c.release = nil
+			return
+		}
 		c.release = func(g msgin.MessageGroup) (bool, error) { return fn(g), nil }
 	}
 }
@@ -238,9 +257,23 @@ var _ msgin.MessageHandler = (*Aggregator)(nil)
 
 // NewAggregator builds an Aggregator from store, the typed aggregate function
 // fn, and opts. store and an output channel (WithOutputChannel) are required;
-// a nil store is ErrNilStore, a nil fn is a BARE ErrNilFunc, and no
-// WithOutputChannel is ErrNilOutput — no panic on caller input. WithGroupTimeout
-// without a paired WithExpiredGroupChannel is ErrExpiryChannelRequired.
+// a nil store is ErrNilStore and no WithOutputChannel is ErrNilOutput — no
+// panic on caller input. WithGroupTimeout without a paired
+// WithExpiredGroupChannel is ErrExpiryChannelRequired.
+//
+// EVERY FUNCTION Handle CALLS UNCONDITIONALLY IS REJECTED HERE, as a BARE
+// ErrNilFunc naming its position so the caller knows which one:
+//
+//   - a nil fn                            → "routing.NewAggregator: nil fn"
+//   - [WithCorrelationStrategy](nil)      → "…: nil correlation strategy"
+//   - [WithReleaseStrategy](nil) or
+//     [WithReleaseWhen](nil)              → "…: nil release strategy"
+//
+// Rejecting at construction is what keeps a misconfiguration VISIBLE: Handle
+// calls correlate and release unconditionally, so a nil one would panic on the
+// first message, and inside a Consumer that panic is recovered and classified
+// ErrHandlerPanic — TRANSIENT — so the flow would retry the same doomed
+// configuration forever rather than failing fast here.
 //
 // These are CONSTRUCTION-time errors and are returned BARE, deliberately: they
 // are handed to the caller here and never carried through Handle, so they never
@@ -257,11 +290,19 @@ func NewAggregator[A, B any](
 		return nil, msgin.ErrNilStore
 	}
 	if fn == nil {
-		return nil, msgin.ErrNilFunc
+		return nil, nilFuncAt("routing.NewAggregator: nil fn")
 	}
 	cfg := aggregatorConfig{correlate: defaultCorrelate, release: defaultRelease, clock: clockwork.NewRealClock()}
 	for _, opt := range opts {
 		opt(&cfg)
+	}
+	// Handle calls both strategies unconditionally; a nil one must not survive
+	// construction (see the doc comment).
+	if cfg.correlate == nil {
+		return nil, nilFuncAt("routing.NewAggregator: nil correlation strategy")
+	}
+	if cfg.release == nil {
+		return nil, nilFuncAt("routing.NewAggregator: nil release strategy")
 	}
 	if cfg.output == nil {
 		return nil, msgin.ErrNilOutput

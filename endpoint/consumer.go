@@ -131,9 +131,20 @@ func WithInvalidMessageSink[T any](out msgin.OutboundAdapter) ConsumerOption[T] 
 	return func(o *consumerConfig[T]) { o.invalidSink = out }
 }
 
-// WithLogger injects the structured logger (default: a discard logger).
+// WithLogger injects the structured logger the consumer uses to report a
+// discarded invalid message, a panicking hook or governor, and a failed settle.
+// Default: a discard logger, so a library consumer who wants no output gets
+// none. A nil logger is ignored (keeps the default) rather than a
+// caller-triggered nil-panic at the first settlement that logs — which would be
+// raised on a WORKER goroutine, where safeHandle does not recover it, and would
+// therefore take the process down (no panic on caller input). Mirrors
+// WithProducerLogger, from which it is named distinctly (ADR 0007 D10).
 func WithLogger[T any](l *slog.Logger) ConsumerOption[T] {
-	return func(o *consumerConfig[T]) { o.logger = l }
+	return func(o *consumerConfig[T]) {
+		if l != nil {
+			o.logger = l
+		}
+	}
 }
 
 // WithHooks sets the observability callbacks (all nil-safe).
