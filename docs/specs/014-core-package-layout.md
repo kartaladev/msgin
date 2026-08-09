@@ -155,7 +155,7 @@ behavior changes" cites the table, never its length.**
 | 4 | `WithReleaseStrategy` takes the named `ReleaseStrategy` (fallible); the bool-only sugar becomes `WithReleaseWhen` | ADR 0029 §3 (D-E) | §6, F3 |
 | 5 | `NewChannelExchange` **probes** `ExclusiveSubscribable` and **rejects** a reply channel that reports non-exclusive with `ErrSharedReplyChannel`, unless `endpoint.WithSharedReplyChannel()` is passed. A program that today builds two exchanges over one plain `PublishSubscribeChannel` stops compiling green: it now returns an error | ADR 0030 §3 (D-J), amended by **D-L** | §5.1, §9 AC-9, §10 |
 | 6 | **A deterministic endpoint fault carries its own retry classification.** *Invariant (corrected in round 8, B7 — the round-7 form was compile-proven FALSE; see ADR 0029 §5.0b):* **every typed error msgin returns from inside a `MessageHandler` body msgin itself constructs, whose cause was fixed at construction and cannot change for the message's lifetime, is `Permanent`; a fault a later `Subscribe`, config reload or drain could resolve stays bare and transient; every one returned from a constructor is bare, because construction never reaches a `RetryPolicy`; everything else — handed to a caller from a non-constructor API — is bare too.** Applied, each flow-path producer returns `msgin.Permanent(<sentinel>)` wrapped with positional context, so a mis-wired step is **diverted to the invalid-message channel** instead of consuming the retry budget, landing in the dead-letter sink and recording an unhealthy signal that trips the circuit breaker. Covers `ErrNilFunc` **and `ErrNilSink`** (`handler.go:55`, `msgin.To`); **excludes** `routing/aggregator.go:251` (`NewAggregator` — a constructor) and `ErrNoRoute` (evaluated per message) | ADR 0029 §5.0b (**D-M**, scope-corrected in round 7) | §7; **Plan 027 Task 9.7** (shipped producers) + **Task 9** (combinators); precedent `routing/aggregator.go:151-160` |
-| 7 | **`divert` falls back to the dead-letter sink before discarding — and the fallback is SINGLE-SHOT.** When no invalid-message sink is configured but a `DeadLetter` sink is, an invalid message is routed there rather than discarded; the discard remains when **neither** sink is configured **and whenever the invalid path's sink — the configured `WithInvalidMessageSink` or, when unset, the dead-letter fallback — fails its own `Send`** — that failure is settled by a WARN naming **both** the classification cause and the sink error, then an `Ack`, never a `Nack` with requeue (**D-P**). The single shot is a property of the **message** (permanent by classification), not of which sink refused it, so it governs the **whole invalid path**, not the fallback alone. **One exception**, added by the Task 9.7 code review: a `Send` that fails only because the consumer's settle context was **already cancelled by the shutdown deadline** proved nothing about the sink, so it is `Nack`ed with requeue, fires no terminal hook, and keeps its tracker entry — see the shutdown-exception note under [ADR 0007 D7](../adrs/0007-reliability-settlement-api.md#d7--no-invalid-sink-policy-tasks-45). It does not weaken D-P: in normal operation `ctx.Err()` is `nil`, and the arm is reachable only during a shutdown D9 bounds, so it cannot loop. `OnInvalidMessage` fires on every arm; `OnRetry` fires on none of them. Without the fallback, row 6 would turn a message the library previously captured durably into a **dropped** one, in the default configuration of every finite-retry consumer; without the single shot, a **permanent** message would loop through redelivery unboundedly, invisible to `MaxAttempts`, to `Backoff` and to the circuit breaker — and, holding its `WithMaxInFlight` credit forever, starving **valid** traffic. **Three consequences are accepted and recorded, not absent:** an oversize payload rejected by `WithMaxPayloadBytes` is now **persisted** into the operator's durable dead-letter store; a poison storm becomes durable writes rather than log lines; and **a transient outage of a *configured* invalid-message sink discards that window's invalid messages** rather than holding them until it recovers — loudly (a WARN per message naming the id, the cause and the sink error, plus `OnInvalidMessage`), and the price of the termination guarantee. Point `WithInvalidMessageSink` at a durable-on-write target (a spool, an outbox table) if that window matters. **Disclosed limitation (CLAUDE.md's multi-instance rule):** the dead-letter sink now carries two operationally distinct classes — retries-exhausted and permanently-invalid — with **no settlement-reason header** to tell them apart in another process; an operator who needs the distinction must configure `WithInvalidMessageSink` | ADR 0029 §5.0b (**D-N**, amended by **D-P**), amending [ADR 0007 D7](../adrs/0007-reliability-settlement-api.md#d7--no-invalid-sink-policy-tasks-45) twice | §7; **Plan 027 Task 9.7**, same commit as row 6 |
+| 7 | **`divert` falls back to the dead-letter sink before discarding — and the fallback is SINGLE-SHOT.** When no invalid-message sink is configured but a `DeadLetter` sink is, an invalid message is routed there rather than discarded; the discard remains when **neither** sink is configured **and whenever the invalid path's sink — the configured `WithInvalidMessageSink` or, when unset, the dead-letter fallback — fails its own `Send`** — that failure is settled by a WARN naming **both** the classification cause and the sink error, then an `Ack`, never a `Nack` with requeue (**D-P**). The single shot is a property of the **message** (permanent by classification), not of which sink refused it, so it governs the **whole invalid path**, not the fallback alone. **One exception**, added by the Task 9.7 code review: a `Send` that fails only because the consumer's settle context was **already cancelled by the shutdown deadline** proved nothing about the sink, so it is `Nack`ed with requeue, fires no terminal hook, and keeps its tracker entry — see the shutdown-exception note under [ADR 0007 D7](../adrs/0007-reliability-settlement-api.md#d7--no-invalid-sink-policy-tasks-45). It does not weaken D-P: in normal operation `ctx.Err()` is `nil`, and the arm is reachable only during a shutdown D9 bounds, so it cannot loop. `OnInvalidMessage` fires on every arm; `OnRetry` fires on none of them. Without the fallback, row 6 would turn a message the library previously captured durably into a **dropped** one, in the default configuration of every finite-retry consumer; without the single shot, a **permanent** message would loop through redelivery unboundedly, invisible to `MaxAttempts`, to `Backoff` and to the circuit breaker — and, holding its `WithMaxInFlight` credit forever, starving **valid** traffic. **ONE CLASS IS EXEMPT FROM THE FALLBACK — `ErrPayloadTooLarge`** (the byte-cap reject from `WithMaxPayloadBytes`), amended 2026-08-09 by the whole-branch `/code-review` of Task 9.5. With no invalid sink it is **discarded** (WARN naming the id and the class, `OnInvalidMessage`, `Ack`) rather than dead-lettered, even when a `DeadLetter` sink is configured; with an invalid sink set it goes there, unchanged. The cap bounds memory and durable storage against **untrusted wire input**, so routing its rejects into the fallback — reached in the default shape of *every* finite-retry consumer — would write each oversize payload **verbatim** into the operator's durable store and make the defence the vector. This does not violate the row's own premise (*"no configuration that previously captured a message starts dropping it"*): the class was already `IsPermanent` before **D-N** and was therefore already **discarded**, so the exemption **restores** the prior behavior rather than losing a capture. **Two further consequences are accepted and recorded, not absent:** a poison storm becomes durable writes rather than log lines; and **a transient outage of a *configured* invalid-message sink discards that window's invalid messages** rather than holding them until it recovers — loudly (a WARN per message naming the id, the cause and the sink error, plus `OnInvalidMessage`), and the price of the termination guarantee. Point `WithInvalidMessageSink` at a durable-on-write target (a spool, an outbox table) if that window matters. **Disclosed limitation (CLAUDE.md's multi-instance rule):** the dead-letter sink now carries two operationally distinct classes — retries-exhausted and permanently-invalid — with **no settlement-reason header** to tell them apart in another process; an operator who needs the distinction must configure `WithInvalidMessageSink` | ADR 0029 §5.0b (**D-N**, amended by **D-P**), amending [ADR 0007 D7](../adrs/0007-reliability-settlement-api.md#d7--no-invalid-sink-policy-tasks-45) three times | §7; **Plan 027 Task 9.7**, same commit as row 6 |
 | 8 | **`Producer.Send` returns a permanent outbound error to the caller WITHOUT dead-lettering it.** This is not a new code path — `endpoint/producer.go:453-455` already returns on `IsPermanent` before `p.deadLetter(...)` — it is row 6 reaching the producer: a mis-wired step downstream of a producer over a `*channel.DirectChannel` (`channel/direct.go:89` returns the handler's error verbatim) now classifies `Permanent`, so **the producer's dead-letter sink stops receiving it** and **`errors.Is(err, msgin.ErrDeadLettered)` flips `true` → `false`** on the error `Send` returns. `OnDeadLetter` stops firing for this class. The behavior is correct and deliberate — `Send` is synchronous, the caller receives the error, there is no message to lose, which is why row 7's fallback does **not** extend to the producer (there is no `WithInvalidMessageSink` on the producer) — but it is an observable change to an **exported error contract** and rides in this register rather than silently. Round 7 recorded row 7's premise as *"no configuration that previously captured a message starts dropping it"*: true of the consumer, **false here** | ADR 0029 §5.0b (**D-M**, producer-side blast radius, round 8) | §7; **Plan 027 Task 9.7**, same commit as rows 6 and 7 |
 
 > **Row 6 is stated as an INVARIANT, not as a quantifier over a sentinel name** (round-7 D-B7/X-B3). It
@@ -519,8 +519,8 @@ for p in endpoint routing transform channel resilience; do
 done                                        # must be EMPTY
 ```
 
-> **DECIDED (decision D-I, 2026-07-28): the two orphaned expr sentinels LEAVE root.** `ErrInvalidExpression`
-> (`errors.go:168`) and `ErrExprResultType` (`errors.go:193`) had **zero users** after the `*Expr` deletion and
+> **DECIDED (decision D-I, 2026-07-28) and IMPLEMENTED (Plan 027 Task 9.5).** `ErrInvalidExpression`
+> and `ErrExprResultType` had **zero users** after the `*Expr` deletion and
 > their godoc named constructors that no longer exist (F11.7). They are **deleted from `errors.go`**, and the
 > `expr` module (Task 10) declares **one** replacement of its own. Root's contract then has a producer inside
 > the root module for every sentinel it declares — the claim a *closed* contract has to be able to make.
@@ -2065,12 +2065,14 @@ Task 12's invariant block unrunnable with no rebuild instructions.
 for p in endpoint routing transform channel resilience; do
   go run docs/plans/027-tools/decls.go $p | grep -v '_test\.go' \
     | awk -F'\t' -v P=$p '$5=="exported" && $3!="method" {print P"\t"$4}'
-done | sort -u -k2,2 > docs/plans/027-tools/symmap.tsv        # 91 symbols at dadc775
+done | sort -u -k2,2 > docs/plans/027-tools/symmap.tsv  # 91 at dadc775; 95 after Task 9 added Predicate,
+                                                        # RouteFunc, SplitFunc, Transformer
 
 # ARM 1 — MOVED symbols still qualified as msgin.X
 while IFS=$'\t' read -r pkg sym; do
   grep -rn --include='*.go' --exclude-dir=docs "msgin\.${sym}\b" .
-done < docs/plans/027-tools/symmap.tsv  # currently 2 survivors: codec.go:33, routing/aggregator_test.go:21
+done < docs/plans/027-tools/symmap.tsv  # 2 survivors at dadc775 (codec.go:33, routing/aggregator_test.go:21);
+                                        # both FIXED and this arm EMPTY as of Plan 027 Task 9.5
 
 # ARM 2 — CONSTRUCTOR/OPTION/SENTINEL-SHAPED names (With*/Err*/New*) referenced UNQUALIFIED in a
 # LINE comment, that are declared nowhere in the ELEVEN scanned package directories (root + ten).
@@ -2110,6 +2112,7 @@ comm -23 \
       | awk -F'\t' '$5=="exported"{sub(/^.*\./,"",$4); print $4}' | sort -u) \
   | grep -vxE 'ErrNoRows|ErrUnexpectedEOF|ErrUnsupported|ErrNoPayloadCodec|WithBusyTimeout|WithImage|WithInstanceID|WithJournalMode|WithSharedMemory|WithX'
 # at dadc775 → exactly one line: WithRelease   (routing/aggregator.go:316 — see below)
+# FIXED and this arm EMPTY as of Plan 027 Task 9.5 (the comment had moved to :366 by then)
 ```
 
 **The arm-2 allow-list is short, and every entry is justified** — an unexplained allow-list is how a gate
@@ -2147,6 +2150,13 @@ becomes decorative:
 **The one genuine survivor at `dadc775`:** `routing/aggregator.go:316` —
 `// release-decision error (the WithRelease strategy failed)`. The option is `WithReleaseStrategy`.
 
+> **CLEARED IN PLAN 027 TASK 9.5.** Both arms now report empty, and both were **probed for vacuity** before
+> that was believed: a planted `// Probe: msgin.NewQueueChannel …` made arm 1 report one line, and a planted
+> `// Probe: WithNonexistentOption and ErrNeverDeclared …` made arm 2 report two. The `dadc775` line numbers
+> above are **historical** — by execution the arm-2 comment had drifted to `routing/aggregator.go:366` — so
+> run the commands rather than reading the numbers. Task 12 re-runs both arms on the delivered tree, over
+> **twelve** directories once `expr/` exists.
+
 Both arms must be empty (arm 2 modulo the allow-list above). Run the sweep **after the last move**, tree-wide
 — it is *not* an adapter-only task: the core-extraction tasks leave their own stale mentions behind.
 
@@ -2180,8 +2190,10 @@ Both arms must be empty (arm 2 modulo the allow-list above). Run the sweep **aft
    (`robfig/cron` **stays** — RFC-0004's settled decision.)
 4. **Capability** — a test proves a `QueueChannel`, a `PublishSubscribeChannel`, **and** a shipped
    `OutboundAdapter` (e.g. `*memory.Broker`) can each serve at **all eight** send-only positions §5.0
-   enumerates. Today it covers **three** (`capability_test.go:152,163,174` — filter discard, router default,
-   exchange request), i.e. **9 of the required 24 subtests**. The five missing are rows **3, 4, 5, 7, 8**:
+   enumerates. **MET as of Plan 027 Task 9.5: all 24 subtests exist** — 18 in root's `capability_test.go`
+   (6 core sites × 3 targets) plus 3 in `adapter/http` and 3 in `adapter/http/stdlib`, whose cases belong in
+   those packages' tests rather than root's. It previously covered **three** sites, i.e. **9 of 24**, and the
+   five that were missing are rows **3, 4, 5, 7, 8**:
    `routing.NewRouter`'s `pick` **return**, the Aggregator **output** and **expired-group** sinks, and the two
    HTTP inbound targets. Row 3 is the one every draft has dropped, and it is the position where a
    *user-supplied* `pick` returns a durable channel chosen at **message time** — the widening's sharpest case.
@@ -2189,6 +2201,14 @@ Both arms must be empty (arm 2 modulo the allow-list above). Run the sweep **aft
    `adapter/http` and `adapter/http/stdlib`. This is the defect in §1.2, so it must fail against the
    pre-window code. **A compile failure produces no `FAIL` line** — the RED artifact is the compiler
    transcript from `go test -c -o /dev/null .`, not `go vet` (which stops after one type-error batch).
+
+   > **SATISFIED IN PLAN 027 TASK 9.5 — all 24 subtests exist and pass.** 18 in root's
+   > `capability_test.go`; 3 in `adapter/http/capability_test.go`
+   > (`TestServeAsyncTargetAcceptsEveryChannel`); 3 in `adapter/http/stdlib/capability_test.go`
+   > (`TestNewInboundTargetAcceptsEveryChannel`). Row 5 (the expired-group sink) delivers on the reaper's
+   > goroutine and returns **no error**, so its error assertion is vacuous by construction and the delivery
+   > assertion is the real one; all three added core rows were mutation-probed (target swapped for a decoy
+   > channel → 9 of 9 failed) so that this is proven rather than asserted.
 5. **Behavior preservation** — every pre-existing test passes, modified only where it names a moved or
    narrowed signature. No test's assertions change, outside **the rows of §2.1's table** (cite the table, not
    a count — the table has grown three times). The rows that *require* an assertion change, with the task that

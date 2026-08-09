@@ -87,7 +87,7 @@ func WithRetryPolicy[T any](p msgin.RetryPolicy) ConsumerOption[T] {
 // that window matters, point this option at a durable-on-write sink (a local
 // spool, an outbox table) rather than a remote service.
 //
-// WHEN IT IS UNSET the divert still happens, in three arms:
+// WHEN IT IS UNSET the divert still happens, in four arms:
 //
 //  1. RetryPolicy.DeadLetter is configured → the message goes THERE. A finite
 //     MaxAttempts requires a DeadLetter sink, so this is the default shape of
@@ -95,7 +95,15 @@ func WithRetryPolicy[T any](p msgin.RetryPolicy) ConsumerOption[T] {
 //  2. That sink's Send fails → same single-shot discard as above (WARN naming
 //     both the classification cause and the sink error, then Ack).
 //  3. Neither sink is configured → logged at WARN and discarded (the original
-//     ADR 0007 D7 behavior).
+//     ADR 0007 D7 behavior). The WARN names BOTH options, since reaching this
+//     arm means neither is set.
+//  4. EXCEPT for an over-size payload (ErrPayloadTooLarge from
+//     WithMaxPayloadBytes), which does NOT take arm 1: it is discarded (WARN +
+//     OnInvalidMessage + Ack) even when a DeadLetter sink is configured. The
+//     byte cap defends memory and durable storage against untrusted wire input,
+//     so persisting its rejects into the operator's dead-letter store would make
+//     the defence the vector. Setting THIS option opts back in — the sink-set
+//     arm above covers over-size messages like any other.
 //
 // OnInvalidMessage fires on every arm; OnRetry and OnDeadLetter fire on none.
 // The DEAD-LETTER path is the opposite and unchanged (ADR 0007 D8): a
@@ -765,7 +773,7 @@ func (c *consumer[T]) dispatch(ctx, settleCtx context.Context, d msgin.Delivery)
 		// Decode failure = permanent invalid message → the invalid-message sink,
 		// or the dead-letter sink when none is configured (D-N). Settled
 		// TERMINALLY: one attempt at the sink, never a Nack (D-P).
-		sink, fellBack := c.invalidTarget()
+		sink, fellBack := c.invalidTarget(derr)
 		if fellBack {
 			c.warnInvalidFallback(id)
 		}
@@ -799,7 +807,7 @@ func (c *consumer[T]) dispatch(ctx, settleCtx context.Context, d msgin.Delivery)
 		// dead-letter sink when none is configured (D-N). Settled TERMINALLY:
 		// one attempt at the sink, never a Nack (D-P).
 		// Note (M8): the attempt tracker is deliberately NOT consulted here.
-		sink, fellBack := c.invalidTarget()
+		sink, fellBack := c.invalidTarget(err)
 		if fellBack {
 			c.warnInvalidFallback(id)
 		}
@@ -834,13 +842,14 @@ func (c *consumer[T]) attempts(d msgin.Delivery) int {
 	return c.tracker.observe(d.Msg.ID())
 }
 
-// invalidTarget returns where an invalid message is diverted: the configured
-// invalid-message sink, or — when none is configured (D-N) — the dead-letter
-// sink, so a fault previously captured durably is never downgraded to a
-// discard by D-M's reclassification. fellBack reports the second case, so the
-// call site can emit D-N's WARN with the message id. Both are nil/false only
-// when neither sink is configured, where ADR 0007 D7's logged discard remains
-// the terminal behavior.
+// invalidTarget returns where an invalid message with classification cause is
+// diverted: the configured invalid-message sink, or — when none is configured
+// (D-N) — the dead-letter sink, so a fault previously captured durably is never
+// downgraded to a discard by D-M's reclassification. fellBack reports the second
+// case, so the call site can emit D-N's WARN with the message id. Both are
+// nil/false when neither sink is configured — and when the byte-cap exemption
+// below applies — where ADR 0007 D7's logged discard remains the terminal
+// behavior.
 //
 // It is a pure config read and is deliberately NOT folded into divertTerminal:
 // the dead-letter call site's sink IS c.policy.DeadLetter, so a fallback inside
@@ -863,9 +872,33 @@ func (c *consumer[T]) attempts(d msgin.Delivery) int {
 //
 // TestDivertInvalidFallbackUnderNativeDeadLetter pins this: a native-DLQ source
 // with no invalid sink must still reach c.policy.DeadLetter.
-func (c *consumer[T]) invalidTarget() (sink msgin.OutboundAdapter, fellBack bool) {
+func (c *consumer[T]) invalidTarget(cause error) (sink msgin.OutboundAdapter, fellBack bool) {
 	if c.invalidSink != nil {
 		return c.invalidSink, false
+	}
+	// THE BYTE-CAP EXEMPTION TO D-N. WithMaxPayloadBytes exists to bound memory
+	// and storage against UNTRUSTED wire input. Routing its rejects to the
+	// dead-letter sink would write each oversize payload VERBATIM into the
+	// operator's durable store — so an attacker posting oversize bodies to a
+	// capped consumer fills that store with exactly the bytes the cap declared
+	// illegitimate, and the defence becomes the vector. The fallback is
+	// therefore not applied to this one class; the message is discarded (loudly)
+	// instead.
+	//
+	// THIS DOES NOT VIOLATE D-N'S PREMISE. D-N exists so that "no configuration
+	// that previously captured a message starts dropping it" — the D-M
+	// reclassification had moved faults OFF the retry-exhaustion path that used
+	// to deposit them in the DeadLetter sink. ErrPayloadTooLarge was never on
+	// that path: it was permanent (IsPermanent, reliability.go) before D-N too,
+	// so it was already DISCARDED under ADR 0007 D7. Exempting it RESTORES the
+	// pre-D-N behavior for this class rather than losing anything D-N promised.
+	//
+	// An operator who does want the bytes captured opts in with
+	// WithInvalidMessageSink, handled above: that sink is a deliberate choice
+	// aimed at invalid messages, whereas the dead-letter fallback is inherited
+	// by every finite-retry consumer that never asked for it.
+	if errors.Is(cause, msgin.ErrPayloadTooLarge) {
+		return nil, false
 	}
 	return c.policy.DeadLetter, c.policy.DeadLetter != nil
 }
@@ -905,9 +938,11 @@ func (c *consumer[T]) warnInvalidFallback(id string) {
 // are permanent by classification, so every outcome ends in a terminal event
 // and an Ack and none of them re-enters the flow. Four outcomes:
 //
-//   - nil sink (neither an invalid-message sink nor a DeadLetter is configured)
-//     → discarding IS the terminal invalid event (ADR 0007 D7): log a loud
-//     WARN, fire terminalHook, Ack.
+//   - nil sink → discarding IS the terminal invalid event (ADR 0007 D7): log a
+//     loud WARN naming the id and the class, fire terminalHook, Ack. Two ways to
+//     get here, and the WARN distinguishes them: neither an invalid-message sink
+//     nor a DeadLetter is configured, or invalidTarget's BYTE-CAP EXEMPTION
+//     withheld the DeadLetter fallback from an ErrPayloadTooLarge reject.
 //   - sink.Send FAILS WHILE ctx IS ALREADY DONE → this is SHUTDOWN, not a sink
 //     refusal, and it is the ONE arm that does not settle terminally. See the
 //     dedicated paragraph below.
@@ -944,10 +979,22 @@ func (c *consumer[T]) warnInvalidFallback(id string) {
 // success path: a failed source-Ack must not drop the attempt count.
 func (c *consumer[T]) divertTerminal(ctx context.Context, sink msgin.OutboundAdapter, d msgin.Delivery, terminalHook func(context.Context, msgin.Message[any], error), cause error) bool {
 	if sink == nil {
-		// Neither sink configured: discarding is the terminal invalid event
-		// (ADR 0007 D7). One line per message — the id is the only record the
-		// message ever existed.
-		c.logger.Warn("msgin: discarding message; no invalid-message sink configured", "id", d.Msg.ID())
+		// No sink to divert to: discarding is the terminal invalid event (ADR
+		// 0007 D7). One line per message — the id is the only record the message
+		// ever existed — and it names the CLASS, so an operator can tell the two
+		// ways this arm is reached apart without reading the code.
+		if errors.Is(cause, msgin.ErrPayloadTooLarge) {
+			// The byte-cap exemption (invalidTarget): a DeadLetter sink may well
+			// be configured, so the WARN must not claim nothing was.
+			c.logger.Warn("msgin: discarding over-size message; the byte cap's rejects are never written to the dead-letter sink (set WithInvalidMessageSink to capture them)",
+				"id", d.Msg.ID(), "cause", causeForLog(cause))
+		} else {
+			// Neither sink configured. Name BOTH — after D-N this arm needs both
+			// to be unset, so naming only the invalid one sends an operator who
+			// HAS a dead-letter sink to check the wrong option.
+			c.logger.Warn("msgin: discarding message; neither an invalid-message sink (WithInvalidMessageSink) nor a dead-letter sink (RetryPolicy.DeadLetter) is configured",
+				"id", d.Msg.ID(), "cause", causeForLog(cause))
+		}
 	} else if err := c.safeSend(ctx, sink, d.Msg); err != nil {
 		if ctx.Err() != nil {
 			// Shutdown, not a sink refusal (see the paragraph above): keep the

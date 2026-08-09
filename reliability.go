@@ -28,6 +28,14 @@ func (e *permanentError) Unwrap() error { return e.err }
 //     discard;
 //  3. otherwise it is logged at WARN and discarded.
 //
+// EXACTLY ONE CLASS SKIPS ARM 2: [ErrPayloadTooLarge], the byte-cap reject from
+// endpoint.WithMaxPayloadBytes, goes straight from arm 1 to arm 3. That cap
+// exists to bound memory and durable storage against untrusted wire input, so
+// writing its rejects into the operator's dead-letter store — which arm 2 would
+// do in the default shape of every finite-retry consumer — would turn the
+// defence into the vector. The class was already discarded before arm 2 existed,
+// so this loses nothing arm 2 had captured. See endpoint.WithMaxPayloadBytes.
+//
 // The divert is SINGLE-SHOT on ALL of them: one attempt at one sink. If that
 // Send fails — arm 1's configured sink and arm 2's fallback alike — the message
 // is logged at WARN (naming the classification cause and the sink error) and

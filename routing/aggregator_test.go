@@ -18,7 +18,7 @@ import (
 
 // fakeAggChannel is a MessageChannel that records every Send and can be
 // scripted to fail (sendErr), used as an Aggregator's WithOutputChannel in
-// tests instead of a *msgin.DirectChannel + subscriber.
+// tests instead of a *channel.DirectChannel + subscriber.
 type fakeAggChannel struct {
 	mu      sync.Mutex
 	sent    []msgin.Message[any]

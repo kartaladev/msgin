@@ -386,8 +386,8 @@ and defined nowhere; it is defined here.
 | 4–8 | Extract `routing`, `transform`, `channel`, `resilience`, `endpoint`; place the 44 test files | **DONE** — commit `c83dde9`, F8 |
 | 7a | Requalify `adapter/` + the six satellite modules | **DONE** — commit `c83dde9`, F9 |
 | — | Round-3 code fixes (7-module `go mod tidy`, ST1008, reliability tests, dead-helper deletion, 5 × `doc.go`, article agreement) | **DONE** — committed `1d7fc80` (code) + `3d0b87a` (docs), F12/F13 |
-| **9** | Named behavior types + combinators | **PARTIAL** — `CorrelationStrategy`/`ReleaseStrategy` shipped; 4 types + combinators remain |
-| **9.5** | Residual cleanups the migration left behind | **PARTIAL** — the dead-helper deletion and the article sweep landed in the round-3 pass; **the sentinel decision is now CLOSED (D-I: they leave root)**, its `errors.go` deletion, the two-arm sweep, and the capability-test widening remain |
+| **9** | Named behavior types + combinators | **DONE** — committed `544cb5b`, ledger §F16. All four types + `And`/`Or`/`Not`; gates 8.4c–8.4f RED→GREEN. The `MessageChannel` census is **15**, not the projected 14: naming a type RELOCATES an occurrence (`RouteFunc`'s own declaration is a census line) rather than removing one |
+| **9.5** | Residual cleanups the migration left behind | **DONE** — this commit, ledger §F17. The dead-helper deletion and the article sweep had landed in the round-3 pass; this commit adds **D-I's `errors.go` deletion** (root 102→100 exported, 43→41 sentinels, `apidiff` 95→97 removals — the projections held exactly), both sweep arms empty, and the capability test widened 9 → **24** subtests (18 root + 3 `adapter/http` + 3 `adapter/http/stdlib`) |
 | **9.6** | Reply-channel exclusivity probe (**D-J**, ADR 0030) | **NOT STARTED** — added in the D-I/D-J pass (`aae6160`); closes the residual three review lenses converged on |
 | **9.7** | Classify the **five** shipped producers (`ErrNilFunc` ×4 + `ErrNilSink`) as `Permanent` (**D-M**), add the dead-letter fallback (**D-N**) and make it single-shot (**D-P**) | **DONE** — this commit, ledger §F15. Ran **FIRST**, before Task 9, per the round-7 correction. All five gates green; `apidiff` empty on all four packages; zero net-new uncovered blocks |
 | **10** | The `expr` provider module | **NOT STARTED** |
@@ -841,7 +841,7 @@ behavior-type naming and combinators, whose own header declares RFC 0002 + 0003.
 
 ---
 
-## Task 9.5 — Residual cleanups the migration left behind · **M** · PARTIAL
+## Task 9.5 — Residual cleanups the migration left behind · **M** · DONE
 
 Each item is invisible to `go build`, `go vet`, `go test`, and `gofmt`. None is cosmetic; each is a delivery
 blocker under CLAUDE.md's godoc and dead-code expectations.
@@ -878,8 +878,10 @@ blocker under CLAUDE.md's godoc and dead-code expectations.
 > but **whose fault it is**: an invalid expression is the provider's fault, and root — after Task 1 — has no
 > code that can produce one. Spec 014 §3.2 carries the commands.
 
-- [x] **Decided: B.** `ErrInvalidExpression` (`errors.go:168`) and `ErrExprResultType` (`errors.go:193`) are
-      **deleted from root**; the `expr` module declares **`expr.ErrInvalidExpression` only**, with the
+- [x] **Decided: B.** `ErrInvalidExpression` and `ErrExprResultType` are
+      **deleted from root** (done; line numbers struck rather than refreshed — see the deletion bullet below,
+      where all three documents published a different and wrong pair); the `expr` module declares
+      **`expr.ErrInvalidExpression` only**, with the
       `msgin/expr:` prefix (Spec 014 §7). **Not aliased** — an alias would keep the dead names in the closed
       contract and would have to reference the root vars this decision removes.
 
@@ -897,16 +899,32 @@ blocker under CLAUDE.md's godoc and dead-code expectations.
 
       The HEAD row is **measured** (`decls.go` and `apidiff`, both re-run 2026-07-28); the other two are
       **projections**. Task 12 re-runs the commands and treats their output as the truth.
-- [ ] **Deletion is CODE, and it belongs to this task's commit** — remove both `var` blocks from `errors.go`
-      (`ErrInvalidExpression` at `:180`, `ErrExprResultType` at `:206`, each with the godoc block above it,
-      starting at `:168` and `:193` respectively). **Delete both godoc blocks outright — do NOT copy either
+
+      > **MEASURED AT EXECUTION (`b4d1a1a` → this task's tree). ALL FOUR D-I PROJECTIONS HELD EXACTLY.**
+      > The BEFORE row was re-measured at `b4d1a1a` first, because Tasks 9.7 and 9 landed after `dadc775`
+      > and the table could not be assumed still valid: it was **unchanged** — 102 / 43 / 95 / 6 — confirming
+      > that neither task added a root exported symbol (Task 9's four behavior types are in `routing` and
+      > `transform`). AFTER the two deletions: **100 exported / 41 sentinels / 97 removals / 6 additions**,
+      > with the two new `apidiff` lines being exactly `- ErrExprResultType: removed` and
+      > `- ErrInvalidExpression: removed`. The `After D-J` row remains a projection until Task 9.6 lands.
+- [x] **Deletion is CODE, and it belongs to this task's commit** — remove both `var` blocks from `errors.go`
+      (each with the godoc block above it). **Delete both godoc blocks outright — do NOT copy either
       one forward.** Task 10 writes `expr.ErrInvalidExpression`'s godoc **fresh**, from the three-point
       content spec in its own checkbox, and the reason is not stylistic: the root text names
       `ErrExprResultType` (a sentinel revised D-K abolishes, and one Spec AC-10 arm 2 requires to be empty
       **workspace-wide**, `errors.go` included) and closes with *"It is exported **here, not in the
-      provider**"*, the exact premise D-I reversed. `ErrExprResultType`'s godoc (`:193-206`) has no
-      destination at all: the `expr` module returns `msgin.ErrPayloadType` rather than minting a replacement,
-      so there is no declaration for that comment to sit above.
+      provider**"*, the exact premise D-I reversed. `ErrExprResultType`'s godoc has no destination at all:
+      the `expr` module returns `msgin.ErrPayloadType` rather than minting a replacement, so there is no
+      declaration for that comment to sit above.
+
+      > **EVERY LINE NUMBER THIS TASK PUBLISHED FOR THE TWO BLOCKS WAS STALE, IN ALL THREE DOCUMENTS.**
+      > At execution (`b4d1a1a`) the real positions were `ErrInvalidExpression` godoc `errors.go:196-207`,
+      > declaration `:208`; `ErrExprResultType` godoc `:223-235`, declaration `:236`. This task published
+      > `:168`/`:180` and `:193`/`:206`; Spec 014 §3.2 (L522-523) published `:168` and `:193`; ADR 0029
+      > (L1081-1082) published `:180` and `:206`. Three documents, three different pairs, none of them right
+      > — the blocks had drifted ~28 lines since they were measured. The task text already warned to locate
+      > by symbol rather than by line, which is what made this harmless; the numbers are struck rather than
+      > refreshed, because a deleted declaration has no line number worth carrying.
 
       > **ROUND-7 CORRECTION (X-B5, this task's half).** This bullet read *"Copy `ErrInvalidExpression`'s
       > godoc (`:168-180`) out to Task 10 first"*, and Task 10 read *"recover it from
@@ -920,9 +938,17 @@ blocker under CLAUDE.md's godoc and dead-code expectations.
       > `errors.go`, and lines 175–177 contain no matched token — they are ordinary sentinel godoc. An
       > implementer would delete the blocks, re-run the sweep, observe no delta, and reasonably conclude the
       > gate was broken. The deletion is still correct; only the justification was invented.
-- [ ] **Propagate in the same commit:** the ledger; Spec 014 §3.2 / §4 / §4.1 / §7 (**done in the doc pass**);
+- [x] **Propagate in the same commit:** the ledger; Spec 014 §3.2 / §4 / §4.1 / §7 (**done in the doc pass**);
       Task 10's provider set and its `RouteFunc`, whose **two construction validations wrap
       `ErrInvalidExpression`** and must now wrap the module's own; Task 12's assertion numbers.
+
+      > **VERIFIED AT EXECUTION, NOT ASSUMED.** All four downstream sites already carried D-I correctly and
+      > needed **no edit**: Spec 014 §3.2 (L522-531), §4's arithmetic row (L1091), §4.1's fifth-class note
+      > (L1177-1191) and §7 (L1740-1818, incl. the `msgin/expr:` prefix and the "deleted, not aliased" rule);
+      > Task 10's `expr/errors.go` checkbox (L2199-2206) and its `RouteFunc` two-construction-validations
+      > bullet (L2197-2198); Task 12's projection table (L3011-3024) and its `apidiff` fifth-class bullet
+      > (L3048-3051). Spec §4/§4.1's D-I numbers are deliberately LEFT as projections: the end state they
+      > describe is post-D-J (102/42), which Task 9.6 has not landed yet, and Task 12 owns that measurement.
 
 ### 9.5.1 — the rest
 
@@ -939,7 +965,7 @@ blocker under CLAUDE.md's godoc and dead-code expectations.
       grep -rnE '\b[Aa] endpoint\.|\b[Aa]n (msgin|routing|transform|channel|resilience)\.' --include='*.go' .   # empty
       grep -rn --include='*.go' -E '\[(endpoint|routing|channel|transform|resilience)\.[A-Z]' adapter/          # empty
       ```
-- [ ] **Run the two-arm staleness sweep to empty** (Spec 014 §8.1, **arm 2 redesigned in round 4**).
+- [x] **Run the two-arm staleness sweep to empty** (Spec 014 §8.1, **arm 2 redesigned in round 4**).
       Measured at `dadc775`, by running both arms:
       ```
       ARM 1 (moved symbols still qualified msgin.X) — 2 survivors:
@@ -950,6 +976,22 @@ blocker under CLAUDE.md's godoc and dead-code expectations.
       Regenerate `docs/plans/027-tools/symmap.tsv` before running arm 1 — it is derived and it went stale by
       one entry (`channel.WithSingleSubscriber`) between `c83dde9` and `b6ce7bb`.
 
+      > **RUN AT EXECUTION (`b4d1a1a`). Both arms are now EMPTY.** `symmap.tsv` was **stale by four more
+      > entries**, not the one this checkbox names: Task 9 added `routing.Predicate`, `routing.RouteFunc`,
+      > `routing.SplitFunc` and `transform.Transformer`, taking it **91 → 95**. The three survivors were all
+      > real and all still present, at shifted lines:
+      > ```
+      > ARM 1  codec.go:33                  msgin.NewProducer / msgin.WithProducerCodec  -> endpoint.*
+      >        routing/aggregator_test.go:21  "*msgin.DirectChannel"                     -> *channel.DirectChannel
+      > ARM 2  routing/aggregator.go:366    "the WithRelease strategy failed"            -> WithReleaseStrategy fn
+      > ```
+      > Note arm 2's line: **366, not the 316 published here and in Spec §8.1** — the file grew 50 lines since
+      > the measurement, which is exactly why the checkbox says to run the command rather than trust the list.
+      > Both arms were then **probed for vacuity**, since a gate that reports empty because it matches nothing
+      > is the failure mode round 4 found: planting `// Probe: msgin.NewQueueChannel …` made arm 1 report one
+      > line, and planting `// Probe: WithNonexistentOption and ErrNeverDeclared …` made arm 2 report two.
+      > Both probes were reverted.
+
       > **ROUND-4 CORRECTION (B4 / exec-B1).** This checkbox previously published **"arm 2 has 7 survivors"**
       > at seven named lines. **Arm 2's published command returns zero hits and always did** — it was a
       > hardcoded list of the six `*Expr` names, none of which survives anywhere. All seven named lines hold
@@ -957,7 +999,7 @@ blocker under CLAUDE.md's godoc and dead-code expectations.
       > a name that exists) rather than a list of deleted names, which is what surfaces `WithRelease` — a name
       > that never existed at all, and therefore one that **no deleted-symbol enumeration could ever contain**.
       > Run the command; do not trust this list either.
-- [ ] **Extend the capability test to ALL EIGHT send-only positions.** `capability_test.go`'s
+- [x] **Extend the capability test to ALL EIGHT send-only positions.** `capability_test.go`'s
       `TestSendOnlyCallSitesAcceptEveryChannel` covers **3 targets × 3 sites = 9 subtests** today (filter
       discard, router default, exchange request — `capability_test.go:152,163,174`). Spec 014 §9.4 requires all
       eight, so **five** are missing, not four:
@@ -994,6 +1036,26 @@ blocker under CLAUDE.md's godoc and dead-code expectations.
       > behavior. Their failure mode is a future narrowing, and a test that has never been red is exactly
       > what catches that. TDD's red step is satisfied for this checkbox by *deleting* the widening locally
       > and watching the case fail, if a worker wants the evidence; it is not a precondition for the commit.
+
+      > **DONE AT EXECUTION — 24 subtests, counted, not projected.** 3 targets × 6 core sites = **18** in
+      > root's `capability_test.go`, plus **3** in the new `adapter/http/capability_test.go`
+      > (`TestServeAsyncTargetAcceptsEveryChannel`) and **3** in the new
+      > `adapter/http/stdlib/capability_test.go` (`TestNewInboundTargetAcceptsEveryChannel`). The two HTTP
+      > files each carry their own copy of the three target fixtures — unavoidable, since all three test
+      > packages are **blackbox** (`package X_test`) and there is no shared test-helper package.
+      >
+      > **The row-5 trap was handled and then PROVEN handled.** A `NoError` assertion on the expired-group
+      > path is vacuous on its own (`Handle` holds the member and returns nil; the reaper delivers later, on
+      > `Run`'s goroutine), so the load-bearing assertion is the harness's own delivery check. To prove that
+      > check is real rather than assumed, all three new core sites were **mutation-probed**: each was
+      > re-pointed at a decoy `channel.NewPublishSubscribeChannel()` instead of `target`, and **9 of 9**
+      > subtests (3 targets × 3 new sites) failed, row 5 included. Mutation reverted.
+      >
+      > Row 5's `Run` goroutine is joined deterministically via a `t.Cleanup` registered **before** the clock
+      > tick, so the reaper is joined even when the delivery assertion fails; root's package-level
+      > `goleak.VerifyTestMain` (`main_test.go`) is the leak gate. Row 3 uses a bare closure literal, which
+      > is assignable to Task 9's named `routing.RouteFunc` (only a caller's OWN named func type is not —
+      > see `RouteFunc`'s ASSIGNABILITY godoc).
 
 **Verify:** the sentinel decision recorded in the ledger with its three downstream numbers propagated; both
 sweep arms empty; the capability test covers **3 targets × 6 core sites** in `capability_test.go` **plus 3 × 2

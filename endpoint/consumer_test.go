@@ -295,7 +295,8 @@ func TestConsumer_NilOptionValues_AreNoOpsNotPanics(t *testing.T) {
 				return &liveRedeliverSource{redeliverSource: &redeliverSource{st: st, id: "m1", max: 1}}
 			},
 			// Permanent + no invalid sink + no dead-letter sink is the arm that
-			// logs "discarding message; no invalid-message sink configured".
+			// logs the "neither ... sink ... is configured" discard WARN — the
+			// one place a nil logger would nil-deref if it were not defaulted.
 			handler: func(context.Context, msgin.Message[order]) error {
 				return msgin.Permanent(errors.New("boom"))
 			},

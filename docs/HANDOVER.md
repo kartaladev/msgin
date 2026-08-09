@@ -180,9 +180,16 @@ Verified at that state: `gofmt -l .` empty · `go build ./...` clean · root
 
 | | Decision | Chosen | Status |
 |---|---|---|---|
-| **D-I** | The two orphaned expr sentinels (`ErrInvalidExpression`, `ErrExprResultType`) | **LEAVE root**; the `expr` module mints its own with the `msgin/expr:` prefix, **not aliases** | Recorded (ADR 0029 §5.0a, Spec §3.2/§7). **Code not written** — Task 9.5 deletes, Task 10 declares |
+| **D-I** | The two orphaned expr sentinels (`ErrInvalidExpression`, `ErrExprResultType`) | **LEAVE root**; the `expr` module mints its own with the `msgin/expr:` prefix, **not aliases** | **HALF DONE.** The deletion **landed in Task 9.5** — both are gone workspace-wide, root 102→100 exported / 43→41 sentinels / `apidiff` 95→97. **Task 10 still owes** `expr.ErrInvalidExpression` |
 | **D-J** | Reply-channel exclusivity | **PROBE and reject by default** — `msgin.ExclusiveSubscribable{SubscribableChannel; SingleSubscriber() bool}`, `msgin.ErrSharedReplyChannel`, opt-out `endpoint.WithSharedReplyChannel()`. A channel that does **not** implement the probe is **accepted**, keeping the SPI open | Recorded (**ADR 0030**, Spec §5.1, **Plan Task 9.6**). **Code not written** |
-| **D-K** | `ErrExprResultType`'s retry classification | **Wrap in `msgin.Permanent`** — it is `ErrPayloadType`'s expression-domain twin and is deterministic | Recorded (**ADR 0029 §5.0b**, Plan Task 10). **Code not written** |
+| **D-K** | `ErrExprResultType`'s retry classification | ⚠️ **SUPERSEDED — read the revised D-K, not this row.** The revision (round 6) has the `expr` providers wrap **`msgin.ErrPayloadType`** and declare **no** `ErrExprResultType` at all; no `msgin.Permanent` wrap is needed because `ErrPayloadType` is already inside `IsPermanent`. This row's "wrap in `msgin.Permanent`" is the withdrawn form | Recorded (**ADR 0029 §5.0b**, Plan Task 10). **Code not written** |
+
+> **⚠️ THIS FILE IS STALE BELOW THIS POINT — it predates four commits.** `64963ad` (Task 9.7), `544cb5b`
+> (Task 9), `b4d1a1a` (the nil-guard fixes) and Task 9.5 (uncommitted at the time of writing) have all landed
+> since it was written, so its "next actions", ahead/behind counts and task statuses describe an earlier tree.
+> **Trust `docs/plans/027-core-package-layout.md`'s Progress table and `git log` over this file** until it is
+> rewritten. The three rows above are corrected in place because they are decision records a fresh session
+> would otherwise act on.
 
 **D-I's plan-recommendation was wrong and the correction matters.** Plan §9.5.0 had recommended keeping the
 sentinels in root, arguing §3.2's rule "cuts the other way only for packages a consumer imports instead of

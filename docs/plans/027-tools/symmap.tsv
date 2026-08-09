@@ -31,6 +31,7 @@ channel	NewQueueChannel
 routing	NewRouter
 resilience	NewTokenBucket
 endpoint	OutboundGateway
+routing	Predicate
 endpoint	Producer
 endpoint	ProducerOption
 channel	PublishSubscribeChannel
@@ -38,11 +39,14 @@ channel	PubSub
 channel	PubSubOption
 channel	QueueChannel
 routing	ReleaseStrategy
+routing	RouteFunc
 routing	Router
 routing	RouterOption
 routing	Split
+routing	SplitFunc
 resilience	TokenBucketOption
 transform	Transform
+transform	Transformer
 routing	WithAggregatorClock
 endpoint	WithAttemptTTL
 resilience	WithBreakerClock

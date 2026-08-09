@@ -276,9 +276,16 @@ it. A `use` line in `go.work` is necessary but not sufficient (round-2 §C2).
 
 #### 5.0a The module owns its two error sentinels — decision D-I (2026-07-28)
 
-> **STATUS: DECIDED, NOT YET IMPLEMENTED.** Both sentinels still exist in root at `dadc775`
-> (`errors.go:180`, `:206`). Plan 027 Task 9.5 deletes them; Task 10 declares the **one** replacement. Every
-> present-tense sentence below describes the decided end state, not the tree.
+> **STATUS: IMPLEMENTED (Plan 027 Task 9.5).** Both sentinels and their godoc are deleted from root:
+> `grep -rn 'ErrInvalidExpression\|ErrExprResultType' --include='*.go' .` is empty workspace-wide, and root
+> measures **100** exported symbols / **41** sentinels (`apidiff` **97** removals), down from 102 / 43 / 95.
+> **Task 10 still owes the one replacement** — the `expr` module's own `expr.ErrInvalidExpression`. Every
+> present-tense sentence below now describes the tree.
+>
+> *Line numbers are deliberately not republished here.* The previous form cited `errors.go:180`/`:206` pinned
+> at `dadc775`; by the time Task 9.5 ran, the real positions were `:196` and `:223`, and the plan and Spec 014
+> each published a **third, different** pair. Three documents, three answers, all wrong — so the citation is
+> struck rather than refreshed. Locate a sentinel by symbol.
 
 The `*Expr` deletion left `msgin.ErrInvalidExpression` and `msgin.ErrExprResultType` with **zero producers
 anywhere in the workspace** — the only two root sentinels in that position. **Both leave root.** This module
@@ -1078,13 +1085,13 @@ parallel `*Expr` constructors collapse into one base constructor per endpoint. P
   `expr-lang` as one of three accepted core exceptions **and names `FilterExpr`/`RouterExpr` at `CLAUDE.md:235`
   as its justification** (both deleted), its architecture blueprint named `StreamingSource`, and `MESSAGING.md`
   carries three more rename sites. Leaving any of them stale is a traceability breach.
-- **Two error sentinels are orphaned in root — DECIDED, not open.** `ErrInvalidExpression` (declared
-  `errors.go:180`) and `ErrExprResultType` (declared `errors.go:206`) have **zero producers** after the `*Expr`
-  deletion, and their godoc names constructors that no longer exist (F11.7). **Decision D-I (§5.0a): both leave
-  root.** The `expr` module declares `expr.ErrInvalidExpression`; the evaluation-time fault is expressed by
-  wrapping root's existing `msgin.ErrPayloadType` (**revised D-K**, §5.0b), so no second `expr` sentinel is
-  minted. **Plan 027 Task 9.5 deletes them; Task 10 declares the one replacement** — it is not Task 10's
-  decision to make. **NOT YET IMPLEMENTED:** both vars still exist in the tree at the `dadc775` code pin.
+- **Two error sentinels were orphaned in root — DECIDED, and now IMPLEMENTED.** `ErrInvalidExpression` and
+  `ErrExprResultType` had **zero producers** after the `*Expr` deletion, and their godoc named constructors
+  that no longer exist (F11.7). **Decision D-I (§5.0a): both leave root.** The `expr` module declares
+  `expr.ErrInvalidExpression`; the evaluation-time fault is expressed by wrapping root's existing
+  `msgin.ErrPayloadType` (**revised D-K**, §5.0b), so no second `expr` sentinel is minted. **Plan 027 Task 9.5
+  deleted them** (root 102→100 exported, 43→41 sentinels, `apidiff` 95→97 removals); **Task 10 still declares
+  the one replacement** — it is not Task 10's decision to make.
 
   > *Corrected (round 6, C-B1 + C-B3).* This bullet survived the D-I pass unamended and was the worst kind of
   > stale: it presented a **settled** decision as open, framed both options as live, and assigned it to the

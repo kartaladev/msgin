@@ -97,15 +97,29 @@ func WithAttemptTTL[T any](d time.Duration) ConsumerOption[T] {
 // spec §7 untrusted-input defense). A payload whose length exceeds n is settled
 // as a PERMANENT invalid message (ErrPayloadTooLarge) — diverted like a decode
 // failure, never retried — since an over-size payload will not shrink on
-// redelivery. The destination is the invalid-message sink, or the dead-letter
-// sink when none is configured ([msgin.Permanent] states all three arms).
+// redelivery.
 //
-// ACCEPTED COST of that fallback: a consumer with a DeadLetter sink but no
-// WithInvalidMessageSink now PERSISTS the very bytes this cap declared
-// illegitimate into the operator's durable dead-letter store. Two levers, if
-// that is unacceptable: point WithInvalidMessageSink somewhere cheap and
-// bounded, or reject over-size input at the adapter before it becomes a
-// Delivery.
+// THIS CLASS IS THE ONE EXEMPTION TO THE D-N DEAD-LETTER FALLBACK, and the
+// exemption is the whole reason the cap is safe to turn on:
+//
+//   - WithInvalidMessageSink SET → the message goes there, like every other
+//     invalid message. The operator asked for the bytes; they get them.
+//   - UNSET → the message is DISCARDED, loudly (a WARN naming the message id and
+//     the class, plus OnInvalidMessage, then an Ack). It does NOT fall back to
+//     RetryPolicy.DeadLetter the way other invalid messages do.
+//
+// Without that exemption the cap would defeat itself: "DeadLetter set, invalid
+// sink unset" is the default shape of every finite-retry consumer, so an
+// attacker posting over-size bodies would have each rejected payload written
+// VERBATIM into the operator's durable dead-letter store — the defence becoming
+// the vector. Discarding is not a regression against the fallback either: this
+// class was already permanent before D-N and was already discarded under ADR
+// 0007 D7, so the exemption RESTORES that behavior rather than dropping
+// something D-N had captured.
+//
+// If you need the rejected bytes for forensics, set WithInvalidMessageSink to
+// something cheap and bounded, or reject over-size input at the adapter before
+// it becomes a Delivery.
 //
 // n <= 0 disables the cap (the default): a library cannot guess a caller's
 // legitimate maximum, so the cap is opt-in. Wire adapters consuming UNTRUSTED

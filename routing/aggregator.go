@@ -363,7 +363,7 @@ func (a *Aggregator) Handle(ctx context.Context, msg msgin.Message[any]) error {
 	}
 	ok, err := a.cfg.release(group)
 	if err != nil {
-		return err // release-decision error (the WithRelease strategy failed) → retry/DLQ;
+		return err // release-decision error (the WithReleaseStrategy fn failed) → retry/DLQ;
 		// the reaper's expiry fall-through surfaces a stuck group (ADR 0019 A3).
 	}
 	if !ok {

@@ -38,6 +38,10 @@ type divertCase struct {
 	invalid *recordingSink
 	// backoff, when set, makes the D8 send-failure Nack delay observably non-zero.
 	backoff msgin.BackoffStrategy
+	// maxPayloadBytes, when > 0, sets WithMaxPayloadBytes so a `wire` case's
+	// payload is rejected as ErrPayloadTooLarge BEFORE the codec sees it —
+	// driving the byte-cap exemption to D-N's dead-letter fallback.
+	maxPayloadBytes int
 	// handlerErr is what the handler returns on the live-value path.
 	handlerErr error
 	assert     func(t *testing.T, r divertResult)
@@ -86,6 +90,9 @@ func runDivert(t *testing.T, tc divertCase) divertResult {
 	}
 	if tc.invalid != nil {
 		opts = append(opts, endpoint.WithInvalidMessageSink[order](tc.invalid))
+	}
+	if tc.maxPayloadBytes > 0 {
+		opts = append(opts, endpoint.WithMaxPayloadBytes[order](tc.maxPayloadBytes))
 	}
 
 	var src any
@@ -209,7 +216,13 @@ func TestDivertInvalidFallback(t *testing.T) {
 				assert.Zero(t, r.hooks.count("retry"))
 				assert.Equal(t, 1, r.acks)
 				assert.Zero(t, r.nacks)
-				assert.Contains(t, r.log, "discarding message; no invalid-message sink configured")
+				// The WARN must name BOTH sinks. After D-N this arm is reached
+				// only when NEITHER is set, so naming only the invalid one sent
+				// an operator who HAD configured a DeadLetter to check the wrong
+				// option.
+				assert.Contains(t, r.log, "WithInvalidMessageSink")
+				assert.Contains(t, r.log, "RetryPolicy.DeadLetter")
+				assert.Contains(t, r.log, "id=m1", "the discard WARN names the message id")
 			},
 		},
 		{
@@ -311,6 +324,66 @@ func TestDivertInvalidFallback(t *testing.T) {
 					"the classification cause is still named, as D-P requires")
 				assert.NotContains(t, r.log, "invalid character",
 					"the codec's free text — which can quote the payload — is NOT logged")
+			},
+		},
+		{
+			// THE BYTE-CAP EXEMPTION to D-N. WithMaxPayloadBytes exists to bound
+			// memory and storage against untrusted wire input; routing its
+			// rejects to the dead-letter sink would write each oversize payload
+			// VERBATIM into the operator's durable store, turning the defence
+			// into the vector. This class was DISCARDED before D-N, never
+			// captured, so exempting it restores the prior behavior rather than
+			// losing anything D-N promised.
+			name:            "oversize payload is discarded, NOT dead-lettered, when no invalid sink is set",
+			wire:            true,
+			maxPayloadBytes: 4, // the wire source emits 10 bytes
+			dlq:             &recordingSink{},
+			assert: func(t *testing.T, r divertResult) {
+				assert.Zero(t, r.dlqSends, "the dead-letter sink receives NOTHING — the byte cap's rejects are never persisted")
+				assert.Equal(t, 1, r.hooks.count("invalid"), "OnInvalidMessage still fires — the discard is observable")
+				assert.Zero(t, r.hooks.count("deadletter"))
+				assert.Zero(t, r.hooks.count("retry"))
+				assert.Equal(t, 1, r.acks, "the delivery is Acked")
+				assert.Zero(t, r.nacks)
+				assert.Equal(t, 1, r.deliveries, "no redelivery loop")
+				assert.Contains(t, r.log, "id=m1", "the discard WARN names the message id")
+				assert.Contains(t, r.log, "payload exceeds the configured maximum size",
+					"the discard WARN names the class")
+				assert.NotContains(t, r.log, "sending the invalid message to the dead-letter sink",
+					"the D-N fallback WARN must NOT fire — there was no fallback")
+				assert.NotContains(t, r.log, "neither an invalid-message sink",
+					"a DeadLetter sink IS configured here — the WARN must not claim otherwise")
+			},
+		},
+		{
+			// The exemption is scoped to the FALLBACK, not to the class: an
+			// operator who set WithInvalidMessageSink opted in, so the oversize
+			// bytes go there exactly as every other invalid message does.
+			name:            "oversize payload still reaches a CONFIGURED invalid sink",
+			wire:            true,
+			maxPayloadBytes: 4,
+			dlq:             &recordingSink{},
+			invalid:         &recordingSink{},
+			assert: func(t *testing.T, r divertResult) {
+				assert.Equal(t, 1, r.invalidSends, "the operator opted in — the configured sink receives it")
+				assert.Zero(t, r.dlqSends)
+				assert.Equal(t, 1, r.hooks.count("invalid"))
+				assert.Equal(t, 1, r.acks)
+				assert.Zero(t, r.nacks)
+			},
+		},
+		{
+			// The exemption must not leak to the neighbouring class. A decode
+			// failure on the SAME wire arm still falls back to the dead-letter
+			// sink, so the guard keys on ErrPayloadTooLarge and not merely on
+			// "the message came off the wire".
+			name: "the exemption does not leak — a decode failure still dead-letters",
+			wire: true,
+			dlq:  &recordingSink{},
+			assert: func(t *testing.T, r divertResult) {
+				assert.Equal(t, 1, r.dlqSends, "a decode failure is NOT exempt — D-N still applies to it")
+				assert.Equal(t, 1, r.hooks.count("invalid"))
+				assert.Equal(t, 1, r.acks)
 			},
 		},
 		{

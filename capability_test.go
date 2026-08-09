@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -104,10 +105,27 @@ func recvWithin(got chan msgin.Message[any]) func(*testing.T) (msgin.Message[any
 	}
 }
 
+// firstOfGroup is the aggregate function the two Aggregator capability sites
+// use: it forwards the group's first member unchanged, so the aggregate that
+// reaches the output channel still carries capabilityPayload.
+func firstOfGroup(_ context.Context, group []msgin.Message[string]) (msgin.Message[string], error) {
+	return group[0], nil
+}
+
 // TestSendOnlyCallSitesAcceptEveryChannel is the ADR 0028 capability test: each
 // send-only call site must accept a QueueChannel, a PublishSubscribeChannel, and
 // a shipped OutboundAdapter — none of which could satisfy the pre-window bundled
 // MessageChannel.
+//
+// It covers the SIX core positions of Spec 014 §9.4's eight; the remaining two
+// are HTTP inbound targets and live in adapter/http and adapter/http/stdlib,
+// whose own capability_test.go files carry the same three targets.
+//
+// These cases are a REGRESSION FENCE around ADR 0028's widening, not a
+// red-to-green proof of new behavior: every site already accepts
+// msgin.MessageChannel, so each subtest passes the first time it compiles. Their
+// failure mode is a future NARROWING of any of these parameters back to a
+// bundled (send + subscribe) interface, which would break the build here.
 func TestSendOnlyCallSitesAcceptEveryChannel(t *testing.T) {
 	type targetCase struct {
 		name   string
@@ -169,6 +187,89 @@ func TestSendOnlyCallSitesAcceptEveryChannel(t *testing.T) {
 				return r.Handle(t.Context(), msgin.New[any](capabilityPayload))
 			},
 			assert: func(t *testing.T, err error) { assert.NoError(t, err) },
+		},
+		{
+			// Spec 014 §9.4 row 3. The only one of the eight where the channel is
+			// chosen at MESSAGE time rather than at construction: a user-supplied
+			// RouteFunc returns the durable target itself.
+			name: "router pick return",
+			run: func(t *testing.T, target msgin.MessageChannel) error {
+				r := routing.NewRouter(func(context.Context, msgin.Message[any]) (msgin.MessageChannel, error) {
+					return target, nil
+				})
+				return r.Handle(t.Context(), msgin.New[any](capabilityPayload))
+			},
+			assert: func(t *testing.T, err error) { assert.NoError(t, err) },
+		},
+		{
+			// Spec 014 §9.4 row 4. WithCompletionSize(1) releases the group on the
+			// first member, so Handle itself drives the send to target.
+			name: "aggregator output channel",
+			run: func(t *testing.T, target msgin.MessageChannel) error {
+				store, err := memory.NewGroupStore()
+				require.NoError(t, err)
+				agg, err := routing.NewAggregator[string, string](store, firstOfGroup,
+					routing.WithOutputChannel(target),
+					routing.WithCompletionSize(1),
+				)
+				require.NoError(t, err)
+				msg := msgin.New[any](capabilityPayload).
+					WithHeader(msgin.HeaderCorrelationID, "capability-aggregate")
+				return agg.Handle(t.Context(), msg)
+			},
+			assert: func(t *testing.T, err error) { assert.NoError(t, err) },
+		},
+		{
+			// Spec 014 §9.4 row 5. One member of a would-be two-member group is
+			// HELD, never released, so only the reaper's age-expiry path can reach
+			// target — which means the send happens on Run's goroutine, after the
+			// fake clock ticks, not on the caller's.
+			name: "aggregator expired-group channel",
+			run: func(t *testing.T, target msgin.MessageChannel) error {
+				clock := clockwork.NewFakeClock()
+				store, err := memory.NewGroupStore(memory.WithGroupClock(clock))
+				require.NoError(t, err)
+				agg, err := routing.NewAggregator[string, string](store, firstOfGroup,
+					routing.WithOutputChannel(channel.NewPublishSubscribeChannel()),
+					routing.WithGroupTimeout(30*time.Second),
+					routing.WithExpiredGroupChannel(target),
+					routing.WithAggregatorClock(clock),
+				)
+				require.NoError(t, err)
+
+				msg := msgin.New[any](capabilityPayload).
+					WithHeader(msgin.HeaderCorrelationID, "capability-expired").
+					WithHeader(msgin.HeaderSequenceSize, 2)
+				if err := agg.Handle(t.Context(), msg); err != nil {
+					return err
+				}
+
+				ctx, cancel := context.WithCancel(t.Context())
+				done := make(chan error, 1)
+				go func() { done <- agg.Run(ctx) }()
+				// Registered BEFORE the tick so the reaper is always joined, even if
+				// the delivery assertion below fails: Run must leave no goroutine
+				// behind for the package's goleak.VerifyTestMain (main_test.go).
+				t.Cleanup(func() {
+					cancel()
+					select {
+					case runErr := <-done:
+						assert.ErrorIs(t, runErr, context.Canceled)
+					case <-time.After(5 * time.Second):
+						t.Error("Aggregator.Run did not return after ctx cancel")
+					}
+				})
+
+				require.NoError(t, clock.BlockUntilContext(t.Context(), 1)) // reaper's ticker is armed
+				clock.Advance(31 * time.Second)
+				return nil
+			},
+			// THE EXPIRY PATH RETURNS NO ERROR. Handle held the member and returned
+			// nil; the reaper does the delivery asynchronously. A NoError assertion
+			// is therefore vacuous ON ITS OWN — the load-bearing assertion for this
+			// row is the target's own delivery check, which the harness below runs
+			// after this one (waitFor blocks up to 2s for the reaped member).
+			assert: func(t *testing.T, err error) { require.NoError(t, err) },
 		},
 		{
 			name: "exchange request channel",

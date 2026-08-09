@@ -3635,3 +3635,334 @@ neither operand leaks `(true, err)`.
 `endpoint/consumer_test.go`, `routing/aggregator.go`, `routing/aggregator_test.go`, `routing/helpers.go`
 (shipped code, outside Task 9); **B** — `routing/predicate.go`, `routing/router.go`, `routing/splitter.go`,
 `transform/transformer.go` and their tests (Task 9's own surface).
+
+## F17 — Task 9.5 (D-I sentinel removal, staleness sweep, capability widening): execution record
+
+Executed at `b4d1a1a` (clean tree). Plan 027 §9.5; Spec 014 §3.2/§8.1/§9 AC-4; ADR 0029 §5.0a. Three
+workstreams, one commit.
+
+### F17.1 — D-I landed, and all four projected numbers held EXACTLY
+
+The §9.5.0 table was measured at `dadc775`, three commits before execution, so the BEFORE row was
+**re-measured first** rather than assumed. It was unchanged — confirming that Tasks 9.7 and 9 added no root
+exported symbol (Task 9's four new behavior types live in `routing`/`transform`).
+
+```
+                              exported  sentinels  removals  additions
+plan table, at dadc775            102        43        95         6
+RE-MEASURED at b4d1a1a            102        43        95         6     <- BEFORE, matched
+after deleting both sentinels     100        41        97         6     <- AFTER, matched the projection
+```
+
+The two new `apidiff` lines are exactly `- ErrExprResultType: removed` and `- ErrInvalidExpression: removed`.
+Both `var`s were deleted **with their godoc blocks and neither block copied forward** — root's
+`ErrInvalidExpression` text names `ErrExprResultType` (which Spec AC-10 arm 2 requires absent workspace-wide)
+and closes with *"exported here, not in the provider"*, the premise D-I reverses; `ErrExprResultType`'s text
+has no destination at all under revised D-K.
+
+**Every published line number for the two blocks was stale, in all three documents** (Plan §9.5.0 `:168`/`:180`
+and `:193`/`:206`; Spec §3.2 `:168`/`:193`; ADR 0029 `:180`/`:206`). The real positions at `b4d1a1a` were
+`:196-208` and `:223-236` — the blocks had drifted ~28 lines. Harmless only because the task text said to
+locate by symbol. Same class as F13's "verify structural claims against code".
+
+### F17.2 — both sweep arms cleared, and both probed for vacuity
+
+`symmap.tsv` was regenerated first, as required. It was **stale by four entries, not the one the plan named**:
+Task 9 added `routing.Predicate`, `routing.RouteFunc`, `routing.SplitFunc`, `transform.Transformer`, taking it
+**91 → 95**.
+
+```
+ARM 1  codec.go:33                    msgin.NewProducer / msgin.WithProducerCodec  -> endpoint.*
+       routing/aggregator_test.go:21  "*msgin.DirectChannel"                       -> *channel.DirectChannel
+ARM 2  routing/aggregator.go:366      "the WithRelease strategy failed"            -> WithReleaseStrategy fn
+```
+
+All three survivors were real; arm 2's was at **:366, not the :316** the plan and Spec §8.1 both publish (the
+file grew 50 lines since the measurement). After the fixes both arms report empty.
+
+Round 4 established that an arm reporting empty proves nothing until you know it can report non-empty, so both
+were probed and both reverted:
+
+```
+planted  // Probe: msgin.NewQueueChannel is a moved symbol …          -> ARM 1 reported 1 line
+planted  // Probe: WithNonexistentOption and ErrNeverDeclared …       -> ARM 2 reported 2 lines
+```
+
+### F17.3 — the capability test now covers all eight positions: 24 subtests
+
+3 targets (`QueueChannel`, `PublishSubscribeChannel`, `*memory.Broker`) × 8 send-only positions.
+
+| Where | Test | Subtests |
+|---|---|--:|
+| `capability_test.go` | `TestSendOnlyCallSitesAcceptEveryChannel` (6 core sites) | 18 |
+| `adapter/http/capability_test.go` | `TestServeAsyncTargetAcceptsEveryChannel` | 3 |
+| `adapter/http/stdlib/capability_test.go` | `TestNewInboundTargetAcceptsEveryChannel` | 3 |
+| | | **24** |
+
+The two HTTP files each carry their own copy of the three target fixtures. That duplication is forced, not
+sloppy: all three test packages are blackbox (`package X_test`) and the repo has no shared test-helper package.
+HTTP payloads assert `[]byte(capabilityPayload)` — `DecodeRequest` reads the raw body and never decodes it.
+
+**Row 5 (`WithExpiredGroupChannel`) is the trap, and it was proven handled rather than assumed.** That path
+returns **no error**: `Handle` holds the member and returns nil, and the reaper delivers later on `Run`'s
+goroutine after a fake-clock tick, so an `assert(err)` in the rows-1–3 shape is vacuous. The load-bearing
+assertion is the harness's delivery check. To prove that check is real, all three added core sites were
+**mutation-probed** — each re-pointed at a decoy `channel.NewPublishSubscribeChannel()` instead of `target`:
+
+```
+9 of 9 subtests FAILED (3 targets x {router pick return, aggregator output, aggregator expired-group})
+```
+
+including row 5. Mutation reverted. Row 5's `Run` goroutine is joined by a `t.Cleanup` registered **before**
+the tick, so it is joined even when the delivery assertion fails; root's `goleak.VerifyTestMain` is the leak
+gate. Row 3 (`NewRouter`'s `pick` return — the message-time position every earlier draft dropped) uses a bare
+closure literal, which is assignable to Task 9's named `routing.RouteFunc`.
+
+There is deliberately **no RED** for this workstream (round-7 X-M10): the widening landed in `b6ce7bb`, so
+every subtest passes the first time it compiles. These are a regression fence whose failure mode is a future
+*narrowing*. The mutation probe above is the substitute evidence that they are not vacuous.
+
+### F17.4 — propagation: verified, not assumed
+
+All four downstream sites already carried D-I correctly and needed **no edit** — Spec 014 §3.2 (L522-531), §4
+(L1091), §4.1 (L1177-1191), §7 (L1740-1818); Plan Task 10's `expr/errors.go` checkbox and its `RouteFunc`
+two-construction-validations bullet; Plan Task 12's projection table and `apidiff` fifth-class bullet. Spec
+§4/§4.1's D-I numbers are left as **projections** on purpose: the end state they describe is post-D-J
+(102/42), which Task 9.6 has not landed.
+
+Edited because this task invalidated a published measurement: Spec §8.1's `symmap` count and both survivor
+lists, and Spec §9 AC-4's "9 of the required 24".
+
+**`CLAUDE.md:275` — RAISED by the implementer, FIXED by the coordinator, in this commit.** It read *"DECIDED
+but NOT YET IMPLEMENTED … they still exist in `errors.go` today"*, which the deletion falsifies. CLAUDE.md is
+outside an implementer subagent's remit, so it was flagged rather than edited — the right call — and the
+coordinator made the edit: the paragraph now records D-I as landed, with the measured 43→41 / 102→100 / 95→97.
+
+**The same class reached three more documents, and the adversarial review caught that one instance had been
+fixed while three were left.** ADR 0029 §5.0a (`:279` `STATUS:` and `:1087`) and `docs/HANDOVER.md:183` all
+still asserted the sentinels existed. ADR 0029 is the **normative** record of D-I, so leaving it saying "not
+yet implemented" after implementing it is precisely the drift the traceability rule exists to prevent; both
+lines are corrected here rather than deferred to Task 12's doc sync. This is the *fix the class, not the
+instance* rule applied to documentation: the unit of repair is "every document asserting the pre-D-I state",
+not "the one CLAUDE.md line someone noticed".
+
+## F18 — Task 9.5 whole-branch review, second pass: one fix, one triaged class
+
+### F18.1 — FIXED: `endpoint.NewConsumer` guarded `src` but not `h` — 46k retries in 200 ms
+
+**The asymmetry.** `NewConsumer[T](src any, h Handler[T], opts ...ConsumerOption[T])` (`endpoint/consumer.go`)
+validated exactly two things — `src == nil` → `msgin.ErrNilAdapter`, and `cfg.policy.Validate()`. Its peer
+argument `h` was never checked. Every other exported constructor in the workspace that takes two required
+arguments guards **both** (`NewChannelExchange` request+reply, `NewSQLElector`/`NewSQLLocker` db+dialect,
+`newAdapterBase`/`newGroupBase` db+table+dialect, `NewInboxDeduper`, `cron.NewSource` spec+factory,
+`NewAggregator` store+fn+both strategies). `NewConsumer` was the sole exception.
+
+**Why it is not cosmetic.** The nil is not seen until the first message, where `c.handler(...)` nil-derefs on a
+worker goroutine. `safeHandle` recovers that panic into `ErrHandlerPanic` — and `IsPermanent` classifies
+`ErrHandlerPanic` **TRANSIENT**, so the message is Nacked and redelivered. Measured on one message over 200 ms:
+
+```
+OnRetry = 46106     OnInvalidMessage = 0
+```
+
+A pure wiring mistake becomes an unbounded hot retry loop instead of an error at the call the caller can see.
+This is the same failure mode D-M's `Permanent` wrap exists to prevent on the Step-returning constructors
+(ADR 0029 §5.0b) — reached here by the other arm of the invariant.
+
+**The fix.** `endpoint/consumer.go` — a guard immediately after the `src` check, preserving the established
+"nil-arg checks before value validation" order:
+
+```go
+if h == nil {
+    return nil, nilFuncAt("endpoint.NewConsumer: nil handler")
+}
+```
+
+`nilFuncAt` is a new package-local helper in `endpoint/helpers.go`, mirroring `routing/helpers.go`'s
+`nilFuncAt` **byte-for-byte in shape**. It is copied rather than shared: exporting an internal helper across
+package boundaries to save two lines over `fmt.Errorf`/`msgin.ErrNilFunc` is precisely what Spec 014 §3.3's
+inlining rule rejects — the same rule that already gives each endpoint package its own `boxMessage` and
+`nilFuncStep`.
+
+**The sentinel is BARE, deliberately — this is the `NewAggregator` arm of `ErrNilFunc`'s invariant.** The error
+is handed straight back to the caller and never carried through a handler, so it never reaches a
+`RetryPolicy` and a retry classification would be meaningless on it. The test asserts
+`msgin.IsPermanent(err) == false` so a later "finish the job" sweep that wraps it fails loudly.
+
+**Non-vacuity, by mutation.** The guard was removed and the new subtest re-run:
+
+```
+--- FAIL: TestNewConsumer_Validation/nil_handler_is_a_BARE,_non-permanent_ErrNilFunc_(construction-time)
+        Error: Expected error with "msgin: nil endpoint function" in chain but got nil.
+```
+
+Guard restored; green. The case lives in the existing `TestNewConsumer_Validation` table
+(`endpoint/consumer_test.go`), which gained a `handler func() endpoint.Handler[order]` modifier field — nil
+means "use the loop's valid default", and the nil-handler case sets it to a func *returning* nil, so the table
+can express "the argument is nil" without conflating it with "the field is unset".
+
+### F18.2 — the `NewProducer`-family sweep: NO other member of this class exists
+
+Every exported constructor in all seven modules was enumerated mechanically and each required (non-variadic)
+argument traced to a guard. **Result: `NewConsumer` was the only "guarded sibling, unguarded peer".**
+
+| Constructor | Required args | Verdict |
+|---|---|---|
+| `endpoint.NewProducer` | `out` | Guarded (`ErrNilAdapter`). No peer — not in the family. |
+| `endpoint.NewGateway` | `x` | Guarded (`ErrNilExchange`). No peer. |
+| `endpoint.NewChannelExchange` | `request`, `reply` | **Both** guarded (`ErrNilChannel`), plus `ErrNilSubscription`. |
+| `channel.NewQueueChannel` | `store` | Guarded (`ErrNilStore`). |
+| `routing.NewAggregator` | `store`, `fn`, strategies | All guarded, all bare `ErrNilFunc`. |
+| `routing.NewRouter`, `routing.Filter`, `routing.Split`, `transform.Transform`, `endpoint.Activate`/`Consume`/`OutboundGateway` | 1 func/iface | Return a `Step`/value, not an error: nil degrades to `Permanent(ErrNilFunc)`/`ErrNilExchange` at evaluation (D-M). Correct by design. |
+| `cron.NewSource` | `spec`, `factory` | Both guarded (`ErrInvalidSchedule`, `ErrNilFactory`). |
+| `cron.NewSQLElector`, `cron.NewSQLLocker` | `db`, `dialect` | Both guarded. |
+| `sql.NewPollingSource`, `NewOutboundAdapter`, `NewQueueStore`, `NewGroupStore`, `NewInboxDeduper` | `db`, `table`, `dialect` | All guarded via `newAdapterBase`/`newGroupBase`. |
+| `stdlib.NewInbound`, `stdlib.NewInboundGateway` | `target` / `exchange` | Guarded (`ErrNilTarget` / `ErrNilExchange`). |
+
+**One adjacent observation, NOT fixed** (no guarded sibling, so outside this family): `msghttp.NewSSEParser(r
+io.Reader, opts ...Option)` validates `opts` via `NewConfig` but never checks `r`. A nil reader is not a
+sibling-asymmetry — it is a wholly unguarded single argument that surfaces on the first `Next`. Recorded here
+so a future sweep re-derives it rather than rediscovering it.
+
+### F18.3 — TRIAGED TO BACKLOG, NOT FIXED: 24 variadic-option loops call a nil element
+
+**The finding.** 25 sites iterate a variadic slice and invoke each element with no nil check. `msgin.Chain` was
+the 25th and **is fixed** (a nil `Step` is replaced in place by a handler returning
+`Permanent(ErrNilFunc)` naming its index). The remaining **24** are all the same shape —
+`for _, opt := range opts { opt(&cfg) }` in a constructor:
+
+| # | Site | Enclosing constructor |
+|--:|---|---|
+| 1 | `adapter/cron/source.go:180` | `NewSource[T]` |
+| 2 | `adapter/cron/sqlelector.go:100` | `NewSQLElector` |
+| 3 | `adapter/cron/sqllock.go:59` | `NewSQLLocker` |
+| 4 | `adapter/database/sql/groupstore.go:206` | `NewGroupStore` |
+| 5 | `adapter/database/sql/inbox_dedup.go:80` | `NewInboxDeduper` |
+| 6 | `adapter/database/sql/outbound.go:56` | `NewOutboundAdapter` |
+| 7 | `adapter/database/sql/source.go:89` | `NewPollingSource` |
+| 8 | `adapter/database/sql/sqlite/dsn.go:50` | `DSN` |
+| 9 | `adapter/http/options.go:1109` | `NewConfig` |
+| 10 | `adapter/memory/groupstore.go:80` | `NewGroupStore` |
+| 11 | `adapter/memory/memory.go:42` | `New` |
+| 12 | `adapter/memory/queuestore.go:86` | `NewQueueStore` |
+| 13 | `channel/pubsub.go:121` | `NewPublishSubscribeChannel` |
+| 14 | `channel/pubsub_registry.go:28` | `NewPubSub` |
+| 15 | `endpoint/consumer.go:253` | `NewConsumer[T]` |
+| 16 | `endpoint/exchange.go:235` | `NewChannelExchange` |
+| 17 | `endpoint/gateway.go:31` | `NewGateway[Req, Rep]` |
+| 18 | `endpoint/producer.go:345` | `NewProducer[T]` |
+| 19 | `message.go:159` | `New[T]` |
+| 20 | `resilience/breaker.go:85` | `NewCircuitBreaker` |
+| 21 | `resilience/ratelimit.go:48` | `NewTokenBucket` |
+| 22 | `routing/aggregator.go:297` | `NewAggregator[A, B]` |
+| 23 | `routing/filter.go:36` | `Filter[A]` |
+| 24 | `routing/router.go:76` | `NewRouter` |
+
+**Reproduction** (`endpoint`, blackbox; the same shape reproduces at all 24):
+
+```go
+h := func(context.Context, msgin.Message[order]) error { return nil }
+_, _ = endpoint.NewConsumer[order](memory.New(), h, nil)
+// recovered: runtime error: invalid memory address or nil pointer dereference
+```
+
+**Why these are deliberately NOT fixed in this window** — the three-point rationale, per CLAUDE.md's
+"explicitly triaged to a backlog with a written rationale":
+
+1. **It is a uniform 24-site class needing ONE uniform answer.** The decision (skip the nil element vs. reject
+   at construction) applies identically to all 24; there is no site-specific judgement. Fixing a subset now
+   would repeat exactly the partial-sweep pattern that produced these findings in the first place — `b4d1a1a`
+   swept `With*` **options** only, which is precisely why `OutboundGateway` and `Chain` slipped through. *Fix
+   the class, not the instance* means fixing all 24 under one decision, or none.
+2. **Severity is genuinely lower than the message-time cases.** These panic in the **caller's own goroutine at
+   wiring time** — fail-fast, on the caller's stack, at the line that made the mistake. That is the opposite
+   of F18.1's failure mode (a silent infinite retry on a worker goroutine where `safeHandle` converts the
+   panic into a misclassified transient error). A construction-time panic is visible; a 46k/200ms retry loop
+   is not.
+3. **No realistic code path produces a nil option.** Options are written as literal calls
+   (`WithConcurrency(4)`); none of the workspace's `With*` constructors can return nil. Contrast a nil `Step`,
+   which conditional step-building (`steps = append(steps, maybeStep())`) produces naturally — that is why
+   `Chain` was fixed and these are not.
+
+**The two candidate fixes.**
+
+| Option | Shape | Pros | Cons |
+|---|---|---|---|
+| **A — skip the nil element** | `if opt == nil { continue }` at all 24 | 1 line/site, no API change, no new sentinel, cannot break a caller | Silently accepts a wiring bug; diverges from `Chain`, which deliberately does NOT skip |
+| **B — reject at construction** (RECOMMENDED) | `return nil, nilFuncAt("<pkg>.<Ctor>: nil option at index N")` | Consistent with `Chain`'s "a nil element is a wiring bug, not a no-op", with F18.1, and with `NewAggregator`'s bare-`ErrNilFunc` constructor arm; names the offending index | **8 of the 24 return no error** and cannot adopt it without a signature change: `sqlite.DSN`, `memory.New`, `channel.NewPublishSubscribeChannel`, `channel.NewPubSub`, `msgin.New`, `resilience.NewCircuitBreaker`, `routing.Filter` (returns a `Step`), `routing.NewRouter` |
+
+**Recommendation: B, with A as the fallback at the eight error-less constructors** — and the split itself
+recorded as the decision, so the next worker does not re-litigate it. Whoever takes this must settle B-vs-A
+**once**, then apply it to all 24 in a single commit with a class-sweep assertion (not an enumeration) proving
+no site was missed.
+
+**Regenerate the site list — do not trust the table above.** It is a measurement with a date on it; line
+numbers move. Re-derive with:
+
+```bash
+git ls-files '*.go' | grep -v '_test\.go$' | while read -r f; do
+  awk -v F="$f" '
+    /for[ \t]+_,[ \t]*[A-Za-z_]+[ \t]*:=[ \t]*range[ \t]+(opts|options)[ \t]*\{/ { getline
+      if ($0 ~ /^[ \t]*(opt|o|option)\(/) print F ":" NR }
+  ' "$f"
+done
+# 24 today (2026-08-09). Chain is NOT in this set: it ranges `steps`, and is already fixed.
+```
+
+### F18.4 — two adjacent nil-argument notes, also backlogged
+
+Both were raised in the same pass and are recorded here for the same reason as F18.3 — they belong to a
+"nil argument at wiring time" decision, not to this window's fix.
+
+1. **`stdlib.Register(mux *http.ServeMux, pattern string, h http.Handler)`** (`adapter/http/stdlib/inbound.go`)
+   calls `mux.Handle(pattern, h)` with **no guard on `mux`**. A nil `*http.ServeMux` panics on the caller's
+   goroutine at wiring time — same fail-fast profile as F18.3, and the same reason it is not urgent. Note it
+   is a thin pass-through helper: `http.ServeMux.Handle` would panic on a nil receiver anyway, so guarding it
+   is about the **error message**, not about preventing a crash.
+2. **`msghttp.ServeAsync(w, r, target msgin.MessageChannel, cfg)`** and
+   **`msghttp.ServeGateway(w, r, exchange msgin.RequestReplyExchange, cfg)`** (`adapter/http/inbound.go`) do
+   not guard `target`/`exchange`. Unlike (1) these run **per request**, so a nil would deref on a server
+   goroutine — but the blast radius is contained: `recoverHandler` catches it and returns a 500. The two
+   supported entry points (`stdlib.NewInbound`, `stdlib.NewInboundGateway`) both guard the argument at
+   construction, so reaching these with a nil requires calling the low-level function directly. Recorded, not
+   fixed.
+
+### F18.5 — coverage: `endpoint` is NOT 99.4% deterministically; it oscillates 99.16 ↔ 99.44
+
+Verifying "coverage no worse than 99.4% on `endpoint`" surfaced a measurement defect, not a regression. The
+package's number is **not stable across runs**. Eight consecutive `go test ./endpoint -coverprofile` runs on
+the same tree:
+
+| Run | Coverage | `admit` ctx-done arm hits |
+|--:|--:|--:|
+| 1 | 99.443% | 1 |
+| 2 | 99.443% | 1 |
+| 3 | 99.443% | 1 |
+| 4 | 99.164% | 0 |
+| 5 | 99.164% | 0 |
+| 6 | 99.443% | 1 |
+| 7 | 99.164% | 0 |
+| 8 | 99.164% | 0 |
+
+**4 of 8.** The entire 0.28pp swing is one 2-statement block — `consumer.go` `admit`'s final
+`select { case out <- md: … case <-ctx.Done(): … }`, the cancellation arm. Whether it is reached depends on
+which arm the scheduler picks during a shutdown test; nothing in the tree changed between runs.
+
+**The fix in F18.1 is coverage-neutral-to-positive, proven arithmetically rather than by comparing two
+single runs.** Physically reverting the guard, the helper and the test case gives a baseline of
+**711/715 = 99.441%**. The change adds **3** statements (cover counts the `if h == nil` statement itself in
+the enclosing block, plus the guarded `return`, plus `nilFuncAt`'s `return`) and **all 3 are covered** —
+`go tool cover -func` reports `NewConsumer 100.0%` and `nilFuncAt 100.0%`. So with-change is
+714/718 = **99.443%** on the runs where the flaky arm lands, i.e. marginally *above* baseline.
+
+**Two traps for the next worker, both hit during this verification:**
+
+1. **`go tool cover -func` resolves line numbers against the CURRENT source.** Running it on a profile
+   captured from a different revision of the file silently mis-attributes every block — it reported
+   `nilFuncAt 0.0%` for a baseline profile taken when `nilFuncAt` did not exist. Compare **raw profiles**
+   (`awk '$3==0'`), never `-func` output across revisions.
+2. **A single coverage run is not a measurement here.** Quoting "endpoint 99.4%" as a gate invites a future
+   worker to attribute a scheduler coin-flip to their own diff. State the *range* and the flaky block, or
+   pin the arm with a deterministic test. Backlogged: `admit`'s ctx-done arm has no test that forces it —
+   the coverage it gets today is incidental. This is the *measure interleaving tests, don't trust them* rule
+   applied to coverage itself.

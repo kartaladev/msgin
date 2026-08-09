@@ -6,7 +6,8 @@
   D-N adds a case it could not have weighed, created by decision **D-M** in
   [ADR 0029 §5.0b](0029-eip-lexical-alignment.md), and **D-P makes D-N's fallback single-shot** so that a
   **down** fallback sink falls through to D7's discard instead of re-creating the infinite-retry trap D7's own
-  sentence rejects.
+  sentence rejects. **D7 amended a third time 2026-08-09** — `ErrPayloadTooLarge` is **exempt** from D-N's
+  dead-letter fallback, so a byte cap's rejects are never persisted into the operator's durable store.
 - **Context source:** [Spec 001 — Messaging core](../specs/001-messaging-core.md) §5–§8;
   [Plan 002 — Reliability](../plans/002-reliability.md)
 - **Amended by:** [ADR 0029 §5.0b](0029-eip-lexical-alignment.md) (D-N and D-P, D7 only) ·
@@ -306,6 +307,42 @@ fixes the *policy* so Task 5 has nothing left to decide.
 > and msgin stamps **no settlement-reason header**, so the distinction does not survive the process. See
 > [ADR 0029 §5.0b](0029-eip-lexical-alignment.md) (decision D-N's Consequences) for the full record and the
 > remedy available to operators today.
+>
+> ---
+>
+> **AMENDED A THIRD TIME 2026-08-09 — `ErrPayloadTooLarge` is EXEMPT from D-N's fallback** (whole-branch
+> `/code-review` of Task 9.5; [Spec 014 §2.1](../specs/014-core-package-layout.md#21-the-deliberate-behavior-changes-the-register)
+> row 7). **Arm 2 above (`invalidSink == nil` → DeadLetter) does not apply to the byte-cap reject.**
+>
+> `endpoint.WithMaxPayloadBytes` (ADR 0009 D5) caps a wire payload's length *before* the codec sees it,
+> specifically to bound **memory and storage** consumed by **untrusted** input. D-N routes every invalid
+> message to `RetryPolicy.DeadLetter` when no invalid sink is configured — and "DeadLetter set, invalid sink
+> unset" is, by D-N's own argument above, **the default shape of every finite-retry consumer**. The composition
+> of the two is that an attacker posting over-size bodies to a capped consumer gets each rejected payload
+> written **verbatim** into the operator's durable dead-letter store. **The defence becomes the vector**: the
+> cap stops the decode-time allocation it was written for and then pays for it with unbounded durable writes,
+> which is the larger of the two costs it was protecting.
+>
+> | configuration | oversize (`ErrPayloadTooLarge`) | every other permanent class |
+> |---|---|---|
+> | no invalid sink | **WARN + `Ack` (discard)** — the pre-D-N behavior | dead-letter fallback (D-N, unchanged) |
+> | invalid sink set | invalid sink (unchanged — the operator opted in) | invalid sink (unchanged) |
+>
+> **Why this does not violate D-N's premise.** D-N exists so that *"no configuration that previously captured a
+> message starts dropping it"* — its measured table above shows a fault moving **off** the retry-exhaustion path
+> that had been depositing it in the DeadLetter sink. `ErrPayloadTooLarge` was never on that path: `IsPermanent`
+> has always been true for it (`reliability.go`), so before D-N it was **discarded** under this decision's
+> original text, not captured. Exempting it **restores** the prior behavior for this class rather than losing
+> anything D-N promised. The exemption is scoped to the *fallback*, not to the class: a caller who sets
+> `WithInvalidMessageSink` has deliberately asked for invalid messages and still receives over-size ones there.
+>
+> The discard stays **loud** — a WARN naming the message id and the classification, `OnInvalidMessage` fires,
+> the delivery is `Ack`ed — and its WARN is distinct from arm 4's, because a DeadLetter sink may well be
+> configured on this arm and a message claiming none was would send the operator to the wrong option.
+>
+> **The class, not the instance:** *a defence that bounds a resource must not be routed into a path that
+> re-spends that resource.* Any future settlement arm added downstream of a cap, quota or filter must state
+> what it does with the rejects, or it will re-create this.
 
 ### D8 — `divert` settlement contract (Task 5)
 
