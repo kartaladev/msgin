@@ -387,9 +387,9 @@ and defined nowhere; it is defined here.
 | 7a | Requalify `adapter/` + the six satellite modules | **DONE** — commit `c83dde9`, F9 |
 | — | Round-3 code fixes (7-module `go mod tidy`, ST1008, reliability tests, dead-helper deletion, 5 × `doc.go`, article agreement) | **DONE** — committed `1d7fc80` (code) + `3d0b87a` (docs), F12/F13 |
 | **9** | Named behavior types + combinators | **DONE** — committed `544cb5b`, ledger §F16. All four types + `And`/`Or`/`Not`; gates 8.4c–8.4f RED→GREEN. The `MessageChannel` census is **15**, not the projected 14: naming a type RELOCATES an occurrence (`RouteFunc`'s own declaration is a census line) rather than removing one |
-| **9.5** | Residual cleanups the migration left behind | **DONE** — this commit, ledger §F17. The dead-helper deletion and the article sweep had landed in the round-3 pass; this commit adds **D-I's `errors.go` deletion** (root 102→100 exported, 43→41 sentinels, `apidiff` 95→97 removals — the projections held exactly), both sweep arms empty, and the capability test widened 9 → **24** subtests (18 root + 3 `adapter/http` + 3 `adapter/http/stdlib`) |
+| **9.5** | Residual cleanups the migration left behind | **DONE** — committed `910e092`, ledger §F17. The dead-helper deletion and the article sweep had landed in the round-3 pass; this commit adds **D-I's `errors.go` deletion** (root 102→100 exported, 43→41 sentinels, `apidiff` 95→97 removals — the projections held exactly), both sweep arms empty, and the capability test widened 9 → **24** subtests (18 root + 3 `adapter/http` + 3 `adapter/http/stdlib`) |
 | **9.6** | Reply-channel exclusivity probe (**D-J**, ADR 0030) | **NOT STARTED** — added in the D-I/D-J pass (`aae6160`); closes the residual three review lenses converged on |
-| **9.7** | Classify the **five** shipped producers (`ErrNilFunc` ×4 + `ErrNilSink`) as `Permanent` (**D-M**), add the dead-letter fallback (**D-N**) and make it single-shot (**D-P**) | **DONE** — this commit, ledger §F15. Ran **FIRST**, before Task 9, per the round-7 correction. All five gates green; `apidiff` empty on all four packages; zero net-new uncovered blocks |
+| **9.7** | Classify the **five** shipped producers (`ErrNilFunc` ×4 + `ErrNilSink`) as `Permanent` (**D-M**), add the dead-letter fallback (**D-N**) and make it single-shot (**D-P**) | **DONE** — committed `64963ad`, ledger §F15. Ran **FIRST**, before Task 9, per the round-7 correction. All five gates green; `apidiff` empty on all four packages; zero net-new uncovered blocks |
 | **10** | The `expr` provider module | **NOT STARTED** |
 | **11** | Package docs + Spec 014 §8/§10 godoc obligations | **PARTIAL** — 11a (`doc.go` × 5) done; 11b/11c not started |
 | **12** | `MIGRATION.md`, doc sync, whole-branch gate | **NOT STARTED** |
@@ -610,7 +610,7 @@ satellite already `require`s and `replace`s the root module (F9.6). All seven mo
 
 ---
 
-## Task 9 — Named behavior types and combinators · **M** · DONE (uncommitted)
+## Task 9 — Named behavior types and combinators · **M** · DONE (`544cb5b`)
 
 > **EXECUTE TASK 9.7 FIRST** (round-7 D-M2/X-M2). Task 9.7 classifies the **shipped** producers; this task
 > authors three **new** producers under the same rule. Running this task first creates, across three commits,
@@ -841,7 +841,7 @@ behavior-type naming and combinators, whose own header declares RFC 0002 + 0003.
 
 ---
 
-## Task 9.5 — Residual cleanups the migration left behind · **M** · DONE
+## Task 9.5 — Residual cleanups the migration left behind · **M** · DONE (`910e092`)
 
 Each item is invisible to `go build`, `go vet`, `go test`, and `gofmt`. None is cosmetic; each is a delivery
 blocker under CLAUDE.md's godoc and dead-code expectations.
@@ -1482,7 +1482,7 @@ RFC: 0002
 
 ---
 
-## Task 9.7 — Classify the shipped deterministic endpoint faults as `Permanent`, and stop discarding them (decisions D-M, D-N, D-P) · **M** · DONE — this commit; execution record and every gate transcript in ledger §F15
+## Task 9.7 — Classify the shipped deterministic endpoint faults as `Permanent`, and stop discarding them (decisions D-M, D-N, D-P) · **M** · DONE (`64963ad`); execution record and every gate transcript in ledger §F15
 
 > **RE-SIZED S → M in the round-7 pass (X-M1).** The `S` label covered "wrap four producers". It does not cover
 > the round-7 scope: **five** producers (D-B1 adds root's `handler.go:55`), the **D-N** fallback in
