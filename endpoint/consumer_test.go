@@ -222,35 +222,66 @@ func TestConsumer_LiveValueTypeMismatchDiscards(t *testing.T) {
 
 func TestNewConsumer_Validation(t *testing.T) {
 	tests := []struct {
-		name   string
-		src    any
-		opts   []endpoint.ConsumerOption[order]
-		assert func(t *testing.T, err error)
+		name string
+		src  any
+		// handler overrides the valid default handler the loop body supplies.
+		// A nil field means "use the default"; a case that wants to pass a nil
+		// handler sets it to a func RETURNING nil, so the table can express
+		// "the handler argument is nil" without conflating it with "unset".
+		handler func() endpoint.Handler[order]
+		opts    []endpoint.ConsumerOption[order]
+		assert  func(t *testing.T, err error)
 	}{
-		{"nil source", nil, nil,
+		{"nil source", nil, nil, nil,
 			func(t *testing.T, err error) { assert.ErrorIs(t, err, msgin.ErrNilAdapter) }},
-		{"concurrency < 1", memory.New(),
+		{
+			// The sibling of the nil-source arm above, and the CONSTRUCTOR arm of
+			// D-M's invariant (ADR 0029 §5.0b): NewConsumer returns ErrNilFunc BARE
+			// and deliberately transient — construction never reaches a RetryPolicy,
+			// so a retry classification would be meaningless on it. Same shape as
+			// routing.NewAggregator's nil-fn arm; the exclusion is a decision, not
+			// an omission, so a later sweep must not "finish the job" by wrapping it.
+			//
+			// Rejecting at construction is load-bearing, not tidiness: an unguarded
+			// nil handler nil-derefs on the FIRST message, safeHandle recovers that
+			// panic into ErrHandlerPanic, and IsPermanent classifies ErrHandlerPanic
+			// TRANSIENT — so a pure wiring mistake hot-spins on Nack-redelivery
+			// (measured: 46,106 retries on one message in 200ms) instead of failing
+			// at the call the caller can see.
+			name:    "nil handler is a BARE, non-permanent ErrNilFunc (construction-time)",
+			src:     memory.New(),
+			handler: func() endpoint.Handler[order] { return nil },
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.False(t, msgin.IsPermanent(err), "construction-time ErrNilFunc must stay bare")
+				assert.Contains(t, err.Error(), "endpoint.NewConsumer: nil handler")
+			},
+		},
+		{"concurrency < 1", memory.New(), nil,
 			[]endpoint.ConsumerOption[order]{endpoint.WithConcurrency[order](0)},
 			func(t *testing.T, err error) { assert.ErrorIs(t, err, msgin.ErrInvalidConcurrency) }},
-		{"live-value source with codec", memory.New(),
+		{"live-value source with codec", memory.New(), nil,
 			[]endpoint.ConsumerOption[order]{endpoint.WithConsumerCodec[order](msgin.JSONPayloadCodec[order]{})},
 			func(t *testing.T, err error) { assert.ErrorIs(t, err, msgin.ErrUnexpectedCodec) }},
-		{"polling source constructs (resolved to the pull path)", stubPolling{}, nil,
+		{"polling source constructs (resolved to the pull path)", stubPolling{}, nil, nil,
 			func(t *testing.T, err error) { assert.NoError(t, err) }},
-		{"polling source constructs with valid poll options", stubPolling{},
+		{"polling source constructs with valid poll options", stubPolling{}, nil,
 			[]endpoint.ConsumerOption[order]{
 				endpoint.WithPollInterval[order](2 * time.Second),
 				endpoint.WithPollMaxBatch[order](50),
 			},
 			func(t *testing.T, err error) { assert.NoError(t, err) }},
-		{"source implementing neither is unsupported", stubNeither{}, nil,
+		{"source implementing neither is unsupported", stubNeither{}, nil, nil,
 			func(t *testing.T, err error) { assert.ErrorIs(t, err, msgin.ErrUnsupportedSource) }},
-		{"wire streaming source constructs with default codec", &fakeStream{}, nil,
+		{"wire streaming source constructs with default codec", &fakeStream{}, nil, nil,
 			func(t *testing.T, err error) { assert.NoError(t, err) }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			h := func(context.Context, msgin.Message[order]) error { return nil }
+			var h endpoint.Handler[order] = func(context.Context, msgin.Message[order]) error { return nil }
+			if tc.handler != nil {
+				h = tc.handler()
+			}
 			_, err := endpoint.NewConsumer[order](tc.src, h, tc.opts...)
 			tc.assert(t, err)
 		})

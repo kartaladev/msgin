@@ -150,10 +150,12 @@ func TestGateway_channelExchangeRoundTrip(t *testing.T) {
 // request, for cases that assert on the fresh id minted per exchange.
 func TestOutboundGateway(t *testing.T) {
 	tests := []struct {
-		name   string
-		msgs   func() []msgin.Message[any]
-		fn     func(reqCorr *[]any) func(ctx context.Context, req msgin.Message[any]) (msgin.Message[any], error)
-		assert func(t *testing.T, col *collector, err error, reqCorr []any)
+		name string
+		msgs func() []msgin.Message[any]
+		// nilExchange drives OutboundGateway(nil); fn is then unused.
+		nilExchange bool
+		fn          func(reqCorr *[]any) func(ctx context.Context, req msgin.Message[any]) (msgin.Message[any], error)
+		assert      func(t *testing.T, col *collector, err error, reqCorr []any)
 	}{
 		{
 			name: "forwards reply downstream",
@@ -279,11 +281,31 @@ func TestOutboundGateway(t *testing.T) {
 				assert.Empty(t, col.got)
 			},
 		},
+		{
+			// OutboundGateway returns a Step, not (Step, error), so a nil
+			// exchange surfaces at EVALUATION exactly like msgin.To(nil) and
+			// routing.NewRouter(nil) — never as a panic. Panicking here was
+			// worse than a crash: driven by a Consumer, safeHandle recovers it
+			// into ErrHandlerPanic, which IsPermanent classifies TRANSIENT, so a
+			// pure wiring mistake was Nacked and redelivered forever.
+			name:        "OutboundGateway(nil) is a permanent ErrNilExchange naming its position",
+			nilExchange: true,
+			msgs:        func() []msgin.Message[any] { return []msgin.Message[any]{msgin.New[any]("req")} },
+			assert: func(t *testing.T, col *collector, err error, reqCorr []any) {
+				require.ErrorIs(t, err, msgin.ErrNilExchange)
+				assert.True(t, msgin.IsPermanent(err), "must be permanent — x is captured at construction")
+				assert.Contains(t, err.Error(), "endpoint.OutboundGateway: nil exchange")
+				assert.Empty(t, col.got, "nothing is forwarded downstream")
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var reqCorr []any
-			ex := fakeExchange{fn: tt.fn(&reqCorr)}
+			var ex msgin.RequestReplyExchange
+			if !tt.nilExchange {
+				ex = fakeExchange{fn: tt.fn(&reqCorr)}
+			}
 			col := &collector{}
 			handler := msgin.Chain(endpoint.OutboundGateway(ex), msgin.To(col))
 

@@ -223,10 +223,26 @@ type consumer[T any] struct {
 // adapter whose Nack blocks on a channel the stopped Stream no longer reads.
 const defaultShutdownTimeout = 30 * time.Second
 
-// NewConsumer validates the source and options, and builds a Consumer.
+// NewConsumer validates the source, the handler and the options, and builds a
+// Consumer. A nil src is [msgin.ErrNilAdapter]; a nil h is a bare
+// [msgin.ErrNilFunc] naming its position ("endpoint.NewConsumer: nil handler")
+// — checked in that order, both at construction.
+//
+// Rejecting a nil handler HERE is load-bearing, not tidiness. Left unguarded,
+// the nil is not seen until the first message, where calling it nil-derefs on a
+// worker goroutine; safeHandle recovers that panic into ErrHandlerPanic, which
+// [msgin.IsPermanent] classifies TRANSIENT, so the message is Nacked and
+// redelivered forever — a pure wiring mistake becomes an unbounded hot retry
+// loop (measured at ~46k retries on a single message in 200ms) instead of an
+// error at the call the caller can see. Same reasoning as the Permanent wrap on
+// the Step-returning constructors (D-M, ADR 0029 §5.0b), reached by the other
+// arm of the invariant: this one is a constructor, so the sentinel stays bare.
 func NewConsumer[T any](src any, h Handler[T], opts ...ConsumerOption[T]) (Consumer[T], error) {
 	if src == nil {
 		return nil, msgin.ErrNilAdapter
+	}
+	if h == nil {
+		return nil, nilFuncAt("endpoint.NewConsumer: nil handler")
 	}
 	cfg := consumerConfig[T]{
 		concurrency: 1,

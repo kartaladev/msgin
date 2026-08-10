@@ -42,7 +42,20 @@ func NewGateway[Req, Rep any](x msgin.RequestReplyExchange, opts ...GatewayOptio
 // stripped. The fresh id guarantees a unique registry key even when the entering
 // messages share a correlation id (e.g. all children of one split). An Exchange
 // error propagates to the driving Consumer (retry/dead-letter owns it).
+//
+// A nil x does NOT panic. Unlike its sibling NewGateway — a constructor, which
+// returns ErrNilExchange to the caller — this returns a Step, so the fault has
+// nowhere to surface until evaluation: the handler fails with
+// Permanent(ErrNilExchange) naming its position, exactly as msgin.To(nil) and
+// routing.NewRouter(nil) do. The Permanent wrap is load-bearing, not decorative
+// (D-M): a bare panic here would be recovered by the Consumer's safeHandle into
+// ErrHandlerPanic, which IsPermanent classifies TRANSIENT, so a pure wiring
+// mistake would be Nacked and redelivered forever instead of surfacing.
+// errors.Is(err, msgin.ErrNilExchange) still matches through both wraps.
 func OutboundGateway(x msgin.RequestReplyExchange) msgin.Step {
+	if x == nil {
+		return nilExchangeStep("endpoint.OutboundGateway: nil exchange")
+	}
 	return func(next msgin.MessageHandler) msgin.MessageHandler {
 		return msgin.HandlerFunc(func(ctx context.Context, msg msgin.Message[any]) error {
 			savedVal, had := msg.Header(msgin.HeaderCorrelationID) // raw presence — NOT Headers().String (audit G5)

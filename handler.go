@@ -40,10 +40,30 @@ func (discardHandler) Handle(context.Context, Message[any]) error { return nil }
 // no downstream terminal will DISCARD its final message silently. Always end a
 // producing flow with a terminal — To(sink) to deliver outward, or Consume for a
 // side-effect sink. Chain() with no steps is a no-op consume.
+//
+// A nil ELEMENT is not a panic (no panic on caller input) and is NOT skipped: it
+// is replaced in place by a step whose handler fails with Permanent(ErrNilFunc)
+// naming its index, so the flow degrades exactly as To(nil) or Activate(nil)
+// does. Skipping was rejected — a step built conditionally
+// (steps = append(steps, maybeStep())) that came back nil is a WIRING BUG, and
+// deleting it would silently change what the flow does: a dropped Filter stops
+// filtering, a dropped To discards the message. Steps BEFORE the nil still run;
+// the chain stops at it.
 func Chain(steps ...Step) MessageHandler {
 	next := MessageHandler(discardHandler{})
 	for i := len(steps) - 1; i >= 0; i-- {
-		next = steps[i](next)
+		s := steps[i]
+		if s == nil {
+			// D-M (ADR 0029 §5.0b): the nil is fixed at composition and cannot
+			// change for the message's lifetime — permanent, not retried.
+			position := fmt.Sprintf("msgin.Chain: nil step at index %d", i)
+			s = func(MessageHandler) MessageHandler {
+				return HandlerFunc(func(context.Context, Message[any]) error {
+					return fmt.Errorf("%w: %s", Permanent(ErrNilFunc), position)
+				})
+			}
+		}
+		next = s(next)
 	}
 	return next
 }

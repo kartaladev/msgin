@@ -161,7 +161,8 @@ var (
 	ErrNilSink = errors.New("msgin: nil outbound sink")
 	// ErrNilFunc is returned, wrapped in [Permanent], by an endpoint
 	// (Transform/Filter/Activate/Consume/Router/Split) constructed with a nil
-	// function, instead of panicking at dispatch.
+	// function — and by [Chain] for a nil Step ELEMENT, which is a nil function
+	// too — instead of panicking at dispatch.
 	//
 	// The governing invariant, which decides whether any msgin sentinel is
 	// wrapped in [Permanent] at the point it is produced:
@@ -176,8 +177,10 @@ var (
 	//
 	// Applied here: an endpoint's handler returns it wrapped in [Permanent] with
 	// the position that names the mis-wired constructor (e.g.
-	// "transform.Transform: nil fn"), errors.Is(err, ErrNilFunc) still matches,
-	// and a CONSTRUCTOR — routing.NewAggregator — returns it bare. The sentinel
+	// "transform.Transform: nil fn", or "msgin.Chain: nil step at index 1" for a
+	// nil element), errors.Is(err, ErrNilFunc) still matches,
+	// and the CONSTRUCTORS — routing.NewAggregator (nil fn or nil strategy) and
+	// endpoint.NewConsumer (nil handler) — return it bare. The sentinel
 	// itself is never wrapped, so [IsPermanent] on the bare value reports false.
 	ErrNilFunc = errors.New("msgin: nil endpoint function")
 	// ErrNoRoute is returned by a Router when pick resolves no destination and no
@@ -223,6 +226,13 @@ var (
 	// nil. adapter/http/stdlib.NewInboundGateway (the I2 sync inbound gateway
 	// constructor) is a second legitimate caller: it returns this same
 	// sentinel when its exchange argument is nil.
+	//
+	// endpoint.OutboundGateway is the third, and the only one that wraps it in
+	// [Permanent]: it returns a Step rather than an error, so the nil surfaces
+	// from inside a handler body at EVALUATION ("endpoint.OutboundGateway: nil
+	// exchange") instead of at construction. That is ErrNilFunc's invariant
+	// applied to this sentinel — see [ErrNilFunc] — and the reason the two
+	// constructor call sites above stay bare while this one does not.
 	ErrNilExchange = errors.New("msgin: request-reply exchange is nil")
 
 	// ErrNilChannel is returned by NewChannelExchange when the request or reply

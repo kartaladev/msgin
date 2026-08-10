@@ -49,6 +49,33 @@ func TestChain(t *testing.T) {
 			assert: func(t *testing.T, err error, log []string) { require.NoError(t, err); assert.Empty(t, log) },
 		},
 		{
+			// A nil element is a WIRING mistake — steps built conditionally
+			// (`steps = append(steps, maybeStep())`) can produce one. Chain must
+			// not panic on it (CLAUDE.md: no panic on caller input) and must not
+			// silently skip it either: skipping would delete a step the caller
+			// wrote, so a nil Filter would stop filtering and a nil To would
+			// discard. It degrades exactly like To(nil)/Activate(nil) instead.
+			name: "a nil step is a permanent ErrNilFunc naming its index",
+			steps: func(log *[]string) []msgin.Step {
+				return []msgin.Step{appendStep(log, "a"), nil, appendStep(log, "c")}
+			},
+			assert: func(t *testing.T, err error, log []string) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.True(t, msgin.IsPermanent(err), "must be permanent — the nil is fixed at composition")
+				assert.Contains(t, err.Error(), "msgin.Chain: nil step at index 1")
+				assert.Equal(t, []string{"a"}, log, "the chain stops AT the nil step, not before it")
+			},
+		},
+		{
+			name:  "a chain of only a nil step degrades rather than panicking",
+			steps: func(*[]string) []msgin.Step { return []msgin.Step{nil} },
+			assert: func(t *testing.T, err error, log []string) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "msgin.Chain: nil step at index 0")
+				assert.Empty(t, log)
+			},
+		},
+		{
 			name: "a mid-chain error stops the chain and propagates",
 			steps: func(log *[]string) []msgin.Step {
 				boom := func(next msgin.MessageHandler) msgin.MessageHandler {
