@@ -255,12 +255,10 @@ and defined nowhere; it is defined here.
    > elsewhere, the **per-package** arm is the only one that can see the gap.
    > The earlier wording — *"a pure move that loses coverage means tests were dropped"* — actively
    > misdiagnosed this and sent the worker hunting a bug that does not exist (round-2 §A8).
-5. **Eight modules at the end, SEVEN until Task 10 creates `expr`.** `./...` at root covers 11 packages only.
-   The per-module `GOWORK=off` loop is the gate. **Copy this block verbatim — the `expr` entry is commented
-   out on purpose** and is uncommented by Task 10, the task that creates the directory:
+5. **Eight modules at the end — reached as of Task 10's `expr` scaffolding half.** `./...` at root covers 11
+   packages only. The per-module `GOWORK=off` loop is the gate. **Copy this block verbatim:**
    ```bash
-   for d in . adapter/database/sql/{harness,postgres,mysql,sqlite,dbtest} adapter/cron/crontest \
-            ; do                       # ← Task 10 onward, append: expr
+   for d in . adapter/database/sql/{harness,postgres,mysql,sqlite,dbtest} adapter/cron/crontest expr; do
      (cd "$d" && GOWORK=off go build ./... >/dev/null 2>&1 && GOWORK=off go vet ./... >/dev/null 2>&1 \
        && echo "GREEN: $d") || echo "RED: $d"
    done
@@ -390,7 +388,7 @@ and defined nowhere; it is defined here.
 | **9.5** | Residual cleanups the migration left behind | **DONE** — committed `910e092`, ledger §F17. The dead-helper deletion and the article sweep had landed in the round-3 pass; this commit adds **D-I's `errors.go` deletion** (root 102→100 exported, 43→41 sentinels, `apidiff` 95→97 removals — the projections held exactly), both sweep arms empty, and the capability test widened 9 → **24** subtests (18 root + 3 `adapter/http` + 3 `adapter/http/stdlib`) |
 | **9.6** | Reply-channel exclusivity probe (**D-J**, ADR 0030) | **DONE** — all five gates 8.10/8.11/8.11a/8.12/8.13 RED→GREEN (11c1 still RED, Task 11c's); `apidiff` 97 removals / **8** additions, exactly the D-J projection; `channel` back to **100.0%** on the per-package profile; **seven** subtests in the `endpoint` truth table (the seventh pins D-M2, execution finding I-1) plus the three-case `channel` table, every assertion mutation-killed |
 | **9.7** | Classify the **five** shipped producers (`ErrNilFunc` ×4 + `ErrNilSink`) as `Permanent` (**D-M**), add the dead-letter fallback (**D-N**) and make it single-shot (**D-P**) | **DONE** — committed `64963ad`, ledger §F15. Ran **FIRST**, before Task 9, per the round-7 correction. All five gates green; `apidiff` empty on all four packages; zero net-new uncovered blocks |
-| **10** | The `expr` provider module | **NOT STARTED** |
+| **10** | The `expr` provider module | **DONE** — the eighth module ships with its own `go.mod` (`require` + `replace`), `go.work` `use` entry, and **three** CI edits (`expr` in both jobs, plus the pre-existing `adapter/cron/crontest` gap closed in both; `dir:` 6 → 8). **One** sentinel (`ErrInvalidExpression`), six providers, the **12** reinstated `*Expr` test functions under their new names, and **D-K's acceptance fixture** — a real `Consumer` + `RetryPolicy{MaxAttempts: 3, DeadLetter}` + `WithInvalidMessageSink` over a **re-emitting** source, so `dlq.count()==0` is load-bearing rather than vacuous. Root's `ErrPayloadType` godoc widened (**AC-10's fifth arm**, four `go doc` phrase gates RED → GREEN). **Fix round 1** closed a second vacuity of the same class in the CONSTRUCTION path (expr-lang echoes the offending source line in its *compile* error too, so `Contains(err.Error(), src)` passed with msgin's `%q` wrap deleted), and routed all three `msgin.PayloadOf` sites through one `payloadError` helper so a dead-letter record names WHICH expression rejected the payload. **Fix round 2** added **decision D-Q** (ADR 0029 §5.0d, Spec 014 §2.1 row 9): a `MessageGroupStore` whose `Add` returns a nil snapshot with a nil error is caller input, and it panicked **all four** release strategies; it is now rejected once at the choke point in `Handle` with `Permanent(ErrNilMessageGroup)`. That **supersedes** the `defaultRelease`-local guard of round 1, which closed only 1 of 4 and was removed. Root: **103** exported / **43** sentinels; `apidiff` **97 removals / 9 additions**, the ninth being `ErrNilMessageGroup`; `./routing` apidiff empty. `expr` and `routing` both at **100.0%** coverage, **37 mutants planted, 37 killed** — two of which caught vacuous assertions (`M5`, `M31`) and one of which (`M38`) proves each of the four release-strategy cases is necessary rather than redundant |
 | **11** | Package docs + Spec 014 §8/§10 godoc obligations | **PARTIAL** — 11a (`doc.go` × 5) done; 11b/11c not started |
 | **12** | `MIGRATION.md`, doc sync, whole-branch gate | **NOT STARTED** |
 
@@ -569,7 +567,7 @@ package-local `retryDelay` in `endpoint/consumer.go:948`.
 > *"apidiff shows exactly three additions and zero removals"* could never hold against the Task 0 baseline,
 > because Task 1 had already removed six exported `*Expr` constructors. The apidiff expectation is stated
 > once, for the whole window, in Spec 014 §4.1 — measured **95 removals / 6 additions** at `dadc775`, projected
-> **97 / 8** once D-I and D-J land.
+> **97 / 9** once D-I, D-J and D-Q land.
 
 ### Tasks 4–8 — the package extractions · **DONE** (`c83dde9`)
 
@@ -899,6 +897,10 @@ blocker under CLAUDE.md's godoc and dead-code expectations.
 
       The HEAD row is **measured** (`decls.go` and `apidiff`, both re-run 2026-07-28); the other two are
       **projections**. Task 12 re-runs the commands and treats their output as the truth.
+
+      > **THIS TABLE STOPS AT D-J — it is NOT the branch end state.** Task 10's fix round 2 adds **D-Q**
+      > (`ErrNilMessageGroup`), taking root to **103 exported / 43 sentinels / 97 removals / 9 additions**.
+      > The running total lives in Task 12's table and Spec 014 §4; this one is scoped to D-I + D-J.
 
       > **MEASURED AT EXECUTION (`b4d1a1a` → this task's tree). ALL FOUR D-I PROJECTIONS HELD EXACTLY.**
       > The BEFORE row was re-measured at `b4d1a1a` first, because Tasks 9.7 and 9 landed after `dadc775`
@@ -2161,7 +2163,7 @@ benefit.)*
 
 ---
 
-## Task 10 — The `expr` provider module · **L** · NOT STARTED
+## Task 10 — The `expr` provider module · **L** · DONE
 
 > **RE-SIZED M → L in round 6 (E-M7).** The **M** label covered "write six providers and reinstate twelve
 > tests". It did not cover **D-K's acceptance bar**, which requires a full consumer + `RetryPolicy` + DLQ
@@ -2175,7 +2177,7 @@ benefit.)*
 > `expr/errors.go`; 10b = the six providers and the twelve reinstated tests, both green units) — do it as one
 > coordinated change if a future round wants it.
 
-- [ ] New module `expr` with its own `go.mod` (Go 1.25). **It needs BOTH:**
+- [x] New module `expr` with its own `go.mod` (Go 1.25). **It needs BOTH:**
       ```
       require github.com/kartaladev/msgin v0.0.0
       replace github.com/kartaladev/msgin => ..
@@ -2183,7 +2185,7 @@ benefit.)*
       `git tag | wc -l` → **0**, so without the `replace` the module cannot resolve the root module under
       `GOWORK=off` — which is exactly how CI's `module` job runs it. A `use` line in `go.work` is necessary
       but **not sufficient** (round-2 §C2).
-- [ ] **`go.work`: add `./expr` to the `use` block — a PREREQUISITE of CI edit #2, not a nicety.** The
+- [x] **`go.work`: add `./expr` to the `use` block — a PREREQUISITE of CI edit #2, not a nicety.** The
       workspace job runs `go build ./...` with the workspace **on**, and a module that is not in `use` cannot
       be built that way at all. Proven in isolation on the untouched tree (a throwaway module created inside
       the repo, then removed):
@@ -2198,7 +2200,7 @@ benefit.)*
       line appeared only inside the subordinate clause "necessary but not sufficient" above — a remark about
       `replace`, not an instruction — so nothing in this task told anyone to edit `go.work`, and CI edit #2
       would have gone red.)*
-- [ ] **CI: three edits, not one.** `.github/workflows/ci.yml`'s `module` matrix lists six directories
+- [x] **CI: three edits, not one.** `.github/workflows/ci.yml`'s `module` matrix lists six directories
       (`grep -c 'dir:' .github/workflows/ci.yml` → **6**) and the `workspace` job hard-codes a six-directory
       loop:
       1. add `expr` to the `module` matrix;
@@ -2224,7 +2226,7 @@ benefit.)*
       > not — no `dir:` entry and no loop entry exists. The comment-stripped form above is the one CLAUDE.md's
       > own quality-gate block already uses. **Counter-rule 10: when a pass edits a file, re-run every pasted
       > command in the bundle that reads that file.**
-- [ ] Providers returning the Task 9 types. **The shape is NOT uniform, and it is NOT non-generic** — the
+- [x] Providers returning the Task 9 types. **The shape is NOT uniform, and it is NOT non-generic** — the
       earlier plan got both wrong (round-2 §D2 for the first; round 3, compile-proven, for the second):
       ```go
       func Predicate[A any](s string)      (routing.Predicate[A], error)
@@ -2277,7 +2279,7 @@ benefit.)*
 
       `RouteFunc` additionally carries the **two construction validations** `RouterExpr` had. Do not force it
       into a `(string) → (T, error)` mould it cannot fit.
-- [ ] **`expr/errors.go` — the module declares exactly ONE sentinel (decision D-I, §9.5.0; revised D-K).**
+- [x] **`expr/errors.go` — the module declares exactly ONE sentinel (decision D-I, §9.5.0; revised D-K).**
       This is a **prerequisite for the providers compiling**, not a follow-up: every construction path below
       wraps `ErrInvalidExpression`, and root no longer has it.
       ```go
@@ -2372,10 +2374,10 @@ benefit.)*
       > **Moot as of this correction (round-7 X-M13):** the old *"before Task 9.5 deletes it"* urgency.
       > `git show 3d0b87a:` reads **history**, so nothing Task 9.5 does to the working tree can make that
       > text unreadable. The deadline was fiction, and it is removed rather than reworded.
-- [ ] `Release` returns `routing.ReleaseStrategy`, whose `(bool, error)` shape is what lets an evaluation
+- [x] `Release` returns `routing.ReleaseStrategy`, whose `(bool, error)` shape is what lets an evaluation
       failure propagate instead of being swallowed into a permanent `false`. `WithReleaseStrategy(expr.Release(…))`
       now compiles, which is the point of D-E.
-- [ ] **Reinstate the deleted `*Expr` test cases against the providers. The parity source of truth is git,
+- [x] **Reinstate the deleted `*Expr` test cases against the providers. The parity source of truth is git,
       NOT the ledger.**
 
       > **CORRECTED (round 3).** This step previously said *"reinstate the Task 1 test cases from the ledger …
@@ -2431,10 +2433,10 @@ benefit.)*
       **Two cases are `toGroupEnv` guard cases that genuinely belong here** — M-1 (empty group snapshot) and
       M-6 (non-`A` member → `ErrPayloadType`) — while H-1/H-2/H-3 already returned in Task 1 and must **not**
       be re-added (F3).
-- [ ] Runtime failures wrap the **source expression text** — the debuggability mitigation ADR 0029 §3 traded
+- [x] Runtime failures wrap the **source expression text** — the debuggability mitigation ADR 0029 §3 traded
       the interface shape for, so it is a requirement, not a nicety.
 
-- [ ] **A result-type mismatch returns root's `msgin.ErrPayloadType` — decision D-K, AS REVISED in round 6**
+- [x] **A result-type mismatch returns root's `msgin.ErrPayloadType` — decision D-K, AS REVISED in round 6**
       (ADR 0029 §5.0b). Every such site:
       ```go
       return msgin.Message[B]{}, fmt.Errorf("%w: expr result %T is not %T",
@@ -2454,7 +2456,7 @@ benefit.)*
       **`ErrInvalidExpression` is NOT wrapped either** — it is a construction-time fault that never reaches
       the retry path. The two faults remain asymmetric; do not treat them uniformly.
 
-- [ ] **THIS TASK OWNS THE `errors.go:6` GODOC WIDENING — decision D-K, round-7 D-B8.** Revised D-K stretches
+- [x] **THIS TASK OWNS THE `errors.go:6` GODOC WIDENING — decision D-K, round-7 D-B8.** Revised D-K stretches
       `msgin.ErrPayloadType` over a second producer class that its one-line godoc does not describe, and
       until this round **no task amended it**. Measured on the untouched tree:
 
@@ -2572,7 +2574,7 @@ benefit.)*
       matches; after Task 9.5 no other declaration in the block contains any of the four strings — the only
       other `expr`-flavoured godoc in it is the pair 9.5 deletes.)*
 
-- [ ] **Extend Spec §8.1 arm 2's DECLARED-SIDE loop with `expr` — round-7 X-B7 (Task-10 half).** Spec
+- [x] **Extend Spec §8.1 arm 2's DECLARED-SIDE loop with `expr` — round-7 X-B7 (Task-10 half).** Spec
       §8.1's command block already carries the instruction (*"TASK 10 MUST EXTEND THE LOOP WITH `expr` the
       moment `expr/` exists"*, round-6 E-B2) and §8.1's allow-list table records `ErrInvalidExpression` as
       **deliberately not allow-listed** for this reason — but the instruction landed only in the Spec's
@@ -3062,10 +3064,75 @@ ADR 0027; RFC 0002 backs ADRs 0028 and 0030.)*
       - **`ChannelExchange.Close`'s post-`Close` reply behavior change** (Spec 014 §5.2a);
       - the two-import shape for a retry policy:
         `msgin.RetryPolicy{Backoff: resilience.ExponentialBackoff{…}}`.
-- [ ] **CLAUDE.md, same commit** (traceability, non-optional): the **"Commands" section's**
-      *"`./...` does NOT mean 'the repo'"* block and the **"Architecture blueprint"** section must name the
-      **eighth** module (`expr`) and its package. **Cite CLAUDE.md by SECTION, never by line number** — they
-      rot on every edit, and this checkbox is the proof.
+- [ ] **CLAUDE.md, same commit** (traceability, non-optional). **FIVE sites, enumerated — the first two were
+      the whole checkbox until Task 10's fix rounds found sites three through five unowned** (see the round-6
+      correction below, which is about the first two only):
+      1. the **"Commands" section's** *"`./...` does NOT mean 'the repo'"* block — it must name the
+         **eighth** module (`expr`) and its package, and its two per-module loops must run **eight**
+         directories, not seven. The **"Until Task 10 lands, run seven locally"** preamble is now false and
+         goes with it.
+      2. the **"Architecture blueprint"** section — `expr` joins the shipped-adapter list, and the
+         *"26 plans / 25 ADRs / 13 specs"* counts move with Spec 014 / ADRs 0027–0030 / Plan 027.
+      3. **the "Dependency policy" section's *"Still outstanding"* sentence** — *"Task 10 has the `expr`
+         module declare **`ErrInvalidExpression`** itself"*. **Task 10 DID that**, so the
+         sentence is false as written; replace it with the delivered state (one sentinel, `msgin/expr:`
+         prefix, `expr-lang` confined to `expr/go.mod` + `expr/go.sum`). *(Task 10's worker correctly
+         deferred this edit here rather than reaching into CLAUDE.md — but this checkbox did not cover it, so
+         a Task 12 worker would have skipped it. Fix round 1.)*
+      4. the same section's CI-gap paragraph — *"**Plan 027 Task 10 adds `crontest` to both CI jobs**"* — is
+         delivered; `grep -c 'dir:' .github/workflows/ci.yml` is now **8** and the comment-stripped
+         `crontest` grep is non-zero on both jobs.
+      5. **the same section's SENTINEL and EXPORTED-SYMBOL counts** — *"taking root from **43 → 41**
+         sentinels and **102 → 100** exported symbols (`apidiff` removals 95 → 97)"*. That sentence is
+         accurate **for Task 9.5 in isolation** and stale as a statement about the branch: Task 9.6 (D-J) then
+         added `ErrSharedReplyChannel` + `ExclusiveSubscribable`, and Task 10's fix round 2 added
+         `ErrNilMessageGroup`. The delivered tree measures **103 exported / 43 sentinels / apidiff 97
+         removals + 9 additions** — re-measure with the §Task-12 commands rather than transcribing this
+         figure, and reconcile the sentinels **by name**, since 43 at `dadc775` and 43 today are different
+         sets.
+
+      **Cite CLAUDE.md by SECTION, never by line number** — they rot on every edit, and this checkbox is the
+      proof.
+
+      **Also re-check every ADR STATUS block in the same pass.** Task 10 falsified three in ADR 0029 and
+      fixed them (§5.0a's *"Task 10 still owes the one replacement"*, §5.0b's *"DECIDED, NOT YET
+      IMPLEMENTED"*, and §5.0c's cost table naming `"want %T, got %T"` as the payload-side discriminator).
+      **Task 10's round-3 sweep also found TWO stale blocks it does NOT own — they belong to Task 9.6, which
+      is DONE, and they were already stale before Task 10 began** (last touched at `c4582ba`):
+
+      - [`docs/adrs/0028-channel-interface-segregation.md:364`](../adrs/0028-channel-interface-segregation.md)
+        — *"**NOT YET IMPLEMENTED.** … at `dadc775` the probe does not exist"*. The probe shipped with
+        Task 9.6.
+      - the same file at `:401` — *"**NOT YET IMPLEMENTED** — Plan 027 Task 9.6"*.
+
+      Sweep command below. **Three things in it are deliberate; do not "simplify" any of them.**
+
+      1. **The vacuity probe.** A bare `grep` over an unquoted shell variable does **not** word-split in zsh:
+         `grep` receives one long non-existent filename, fails, and an `|| echo CLEAN` fallback prints a
+         pass. That false CLEAN is how this class hides. `set --` + `"$@"` fixes it; the probe proves it.
+      2. **Frozen files are EXCLUDED.** `docs/plans/027-audit-round-*.md` and the derivation
+         ledger/brief record what was true **at a past commit** and must never be "fixed" — editing them
+         destroys the audit trail. Run without the exclusion, `027-derivation-findings.md:3737` hits on a
+         quoted historical status and reads as a live defect.
+      3. **`DECIDED, NOT` and `still panics` were REMOVED from the pattern.** `DECIDED, NOT` is fully
+         redundant with `NOT YET IMPLEMENTED` (the status block reads `STATUS: DECIDED, NOT YET
+         IMPLEMENTED`) and, case-insensitively, matches ordinary English — *"decided, not incidental"*
+         (`docs/adrs/0028…:222`) and *"(decided, not open)"* (`docs/plans/011-cron-source.md:2457`).
+         `still panics` matches correct prose documenting a real limitation (ADR 0029 §5.0d's typed-nil
+         caveat). Both produced pure noise; the pattern is case-SENSITIVE for the same reason.
+
+      ```bash
+      set -- $(ls docs/plans/*.md docs/specs/*.md docs/adrs/*.md docs/HANDOVER.md \
+                 | grep -vE 'docs/plans/027-(audit-round-[0-9]+|derivation-findings|derivation-brief)\.md')
+      grep -c "Task 10" "$@" | grep -v ':0$' | head -3    # PROBE: must print at least one line
+      grep -nE "NOT YET IMPLEMENTED|still owes|still declares" "$@"
+      ```
+
+      **EXPECTED OUTPUT — how to tell a real hit from a known one.** A hit in
+      **`docs/plans/027-core-package-layout.md` is THIS CHECKBOX quoting its own search strings** — ignore
+      it, and expect it to move as the file is edited. A hit **anywhere else is real.** Today that is
+      exactly two, both listed above (`docs/adrs/0028-channel-interface-segregation.md:364` and `:401`).
+      When those two are fixed, every remaining line should be in this file.
 
       > **ROUND-6 CORRECTION (M-1).** This checkbox was stale three separate ways at `aae6160`:
       > (1) *"dependency policy drops `expr-lang` and **keeps `robfig`**"* — **already done**; (2) *"the
@@ -3075,6 +3142,41 @@ ADR 0027; RFC 0002 backs ADRs 0028 and 0030.)*
       > inside the dependency-policy bullet list, nowhere near what the checkbox described; (3) the
       > `./...`-is-not-the-repo block was **already updated in round 5** and correctly describes a 7-module
       > workspace today. Only the **eighth module** remains, and it lands with Task 10's `go.work` + CI edits.
+- [ ] **Backfill the final commit SHAs, and cite by TASK until then.** Task 10 was amended three times, and
+      each amend destroyed the SHA the previous round's prose had cited, and both are now unreachable
+      (`git merge-base --is-ancestor <sha> HEAD` fails; a fresh clone cannot resolve either). The two values
+      are recorded in Task 10's fix-round report and are deliberately NOT repeated here — quoting a dead SHA
+      inside the checkbox makes the sweep below report the checkbox's own prose, which is the `grep crontest`
+      trap in `ci.yml` all over again.
+      **A commit cannot cite its own SHA**, so every in-bundle reference to Task 10's commit now names the
+      TASK. Once the branch is final, sweep `docs/` for task-named citations that should carry a SHA and add
+      them — and check reachability for every SHA already written down, not just the ones you add:
+
+      ```bash
+      for sha in $(grep -rhoE '\b[0-9a-f]{7,40}\b' \
+                     docs/*.md docs/*/*.md docs/*/*/*.md | grep -E '[a-f]' | sort -u); do
+        if ! git cat-file -e "$sha^{commit}" 2>/dev/null; then
+          echo "UNRESOLVABLE: $sha"     # not in this clone AT ALL — the fresh-clone case
+        elif ! git merge-base --is-ancestor "$sha" HEAD 2>/dev/null; then
+          echo "ORPHAN: $sha"           # object present (reflog) but not on this branch
+        fi
+      done
+      ```
+
+      **Three deliberate details.** The glob reaches **three** levels — two misses
+      `docs/plans/027-tools/README.md`. `grep -E '[a-f]'` drops decimal literals that are also valid hex
+      (`1000000`, `9223372036`). And **`UNRESOLVABLE` is reported, not skipped**: the earlier form used
+      `git cat-file -e … && …`, so a SHA absent from the object store was silently passed over — which is
+      exactly what happens in a **fresh clone**, the case this gate exists for. A dropped commit would have
+      produced a clean sweep.
+
+      **EXPECTED OUTPUT: one line**, and it is not a defect —
+      `UNRESOLVABLE: 416f41e34fe32840c5634a660df790e1`, a GitHub **gist id** inside a URL in
+      `docs/rfcs/README.md`. Any `ORPHAN:` line, or any other `UNRESOLVABLE:`, is real.
+- [ ] **Regenerate `docs/HANDOVER.md` wholesale.** It predates Tasks 9.6 and 10 and carries a stale status
+      table, a stale `git log`, stale commit counts and *"seven modules"* throughout; Task 10's fix round 3
+      added a staleness banner rather than patching it, because a partially-updated handover contradicts
+      itself. Rewrite from the delivered safepoint per CLAUDE.md's handover contract.
 - [ ] **`MESSAGING.md`** reconciled against the new package names (it carries 3 `EventDrivenSource` mentions
       and is named nowhere in the bundle — F10.4).
 - [ ] **Assert every invariant mechanically**, into the ledger:
@@ -3085,19 +3187,25 @@ ADR 0027; RFC 0002 backs ADRs 0028 and 0030.)*
         | grep -vE '^github.com/kartaladev/msgin/(endpoint|routing|transform|channel|resilience)$'       # EMPTY
       ls *.go | grep -v _test.go | wc -l                                                                 # 14
       go run docs/plans/027-tools/decls.go . | grep -v _test.go \
-        | awk -F'\t' '$5=="exported" && $3!="method"{print $4}' | sort -u | wc -l                        # 102 (projected)
+        | awk -F'\t' '$5=="exported" && $3!="method"{print $4}' | sort -u | wc -l                        # 103 (projected)
       go run docs/plans/027-tools/decls.go . | grep -v _test.go \
-        | awk -F'\t' '$3=="var" && $4 ~ /^Err/{print $1}' | sort | uniq -c                               # 42 errors.go (projected)
+        | awk -F'\t' '$3=="var" && $4 ~ /^Err/{print $1}' | sort | uniq -c                               # 43 errors.go (projected)
       ```
-      > **NO LONGER CONTINGENT — both decisions are closed (2026-07-28).** D-I removes two sentinels from root
-      > and D-J adds two symbols to it, so the expected end state is **102 exported / 42 sentinels /
-      > apidiff 97 removals + 8 additions**:
+      > **NO LONGER CONTINGENT — every contributing decision is closed.** D-I removes two sentinels from root,
+      > D-J adds two symbols, and Task 10's fix round 2 adds one more sentinel
+      > (**`ErrNilMessageGroup`** — the `MessageGroupStore.Add` SPI-violation fault), so the expected end
+      > state is **103 exported / 43 sentinels / apidiff 97 removals + 9 additions**:
       >
       > | | exported | sentinels | removals | additions |
       > |---|--:|--:|--:|--:|
       > | Measured at `dadc775` | 102 | 43 | 95 | 6 |
       > | − D-I (§9.5.0) | 100 | 41 | 97 | 6 |
-      > | + D-J (§9.6) | **102** | **42** | **97** | **8** |
+      > | + D-J (§9.6) | 102 | 42 | 97 | 8 |
+      > | + `ErrNilMessageGroup` (Task 10, fix round 2) | **103** | **43** | **97** | **9** |
+      >
+      > *(The `dadc775` and post-Task-10 rows both read 43 sentinels; they are NOT the same 43 — D-I removed
+      > `ErrInvalidExpression` and `ErrExprResultType`, while D-J added `ErrSharedReplyChannel` and fix round 2
+      > added `ErrNilMessageGroup`. Reconcile by NAME, never by count.)*
       >
       > **Every number in the right-hand rows is a projection.** This task's job is to **measure**, not to
       > confirm: run each command, paste its output, and if it disagrees with this table, **the table is the
@@ -3127,7 +3235,8 @@ ADR 0027; RFC 0002 backs ADRs 0028 and 0030.)*
       `test -z "$(gofmt -l .)"`, `govulncheck`, `go mod tidy` (no-op in every module), and
       `CGO_ENABLED=0 go build ./...`.
 - [ ] `apidiff`/`gorelease` against the Task 0 baseline; reconcile **every** entry against Spec 014 §4.1's
-      decomposition — **projected 97 removals / 8 additions**, i.e. the measured 87 + 6 + 1 + 1 = 95 partition
+      decomposition — **projected 97 removals / 9 additions** (the ninth is `ErrNilMessageGroup`, added by
+      Task 10's fix round 2), i.e. the measured 87 + 6 + 1 + 1 = 95 partition
       **plus a fifth class**: `ErrInvalidExpression` and `ErrExprResultType`, removed by D-I. Add that row to
       §4.1's table when the measurement confirms it. An unexplained entry blocks the merge.
 - [ ] Coverage with **`-coverpkg=./...` on both sides**. **SIX** accepted uncovered blocks are pre-recorded in

@@ -1,5 +1,20 @@
 # Session handover — msgin
 
+> # ⛔ THIS DOCUMENT IS STALE — regenerate before relying on ANY of it (2026-08-11).
+>
+> It was written before **Task 9.6** and **Task 10** landed, and every one of the following is now false:
+> the banner *"THE NEXT STEP IS TASK 9.6"*; the §1 status table (9.6 and 10 both read `NOT STARTED`); the
+> §2 `git log` transcript; the *"five commits of real code"* / *"23 commits unpushed"* counts; and every
+> *"seven modules"* claim — the workspace has **eight** since Task 10 added `expr`.
+>
+> **Authority, in order:** `docs/plans/027-core-package-layout.md`'s Progress table, then `git log`. This
+> file is a session artifact and is rewritten wholesale at the next handover, not patched task by task —
+> partially updating it produces a document whose table and prose disagree, which is worse than one that
+> announces its own staleness. Task 12 owns the regeneration.
+>
+> *(Recorded by Task 10's fix round 3, whose sweep found it. Task 10 did not rewrite it: a handover is
+> written from a safepoint at handover time, per CLAUDE.md, and is not a task deliverable.)*
+
 > **READ FIRST.** Read `CLAUDE.md`, then `docs/plans/027-core-package-layout.md` (its **Progress table** is
 > the authority on what is done), then `docs/specs/014-core-package-layout.md`. **Trust those files and
 > `git log` over this one**, and over any memory.

@@ -75,6 +75,80 @@ func (s *failingAddStore) Add(context.Context, string, msgin.Message[any]) (msgi
 
 var _ msgin.MessageGroupStore = (*failingAddStore)(nil)
 
+// nilAddStore is a MessageGroupStore whose Add returns a NIL group snapshot
+// together with a NIL error, breaking the SPI's Add contract. It exists because
+// MessageGroupStore is the PUBLIC adapter SPI: the store is caller-injected, so
+// a nil-nil pair is caller input reaching library code and must not be deferred
+// into a nil-pointer panic.
+type nilAddStore struct {
+	msgin.MessageGroupStore
+}
+
+func (s *nilAddStore) Add(context.Context, string, msgin.Message[any]) (msgin.MessageGroup, error) {
+	return nil, nil
+}
+
+var _ msgin.MessageGroupStore = (*nilAddStore)(nil)
+
+// TestAggregator_NilGroupFromStoreIsPermanentTypedError covers the choke-point
+// guard in Handle, across EVERY release strategy the Aggregator can be built
+// with.
+//
+// The table is the whole point. Handle chooses among four release values — the
+// default, WithCompletionSize, WithReleaseWhen, and a caller's own
+// WithReleaseStrategy — and all four dereference the group snapshot. A guard
+// placed inside any one of them (the shape this test previously asserted) left
+// the other three panicking on the same input; only a guard BEFORE the call
+// covers the set. Three of these four cases panicked before the choke-point
+// guard existed.
+//
+// It asserts a typed error rather than a silent hold: on a hold Handle returns
+// nil and the source Acks, for a message the store just said it cannot read
+// back — which risks a message that is durable nowhere. The Permanent wrap is
+// D-M's reasoning (a deterministic implementation fault cannot be fixed by
+// redelivery, so retrying it only burns MaxAttempts).
+func TestAggregator_NilGroupFromStoreIsPermanentTypedError(t *testing.T) {
+	tests := []struct {
+		name string
+		opt  routing.AggregatorOption
+	}{
+		{name: "default release strategy"},
+		{name: "WithCompletionSize", opt: routing.WithCompletionSize(2)},
+		{
+			name: "WithReleaseWhen",
+			opt:  routing.WithReleaseWhen(func(g msgin.MessageGroup) bool { return len(g.Messages()) >= 1 }),
+		},
+		{
+			name: "WithReleaseStrategy",
+			opt: routing.WithReleaseStrategy(func(g msgin.MessageGroup) (bool, error) {
+				return len(g.Messages()) >= 1, nil
+			}),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out := &fakeAggChannel{}
+			opts := []routing.AggregatorOption{routing.WithOutputChannel(out)}
+			if tc.opt != nil {
+				opts = append(opts, tc.opt)
+			}
+			agg, err := routing.NewAggregator[int, int](&nilAddStore{}, sumFn, opts...)
+			require.NoError(t, err)
+
+			msg := msgin.New[any](1, msgin.WithHeaders(map[string]any{msgin.HeaderCorrelationID: "g"}))
+			require.NotPanics(t, func() {
+				err = agg.Handle(t.Context(), msg)
+			})
+			require.ErrorIs(t, err, msgin.ErrNilMessageGroup)
+			require.True(t, msgin.IsPermanent(err),
+				"a store that returns nil snapshots cannot be fixed by redelivery, so it must not be retried")
+			require.ErrorContains(t, err, "MessageGroupStore.Add",
+				"the error names the SPI contract that was broken")
+			require.Equal(t, 0, out.count(), "nothing may be released from a group that could not be read")
+		})
+	}
+}
+
 // settleErrStore wraps a real msgin.MessageGroupStore and makes every
 // SettleGroup call fail with settleErr — used to cover releaseOnce's
 // SettleGroup-error branch (its own defer-abandon-unless-settled keeps the
@@ -474,7 +548,8 @@ func TestAggregator_Handle(t *testing.T) {
 				store := newIntStore(t)
 				out := &fakeAggChannel{}
 				const orderKey = "order-key"
-				agg, err := routing.NewAggregator[int, int](store, sumFn,
+				agg, err := routing.NewAggregator[int, int](
+					store, sumFn,
 					routing.WithOutputChannel(out),
 					routing.WithCorrelationStrategy(func(m msgin.Message[any]) (string, error) {
 						v, ok := m.Header(orderKey)
@@ -507,7 +582,8 @@ func TestAggregator_Handle(t *testing.T) {
 			assert: func(t *testing.T) {
 				store := newIntStore(t)
 				out := &fakeAggChannel{}
-				agg, err := routing.NewAggregator[int, int](store, sumFn,
+				agg, err := routing.NewAggregator[int, int](
+					store, sumFn,
 					routing.WithOutputChannel(out),
 					routing.WithReleaseWhen(func(g msgin.MessageGroup) bool {
 						sum := 0
@@ -540,7 +616,8 @@ func TestAggregator_Handle(t *testing.T) {
 			assert: func(t *testing.T) {
 				store := newIntStore(t)
 				out := &fakeAggChannel{}
-				agg, err := routing.NewAggregator[int, int](store, sumFn,
+				agg, err := routing.NewAggregator[int, int](
+					store, sumFn,
 					routing.WithOutputChannel(out),
 					routing.WithReleaseWhen(func(g msgin.MessageGroup) bool {
 						return len(g.Messages()) >= 2
@@ -906,7 +983,8 @@ func TestAggregator_Run(t *testing.T) {
 				require.NoError(t, err)
 				out := &fakeAggChannel{}
 				expired := &fakeAggChannel{}
-				agg, err := routing.NewAggregator[int, int](store, sumFn,
+				agg, err := routing.NewAggregator[int, int](
+					store, sumFn,
 					routing.WithOutputChannel(out),
 					routing.WithGroupTimeout(30*time.Second),
 					routing.WithExpiredGroupChannel(expired),
@@ -968,7 +1046,8 @@ func TestAggregator_Run(t *testing.T) {
 
 				out := &fakeAggChannel{}
 				expired := &fakeAggChannel{}
-				agg, err := routing.NewAggregator[int, int](store, sumFn,
+				agg, err := routing.NewAggregator[int, int](
+					store, sumFn,
 					routing.WithOutputChannel(out),
 					routing.WithGroupTimeout(30*time.Second),
 					routing.WithExpiredGroupChannel(expired),
@@ -1019,7 +1098,8 @@ func TestAggregator_Run(t *testing.T) {
 
 				out := &fakeAggChannel{}
 				expired := &fakeAggChannel{}
-				agg, err := routing.NewAggregator[int, int](store, sumFn,
+				agg, err := routing.NewAggregator[int, int](
+					store, sumFn,
 					routing.WithOutputChannel(out),
 					routing.WithGroupTimeout(30*time.Second),
 					routing.WithExpiredGroupChannel(expired),
@@ -1067,7 +1147,8 @@ func TestAggregator_Run(t *testing.T) {
 
 				out := &fakeAggChannel{}
 				expired := &fakeAggChannel{}
-				agg, err := routing.NewAggregator[int, int](store, sumFn,
+				agg, err := routing.NewAggregator[int, int](
+					store, sumFn,
 					routing.WithOutputChannel(out),
 					routing.WithGroupTimeout(30*time.Second),
 					routing.WithExpiredGroupChannel(expired),
@@ -1110,7 +1191,8 @@ func TestAggregator_Run(t *testing.T) {
 
 				out := &fakeAggChannel{}
 				expired := &fakeAggChannel{}
-				agg, err := routing.NewAggregator[int, int](store, sumFn,
+				agg, err := routing.NewAggregator[int, int](
+					store, sumFn,
 					routing.WithOutputChannel(out),
 					routing.WithGroupTimeout(30*time.Second),
 					routing.WithExpiredGroupChannel(expired),
@@ -1152,7 +1234,8 @@ func TestAggregator_Run(t *testing.T) {
 
 				out := &fakeAggChannel{}
 				expired := &fakeAggChannel{}
-				agg, err := routing.NewAggregator[int, int](store, sumFn,
+				agg, err := routing.NewAggregator[int, int](
+					store, sumFn,
 					routing.WithOutputChannel(out),
 					routing.WithGroupTimeout(100*time.Second), // far larger than the store's 10s RecoverInterval
 					routing.WithExpiredGroupChannel(expired),
@@ -1190,7 +1273,8 @@ func TestAggregator_Run(t *testing.T) {
 
 				out := &fakeAggChannel{}
 				expired := &fakeAggChannel{}
-				agg, err := routing.NewAggregator[int, int](base, sumFn,
+				agg, err := routing.NewAggregator[int, int](
+					base, sumFn,
 					routing.WithOutputChannel(out),
 					routing.WithCompletionSize(2),
 					routing.WithGroupTimeout(30*time.Second),
@@ -1241,7 +1325,8 @@ func TestAggregator_Run(t *testing.T) {
 				out := &fakeAggChannel{}
 				sendErr := errors.New("expired send boom")
 				expired := &fakeAggChannel{sendErr: sendErr}
-				agg, err := routing.NewAggregator[int, int](base, sumFn,
+				agg, err := routing.NewAggregator[int, int](
+					base, sumFn,
 					routing.WithOutputChannel(out),
 					routing.WithGroupTimeout(30*time.Second),
 					routing.WithExpiredGroupChannel(expired),
@@ -1320,7 +1405,8 @@ func TestAggregator_ReleaseErrorReaperFallThrough(t *testing.T) {
 	require.NoError(t, err)
 	out := &fakeAggChannel{}
 	expired := &fakeAggChannel{}
-	agg, err := routing.NewAggregator[int, int](store, sumFn,
+	agg, err := routing.NewAggregator[int, int](
+		store, sumFn,
 		routing.WithOutputChannel(out),
 		routing.WithReleaseStrategy(requireQtyRelease(1)),
 		routing.WithGroupTimeout(30*time.Second),

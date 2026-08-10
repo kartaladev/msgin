@@ -157,6 +157,7 @@ behavior changes" cites the table, never its length.**
 | 6 | **A deterministic endpoint fault carries its own retry classification.** *Invariant (corrected in round 8, B7 — the round-7 form was compile-proven FALSE; see ADR 0029 §5.0b):* **every typed error msgin returns from inside a `MessageHandler` body msgin itself constructs, whose cause was fixed at construction and cannot change for the message's lifetime, is `Permanent`; a fault a later `Subscribe`, config reload or drain could resolve stays bare and transient; every one returned from a constructor is bare, because construction never reaches a `RetryPolicy`; everything else — handed to a caller from a non-constructor API — is bare too.** Applied, each flow-path producer returns `msgin.Permanent(<sentinel>)` wrapped with positional context, so a mis-wired step is **diverted to the invalid-message channel** instead of consuming the retry budget, landing in the dead-letter sink and recording an unhealthy signal that trips the circuit breaker. Covers `ErrNilFunc` **and `ErrNilSink`** (`handler.go:55`, `msgin.To`); **excludes** `routing/aggregator.go:251` (`NewAggregator` — a constructor) and `ErrNoRoute` (evaluated per message) | ADR 0029 §5.0b (**D-M**, scope-corrected in round 7) | §7; **Plan 027 Task 9.7** (shipped producers) + **Task 9** (combinators); precedent `routing/aggregator.go:151-160` |
 | 7 | **`divert` falls back to the dead-letter sink before discarding — and the fallback is SINGLE-SHOT.** When no invalid-message sink is configured but a `DeadLetter` sink is, an invalid message is routed there rather than discarded; the discard remains when **neither** sink is configured **and whenever the invalid path's sink — the configured `WithInvalidMessageSink` or, when unset, the dead-letter fallback — fails its own `Send`** — that failure is settled by a WARN naming **both** the classification cause and the sink error, then an `Ack`, never a `Nack` with requeue (**D-P**). The single shot is a property of the **message** (permanent by classification), not of which sink refused it, so it governs the **whole invalid path**, not the fallback alone. **One exception**, added by the Task 9.7 code review: a `Send` that fails only because the consumer's settle context was **already cancelled by the shutdown deadline** proved nothing about the sink, so it is `Nack`ed with requeue, fires no terminal hook, and keeps its tracker entry — see the shutdown-exception note under [ADR 0007 D7](../adrs/0007-reliability-settlement-api.md#d7--no-invalid-sink-policy-tasks-45). It does not weaken D-P: in normal operation `ctx.Err()` is `nil`, and the arm is reachable only during a shutdown D9 bounds, so it cannot loop. `OnInvalidMessage` fires on every arm; `OnRetry` fires on none of them. Without the fallback, row 6 would turn a message the library previously captured durably into a **dropped** one, in the default configuration of every finite-retry consumer; without the single shot, a **permanent** message would loop through redelivery unboundedly, invisible to `MaxAttempts`, to `Backoff` and to the circuit breaker — and, holding its `WithMaxInFlight` credit forever, starving **valid** traffic. **ONE CLASS IS EXEMPT FROM THE FALLBACK — `ErrPayloadTooLarge`** (the byte-cap reject from `WithMaxPayloadBytes`), amended 2026-08-09 by the whole-branch `/code-review` of Task 9.5. With no invalid sink it is **discarded** (WARN naming the id and the class, `OnInvalidMessage`, `Ack`) rather than dead-lettered, even when a `DeadLetter` sink is configured; with an invalid sink set it goes there, unchanged. The cap bounds memory and durable storage against **untrusted wire input**, so routing its rejects into the fallback — reached in the default shape of *every* finite-retry consumer — would write each oversize payload **verbatim** into the operator's durable store and make the defence the vector. This does not violate the row's own premise (*"no configuration that previously captured a message starts dropping it"*): the class was already `IsPermanent` before **D-N** and was therefore already **discarded**, so the exemption **restores** the prior behavior rather than losing a capture. **Two further consequences are accepted and recorded, not absent:** a poison storm becomes durable writes rather than log lines; and **a transient outage of a *configured* invalid-message sink discards that window's invalid messages** rather than holding them until it recovers — loudly (a WARN per message naming the id, the cause and the sink error, plus `OnInvalidMessage`), and the price of the termination guarantee. Point `WithInvalidMessageSink` at a durable-on-write target (a spool, an outbox table) if that window matters. **Disclosed limitation (CLAUDE.md's multi-instance rule):** the dead-letter sink now carries two operationally distinct classes — retries-exhausted and permanently-invalid — with **no settlement-reason header** to tell them apart in another process; an operator who needs the distinction must configure `WithInvalidMessageSink` | ADR 0029 §5.0b (**D-N**, amended by **D-P**), amending [ADR 0007 D7](../adrs/0007-reliability-settlement-api.md#d7--no-invalid-sink-policy-tasks-45) three times | §7; **Plan 027 Task 9.7**, same commit as row 6 |
 | 8 | **`Producer.Send` returns a permanent outbound error to the caller WITHOUT dead-lettering it.** This is not a new code path — `endpoint/producer.go:453-455` already returns on `IsPermanent` before `p.deadLetter(...)` — it is row 6 reaching the producer: a mis-wired step downstream of a producer over a `*channel.DirectChannel` (`channel/direct.go:89` returns the handler's error verbatim) now classifies `Permanent`, so **the producer's dead-letter sink stops receiving it** and **`errors.Is(err, msgin.ErrDeadLettered)` flips `true` → `false`** on the error `Send` returns. `OnDeadLetter` stops firing for this class. The behavior is correct and deliberate — `Send` is synchronous, the caller receives the error, there is no message to lose, which is why row 7's fallback does **not** extend to the producer (there is no `WithInvalidMessageSink` on the producer) — but it is an observable change to an **exported error contract** and rides in this register rather than silently. Round 7 recorded row 7's premise as *"no configuration that previously captured a message starts dropping it"*: true of the consumer, **false here** | ADR 0029 §5.0b (**D-M**, producer-side blast radius, round 8) | §7; **Plan 027 Task 9.7**, same commit as rows 6 and 7 |
+| 9 | **A `MessageGroupStore` that breaks its `Add` contract now yields a typed, `Permanent` error instead of panicking.** `MessageGroupStore` is the public adapter SPI, so a third-party store returning a **nil group snapshot together with a nil error** is caller input. `Aggregator.Handle` previously passed that nil straight into whichever release strategy was configured, and **all four** dereferenced it — the default, `WithCompletionSize`, `WithReleaseWhen`, and a caller's own `WithReleaseStrategy` — so the flow died on a nil-pointer panic (measured across all four before the fix). It is now rejected **once, at the choke point** immediately after `store.Add`, with `Permanent(ErrNilMessageGroup)` naming the broken contract. **The `Permanent` wrap is row 6's invariant applied here** — a store that returns nil snapshots is fixed at construction and cannot change for the message's lifetime — so the message is diverted to the invalid-message channel rather than burning `MaxAttempts` on a fault redelivery cannot fix. **It is deliberately an error and not a "hold":** returning nil would `Ack` the source for a message the store just said it cannot read back, risking a message durable nowhere, where an error routes it to a visible sink. Precedent for the shape is `ErrNilSubscription`, the same nil-nil SPI-contract violation one level up. Costs one root sentinel (**43** total; `apidiff` additions 8 → **9**, removals unchanged at 97) | ADR 0029 §5.0d (**D-Q**); shape follows **D-M** (ADR 0029 §5.0b) and `ErrNilSubscription`; raised as a user ruling on Plan 027 Task 10 fix round 2 (2026-08-11) | §9 AC-2; `routing.TestAggregator_NilGroupFromStoreIsPermanentTypedError` — a four-case table, one per release strategy, each `require.NotPanics` + `ErrorIs` + `IsPermanent` |
 
 > **Row 6 is stated as an INVARIANT, not as a quantifier over a sentinel name** (round-7 D-B7/X-B3). It
 > previously read *"**Every** producer of `ErrNilFunc` returns `Permanent`"* — a universal quantifier that
@@ -1081,19 +1082,24 @@ $ go run docs/plans/027-tools/decls.go . | grep -v '_test\.go' | awk -F'\t' '$5=
 | **Constructors & combinators** (the allow-list) | 15 | `New`, `NewMessage`, `NewHeaders`, `NewID`, `Chain`, `To`, `PayloadOf`, `WithPayload`, `WithClock`, `WithID`, `WithHeaders`, `Permanent`, `IsPermanent`, `RetryAfter`, `RetryAfterOf` |
 | | **102** | |
 
-**The two decided-but-not-yet-implemented changes move it to 102 again, by a different route.** These are
-**projections, not measurements** — no code has changed since `1d7fc80`, and **Task 12 re-runs the command
-above rather than transcribing this table**:
+**Three decided changes move it to 103.** These are **projections, not measurements**, and **Task 12 re-runs
+the command above rather than transcribing this table**:
 
 | Step | Δ interfaces | Δ sentinels | Root exported |
 |---|--:|--:|--:|
 | Measured at `dadc775` | — | — | **102** |
 | **D-I** — `ErrInvalidExpression`, `ErrExprResultType` leave root (§3.2) | — | −2 | 100 |
-| **D-J** — `ExclusiveSubscribable` + `ErrSharedReplyChannel` are added (§5.1) | +1 | +1 | **102** |
+| **D-J** — `ExclusiveSubscribable` + `ErrSharedReplyChannel` are added (§5.1) | +1 | +1 | 102 |
+| **D-Q** — `ErrNilMessageGroup` is added (§2.1 row 9, ADR 0029 §5.0d) | — | +1 | **103** |
 
-The coincidence of the endpoints is arithmetic, not design: 43 − 2 + 1 = **42** sentinels and 21 + 1 = **22**
-interfaces, so 8 + 11 + 22 + 4 + 42 + 15 = 102. `endpoint.WithSharedReplyChannel` is D-J's third new symbol
-and is **not** in this count — it lives in `endpoint`, and this table is root-scoped.
+The arithmetic: 43 − 2 + 1 + 1 = **43** sentinels and 21 + 1 = **22** interfaces, so
+8 + 11 + 22 + 4 + 43 + 15 = **103**. `endpoint.WithSharedReplyChannel` is D-J's third new symbol and is
+**not** in this count — it lives in `endpoint`, and this table is root-scoped.
+
+> **43 AT BOTH ENDS IS NOT THE SAME 43 — reconcile by NAME, never by count.** `dadc775` measured 43
+> sentinels and the delivered tree measures 43, but D-I removed two (`ErrInvalidExpression`,
+> `ErrExprResultType`) while D-J added `ErrSharedReplyChannel` and D-Q added `ErrNilMessageGroup`. A
+> count-only check passes on a tree with the wrong members.
 
 > `TopicPublisher`/`TopicSubscriber` are **new to this list** — decision D-B. They were never named in any of
 > the five bundle documents or any RFC, while an earlier §3.1 quietly moved their file whole into `channel`
@@ -1175,15 +1181,17 @@ $ comm -23 <(sort removed.txt) <(cut -f2 docs/plans/027-tools/symmap.tsv | sort 
 
 > **NO LONGER CONTINGENT — both open decisions are closed (2026-07-28), and the diff moves.** The block that
 > stood here made these numbers conditional on the fate of `ErrInvalidExpression` and `ErrExprResultType`.
-> **D-I (§3.2) removes both from root**, and **D-J (§5.1) adds `ExclusiveSubscribable` and
-> `ErrSharedReplyChannel`**, so the projected diff once Tasks 9.5/9.6/10 land is:
+> **D-I (§3.2) removes both from root**, **D-J (§5.1) adds `ExclusiveSubscribable` and
+> `ErrSharedReplyChannel`**, and **D-Q (§2.1 row 9) adds `ErrNilMessageGroup`**, so the projected diff once
+> Tasks 9.5/9.6/10 land is:
 >
 > | | removals | additions |
 > |---|--:|--:|
 > | Measured at `dadc775` | **95** | **6** |
 > | D-I: two sentinels leave root | +2 → 97 | — |
 > | D-J: two symbols enter root | — | +2 → 8 |
-> | **Projected at Task 12** | **97** | **8** |
+> | D-Q: one sentinel enters root | — | +1 → 9 |
+> | **Projected at Task 12** | **97** | **9** |
 >
 > **These are projections and are labelled as such.** No code has changed since `3d0b87a`. Task 12 **re-runs
 > `apidiff` and takes its output as the truth**; if it disagrees with this table, the table is wrong. The
@@ -1785,9 +1793,11 @@ return zero, fmt.Errorf("%w: expr result %T is not %T", msgin.ErrPayloadType, go
   have fallen outside that enumeration and been **retried** — the same defect **D-M** (§2.1 row 6) fixes for
   `ErrNilFunc`. The two decisions are one rule read from two directions: *a deterministic fault must not be
   retried*.
-- **Cost to root's SURFACE: none.** No new root symbol, no new import edge, and the `expr` module's
-  projected sentinel count drops from 2 to **1**. Root's projected count is unchanged at `43 − 2 + 1 = 42`
-  (§3.2, §4): root loses both expr sentinels either way, and `apidiff` does not move.
+- **Cost to root's SURFACE: none — from D-K.** D-K itself adds no root symbol and no import edge, and the
+  `expr` module's projected sentinel count drops from 2 to **1**; root loses both expr sentinels either way,
+  and `apidiff` does not move *for this decision*. **Root's total is 43, not 42** — but the extra sentinel is
+  **D-Q**'s (`ErrNilMessageGroup`, §2.1 row 9), decided later and independently of D-K: `43 − 2 + 1 + 1 = 43`
+  (§3.2, §4). Stated here so the total reconciles; D-K's own cost is still nil.
 - **Cost to root's CONTRACT: `ErrPayloadType`'s godoc must be widened, and one `errors.Is` target now covers
   two faults. Accepted, not absent.** `errors.go:6` today reads, in full:
 
@@ -2066,7 +2076,11 @@ for p in endpoint routing transform channel resilience; do
   go run docs/plans/027-tools/decls.go $p | grep -v '_test\.go' \
     | awk -F'\t' -v P=$p '$5=="exported" && $3!="method" {print P"\t"$4}'
 done | sort -u -k2,2 > docs/plans/027-tools/symmap.tsv  # 91 at dadc775; 95 after Task 9 added Predicate,
-                                                        # RouteFunc, SplitFunc, Transformer
+                                                        # RouteFunc, SplitFunc, Transformer; 96 after Task 9.6
+                                                        # added endpoint.WithSharedReplyChannel. Regenerated
+                                                        # (96) in Task 10. NO `expr` symbol enters this file —
+                                                        # the loop covers the five core packages only, and
+                                                        # symmap maps symbols that MOVED OUT OF ROOT.
 
 # ARM 1 — MOVED symbols still qualified as msgin.X
 while IFS=$'\t' read -r pkg sym; do
@@ -2075,27 +2089,24 @@ done < docs/plans/027-tools/symmap.tsv  # 2 survivors at dadc775 (codec.go:33, r
                                         # both FIXED and this arm EMPTY as of Plan 027 Task 9.5
 
 # ARM 2 — CONSTRUCTOR/OPTION/SENTINEL-SHAPED names (With*/Err*/New*) referenced UNQUALIFIED in a
-# LINE comment, that are declared nowhere in the ELEVEN scanned package directories (root + ten).
+# LINE comment, that are declared nowhere in the TWELVE scanned package directories (root + eleven).
 # An INVARIANT within that shape, not an enumeration: no edit is needed when a symbol is deleted,
 # and it catches names that NEVER existed (typos) as well as names that stopped existing.
 # THE TWO SIDES HAVE DIFFERENT SCOPES, AND THE ASYMMETRY IS THE GATE'S MAIN FAILURE MODE:
 #   comment side  = TREE-WIDE  (grep -r . sees every module)
-#   declared side = ELEVEN package dirs (root + ten), a FIXED LIST
+#   declared side = TWELVE package dirs (root + eleven), a FIXED LIST
 # so a symbol declared in a directory this list omits is reported as a survivor although it exists.
 # That is a FALSE POSITIVE, not a blind spot: the allow-list below exists solely to paper over it
 # for the satellite modules (WithBusyTimeout, WithImage, WithJournalMode, WithSharedMemory).
-# TASK 10 MUST EXTEND THE LOOP WITH `expr` the moment `expr/` exists (round-6 E-B2), taking the declared
-# side from ELEVEN directories to TWELVE: the module's `expr/errors.go` godoc opens
-# `// ErrInvalidExpression is …`, so without the extension arm 2 reports that name as a survivor on a
-# correct tree. Measured by emulating Task 10's end state (round-7 X-B7):
+# DONE as of Plan 027 Task 10's `expr` scaffolding half (round-6 E-B2 / round-7 X-B7): the declared
+# side now carries `expr`, taking it from ELEVEN directories to TWELVE. Before this task's `expr/`
+# directory existed, `decls.go` panicked on it (`go run docs/plans/027-tools/decls.go ./expr` ->
+# `panic: open ./expr: no such file or directory`), which is why the extension could not land earlier.
+# Measured by emulating Task 10's end state (round-7 X-B7):
 #     loop WITHOUT expr -> ErrInvalidExpression, WithRelease
 #     loop WITH    expr -> WithRelease
-# It is NOT in the list below because decls.go panics on a directory that does not exist
-# (`go run docs/plans/027-tools/decls.go ./expr` -> `panic: open ./expr: no such file or directory`),
-# so adding it before Task 10 would make the gate unrunnable.
-# Do NOT allow-list `ErrInvalidExpression` instead — that re-decorates the gate rather than fixing it.
-# THE EXECUTABLE HALF IS A CHECKBOX IN PLAN 027 TASK 10. Until round 7 this instruction lived only in
-# this comment block and nowhere a worker executes, which is round-7 blocker X-B7.
+# `ErrInvalidExpression` is deliberately NOT allow-listed instead — that would re-decorate the gate
+# rather than fix it (see the allow-list table below).
 # KNOWN BLIND SPOTS (true false-NEGATIVES) — stated, because an overclaimed gate is a decorative gate
 # (round-5 MINOR 5):
 #   * shape: a name outside With|Err|New is invisible (FilterExpr, StreamingSource, boxMessage...)
@@ -2107,7 +2118,7 @@ comm -23 \
       | grep -oE '(^|[^.[:alnum:]_])(With|Err|New)[A-Z][A-Za-z0-9]*' \
       | grep -oE '(With|Err|New)[A-Z][A-Za-z0-9]*' | sort -u) \
   <({ go run docs/plans/027-tools/decls.go . ; for p in endpoint routing transform channel resilience \
-        adapter/memory adapter/cron adapter/database/sql adapter/http adapter/http/stdlib; do \
+        adapter/memory adapter/cron adapter/database/sql adapter/http adapter/http/stdlib expr; do \
         go run docs/plans/027-tools/decls.go ./$p; done; } \
       | awk -F'\t' '$5=="exported"{sub(/^.*\./,"",$4); print $4}' | sort -u) \
   | grep -vxE 'ErrNoRows|ErrUnexpectedEOF|ErrUnsupported|ErrNoPayloadCodec|WithBusyTimeout|WithImage|WithInstanceID|WithJournalMode|WithSharedMemory|WithX'
@@ -2163,9 +2174,9 @@ Both arms must be empty (arm 2 modulo the allow-list above). Run the sweep **aft
 ## 9. Acceptance criteria
 
 1. **Layout & C-full** — root holds the **14** source files enumerated in §3.1, its exported surface matches
-   §4's closed list exactly (**102** exported non-method symbols — measured 102 at `dadc775`, and projected to
-   return to 102 after D-I removes two and D-J adds two; §4 carries the arithmetic and Task 12 **measures**
-   rather than transcribes it), and **no core package imports another core package**:
+   §4's closed list exactly (**103** exported non-method symbols — measured 102 at `dadc775`, and projected to
+   land at 103 after D-I removes two, D-J adds two and D-Q adds one; §4 carries the arithmetic and Task 12
+   **measures** rather than transcribes it), and **no core package imports another core package**:
 
    ```bash
    go list -deps . | grep -E 'kartaladev/msgin/(endpoint|routing|transform|channel|resilience)'          # EMPTY
@@ -2181,12 +2192,15 @@ Both arms must be empty (arm 2 modulo the allow-list above). Run the sweep **aft
    `package msgin_test` files legitimately import the new subpackages (§3.4) and must not fail this check.
    *(Adapters importing `msgin/resilience` are consumers, not peers — §3.)*
 2. **Move-list fidelity** — `apidiff` against the pre-window baseline reports **only** §4.1's removals and
-   additions, each reconciled against §3.1–§3.3. Measured **95 / 6** at `dadc775`; **projected 97 / 8** once
-   D-I and D-J land (§4.1). An unexplained entry blocks the merge — and a *number* that disagrees with §4.1
+   additions, each reconciled against §3.1–§3.3. Measured **95 / 6** at `dadc775`; **projected 97 / 9** once
+   D-I and D-J land (§4.1) and Task 10's fix round 2 adds `ErrNilMessageGroup` (§2.1 row 9). An unexplained entry blocks the merge — and a *number* that disagrees with §4.1
    is a defect in §4.1, not in the measurement.
-3. **Dependency** — `go list -deps .` excludes `expr-lang`, and **all seven existing modules are
+3. **Dependency** — `go list -deps .` excludes `expr-lang`, and **all seven PRE-EXISTING modules are
    `go mod tidy`-clean with `expr-lang` absent from every `go.mod` AND every `go.sum`**, proved by the
-   per-module loop in §7 (not by measuring root and generalising — Plan 027 Global Constraint 0).
+   per-module loop in §7 (not by measuring root and generalising — Plan 027 Global Constraint 0). **The
+   EIGHTH module, `expr`, is the deliberate exception and the point of the split**: `expr-lang` appears in
+   `expr/go.mod` and `expr/go.sum` and nowhere else, which is the invariant to check once that module exists
+   (`grep -rln 'expr-lang' --include='go.mod' --include='go.sum' .` → exactly those two paths).
    (`robfig/cron` **stays** — RFC-0004's settled decision.)
 4. **Capability** — a test proves a `QueueChannel`, a `PublishSubscribeChannel`, **and** a shipped
    `OutboundAdapter` (e.g. `*memory.Broker`) can each serve at **all eight** send-only positions §5.0

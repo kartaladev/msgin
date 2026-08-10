@@ -89,6 +89,7 @@ routing	WithReleaseStrategy
 routing	WithReleaseWhen
 endpoint	WithReplyTimeout
 endpoint	WithRetryPolicy
+endpoint	WithSharedReplyChannel
 endpoint	WithShutdownTimeout
 channel	WithSingleSubscriber
 resilience	WithTokenBucketClock

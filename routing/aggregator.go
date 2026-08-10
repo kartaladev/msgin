@@ -2,6 +2,7 @@ package routing
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jonboulle/clockwork"
@@ -360,6 +361,16 @@ func (a *Aggregator) Handle(ctx context.Context, msg msgin.Message[any]) error {
 	group, err := a.store.Add(ctx, key, msg)
 	if err != nil {
 		return err
+	}
+	if group == nil {
+		// SPI contract violation: Add returned a nil snapshot AND a nil error.
+		// Guarded HERE, at the single choke point, rather than inside a release
+		// strategy — a.cfg.release is one of four values (the default,
+		// WithCompletionSize, WithReleaseWhen, or a caller's own
+		// WithReleaseStrategy), and only this site precedes all four. A guard in
+		// any one of them leaves the other three dereferencing nil.
+		return fmt.Errorf("%w: routing.Aggregator.Handle: MessageGroupStore.Add returned a nil group with a nil error",
+			msgin.Permanent(msgin.ErrNilMessageGroup))
 	}
 	ok, err := a.cfg.release(group)
 	if err != nil {

@@ -3,7 +3,36 @@ package msgin
 import "errors"
 
 var (
-	// ErrPayloadType is returned when a Message[any] payload cannot be asserted to T.
+	// ErrPayloadType is returned when a value cannot be asserted to the type the
+	// caller declared for it. It has TWO producer classes and errors.Is cannot
+	// tell them apart:
+	//
+	//   - PAYLOAD SIDE — a Message[any] payload cannot be asserted to T. Its
+	//     producers wrap INCONSISTENTLY and live in more than one module, so do
+	//     not identify this side by a wrap: PayloadOf wraps as "want %T, got
+	//     %T"; the consumer's live-value and wire type assertions return it
+	//     BARE; and each msgin/expr provider's payload assertion wraps with the
+	//     source expression. What they share is the ABSENCE of the expression
+	//     side's marker, below.
+	//   - EXPRESSION SIDE (the msgin/expr provider module, and any future
+	//     CEL/starlark provider) — a compiled expression EVALUATED to a value
+	//     that is not the declared result type. Wrapped as
+	//     "expr result %T is not %T" (ADR 0029 §5.0b, decision D-K).
+	//
+	// Both classes are deterministic: the same input yields the same wrong type
+	// on every redelivery. IsPermanent names this sentinel (reliability.go), so
+	// neither is ever retried, and each is diverted WITHOUT a Permanent wrap —
+	// to WithInvalidMessageSink if one is configured, else single-shot to
+	// RetryPolicy.DeadLetter, else logged and discarded (ADR 0007 D7, as
+	// amended by D-N and D-P). That is D-K's whole reason for reusing this
+	// sentinel.
+	//
+	// ACCEPTED TRADE-OFF, not an absence: errors.Is(err, ErrPayloadType) does
+	// not separate the two, which buys callers ONE target instead of one per
+	// expression provider — but the two remedies are disjoint (fix the codec or
+	// the producing adapter, versus fix the expression). Match the string
+	// "expr result" to tell them apart: only the expression side carries a
+	// discriminator, so its ABSENCE is what identifies the payload side.
 	ErrPayloadType = errors.New("msgin: payload is not of the expected type")
 	// ErrPayloadDecode is returned when a wire payload ([]byte) cannot be decoded into T.
 	ErrPayloadDecode = errors.New("msgin: payload decode failed")
@@ -226,6 +255,31 @@ var (
 	// WithGroupTimeout is set without WithExpiredGroupChannel — an expired
 	// partial group must have a visible sink, never a silent drop.
 	ErrExpiryChannelRequired = errors.New("msgin: group timeout requires an expired-group channel")
+	// ErrNilMessageGroup is returned when a MessageGroupStore breaks its Add
+	// contract by returning a nil MessageGroup together with a nil error. Add
+	// must return either a usable group snapshot or a non-nil error; a nil-nil
+	// pair leaves the Aggregator holding a group it cannot read.
+	//
+	// MessageGroupStore is public SPI that third-party adapters implement, so a
+	// faulty implementation is caller input: it is rejected with this typed
+	// error — naming the contract that was broken — rather than deferred into a
+	// nil-pointer panic inside whichever release strategy is configured.
+	//
+	// It catches a nil INTERFACE only. A store that returns a typed nil — a
+	// (*myGroup)(nil) boxed into the interface — is not nil by this test and
+	// still fails inside the release strategy; distinguishing it would need
+	// reflection on the Aggregator's hot path, for every message. No shipped
+	// store does this. The same caveat applies to expr.RouteFunc's nil-channel
+	// check.
+	//
+	// It is always wrapped with Permanent: a store that returns nil snapshots is
+	// a deterministic implementation fault, so redelivery cannot fix it and
+	// retrying only burns MaxAttempts. The runtime therefore diverts it — to the
+	// invalid-message channel, or the dead-letter sink when none is configured
+	// ([Permanent] states all three arms). It is NOT a hold: returning nil here
+	// would Ack the source for a message the store just said it cannot read
+	// back, which risks a message durable nowhere.
+	ErrNilMessageGroup = errors.New("msgin: message group store returned a nil group")
 
 	// ErrGatewayClosed is returned by ChannelExchange.Exchange (and any Gateway
 	// built on it) once Close has been called: new exchanges are rejected and

@@ -279,8 +279,9 @@ it. A `use` line in `go.work` is necessary but not sufficient (round-2 §C2).
 > **STATUS: IMPLEMENTED (Plan 027 Task 9.5).** Both sentinels and their godoc are deleted from root:
 > `grep -rn 'ErrInvalidExpression\|ErrExprResultType' --include='*.go' .` is empty workspace-wide, and root
 > measures **100** exported symbols / **41** sentinels (`apidiff` **97** removals), down from 102 / 43 / 95.
-> **Task 10 still owes the one replacement** — the `expr` module's own `expr.ErrInvalidExpression`. Every
-> present-tense sentence below now describes the tree.
+> **The one replacement is now IN — Plan 027 Task 10** ships the `expr` module's own
+> `expr.ErrInvalidExpression` with the `msgin/expr:` prefix, and it is the module's **only** sentinel
+> (revised D-K withdrew the second — see §5.0b). Every present-tense sentence below now describes the tree.
 >
 > *Line numbers are deliberately not republished here.* The previous form cited `errors.go:180`/`:206` pinned
 > at `dadc775`; by the time Task 9.5 ran, the real positions were `:196` and `:223`, and the plan and Spec 014
@@ -311,9 +312,12 @@ both lines. No alias is provided — an alias would have to reference the root v
 
 #### 5.0b The two sentinels are NOT symmetric, and a deterministic fault needs a retry classification — decisions D-K (revised) and D-M
 
-> **STATUS: DECIDED, NOT YET IMPLEMENTED.** At `dadc775` no `expr` module exists, `IsPermanent` enumerates
-> three sentinels (`reliability.go:38-49`), and every flow-path producer in the class below returns the
-> **bare** sentinel. Every present-tense sentence below describes the decided end state, not the tree.
+> **STATUS: IMPLEMENTED.** D-M landed in Plan 027 Task 9.7 (`64963ad`); **D-K landed in Task 10**. The `expr` module exists as the eighth module, and its result-type fault returns
+> `fmt.Errorf("%w: expr result %T is not %T", msgin.ErrPayloadType, got, want)` with **no**
+> `msgin.Permanent` wrap — proved end-to-end by an acceptance fixture in the module's own tests (a real
+> Consumer + `RetryPolicy` + dead-letter sink + `WithInvalidMessageSink` over a re-emitting source), which
+> asserts the fault reaches the invalid-message sink **without consuming a retry** and never reaches the
+> dead-letter sink. `ErrPayloadType`'s godoc was widened in the same commit (§5.0c below).
 > **D-M is a behavior change to shipped code** and is listed in the register Spec 014 §2.1 keeps.
 >
 > **Which task realizes which half — the two are NOT interchangeable** (round-7 R-B4/D-B7/X-B3: Task 9.7 was
@@ -415,13 +419,27 @@ return Message[B]{}, fmt.Errorf("%w: expr result %T is not %T", msgin.ErrPayload
 
 | Fault | Producer | Remedy |
 |---|---|---|
-| the inbound payload was not `T` | `PayloadOf` (`payload.go:15`), the consumer's live-value and wire decode (`endpoint/consumer.go:831,838`) | fix the codec, or the adapter/producer that emitted the payload |
+| the inbound payload was not `T` | `PayloadOf`; the Consumer's live-value and wire decode; and, in `msgin/expr`, each provider's payload assertion (`RouteFunc`, `Correlation`, and the group projection behind `Release`) | fix the codec, or the adapter/producer that emitted the payload |
 | the expression evaluated to the wrong type | the `msgin/expr` provider (and any future CEL/starlark provider) | fix the **expression** |
 
 The remedies are **disjoint**, and one `errors.Is` target now covers both. That is the price of the shared
 target §5.0c wanted, and it is paid deliberately: the discriminator moves from the **sentinel** to the
-**error string** (`"want %T, got %T"` versus `"expr result %T is not %T"`), and `ErrPayloadType`'s widened
-godoc says so explicitly so a caller is not left to discover it. A caller who genuinely must branch matches
+**error string**, and `ErrPayloadType`'s widened godoc says so explicitly so a caller is not left to
+discover it. **The discriminator is ONE-SIDED — `"expr result"` present or absent.** Only the expression
+side carries that marker, so the payload side is identified by its **ABSENCE**. State the rule that way and
+only that way: **do not restate it as a count of which producers wrap**, because the payload side's producers
+wrap inconsistently and their number is not stable. `PayloadOf` wraps with `"want %T, got %T"`; the Consumer's
+two decode assertions return the sentinel **bare**; and `msgin/expr`'s three payload assertions wrap with
+`(expression %q)`. None of those carries `"expr result"`, which is exactly why absence — not any particular
+wrap — is the reliable test.
+
+> **Two corrections, both to this paragraph, both the same defect.** *Round 8* struck an earlier form that
+> named `"want %T, got %T"` as **the** payload-side discriminator — false, because two of the three producers
+> then known returned bare. *Task 10 fix round 3* struck its replacement, which said *"just one of that
+> side's **three** producers wraps at all"* — falsified **by its own commit**, which added three more
+> payload-side producers in `msgin/expr`, all of which wrap. A rule phrased as an enumeration of producers
+> has now been wrong twice; phrased as an invariant over the marker it is stable under any new provider.
+> Line-number citations are struck here for the same reason §5.0a struck its own. A caller who genuinely must branch matches
 the string; a caller who only needs the *classification* — the common case, and the one this whole decision
 is about — gets it from `IsPermanent` either way.
 
@@ -432,9 +450,10 @@ is about — gets it from `IsPermanent` either way.
 
 **D-I is unaffected.** `ErrInvalidExpression` still leaves root and the `expr` module still mints its own with
 the `msgin/expr:` prefix: it is a **construction-time** fault with no root twin. What changes is the count —
-root loses both sentinels, the `expr` module declares **one**, so Task 12's projected root arithmetic
-`43 − 2 + 1 = 42` is **unchanged** (the `+1` is D-J's `ErrSharedReplyChannel`, not an expr sentinel) while the
-projected `expr`-module sentinel count drops from 2 to **1**.
+root loses both sentinels, the `expr` module declares **one**, so **D-K does not move root's arithmetic at
+all** (the `+1` in `43 − 2 + 1` is D-J's `ErrSharedReplyChannel`, not an expr sentinel) while the projected
+`expr`-module sentinel count drops from 2 to **1**. Root's projected total is `43 − 2 + 1 + 1 = **43**`; the
+final `+1` is **D-Q**'s `ErrNilMessageGroup` (§5.0d), a later and independent decision.
 
 ---
 
@@ -1016,6 +1035,56 @@ revised D-K already did for the other sentinel — wrap an existing root target 
 and it is worth noting that the general fix and the specific one are the same move.
 *(Round-4 design audit MINOR 6; narrowed by round-6 design M4.)*
 
+#### 5.0d A broken `MessageGroupStore` is caller input, not an internal state — decision D-Q (2026-08-11)
+
+> **STATUS: IMPLEMENTED (Plan 027 Task 10, fix round 2).** Registered as Spec 014 §2.1 row 9.
+
+**Context.** `msgin.MessageGroupStore` is public adapter SPI: consumers inject their own, and two ship in
+this repo. Its `Add` contract is *"returns the resulting group snapshot"* — either a usable
+`MessageGroup` **or** a non-nil error. A third-party store that returns **both nil** breaks it.
+
+`routing.Aggregator.Handle` passed that value straight into the configured release strategy. **All four
+strategies dereferenced it** — the default, `WithCompletionSize`, `WithReleaseWhen`, and a caller's own
+`WithReleaseStrategy` — so the flow died on a nil-pointer panic. Measured on the pre-fix tree with a store
+whose `Add` returns `(nil, nil)`: four of four panicked.
+
+**Decision.** Reject it **once, at the choke point** in `Handle` immediately after `store.Add`, with a new
+root sentinel `ErrNilMessageGroup` wrapped in `Permanent`.
+
+1. **At the choke point, not in a strategy.** `a.cfg.release` is one of four values and only the call site
+   precedes all four; a guard inside any one leaves the other three panicking. An earlier revision of this
+   task guarded `defaultRelease` locally and closed **one** of the four — the same fix-the-instance failure
+   this branch has now hit four times.
+2. **A typed error, not a "hold".** Returning `nil` reads as *"group held"*, which makes `Handle` succeed and
+   the source **Ack** — for a message the store just said it cannot read back, so it may be durable nowhere.
+   An error routes it to a visible sink instead. This is CLAUDE.md's fail-safe-default rule.
+3. **`Permanent`, by wrapping at the producing site.** A store that returns nil snapshots is fixed at
+   construction and cannot change for the message's lifetime, so redelivery cannot fix it and retrying only
+   burns `MaxAttempts` — **D-M's invariant** (§5.0b) applied to an SPI-violation fault. The wrap is used
+   rather than adding the sentinel to `IsPermanent`'s enumeration: that enumeration is documented as a closed
+   set of three (Spec 014 §4.1), and **D-K's argument in §5.0b depends on its stability** — D-K reuses
+   `ErrPayloadType` precisely *because* it is already inside `IsPermanent`. Widening the set to solve an
+   unrelated problem would weaken that. The wrap gives the identical classification with no such coupling.
+4. **Nil interface only.** `group == nil` catches a nil *interface*; a store returning a typed nil
+   (`(*myGroup)(nil)`) still panics inside the strategy. Documented on the sentinel rather than solved —
+   Go cannot express the distinction without reflection on every message, on the Aggregator's hot path. No
+   shipped store is affected. This mirrors the caveat `expr.RouteFunc` already carries for a typed-nil
+   channel.
+
+**Precedent.** `ErrNilSubscription` is the same shape one level up: a `SubscribableChannel` returning a
+nil-nil pair from `Subscribe`. Its godoc's framing — *"public SPI that third-party adapters implement, so a
+faulty implementation is caller input"* — is reused verbatim in structure.
+
+**Consequences.** One new root sentinel: root goes to **43** sentinels / **103** exported, `apidiff`
+additions **8 → 9**, removals unchanged at 97 (Spec 014 §4, §4.1). **Not breaking** — a symbol is added, none
+removed or retyped, so no major-version implication. A panic becomes a typed, diverted error, which is why it
+is registered in Spec 014 §2.1 rather than treated as a pure bugfix.
+
+**Alternative considered — a standalone ADR.** Rejected. This decision is a member of §5.0b's
+retry-classification family (it *is* D-M's invariant, applied to a new fault class) and depends on D-K's
+reasoning about `IsPermanent`'s closed set; splitting it into its own ADR would separate three decisions that
+must be read together, and ADR 0029 already owns the `expr` work that surfaced it.
+
 ### 5a. The provider shape is NOT uniform, and it is NOT non-generic
 
 Two separate errors, corrected in two rounds.
@@ -1090,8 +1159,9 @@ parallel `*Expr` constructors collapse into one base constructor per endpoint. P
   that no longer exist (F11.7). **Decision D-I (§5.0a): both leave root.** The `expr` module declares
   `expr.ErrInvalidExpression`; the evaluation-time fault is expressed by wrapping root's existing
   `msgin.ErrPayloadType` (**revised D-K**, §5.0b), so no second `expr` sentinel is minted. **Plan 027 Task 9.5
-  deleted them** (root 102→100 exported, 43→41 sentinels, `apidiff` 95→97 removals); **Task 10 still declares
-  the one replacement** — it is not Task 10's decision to make.
+  deleted them** (root 102→100 exported, 43→41 sentinels, `apidiff` 95→97 removals — figures scoped to that
+  task, not to the branch; §5.0d and Spec 014 §4 carry the running totals); **Task 10 declared the one
+  replacement** — `expr.ErrInvalidExpression`, shipped.
 
   > *Corrected (round 6, C-B1 + C-B3).* This bullet survived the D-I pass unamended and was the worst kind of
   > stale: it presented a **settled** decision as open, framed both options as live, and assigned it to the
