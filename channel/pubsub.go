@@ -110,9 +110,20 @@ type PublishSubscribeChannel struct {
 }
 
 var (
-	_ msgin.OutboundAdapter     = (*PublishSubscribeChannel)(nil)
-	_ msgin.SubscribableChannel = (*PublishSubscribeChannel)(nil)
+	_ msgin.OutboundAdapter       = (*PublishSubscribeChannel)(nil)
+	_ msgin.SubscribableChannel   = (*PublishSubscribeChannel)(nil)
+	_ msgin.ExclusiveSubscribable = (*PublishSubscribeChannel)(nil)
 )
+
+// SingleSubscriber reports whether WithSingleSubscriber was passed to this
+// channel — the channel's POLICY, fixed at construction, never its live
+// subscriber count. Without that option the channel fans every message out to
+// every subscriber, so it reports false and endpoint.NewChannelExchange rejects
+// it as a reply channel with msgin.ErrSharedReplyChannel unless the caller opts
+// into the fan-out. The value is set once by NewPublishSubscribeChannel and
+// never written again, so it is constant for the channel's lifetime and safe
+// for concurrent use, as msgin.ExclusiveSubscribable requires (ADR 0030 §2).
+func (c *PublishSubscribeChannel) SingleSubscriber() bool { return c.cfg.single }
 
 // NewPublishSubscribeChannel returns an empty channel; Subscribe handlers, then Send.
 func NewPublishSubscribeChannel(opts ...PubSubOption) *PublishSubscribeChannel {

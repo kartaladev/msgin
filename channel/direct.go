@@ -25,9 +25,19 @@ type DirectChannel struct {
 }
 
 var (
-	_ msgin.MessageChannel      = (*DirectChannel)(nil)
-	_ msgin.SubscribableChannel = (*DirectChannel)(nil)
+	_ msgin.MessageChannel        = (*DirectChannel)(nil)
+	_ msgin.SubscribableChannel   = (*DirectChannel)(nil)
+	_ msgin.ExclusiveSubscribable = (*DirectChannel)(nil)
 )
+
+// SingleSubscriber reports true, always: a DirectChannel admits one subscriber
+// by type (a second Subscribe is ErrChannelSubscribed) and never fans out, so
+// every message it carries reaches at most one recipient and none of them is in
+// another process. The answer is a property of the type, so it is constant for
+// the channel's lifetime and safe for concurrent use, as
+// msgin.ExclusiveSubscribable requires. It makes an existing guarantee
+// machine-readable for endpoint.NewChannelExchange's probe (ADR 0030 §2).
+func (c *DirectChannel) SingleSubscriber() bool { return true }
 
 // directSubscription is the handle returned by DirectChannel.Subscribe.
 type directSubscription struct {

@@ -149,6 +149,22 @@ var (
 	// subscription. Constructors that own a subscription for their lifetime (e.g.
 	// NewChannelExchange) return it.
 	ErrNilSubscription = errors.New("msgin: channel returned a nil subscription")
+	// ErrSharedReplyChannel is returned by endpoint.NewChannelExchange when the
+	// reply channel reports (via ExclusiveSubscribable) that its POLICY permits
+	// recipients other than this exchange — not that another subscriber exists.
+	// That covers a local fan-out channel and a channel whose deliveries reach
+	// other processes alike. Such a channel delivers a full copy of every reply to
+	// every other recipient. Pass channel.WithSingleSubscriber() to the channel, or
+	// endpoint.WithSharedReplyChannel() to accept the fan-out deliberately.
+	//
+	// THERE IS A THIRD CAUSE, and it is not a policy report at all: the channel's
+	// SingleSubscriber PANICKED. msgin recovers it and fails closed (the probe
+	// proved nothing, so the conservative answer is non-exclusive), and the
+	// recovered value is WRAPPED INTO THIS ERROR — read err.Error(), or errors.As
+	// past this sentinel, before hunting for a second subscriber. The channel may
+	// well be exclusive; what failed is the probe. See ExclusiveSubscribable's
+	// "MUST NOT block and MUST NOT panic" clause.
+	ErrSharedReplyChannel = errors.New("msgin: reply channel permits multiple subscribers; it is not exclusive to this exchange")
 	// ErrNilSink is returned, wrapped in [Permanent], by To when its
 	// OutboundAdapter sink is nil.
 	//

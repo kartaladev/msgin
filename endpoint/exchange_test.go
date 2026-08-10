@@ -181,6 +181,173 @@ func TestNewChannelExchange_validation(t *testing.T) {
 	}
 }
 
+// noopSubscription is a Subscription whose Cancel does nothing — enough for a
+// fake reply channel whose subscription the exchange owns until Close.
+type noopSubscription struct{}
+
+func (noopSubscription) Cancel() {}
+
+// noProbeChannel is a third-party SubscribableChannel that deliberately omits
+// SingleSubscriber, so the type assertion to msgin.ExclusiveSubscribable fails
+// and the accept-unknown arm (ADR 0030 §4) is taken. No in-tree type can drive
+// that arm to an ACCEPTED outcome: both production channels implement the probe,
+// and nilSubChannel — the one in-tree type that omits it — is rejected 20 lines
+// later by the ErrNilSubscription guard.
+type noProbeChannel struct{}
+
+func (noProbeChannel) Send(context.Context, msgin.Message[any]) error { return nil }
+
+func (noProbeChannel) Subscribe(msgin.MessageHandler) (msgin.Subscription, error) {
+	return noopSubscription{}, nil
+}
+
+// countingSharedChannel reports non-exclusive and counts BOTH calls msgin makes
+// into it, so a test can observe the guard's ORDER — which no in-tree type can
+// show, because neither call leaves an observable trace on a real channel.
+//
+// subscribes pins that the probe rejected the exchange BEFORE subscribing
+// (Spec 014 AC-9): PublishSubscribeChannel's subscriber count is unexported, and
+// a Send reaching zero subscribers returns nil by documented design, so neither
+// a count nor a send distinguishes "no subscriber" from "one".
+//
+// probes pins decision D-M2 — WithSharedReplyChannel suppresses the PROBE, not
+// merely the rejection. That is a caller-facing guarantee on the option's godoc
+// (a caller who opted out because their SingleSubscriber locks or does I/O must
+// not pay for it), and reordering the guard to the pre-D-M2 shape
+// `if ok { … if !single && !cfg.allowShared { … } }` leaves every other row of
+// the table green.
+type countingSharedChannel struct {
+	subscribes atomic.Int64
+	probes     atomic.Int64
+}
+
+func (*countingSharedChannel) Send(context.Context, msgin.Message[any]) error { return nil }
+
+func (c *countingSharedChannel) Subscribe(msgin.MessageHandler) (msgin.Subscription, error) {
+	c.subscribes.Add(1)
+	return noopSubscription{}, nil
+}
+
+func (c *countingSharedChannel) SingleSubscriber() bool {
+	c.probes.Add(1)
+	return false
+}
+
+// probePanicLiteral is the distinctive value panickingProbeChannel panics with.
+// The panicking row asserts it is present in err.Error(): asserting only
+// errors.Is(err, ErrSharedReplyChannel) passes against the implementation that
+// discards the recovered value, which is exactly the defect decision D-O2 exists
+// to prevent.
+const probePanicLiteral = "probe: nil map read in tenantExclusivity[tenant]"
+
+// panickingProbeChannel is GENUINELY EXCLUSIVE — it embeds a *channel.DirectChannel,
+// whose second Subscribe is ErrChannelSubscribed — but its probe panics. That
+// shape is what exposes a lost diagnosis: the sentinel's message claims the
+// channel is not exclusive, which is false here, so the recovered panic has to
+// ride in the error for a reader to find the real fault.
+type panickingProbeChannel struct{ *channel.DirectChannel }
+
+func (panickingProbeChannel) SingleSubscriber() bool { panic(probePanicLiteral) }
+
+// TestNewChannelExchange_replyExclusivityProbe is the truth table of the
+// construction-time exclusivity probe (decision D-J, ADR 0030): four arms —
+// probe absent, probe true, probe false, probe false plus the opt-out — plus
+// AC-9's ordering row (nothing is subscribed after a rejection) and decision
+// D-O/D-O2's panicking-probe row (recovered, failed closed, cause preserved).
+func TestNewChannelExchange_replyExclusivityProbe(t *testing.T) {
+	counting, optedOut := &countingSharedChannel{}, &countingSharedChannel{}
+	tests := []struct {
+		name   string
+		reply  msgin.SubscribableChannel
+		opts   []endpoint.ExchangeOption
+		assert func(t *testing.T, ex *endpoint.ChannelExchange, err error)
+	}{
+		{
+			name:  "probe absent: accepted, so the SPI stays open to channels predating it",
+			reply: noProbeChannel{},
+			assert: func(t *testing.T, ex *endpoint.ChannelExchange, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, ex)
+			},
+		},
+		{
+			name:  "probe reports exclusive: accepted",
+			reply: channel.NewDirectChannel(),
+			assert: func(t *testing.T, ex *endpoint.ChannelExchange, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, ex)
+			},
+		},
+		{
+			name:  "probe reports non-exclusive: ErrSharedReplyChannel",
+			reply: channel.NewPublishSubscribeChannel(),
+			assert: func(t *testing.T, ex *endpoint.ChannelExchange, err error) {
+				require.ErrorIs(t, err, msgin.ErrSharedReplyChannel)
+				assert.Nil(t, ex, "want a nil exchange when construction fails")
+			},
+		},
+		{
+			name:  "probe reports non-exclusive but WithSharedReplyChannel opts out: accepted",
+			reply: channel.NewPublishSubscribeChannel(),
+			opts:  []endpoint.ExchangeOption{endpoint.WithSharedReplyChannel()},
+			assert: func(t *testing.T, ex *endpoint.ChannelExchange, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, ex)
+			},
+		},
+		{
+			name:  "a rejected construction leaves no subscription behind",
+			reply: counting,
+			assert: func(t *testing.T, ex *endpoint.ChannelExchange, err error) {
+				require.ErrorIs(t, err, msgin.ErrSharedReplyChannel)
+				assert.Nil(t, ex)
+				assert.Zero(t, counting.subscribes.Load(),
+					"the probe must run BEFORE reply.Subscribe")
+			},
+		},
+		{
+			name:  "a panicking probe is recovered, fails closed, and carries its cause",
+			reply: panickingProbeChannel{channel.NewDirectChannel()},
+			assert: func(t *testing.T, ex *endpoint.ChannelExchange, err error) {
+				require.ErrorIs(t, err, msgin.ErrSharedReplyChannel)
+				require.ErrorContains(t, err, probePanicLiteral,
+					"the recovered panic must survive in the error: this channel IS exclusive, so the "+
+						"sentinel's own message is a false diagnosis without it")
+				assert.Nil(t, ex)
+			},
+		},
+		{
+			name:  "the opt-out suppresses the probe itself, not merely the rejection",
+			reply: optedOut,
+			opts:  []endpoint.ExchangeOption{endpoint.WithSharedReplyChannel()},
+			assert: func(t *testing.T, ex *endpoint.ChannelExchange, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, ex)
+				assert.Zero(t, optedOut.probes.Load(),
+					"WithSharedReplyChannel is tested BEFORE the capability assertion (D-M2), so a "+
+						"caller who opted out never pays for a SingleSubscriber that locks or does I/O")
+				assert.Equal(t, int64(1), optedOut.subscribes.Load(),
+					"the exchange is still built, so it still subscribes exactly once")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var (
+				ex  *endpoint.ChannelExchange
+				err error
+			)
+			require.NotPanics(t, func() {
+				ex, err = endpoint.NewChannelExchange(channel.NewDirectChannel(), tc.reply, tc.opts...)
+			}, "a probe that panics must be recovered inside the constructor, not propagated out of it")
+			if ex != nil {
+				t.Cleanup(func() { require.NoError(t, ex.Close()) })
+			}
+			tc.assert(t, ex, err)
+		})
+	}
+}
+
 func TestChannelExchange_nilOptionGuards(t *testing.T) {
 	// WithExchangeClock(nil)/WithExchangeLogger(nil) must be no-ops (default
 	// stays in place), not a nil-panic on caller input.
@@ -407,9 +574,13 @@ func TestChannelExchange_closeCancelsReplySubscription(t *testing.T) {
 
 // TestChannelExchange_sharedPubSubReplyChannel pins the trade-off ADR 0028 §6
 // accepts: widening reply to SubscribableChannel makes "two exchanges over one
-// pub-sub reply channel" a legal program, and every reply then fans out to BOTH
+// pub-sub reply channel" expressible, and every reply then fans out to BOTH
 // receivers — the non-owner handing a full copy to its unmatched-reply sink.
-// channel.WithSingleSubscriber is the opt-in that turns that into a typed error.
+// Since ADR 0030 that costs an explicit endpoint.WithSharedReplyChannel() on
+// both constructions: by default the probe rejects a plain pub-sub reply channel
+// with msgin.ErrSharedReplyChannel, and the option is what asks for the fan-out.
+// channel.WithSingleSubscriber remains the channel-side guard, which the opt-out
+// cannot override — it suppresses msgin's probe, not the channel's own Subscribe.
 func TestChannelExchange_sharedPubSubReplyChannel(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -417,9 +588,10 @@ func TestChannelExchange_sharedPubSubReplyChannel(t *testing.T) {
 		assert func(t *testing.T, secondErr error, ownReply msgin.Message[any], ownErr error, crossDelivered chan msgin.Message[any])
 	}{
 		{
-			name: "default fan-out: the second exchange is built and sees the first's reply",
+			name: "default fan-out, opted into: the second exchange is built and sees the first's reply",
 			assert: func(t *testing.T, secondErr error, ownReply msgin.Message[any], ownErr error, crossDelivered chan msgin.Message[any]) {
-				require.NoError(t, secondErr, "sharing a plain pub-sub reply channel is NOT rejected")
+				require.NoError(t, secondErr,
+					"WithSharedReplyChannel suppresses the probe, so sharing a plain pub-sub reply channel is accepted")
 				require.NoError(t, ownErr)
 				assert.Equal(t, "shared", ownReply.Payload(), "the owning exchange still gets its reply")
 				select {
@@ -443,7 +615,12 @@ func TestChannelExchange_sharedPubSubReplyChannel(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			reply := channel.NewPublishSubscribeChannel(tc.opts...)
 			requestA := channel.NewDirectChannel()
-			exA, err := endpoint.NewChannelExchange(requestA, reply)
+			// WithSharedReplyChannel is applied UNCONDITIONALLY to both
+			// constructions. It is the opt-out D-J requires for the default
+			// fan-out case, and it is inert for the WithSingleSubscriber case:
+			// there the option suppresses the probe outright and Subscribe still
+			// rejects exB with ErrChannelSubscribed, exactly as that case asserts.
+			exA, err := endpoint.NewChannelExchange(requestA, reply, endpoint.WithSharedReplyChannel())
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, exA.Close()) })
 			mustSubscribe(t, requestA, msgin.Chain(msgin.To(reply)))
@@ -451,7 +628,9 @@ func TestChannelExchange_sharedPubSubReplyChannel(t *testing.T) {
 			crossDelivered := make(chan msgin.Message[any], 1)
 			sink := &stubOutbound{recv: crossDelivered}
 			exB, secondErr := endpoint.NewChannelExchange(
-				channel.NewDirectChannel(), reply, endpoint.WithUnmatchedReplySink(sink))
+				channel.NewDirectChannel(), reply,
+				endpoint.WithUnmatchedReplySink(sink), endpoint.WithSharedReplyChannel(),
+			)
 			if secondErr != nil {
 				tc.assert(t, secondErr, msgin.Message[any]{}, nil, crossDelivered)
 				return

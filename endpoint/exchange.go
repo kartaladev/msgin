@@ -2,6 +2,7 @@ package endpoint
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -120,11 +121,12 @@ func (c *replyCorrelator) closeAll() {
 }
 
 type exchangeConfig struct {
-	timeout    time.Duration
-	timeoutSet bool
-	clock      clockwork.Clock
-	logger     *slog.Logger
-	unmatched  msgin.OutboundAdapter
+	timeout     time.Duration
+	timeoutSet  bool
+	clock       clockwork.Clock
+	logger      *slog.Logger
+	unmatched   msgin.OutboundAdapter
+	allowShared bool
 }
 
 // ExchangeOption configures a ChannelExchange built by NewChannelExchange.
@@ -185,6 +187,37 @@ func WithExchangeLogger(l *slog.Logger) ExchangeOption {
 	}
 }
 
+// WithSharedReplyChannel accepts a reply channel that reports itself
+// non-exclusive, instead of rejecting it with msgin.ErrSharedReplyChannel.
+//
+// IT SUPPRESSES THE PROBE ENTIRELY. NewChannelExchange consults this flag
+// BEFORE the msgin.ExclusiveSubscribable type assertion, so a construction
+// carrying this option never calls the channel's SingleSubscriber at all.
+//
+// THE CONSEQUENCE BEING OPTED INTO. Every reply sent to a fan-out reply channel
+// is copied to EVERY subscriber, so a second exchange over the same channel
+// receives a full copy of every reply belonging to the first, finds no waiter
+// for the correlation id, and hands that copy to its WithUnmatchedReplySink —
+// typically a dead-letter or audit sink, i.e. a place a payload is written down.
+// That is legitimate for a deliberate tap or audit subscriber alongside the
+// exchange; it is a data leak when it was not intended.
+//
+// IT DOES NOT CONFER SHAREABILITY. The option suppresses msgin's check, not the
+// channel's own. A channel that enforces exclusivity itself still rejects the
+// second exchange, and it does so from Subscribe rather than from the probe:
+//
+//	a, _ := endpoint.NewChannelExchange(reqA, direct, endpoint.WithSharedReplyChannel())  // ok
+//	b, err := endpoint.NewChannelExchange(reqB, direct, endpoint.WithSharedReplyChannel())
+//	// err = msgin.ErrChannelSubscribed — from DirectChannel.Subscribe, not from the probe
+//
+// The same holds for a channel.PublishSubscribeChannel built with
+// channel.WithSingleSubscriber(). Neither the option's name nor
+// msgin.ErrChannelSubscribed's text hints that the option just passed cannot
+// help, so it is stated here (ADR 0030 §5).
+func WithSharedReplyChannel() ExchangeOption {
+	return func(c *exchangeConfig) { c.allowShared = true }
+}
+
 // ChannelExchange is the in-process RequestReplyExchange: it sends requests to a
 // request channel and correlates replies received on a reply channel (which it
 // owns as the sole subscriber). Construct it with NewChannelExchange.
@@ -206,22 +239,61 @@ var _ msgin.RequestReplyExchange = (*ChannelExchange)(nil)
 // OutboundAdapter.
 //
 // REPLY MUST BE DEDICATED TO THIS EXCHANGE. The exchange subscribes its reply
-// receiver onto reply and owns that subscription until Close. A DirectChannel
-// enforces the exclusivity itself (a second subscriber is ErrChannelSubscribed),
-// and so does a PublishSubscribeChannel built with channel.WithSingleSubscriber.
-// A plain PublishSubscribeChannel does NOT: sharing one between two exchanges
-// compiles and runs, and every reply then fans out to BOTH receivers — the
-// non-owner finds no waiter for the correlation id and hands a full copy of the
-// other exchange's reply to its WithUnmatchedReplySink (typically a dead-letter
-// or audit sink). Exclusivity is documented rather than enforced here because
-// the core cannot see other exchanges; a registry that could would be exactly
-// the in-process global state a multi-instance deployment must not depend on
-// (ADR 0028 §6).
+// receiver onto reply and owns that subscription until Close. Sharing one reply
+// channel between two exchanges makes every reply fan out to BOTH receivers —
+// the non-owner finds no waiter for the correlation id and hands a full copy of
+// the other exchange's reply to its WithUnmatchedReplySink (typically a
+// dead-letter or audit sink). Exclusivity is therefore PROBED at construction,
+// through the optional msgin.ExclusiveSubscribable capability, with FOUR
+// outcomes:
+//
+//  1. REJECTED — the channel implements the probe and reports non-exclusive:
+//     msgin.ErrSharedReplyChannel. The probe runs BEFORE reply.Subscribe, so a
+//     rejected exchange leaves no subscription behind. A plain
+//     channel.PublishSubscribeChannel is this case; pass
+//     channel.WithSingleSubscriber() to the channel, or WithSharedReplyChannel()
+//     here to accept the fan-out deliberately. A probe that PANICS is recovered
+//     and read as non-exclusive (fail closed), and is rejected with the same
+//     sentinel wrapping the recovered value — read err.Error() for the cause.
+//  2. ACCEPTED — the channel implements the probe and reports exclusive. A
+//     channel.DirectChannel always does; so does a
+//     channel.PublishSubscribeChannel built with channel.WithSingleSubscriber().
+//  3. ACCEPTED UNPROBED — the channel does not implement the probe at all. The
+//     capability is optional so the SPI stays open to third-party reply channels
+//     that predate it: msgin rejects what it can prove is wrong rather than
+//     everything it cannot see. THIS ARM IS ALSO REACHED FROM IN-TREE CHANNELS.
+//     Any wrapper that does not itself declare SingleSubscriber is accepted
+//     here, HOWEVER IT HOLDS THE CHANNEL IT WRAPS — so it is accepted even when
+//     the channel it wraps would be rejected. The one-line decorator
+//     struct{ msgin.SubscribableChannel } is the commonest instance, not the
+//     boundary: a wrapper holding the concrete channel in a named field with
+//     hand-written Send/Subscribe forwarders strips the probe identically. A
+//     decorator over a fan-out channel must declare or forward SingleSubscriber
+//     itself for the check to apply.
+//  4. ACCEPTED ON THE CHANNEL'S OWN WORD, which msgin cannot verify. The probe
+//     is a REPORT, not a proof, and the guarantee is bounded to "msgin will not
+//     silently accept a channel that has told it sharing is permitted". A
+//     channel that reports exclusive is exclusive only within this process:
+//     nothing here observes another instance, and a registry that could would be
+//     exactly the in-process global state a multi-instance deployment must not
+//     depend on (ADR 0028 §6). A channel MUST report non-exclusive whenever a
+//     message sent to it can reach any recipient other than its single
+//     registered subscriber, INCLUDING one in another process; a broker-backed
+//     channel may report exclusive only when the broker guarantees the
+//     destination is private to this process's subscription — a per-instance
+//     NATS _INBOX reply subject, an exclusive auto-delete AMQP reply queue, i.e.
+//     the Return Address pattern. msgin takes that answer on trust.
 //
 // A nil channel is ErrNilChannel; an explicit non-positive WithReplyTimeout is
 // ErrInvalidReplyTimeout. A reply channel whose Subscribe breaks its contract by
 // returning a nil Subscription alongside a nil error is ErrNilSubscription — the
-// exchange owns that subscription until Close, so it must be usable now.
+// exchange owns that subscription until Close, so it must be usable now. An
+// error from reply.Subscribe is returned unwrapped, so subscribing to a channel
+// whose slot is already taken surfaces as msgin.ErrChannelSubscribed. That is
+// the adjacent condition to msgin.ErrSharedReplyChannel and the distinction is
+// deliberate: the shared-reply sentinel means the channel's POLICY permits other
+// recipients, msgin.ErrChannelSubscribed means the channel is exclusive and its
+// one slot is taken.
 func NewChannelExchange(request msgin.MessageChannel, reply msgin.SubscribableChannel, opts ...ExchangeOption) (*ChannelExchange, error) {
 	if request == nil || reply == nil {
 		return nil, msgin.ErrNilChannel
@@ -236,6 +308,23 @@ func NewChannelExchange(request msgin.MessageChannel, reply msgin.SubscribableCh
 	}
 	if cfg.timeoutSet && cfg.timeout <= 0 {
 		return nil, msgin.ErrInvalidReplyTimeout
+	}
+	// The opt-out is tested FIRST, so it suppresses the probe rather than only
+	// the rejection: a caller who has explicitly opted out never pays for a
+	// third-party SingleSubscriber that locks or does work (ADR 0030 §3, D-M2).
+	// Both nil-channel and timeout checks precede this — a nil channel cannot be
+	// probed — and the probe precedes reply.Subscribe, so a rejected exchange
+	// leaves no subscription behind.
+	if !cfg.allowShared {
+		if ex, ok := reply.(msgin.ExclusiveSubscribable); ok {
+			single, cause := safeSingleSubscriber(ex, cfg.logger)
+			if !single {
+				if cause != nil {
+					return nil, fmt.Errorf("%w: %w", msgin.ErrSharedReplyChannel, cause)
+				}
+				return nil, msgin.ErrSharedReplyChannel
+			}
+		}
 	}
 	e := &ChannelExchange{
 		request:   request,
@@ -258,6 +347,26 @@ func NewChannelExchange(request msgin.MessageChannel, reply msgin.SubscribableCh
 	}
 	e.replySub = sub
 	return e, nil
+}
+
+// safeSingleSubscriber invokes the caller-supplied probe, recovering a panic to
+// FAIL CLOSED (report non-exclusive) AND returning the recovered value as an
+// error so the guard can wrap it into ErrSharedReplyChannel. A probe that
+// panics has not proven exclusivity, so the conservative answer is false and
+// the exchange is rejected — but the panic is what the caller has to fix, and a
+// channel that is genuinely exclusive would otherwise be reported as "not
+// exclusive to this exchange" with the cause discarded. Mirrors the eight
+// recover-wrappers that embed %v of the recovered value in the error they
+// return (consumer.go, poller.go, producer.go, channel/pubsub.go).
+func safeSingleSubscriber(ex msgin.ExclusiveSubscribable, log *slog.Logger) (b bool, cause error) {
+	defer func() {
+		if r := recover(); r != nil {
+			b, cause = false, fmt.Errorf("SingleSubscriber panicked: %v", r)
+			log.Warn("msgin: reply channel's SingleSubscriber panicked; treating it as non-exclusive",
+				"panic", r)
+		}
+	}()
+	return ex.SingleSubscriber(), nil
 }
 
 // receiver is the MessageHandler subscribed to the reply channel. It demuxes each

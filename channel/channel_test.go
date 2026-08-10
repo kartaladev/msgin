@@ -226,3 +226,50 @@ func TestDirectChannel_CancelDuringInFlightSend(t *testing.T) {
 	assert.ErrorIs(t, dc.Send(t.Context(), msgin.New[any]("next")), msgin.ErrNoSubscriber,
 		"Cancel must stop only subsequent dispatch")
 }
+
+// TestSingleSubscriber pins the ExclusiveSubscribable probe (ADR 0030 §2) for
+// both in-tree channels directly, in the package that declares them: the
+// endpoint-side truth table exercises the guard, not these two methods, so
+// without this table nothing here covers them. The msgin.ExclusiveSubscribable
+// field type is itself an assertion that both types satisfy the capability.
+//
+// DirectChannel is exclusive by TYPE (its Subscribe rejects a second
+// subscriber); PublishSubscribeChannel reports exactly whether
+// WithSingleSubscriber was passed — the equality that links decision D-F to
+// decision D-J.
+func TestSingleSubscriber(t *testing.T) {
+	tests := []struct {
+		name   string
+		ch     msgin.ExclusiveSubscribable
+		assert func(t *testing.T, single bool)
+	}{
+		{
+			name: "DirectChannel is exclusive by type",
+			ch:   channel.NewDirectChannel(),
+			assert: func(t *testing.T, single bool) {
+				assert.True(t, single,
+					"DirectChannel.Subscribe returns ErrChannelSubscribed to a second subscriber")
+			},
+		},
+		{
+			name: "PublishSubscribeChannel with WithSingleSubscriber is exclusive",
+			ch:   channel.NewPublishSubscribeChannel(channel.WithSingleSubscriber()),
+			assert: func(t *testing.T, single bool) {
+				assert.True(t, single, "WithSingleSubscriber is exactly what the probe reports")
+			},
+		},
+		{
+			name: "plain PublishSubscribeChannel is not exclusive",
+			ch:   channel.NewPublishSubscribeChannel(),
+			assert: func(t *testing.T, single bool) {
+				assert.False(t, single,
+					"fan-out to every subscriber is the default, so the policy permits other recipients")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.assert(t, tc.ch.SingleSubscriber())
+		})
+	}
+}

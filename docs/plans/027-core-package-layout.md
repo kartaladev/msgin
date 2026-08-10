@@ -388,7 +388,7 @@ and defined nowhere; it is defined here.
 | — | Round-3 code fixes (7-module `go mod tidy`, ST1008, reliability tests, dead-helper deletion, 5 × `doc.go`, article agreement) | **DONE** — committed `1d7fc80` (code) + `3d0b87a` (docs), F12/F13 |
 | **9** | Named behavior types + combinators | **DONE** — committed `544cb5b`, ledger §F16. All four types + `And`/`Or`/`Not`; gates 8.4c–8.4f RED→GREEN. The `MessageChannel` census is **15**, not the projected 14: naming a type RELOCATES an occurrence (`RouteFunc`'s own declaration is a census line) rather than removing one |
 | **9.5** | Residual cleanups the migration left behind | **DONE** — committed `910e092`, ledger §F17. The dead-helper deletion and the article sweep had landed in the round-3 pass; this commit adds **D-I's `errors.go` deletion** (root 102→100 exported, 43→41 sentinels, `apidiff` 95→97 removals — the projections held exactly), both sweep arms empty, and the capability test widened 9 → **24** subtests (18 root + 3 `adapter/http` + 3 `adapter/http/stdlib`) |
-| **9.6** | Reply-channel exclusivity probe (**D-J**, ADR 0030) | **NOT STARTED** — added in the D-I/D-J pass (`aae6160`); closes the residual three review lenses converged on |
+| **9.6** | Reply-channel exclusivity probe (**D-J**, ADR 0030) | **DONE** — all five gates 8.10/8.11/8.11a/8.12/8.13 RED→GREEN (11c1 still RED, Task 11c's); `apidiff` 97 removals / **8** additions, exactly the D-J projection; `channel` back to **100.0%** on the per-package profile; **seven** subtests in the `endpoint` truth table (the seventh pins D-M2, execution finding I-1) plus the three-case `channel` table, every assertion mutation-killed |
 | **9.7** | Classify the **five** shipped producers (`ErrNilFunc` ×4 + `ErrNilSink`) as `Permanent` (**D-M**), add the dead-letter fallback (**D-N**) and make it single-shot (**D-P**) | **DONE** — committed `64963ad`, ledger §F15. Ran **FIRST**, before Task 9, per the round-7 correction. All five gates green; `apidiff` empty on all four packages; zero net-new uncovered blocks |
 | **10** | The `expr` provider module | **NOT STARTED** |
 | **11** | Package docs + Spec 014 §8/§10 godoc obligations | **PARTIAL** — 11a (`doc.go` × 5) done; 11b/11c not started |
@@ -1094,7 +1094,7 @@ edit.)*
 
 ---
 
-## Task 9.6 — Reply-channel exclusivity probe (decision D-J) · **M** · NOT STARTED
+## Task 9.6 — Reply-channel exclusivity probe (decision D-J) · **M** · DONE
 
 > **RE-SIZED `S` → `M` in round 7 (X-M1). Do NOT split it** — `Task 9.6` is a cross-document link
 > (ADR 0030, Spec 014 §5.1/§8, Plan §11's gate groups), and renumbering breaks joins the last two rounds were
@@ -1119,7 +1119,7 @@ edit.)*
 **Skills:** start from `cc-skills-golang:golang-how-to`; TDD via `superpowers:test-driven-development`;
 `gopls` for navigation; `table-test` for the branch table; blackbox `_test` packages only.
 
-- [ ] **Root — `channel.go`:** add `ExclusiveSubscribable` (embedding `SubscribableChannel`, one method
+- [x] **Root — `channel.go`:** add `ExclusiveSubscribable` (embedding `SubscribableChannel`, one method
       `SingleSubscriber() bool`). **Its godoc is the VERBATIM normative text of
       [ADR 0030 §1](../adrs/0030-reply-channel-exclusivity-probe.md) — copy it, do not paraphrase.** Add the
       `channel.WithSingleSubscriber` cross-reference.
@@ -1139,7 +1139,7 @@ edit.)*
       > §11 canonical block), so a paraphrase fails it with no diagnosis. **Line breaks no longer matter** —
       > round 8 (C3) adopted the `d` normalizer, which folds `go doc`'s output to one line before matching, so
       > a phrase may span a break. **Wording still matters exactly.** Copy, do not retype.
-- [ ] **Root — `errors.go`:** add `ErrSharedReplyChannel`. Godoc names both remedies
+- [x] **Root — `errors.go`:** add `ErrSharedReplyChannel`. Godoc names both remedies
       (`channel.WithSingleSubscriber()` on the channel, or `endpoint.WithSharedReplyChannel()` on the
       exchange) and states the consequence being prevented — a full copy of every reply reaching another
       subscriber. **Do NOT reuse `ErrChannelSubscribed`**: it would report "already subscribed" for a channel
@@ -1151,11 +1151,11 @@ edit.)*
       the reader to `err.Error()` for the wrapped panic rather than off hunting for a second subscriber
       (CLAUDE.md's debuggability criterion). **Copy the godoc from
       [ADR 0030 §3](../adrs/0030-reply-channel-exclusivity-probe.md)**, which carries the decided text.
-- [ ] **`channel` — two methods:** `(*DirectChannel).SingleSubscriber() → true`;
+- [x] **`channel` — two methods:** `(*DirectChannel).SingleSubscriber() → true`;
       `(*PublishSubscribeChannel).SingleSubscriber() → c.cfg.single`. Add the compile-time assertions
       (`var _ msgin.ExclusiveSubscribable = (*DirectChannel)(nil)`, same for pub-sub) next to the existing
       `_ msgin.SubscribableChannel` ones at `direct.go:29` / `pubsub.go:112`.
-- [ ] **`channel`-package tests for both methods — REQUIRED, and not covered by the four-arm table.** A
+- [x] **`channel`-package tests for both methods — REQUIRED, and not covered by the four-arm table.** A
       `table-test` in `package channel_test` asserting `DirectChannel.SingleSubscriber() == true`, and
       `PublishSubscribeChannel.SingleSubscriber()` **both** with `WithSingleSubscriber()` and without.
 
@@ -1176,11 +1176,11 @@ edit.)*
       round-4 design audit implemented this task and measured `channel` falling **100.0% → 98.3%** with both
       methods at 0.0%, while `-coverpkg=./...` reported them at 100%. **`channel` returning to 100.0% on the
       per-package profile is the acceptance signal.**
-- [ ] **`endpoint` — the guard and the opt-out:** `WithSharedReplyChannel()` sets `cfg.allowShared`; the probe
+- [x] **`endpoint` — the guard and the opt-out:** `WithSharedReplyChannel()` sets `cfg.allowShared`; the probe
       runs in `NewChannelExchange` **before `reply.Subscribe`**, so a rejected exchange leaves no subscription
       behind. Order relative to the existing `ErrNilChannel` and `ErrInvalidReplyTimeout` checks: after both
       (a nil channel cannot be probed).
-- [ ] **Rewrite `NewChannelExchange`'s reply godoc — THIS TASK owns the final wording (round-8 C4).** It
+- [x] **Rewrite `NewChannelExchange`'s reply godoc — THIS TASK owns the final wording (round-8 C4).** It
       currently says exclusivity "is documented rather than enforced here" (`endpoint/exchange.go:216`) — that
       sentence becomes false. The content spec is **Spec §8 obligation 12**, and **gate 8.12 (§11 block) must
       be GREEN before this task commits**; Task 11b re-runs it as a no-regression check and does not write it.
@@ -1230,7 +1230,7 @@ edit.)*
 | yes | `false` | yes | accepted |
 | yes | **panics** | no | **`ErrSharedReplyChannel` wrapping the recovered value** (fail closed — **D-O**/**D-O2**) |
 
-- [ ] **`safeSingleSubscriber` — the probe is caller code called inside a constructor (decision D-O, amended
+- [x] **`safeSingleSubscriber` — the probe is caller code called inside a constructor (decision D-O, amended
       by D-O2).** Wrap every call, and **return the recovered value as an error so the guard can wrap it**:
 
       ```go
@@ -1338,7 +1338,7 @@ fake the arm is unreachable and the CLAUDE.md coverage gate fails.
 > `nilSubChannel` is exactly such a type. The conclusion (a new fake is needed) survives; the reason had to
 > narrow to "no in-tree type can produce an **accepted** probe-absent arm".
 
-- [ ] **A FIFTH row, and a SECOND fake: the rejected arm leaves no subscription behind.** Spec AC-9 requires
+- [x] **A FIFTH row, and a SECOND fake: the rejected arm leaves no subscription behind.** Spec AC-9 requires
       *"a case asserting the channel has no subscriber after a rejected construction"* — the property that
       makes "the probe runs **before** `reply.Subscribe`" observable rather than merely intended. It is **not
       expressible over the in-tree types**: the rejected arm needs `*channel.PublishSubscribeChannel` (the only
@@ -1355,7 +1355,7 @@ fake the arm is unreachable and the CLAUDE.md coverage gate fails.
       > recorded here so the acceptance criterion has an owning task. If Group B instead resolves AC-9 by
       > weakening it, delete this checkbox.)*
 
-- [ ] **Update the test's own PROSE, not just its constructions — neither sweep arm can see prose of this
+- [x] **Update the test's own PROSE, not just its constructions — neither sweep arm can see prose of this
       shape.** `TestChannelExchange_sharedPubSubReplyChannel`'s doc comment and case names assert the
       pre-D-J world in three places, all verified present at `aae6160`:
 
@@ -1375,7 +1375,7 @@ fake the arm is unreachable and the CLAUDE.md coverage gate fails.
       *(Round-6 E-M9. Arm 1 of the staleness sweep matches moved-symbol qualifications and arm 2 matches names
       that are declared nowhere — a sentence that is merely **false** matches neither.)*
 
-- [ ] **Fix the test D-J breaks — this is a required edit, not a discovery.**
+- [x] **Fix the test D-J breaks — this is a required edit, not a discovery.**
       `TestChannelExchange_sharedPubSubReplyChannel` (`endpoint/exchange_test.go:413`) builds **both** its
       exchanges over one plain `NewPublishSubscribeChannel()`: `exA` at `:446` under `require.NoError`, and
       `exB` at `:453`. Both now return `ErrSharedReplyChannel`.
@@ -1395,7 +1395,7 @@ fake the arm is unreachable and the CLAUDE.md coverage gate fails.
       > implementer on whether restructuring the table is permitted (the plan forbids changing assertions
       > outside the rows of Spec §2.1's table, D-J being row 5; see the goal statement above and E-B6.
       > *Round 7: the cardinality word that stood here has been removed rather than re-typed — cite the table.*)
-- [ ] **The blast radius was swept, not assumed — it is ONE TEST, TWO CONSTRUCTIONS.** Measured across the
+- [x] **The blast radius was swept, not assumed — it is ONE TEST, TWO CONSTRUCTIONS.** Measured across the
       whole workspace, not the pattern core (the §3.6 recurrence pattern is an inventory scoped too narrowly).
 
       **This is a DERIVED SUMMARY, not pasted output** — the raw command emits 25 lines and is reproduced
@@ -1436,14 +1436,33 @@ fake the arm is unreachable and the CLAUDE.md coverage gate fails.
   live in `channel` while every test that exercises them lives in `endpoint`, so `-coverpkg` credits them at
   100% while the package-local profile shows them at 0% (Spec §3.4e's attribution effect, in the one task
   written after §3.4e). This was compile-proven in the round-4 design audit: `channel` falls 100.0% → 98.3%.
-- **The table shows SIX distinct subtests** — the four truth-table arms, **plus** AC-9's ordering row
-  (`countingSharedChannel`, asserting `n == 0` after a rejected construction) **plus** D-O's panicking-probe
-  row (asserting `ErrSharedReplyChannel` **and** the panic literal in `err.Error()`) — **and** the
-  `channel`-package test above pins `SingleSubscriber()` for both types directly.
+- **The table shows SEVEN distinct subtests — this is a FLOOR, not a cap** — the four truth-table arms,
+  **plus** AC-9's ordering row (`countingSharedChannel`, asserting `n == 0` after a rejected construction)
+  **plus** D-O's panicking-probe row (asserting `ErrSharedReplyChannel` **and** the panic literal in
+  `err.Error()`) **plus** **D-M2's ordering row** — **and** the `channel`-package test above pins
+  `SingleSubscriber()` for both types directly.
   *(Round-8 C6: this said *"the four-arm table shows four distinct subtests"*, while the task body above
   requires six and Spec AC-9 requires the same six. A worker satisfying the Verify as written ships without
   the ordering assertion **and** without D-O's covering case — the two rows added precisely because nothing
   else observes them.)*
+
+  > **EXECUTION FINDING I-1 (2026-08-10, Task 9.6 code review) — the SEVENTH row, and why "six" was a floor.**
+  > **D-M2's ordering was documented normatively and observed by no test.** `WithSharedReplyChannel`'s godoc
+  > states it as a caller-facing guarantee (*"NewChannelExchange consults this flag BEFORE the
+  > `msgin.ExclusiveSubscribable` type assertion, so a construction carrying this option never calls the
+  > channel's `SingleSubscriber` at all"*), and gate 8.13 only greps for *"suppress"*. **Measured:** restoring
+  > the pre-D-M2 shape the plan explicitly rejects —
+  > `if ex, ok := …; ok { single, cause := safe…; if !single && !cfg.allowShared { … } }` — leaves **rows 1–6
+  > all PASS** and gate 8.13 GREEN, so the regression ships silently. The caller it hurts is exactly D-M2's
+  > population: someone who opted out *because* their third-party `SingleSubscriber` locks or does I/O now pays
+  > for it on every construction, and a panicking probe emits a spurious WARN.
+  >
+  > **Row 7:** a SECOND `countingSharedChannel` instance (row 5 keeps its own) gains a `probes atomic.Int64`
+  > incremented in `SingleSubscriber`; the row constructs with `endpoint.WithSharedReplyChannel()` and asserts
+  > `NoError` **and** `probes == 0` **and** `subscribes == 1`. Row 4 deliberately keeps a real
+  > `*channel.PublishSubscribeChannel`, so it stays a truth-table arm rather than a fake-only assertion.
+  > Mutation-killed by the shape above; **that mutant is not the same as flipping the option to a no-op**,
+  > which changes *whether* the flag is honored rather than *when* it is read.
 - **THE FIVE `go doc` GATES FOR THIS TASK'S OWN GODOC — 8.10, 8.11, 8.11a, 8.12, 8.13, run from the
   [§11 canonical block](#11-gate-block--the-one-source-for-every-11b11c-gate-red-at-each-gates-own-tasks-start),
   RED before and GREEN after, both transcripts in the ledger.** This task **declares all three symbols and

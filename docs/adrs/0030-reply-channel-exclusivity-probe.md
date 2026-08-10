@@ -1,8 +1,10 @@
 # ADR 0030 — Reply-channel exclusivity is probed at construction, not left to godoc
 
-- **Status:** **ACCEPTED (2026-07-28) — NOT YET IMPLEMENTED.** Decision **D-J**, settled with the user after
-  the round-3 review cycle. Realized by [Plan 027 §9.6](../plans/027-core-package-layout.md); this ADR is
-  written **before** the code, so every "is" below is a specification, not a description of the tree.
+- **Status:** **ACCEPTED (2026-07-28) — IMPLEMENTED (2026-08-10) by [Plan 027 §9.6](../plans/027-core-package-layout.md).**
+  Decision **D-J**, settled with the user after the round-3 review cycle. This ADR was
+  written **before** the code, so the "is" statements below were a specification when written; §1's godoc,
+  §3's guard and §3a's helper are now copied verbatim into `channel.go`, `endpoint/exchange.go` and
+  `errors.go`, and Spec 014 §8 gates 8.10/8.11/8.11a/8.12/8.13 are GREEN.
 - **Decisions folded in 2026-07-28 (round 6):** **D-L** — `SingleSubscriber()` is an **end-to-end policy
   predicate** and is **lifetime-invariant**, superseding §1's original handle-local definition
   ([round 6 §1](../plans/027-audit-round-6.md), prompted by design blockers B2/B3, both **compile-proven** in a
