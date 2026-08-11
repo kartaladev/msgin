@@ -1,163 +1,147 @@
 # Session handover — msgin
 
-> # ⛔ THIS DOCUMENT IS STALE — regenerate before relying on ANY of it (2026-08-11).
->
-> It was written before **Task 9.6** and **Task 10** landed, and every one of the following is now false:
-> the banner *"THE NEXT STEP IS TASK 9.6"*; the §1 status table (9.6 and 10 both read `NOT STARTED`); the
-> §2 `git log` transcript; the *"five commits of real code"* / *"23 commits unpushed"* counts; and every
-> *"seven modules"* claim — the workspace has **eight** since Task 10 added `expr`.
->
-> **Authority, in order:** `docs/plans/027-core-package-layout.md`'s Progress table, then `git log`. This
-> file is a session artifact and is rewritten wholesale at the next handover, not patched task by task —
-> partially updating it produces a document whose table and prose disagree, which is worse than one that
-> announces its own staleness. Task 12 owns the regeneration.
->
-> *(Recorded by Task 10's fix round 3, whose sweep found it. Task 10 did not rewrite it: a handover is
-> written from a safepoint at handover time, per CLAUDE.md, and is not a task deliverable.)*
-
 > **READ FIRST.** Read `CLAUDE.md`, then `docs/plans/027-core-package-layout.md` (its **Progress table** is
 > the authority on what is done), then `docs/specs/014-core-package-layout.md`. **Trust those files and
 > `git log` over this one**, and over any memory.
 >
-> ### ✅ IMPLEMENTATION IS UNDER WAY. FIVE TASKS DONE. THE NEXT STEP IS TASK 9.6.
+> ### ✅ TASKS 9.6 AND 10 ARE DONE. THE NEXT STEP IS TASK 11.
 >
-> The design phase closed at `1c4f73e`. Since then **five commits of real code** have landed. Tasks
-> **9.7, 9, 9.5** are done and committed, plus **two out-of-plan `fix:` commits** that closed a defect class
-> the review gates surfaced. The tree is a **clean safepoint**: `git status --short` empty, 11/11 root
-> packages green under `-race -shuffle=on`, all seven modules green standalone.
+> Two commits of real code landed this session, each verified independently by the coordinator rather than
+> accepted on a subagent's report. The tree is a **clean safepoint**: `git status --short` empty, 11/11 root
+> packages green under `-race -shuffle=on`, **all eight** modules green standalone.
 >
-> **Nothing has been pushed this session. 23 commits are unpushed** — pushing needs explicit approval.
+> **Nothing has been pushed. 26 commits are unpushed** — pushing needs explicit approval.
 
 ## 1. Objective & position
 
 `msgin` is a Go 1.25 Enterprise Integration Patterns library. The active effort is the **pre-v1 core
 refactor** (Plan 027): flatten-to-packages, channel interface segregation, EIP lexical alignment.
 
-**Remaining: Task 9.6 → 10 → 11 → 12.** Execution order is load-bearing — **Task 11 must run after Task 9.6**
-(it re-verifies gates 9.6 turns green).
+**Remaining: Task 11 → 12.** Task 11 was already PARTIAL before this session and is unchanged by it.
 
 | Task | Size | State |
 |---|---|---|
-| **9.6** — reply-channel exclusivity probe (D-J) | M | **NOT STARTED — START HERE** |
-| 10 — the `expr` provider module | L | NOT STARTED |
-| 11 — package docs + unowned godoc obligations | M | PARTIAL |
+| **11** — package docs + unowned godoc obligations | M | **PARTIAL — START HERE.** 11a done (`1d7fc80`); **11b and 11c remain** |
 | 12 — migration guide, doc sync, whole-branch gate | M | NOT STARTED |
+
+**Gate `11c1` is RED and that is correct** — it belongs to Task 11c (`channel.WithSingleSubscriber`'s
+single-process clause). Task 9.6 was explicitly forbidden to "fix" it. Do not read its RED as a regression.
 
 ## 2. Exact state
 
 ```
-$ git log --oneline -6
+$ git log --oneline -4
+5e7829c feat(expr,core,routing): expression providers as a separate module; widen ErrPayloadType's contract
+f460610 feat(core,channel,endpoint)!: probe reply-channel exclusivity at construction
+fde23f3 docs(handover): record the five implemented tasks; pin the task headers to their commits
 511cefa fix(core,endpoint): guard the nil constructor arguments the With* sweep missed
-910e092 refactor(core,http)!: move the expr sentinels out of root, clear the staleness sweep, widen the capability test
-b4d1a1a fix(endpoint,routing): reject nil caller input instead of panicking
-544cb5b feat(routing,transform): name the endpoint behavior types and add combinators
-64963ad fix(core,endpoint,routing,transform,sql)!: classify deterministic endpoint faults as Permanent
-1c4f73e docs(handover): close the design phase; next step is implementation at Task 9
 
 $ git status --short
 (clean, apart from this file's own edit)
 ```
 
-**VERIFY THESE, NEVER COPY THEM** — they have been wrong in five consecutive handovers:
+**VERIFY THESE, NEVER COPY THEM** — they have been wrong in six consecutive handovers:
 `git rev-parse --short main @{u}` · `git rev-list --left-right --count @{u}...HEAD`.
-Measured at `511cefa`: `main` = `0de54e9`, `@{u}` = `6f44db6`, **26 ahead of `main`**, **23 unpushed**, 0 behind.
-Committing this file makes them 27 / 24.
+Measured at `5e7829c`: `main` = `0de54e9`, `@{u}` = `6f44db6`, **29 ahead of `main`**, **26 unpushed**,
+0 behind. Branch `claude/repo-structure-refactor-jt79t1`. Committing this file makes them 30 / 27.
 
 **This file cannot state its own commit's SHA or counts** — committing it invalidates them. `HEAD` is
-identified by *subject*: run `git log --oneline -6` and read the top line. Every SHA above is an ancestor and
-safe to cite.
+identified by *subject*: run `git log --oneline -4` and read the top line. Every SHA above is an ancestor
+and safe to cite.
 
-### What the five commits delivered
+### What the two commits delivered
 
 | SHA | Task | Substance |
 |---|---|---|
-| `64963ad` | **9.7** | **D-M** five producers return `Permanent(sentinel)` + position · **D-N** invalid messages fall back to the dead-letter sink · **D-P** that divert is single-shot |
-| `544cb5b` | **9** | `Predicate`/`RouteFunc`/`SplitFunc`/`Transformer` + `And`/`Or`/`Not` |
-| `b4d1a1a` | — | `WithLogger(nil)` no longer kills the process; `NewAggregator` rejects nil strategies |
-| `910e092` | **9.5** | expr sentinels leave root (102→100 exported, 43→41 sentinels) · both sweep arms empty · capability test 9 → 24 subtests |
-| `511cefa` | — | `NewConsumer(src,nil)`, `OutboundGateway(nil)`, `Chain(nil step)` |
+| `f460610` | **9.6** | `ExclusiveSubscribable` + `ErrSharedReplyChannel` (root), `SingleSubscriber` on both `channel` types, `endpoint.WithSharedReplyChannel`, the `safeSingleSubscriber` recover helper, a four-outcome `NewChannelExchange` godoc, and a **seven**-row truth table |
+| `5e7829c` | **10** | The `expr` provider module (8th module) with six generic providers, twelve reinstated `*Expr` tests, D-K's consumer+RetryPolicy+DLQ acceptance fixture, root's widened `ErrPayloadType` contract, `ErrNilMessageGroup` + the nil-group choke-point guard, and CI extended to all eight modules |
 
 ## 3. Read in this order
 
 1. `CLAUDE.md` — hard rules. **SDD is the default execution mode; ask before writing any implementation code.**
-2. `docs/plans/027-core-package-layout.md` — **Task 9.6 is at line ~1097**. Its Progress table is authoritative.
-3. `docs/adrs/0030-reply-channel-exclusivity-probe.md` — **read this before writing anything for 9.6.** Its
-   four rejected alternatives *are* the design; two of them look cheaper until you read why they lost.
-4. `docs/specs/014-core-package-layout.md` §5.1, §8 · ADRs `0028`, `0029` (§5.0a/§5.0b), `0007` (D7/D8).
-5. `docs/plans/027-derivation-findings.md` — the execution ledger. **§F15–F18 are this session's record.**
+2. `docs/plans/027-core-package-layout.md` — **Task 11 is at line ~2644.** Its Progress table is authoritative.
+3. `docs/specs/014-core-package-layout.md` §8 (the godoc obligations 11b owes) and §10 (the multi-instance
+   obligations 11c owes), plus §8.0b's **canonical gate block**.
+4. `docs/adrs/0030-*.md` (Task 9.6's design), `docs/adrs/0029-*.md` §5.0a–**§5.0d** (Task 10's; §5.0d is new).
+5. `.superpowers/sdd/027-core-package-layout/progress.md` — this session's SDD ledger: every dispatch,
+   finding, ruling and verification, with the commands. **Git-ignored scratch — read it, don't rely on it
+   surviving.**
 
-## 4. Decisions made this session
+## 4. Decisions this session
 
 | | Decision | Outcome |
 |---|---|---|
-| **D-P scope** | *User ruling.* Single-shot covers the **whole invalid path**, not just the D-N fallback — a configured `WithInvalidMessageSink` whose `Send` fails is also discarded, not Nacked. The plan said "the invalid path" while ADR 0007 D7 and Spec row 7 said "when `invalidSink == nil`"; the **documents were widened to match the code** | ADR 0007 D7, Spec §2.1 row 7 |
-| **Oversize exemption** | *User ruling.* `ErrPayloadTooLarge` is **exempt** from D-N's fallback. Routing its rejects to the DLQ wrote attacker-supplied oversize bytes verbatim into the operator's durable store — the defence became the vector. Does not weaken D-N: that class was never *captured* before D-N, so the exemption **restores** prior behavior | `endpoint/consumer.go` `invalidTarget`, ADR 0007 D7, Spec row 7 |
-| **Shutdown exception** | A `Send` that fails only because the settle context was cancelled by the shutdown deadline is **Nacked for redelivery**, not discarded — nothing was learned about the sink. `OnInvalidMessage` does not fire | `endpoint/consumer.go` `divertTerminal` |
-| **`Chain` nil element** | **Substitute** the degradation step, do not skip. Skipping trades a visible failure for a silent one — a dropped `Filter` stops filtering | `handler.go` |
-| **Census correction** | The `MessageChannel` census is **15**, not the plan's projected 14. Naming a type **relocates** an occurrence: `RouteFunc`'s own declaration is a census line. Task 12 re-measures — **expect 15** | Plan Task 9 |
+| **Nil-group class** | *User ruling.* A `MessageGroupStore` whose `Add` returns a nil group **and** a nil error is an SPI contract violation → **typed error at the single choke point**, not a panic and not a hold. A hold would `Ack` a message the store just said it cannot read back — durable nowhere | `routing/aggregator.go`, `msgin.ErrNilMessageGroup`, ADR 0029 §5.0d (**D-Q**), Spec §2.1 row 9 |
+| **Nil-guard scope** | *User ruling.* Fix the **class**, not the instance — the first guard closed 1 of 4 release paths; `WithCompletionSize`, `WithReleaseWhen` and a caller's `WithReleaseStrategy` all still panicked (measured) | one guard, all four paths |
+| **Table form** | *User ruling.* Comply literally with CLAUDE.md's assert-closure rule even where a shared-assertion table reads more honestly | `expr/expr_test.go` |
+| **`Permanent` by wrap** | Wrap at the producing site rather than widening `IsPermanent`'s enumeration — that set is documented **closed** in Spec §4.1, D-K's reasoning depends on its stability, and enumeration would make the test's `IsPermanent` assertion structurally unkillable | `routing/aggregator.go` |
+| **Task 10 split** | *User ruling.* Executed as two subagent dispatches but **one commit**, because the plan spells out one commit for Task 10 and the per-task pre-authorization covers only commits the plan spells out | — |
 
-**Open, deliberately not decided** — a dead-lettered message carries no settlement-reason header, so a DLQ
-reader cannot distinguish *"retries exhausted"* from *"permanently invalid"*. Recorded as a limitation with
-the SPI seam noted; the remedy today is to configure `WithInvalidMessageSink`.
+**No pending approvals.** Nothing is blocked.
 
-## 5. Backlog — triaged, NOT fixed (ledger §F18)
+## 5. Backlog — triaged, NOT fixed
 
-- **24 nil-option-element sites.** Every `for _, opt := range opts { opt(&cfg) }` loop calls the element
-  unguarded, so `NewConsumer(src, h, nil)` panics. Deliberately deferred: it is a **uniform class needing one
-  uniform answer** (skip the element vs reject at construction), and fixing a subset would repeat the
-  partial-sweep pattern that produced this session's findings. §F18 has the full site list, the reproduction,
-  both candidate fixes (**B, reject at construction, recommended** — but 8 of the 24 return no error and need
-  A as a local fallback) and the command that regenerates the list. **Re-derive; do not trust the list.**
-- **`admit`'s ctx-done arm has no test forcing it** (§F18.5). Its coverage today is incidental.
-- **Trailer-less `docs:` commits** — unchanged disposition; see the rule in §8 of the previous handover
-  (recoverable via `git show 1c4f73e:docs/HANDOVER.md`).
+- **24 nil-option-element sites** (carried from the previous session, unchanged). Every
+  `for _, opt := range opts { opt(&cfg) }` calls the element unguarded, so `NewConsumer(src, h, nil)` panics.
+  A **uniform class needing one uniform answer**; the previous ledger's §F18 has the site list, the
+  reproduction and both candidate fixes (recoverable via `git show 1c4f73e:docs/HANDOVER.md`).
+  **Re-derive; do not trust the list.**
+- **`admit`'s ctx-done arm has no test forcing it** — coverage today is incidental.
+- **M38 discriminates the default release case from the *group* of the other three**, which all fail
+  identically. "Proves no case is redundant" is accurate but slightly stronger than that one mutant shows.
+- **Task 12 also owns** the `CLAUDE.md` sync (module counts, the Dependency-policy "Still outstanding"
+  sentence, the sentinel/exported counts) and two `NOT YET IMPLEMENTED` blocks in ADR 0028 that belong to
+  Task 9.6. Its checkbox was extended this session to enumerate all of them — an earlier review caught a
+  deferral whose named owner did not actually cover the work.
 
 ## 6. Next actions
 
-1. **START HERE: Task 9.6** (plan line ~1097). Read **ADR 0030 first**. It ships, in one commit: 2 root
-   exported symbols (`ExclusiveSubscribable`, `ErrSharedReplyChannel`) whose godoc is **verbatim normative
-   text from ADR 0030 §1** — *copy, do not retype*, gate 8.11 is a seven-conjunct phrase match; 2 `channel`
-   methods + assertions + a table test; `endpoint.WithSharedReplyChannel`; a four-outcome `NewChannelExchange`
-   godoc rewrite; two test fakes; `safeSingleSubscriber` (D-O) with its sixth truth-table row.
+1. **START HERE: Task 11** (plan line ~2644). 11a is done; **11b** owes Spec §8's unmet godoc bullets and
+   **11c** owes Spec §10's multi-instance obligations, including **gate 11c1**.
 2. **Ask before writing implementation code, and default to SDD.** Plan approval does **not** authorize the
-   execution mode.
-3. **Run the §11 gate baseline for your task and confirm RED first.** Gates are pinned per task, not to the
-   untouched tree.
+   execution mode; approval is per-task, never standing.
+3. **Run the §11 gate baseline for your task and confirm RED first.** Gates are pinned per task.
 4. **Before merge:** `/code-review` and `/security-review` over `main..HEAD`. **The assistant cannot launch
    `/code-review` — the user must run it.**
 
 ## 7. What this session's gates actually caught — read before trusting a green suite
 
-Six defects reached committed-quality code and **not one was visible to the test suite**, which was green at
-100% coverage throughout:
+Tasks 9.6 and 10 were both green at 100% coverage while carrying real defects. What found them:
 
 | Defect | Found by |
 |---|---|
-| D-P scope contradicted ADR 0007 + Spec row 7 | adversarial review |
-| Payload bytes leaked into a WARN, 3 lines from a "never the payload" godoc | adversarial review |
-| Shutdown cancellation misread as a sink refusal → healthy-sink message discarded | `/code-review` |
-| `And`/`Or` returned `(true, err)`, contradicting their own godoc | adversarial review |
-| `WithLogger(nil)` / nil aggregator strategies → panic on caller input | whole-branch `/code-review` |
-| `NewConsumer(src, nil)` → **46,106 retries in 200 ms** | the class sweep ordered after the above |
+| D-M2's probe-ordering guarantee pinned by **no test** — the pre-D-M2 mutant left all six rows *and* gate 8.13 green | adversarial task review |
+| Two assertions on error text that **`expr-lang` itself produces** — deleting msgin's own wrap left the whole suite green | reviewer's independent mutant |
+| The expression-text wrap reaching **1 of 3** `PayloadOf` sites | adversarial task review |
+| Guarding `defaultRelease` closed **1 of 4** nil-group paths | the implementer, who escalated instead of widening silently |
+| Round 2 changed facts; round 1's prose was never re-swept — 8 findings, incl. a **merge blocker** (AC-1 and AC-2 contradicting each other) | scoped re-review |
 
-**Three lessons, all earned this session:**
-- **A test that has never failed proves nothing.** Three separate cases were *vacuous* — the plan's `Not`
-  trap, the `And`/`Or` right-operand cases, and capability row 5 — each passing against the very
-  implementation it existed to reject. **Mutation-test every new assertion.**
-- **Scope the sweep to the class, not the symptom.** `b4d1a1a` swept `With*` options; that scoping is exactly
-  why `OutboundGateway`, `Chain` and `NewConsumer` survived it.
-- **Coverage numbers lie in two ways here.** `-coverpkg=./...` reports *"of statements in `./...`"* — a
-  whole-module figure, not a package one (`routing` reads 58.2% that way and 100.0% isolated). And
-  `endpoint`'s headline swings **99.44% / 99.16% across runs on an unchanged tree**, because `admit`'s
-  ctx-done arm is a scheduler coin-flip. Measure per package, isolated; prove deltas arithmetically.
+**Four lessons, all earned this session:**
+- **A gate that has never failed proves nothing — same as a test.** One sweep reported CLEAN on every arm and
+  was meaningless: zsh does not word-split unquoted parameters, so `grep` got one bogus filename and an `||`
+  fallback printed a pass. **Vacuity-probe every gate before believing it** (plant the thing it should catch).
+- **The SHA-orphan sweep was itself vacuous in the only case it exists for.** `git cat-file -e … && {…}`
+  short-circuits on an unresolvable SHA — i.e. the **fresh-clone** case — so a dropped commit produced a
+  *clean* result. It now reports `UNRESOLVABLE` separately from `ORPHAN`.
+- **Never export a lying gate across a session boundary.** Two Minor doc findings were fixed rather than
+  deferred for exactly this reason: handing a fresh session a command with known false positives is how the
+  `ci.yml` `grep crontest` trap was born (three comment lines that made a bare grep read as "already done").
+- **Amending destroys the SHA your prose cited.** Task 10 was amended four times; three citations to
+  `618dd73` became unresolvable. **Cite by task, not by SHA**, and let Task 12 backfill the final one.
 
 ## 8. Gotchas & environment
 
 - **`export GOTOOLCHAIN=go1.25.12`** always; **`export PATH="$(go env GOPATH)/bin:$PATH"`** — `apidiff`,
   `gopls`, `govulncheck`, `gofumpt` live there and none are on `PATH`.
-- **`./...` is not the repo** — seven modules. CI covers only six (`adapter/cron/crontest` is missing from
-  both jobs; **Task 10 fixes it**), and CI runs **eight** steps per module to the local loop's two. Passing
-  locally does not mean CI passes.
+- **`./...` is not the repo — there are now EIGHT modules**, not seven. `expr` is the new one. **CI now covers
+  all eight**, including `adapter/cron/crontest`, whose absence was a pre-existing gap Task 10 closed.
+- **`docs/plans/027-tools/symmap.tsv` is a DERIVED gate input and goes stale on every symbol addition.** It
+  silently under-checks staleness-sweep arm 1 when stale. Regenerate before running the sweep; it is **96**
+  entries at `5e7829c`.
+- **`43 ≠ 43`.** Root's sentinel count reads 43 both at `dadc775` and today, but they are **different sets**
+  — two left, two entered. **Reconcile by name, never by count.**
+- **The staleness sweep's declared side is now TWELVE directories** (the eleven plus `expr`). Without `expr`
+  it reports `ErrInvalidExpression` as a false survivor on a correct tree — verified by control run.
 - `go tool cover -func` resolves line numbers against the **current** source — running it on a profile from
   another revision silently mis-attributes every block.
 - `.golangci.yml` sets `linters.default: none` — **`ST1000` and `unused` are both off**, so missing package
@@ -168,4 +152,4 @@ Six defects reached committed-quality code and **not one was visible to the test
 - Repo has **zero git tags** — do NOT propose tagging.
 - Never commit `.claude/settings.json`; stage explicit pathspecs.
 - **Per-task commits are pre-authorized** by the approved plan; `git push`, merges, tags and branch deletion
-  are **not**. A commit the plan does not spell out (like `b4d1a1a` and `511cefa`) needs its own approval.
+  are **not**. A commit the plan does not spell out needs its own approval.
