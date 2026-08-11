@@ -389,7 +389,7 @@ and defined nowhere; it is defined here.
 | **9.6** | Reply-channel exclusivity probe (**D-J**, ADR 0030) | **DONE** — all five gates 8.10/8.11/8.11a/8.12/8.13 RED→GREEN (11c1 still RED, Task 11c's); `apidiff` 97 removals / **8** additions, exactly the D-J projection; `channel` back to **100.0%** on the per-package profile; **seven** subtests in the `endpoint` truth table (the seventh pins D-M2, execution finding I-1) plus the three-case `channel` table, every assertion mutation-killed |
 | **9.7** | Classify the **five** shipped producers (`ErrNilFunc` ×4 + `ErrNilSink`) as `Permanent` (**D-M**), add the dead-letter fallback (**D-N**) and make it single-shot (**D-P**) | **DONE** — committed `64963ad`, ledger §F15. Ran **FIRST**, before Task 9, per the round-7 correction. All five gates green; `apidiff` empty on all four packages; zero net-new uncovered blocks |
 | **10** | The `expr` provider module | **DONE** — the eighth module ships with its own `go.mod` (`require` + `replace`), `go.work` `use` entry, and **three** CI edits (`expr` in both jobs, plus the pre-existing `adapter/cron/crontest` gap closed in both; `dir:` 6 → 8). **One** sentinel (`ErrInvalidExpression`), six providers, the **12** reinstated `*Expr` test functions under their new names, and **D-K's acceptance fixture** — a real `Consumer` + `RetryPolicy{MaxAttempts: 3, DeadLetter}` + `WithInvalidMessageSink` over a **re-emitting** source, so `dlq.count()==0` is load-bearing rather than vacuous. Root's `ErrPayloadType` godoc widened (**AC-10's fifth arm**, four `go doc` phrase gates RED → GREEN). **Fix round 1** closed a second vacuity of the same class in the CONSTRUCTION path (expr-lang echoes the offending source line in its *compile* error too, so `Contains(err.Error(), src)` passed with msgin's `%q` wrap deleted), and routed all three `msgin.PayloadOf` sites through one `payloadError` helper so a dead-letter record names WHICH expression rejected the payload. **Fix round 2** added **decision D-Q** (ADR 0029 §5.0d, Spec 014 §2.1 row 9): a `MessageGroupStore` whose `Add` returns a nil snapshot with a nil error is caller input, and it panicked **all four** release strategies; it is now rejected once at the choke point in `Handle` with `Permanent(ErrNilMessageGroup)`. That **supersedes** the `defaultRelease`-local guard of round 1, which closed only 1 of 4 and was removed. Root: **103** exported / **43** sentinels; `apidiff` **97 removals / 9 additions**, the ninth being `ErrNilMessageGroup`; `./routing` apidiff empty. `expr` and `routing` both at **100.0%** coverage, **37 mutants planted, 37 killed** — two of which caught vacuous assertions (`M5`, `M31`) and one of which (`M38`) proves each of the four release-strategy cases is necessary rather than redundant |
-| **11** | Package docs + Spec 014 §8/§10 godoc obligations | **PARTIAL** — 11a (`doc.go` × 5) done; 11b/11c not started |
+| **11** | Package docs + Spec 014 §8/§10 godoc obligations | **DONE** — 11a (`doc.go` × 5) landed earlier in `1d7fc80`; **11b and 11c complete**. All **seven** of Task 11's own gates RED → GREEN (8.1, 8.3, 8.4a, 8.4b, 8.7, 11c1, 11c2) and the **nine** it does not own (Task 9.6's five, Task 9's four) GREEN on arrival and still GREEN after — **16/16**. The diff is **comments-only, proven in both directions** (a planted code addition AND a planted field deletion each trip the check; the real diff trips neither). **Every gate mutation-killed**: reverting each file individually turns RED exactly its own gate and nothing else — 8.7 correctly dies on reverting *either* of its two files. **An adversarial review then found a MAJOR defect behind that green suite** — both HTTP inbound godocs promised a `QueueChannel` parks the request **durably**, when durability belongs to the injected `ChannelStore` and the default in-memory store loses it on process exit — **and four gates that stayed GREEN with the obligation deleted outright.** All nine findings were re-verified against the code, fixed, and folded into this same commit. **All ten Plan-only gates were rewritten**, each proven by counterexample to reject what its predecessor accepted; the six shared with Spec §8.0b are untouched and Global Constraint 10 re-verified identical |
 | **12** | `MIGRATION.md`, doc sync, whole-branch gate | **NOT STARTED** |
 
 ```
@@ -2662,7 +2662,27 @@ widened contract.)*
 
 ---
 
-## Task 11 — Package docs AND the unowned godoc obligations · **M** · PARTIAL
+## Task 11 — Package docs AND the unowned godoc obligations · **M** · DONE
+
+> **EXECUTION RECORD (2026-08-11).** 11b and 11c are complete; 11a had landed earlier in `1d7fc80`. The §11
+> gate block went **16/16 GREEN** from a re-derived baseline of nine GREEN (Tasks 9 + 9.6, no regression) and
+> seven RED (this task's). Seven doc comments across seven files; **no signature, logic, test, or behavior
+> changed**, and the comments-only property was probed in both directions rather than asserted. **The gates
+> were mutation-killed individually** — reverting each file turns RED exactly its own gate, so none went green
+> incidentally. Two briefed claims were **false against the code** and were corrected in favour of the code
+> before being written: `ChannelExchange` does **not** stamp the correlation id (the `Gateway` /
+> `OutboundGateway` façades do, `endpoint/gateway.go:62,83`; the exchange *reads* it and returns
+> `ErrNoCorrelation` when empty, `endpoint/exchange.go:411-413`), and the per-instance retry bypass is keyed on
+> **`HeaderDeliveryCount`**, not on a `NativeReliability` type assertion (`endpoint/consumer.go:854-859`) — so
+> the godoc attributes the behavior to the header, with `NativeReliability` named as the capability that
+> accompanies it. Both verified independently by the coordinator against the cited lines.
+>
+> **A REVIEW ROUND FOLLOWED, and it found a MAJOR defect behind a 16/16-GREEN suite** — a public godoc
+> promising durability the type does not deliver — plus **four gates that stayed GREEN with the obligation
+> deleted outright**. Both are written up below (the review-round block over the gate block, and the paragraph
+> under the Verify transcripts). All nine findings were re-verified by the coordinator against the code before
+> any fix, all were fixed, and the whole task — original work plus fix round — is one amended commit, so the
+> godoc and the gates that prove it stay a single coherent unit.
 
 > **This task grew in round 3.** Spec 014 **§8's nine godoc bullets** and **§10's four multi-instance godoc
 > obligations** were written in the indicative, as though they described the tree, and **had no owning task
@@ -2771,16 +2791,24 @@ g 8.13 "d \$M/endpoint.WithSharedReplyChannel | grep -qi 'suppress' && \
         d \$M/endpoint.WithSharedReplyChannel | grep -q 'ErrChannelSubscribed'"
 g 11c1 "d \$M/channel.WithSingleSubscriber | grep -Eqi 'single-process|per-process'"
 # ---- the ten gates below are Plan-only (no Spec §8.0b counterpart); the six above are the shared set ----
-g 8.1  "grep -rn -i 'correlation identifier' --include='*.go' ."
-g 8.3  "grep -rn -i 'amqp' --include='*.go' . | grep -q 'spi.go'"
-g 8.4a "d \$M/routing.CorrelationStrategy | grep -qi 'spring'"
-g 8.4b "d \$M/routing.ReleaseStrategy | grep -qi 'spring'"
-g 8.4c "d \$M/routing.Predicate | grep -qi 'spring'"
-g 8.4d "d \$M/routing.RouteFunc | grep -qi 'spring'"
-g 8.4e "d \$M/routing.SplitFunc | grep -qi 'spring'"
-g 8.4f "d \$M/transform.Transformer | grep -qi 'spring'"
-g 8.7  "grep -q -i QueueChannel adapter/http/inbound.go && grep -q -i QueueChannel adapter/http/stdlib/inbound.go"
-g 11c2 "d \$M.RetryPolicy | grep -Eq 'per instance|N × MaxAttempts'"
+# ---- TIGHTENED 2026-08-11 (Task 11 review round). Every conjunct is text ONLY the obligation
+# ---- supplies. In particular NEVER gate on a word that `go doc`'s own SIGNATURE line prints:
+# ---- `go doc msghttp.ServeAsync` echoes `target msgin.MessageChannel`, so a `MessageChannel`
+# ---- conjunct on 8.7 would self-satisfy with the entire obligation deleted.
+g 8.1  "d \$M/endpoint | grep -qi 'correlation identifier'"
+g 8.3  "d \$M.RequestReplyExchange | grep -q 'NOT AMQP' && \
+        d \$M.RequestReplyExchange | grep -qi 'routing table'"
+g 8.4a "d \$M/routing.CorrelationStrategy | grep -qF 'org.springframework.integration'"
+g 8.4b "d \$M/routing.ReleaseStrategy    | grep -qF 'org.springframework.integration'"
+g 8.4c "d \$M/routing.Predicate          | grep -qF 'org.springframework.integration'"
+g 8.4d "d \$M/routing.RouteFunc          | grep -qF 'org.springframework.integration'"
+g 8.4e "d \$M/routing.SplitFunc          | grep -qF 'org.springframework.integration'"
+g 8.4f "d \$M/transform.Transformer      | grep -qF 'org.springframework.integration'"
+g 8.7  "d \$M/adapter/http.ServeAsync        | grep -q 'QueueChannel' && \
+        d \$M/adapter/http.ServeAsync        | grep -q 'ChannelStore' && \
+        d \$M/adapter/http/stdlib.NewInbound | grep -q 'QueueChannel' && \
+        d \$M/adapter/http/stdlib.NewInbound | grep -q 'ChannelStore'"
+g 11c2 "d \$M.RetryPolicy | grep -Eqi 'per instance|N × MaxAttempts'"
 ```
 
 **Pasted output of exactly that block, re-run 2026-07-30 on the untouched tree at `7ee3fd6`** (code
@@ -2869,6 +2897,49 @@ Most are RED for the *"symbol does not exist yet"* reason, which `go doc` report
 > round-7 pass wrote this sentence and never created the constraint — the list ran 0–9. It exists now, and it
 > carries the command.)*
 
+> ## ⛔ TASK-11 REVIEW ROUND (2026-08-11) — ALL TEN PLAN-ONLY GATES REWRITTEN. Four of them stayed GREEN
+> ## with the obligation they gate DELETED OUTRIGHT, proven by counterexample, not argued.
+>
+> This is round 6's *"a gate matched a word occurring incidentally in prose"* class, which round 6 believed it
+> had eliminated. It had — **in the six gates shared with Spec §8.0b**. The Plan-only ten were never diffed
+> against anything, so they kept the defect for two more rounds. Measured on a sandbox tree:
+>
+> | Gate | Counterexample applied | Old form | New form |
+> |---|---|---|---|
+> | **8.3** | AMQP disclaimer **deleted** from `RequestReplyExchange`; `// TODO(someday): amqp support.` planted on an unrelated symbol in `spi.go` | **GREEN** | **RED** |
+> | **8.4a** | Spring FQN **deleted** and replaced with the OPPOSITE claim — *"Spring is a different framework; no name is borrowed."* | **GREEN** | **RED** |
+> | **8.1** | `endpoint/doc.go` reverted to its pre-Task-11 state; the phrase planted in `endpoint/consumer_test.go` **only** | **GREEN** | **RED** |
+> | **11c2** | `N × MaxAttempts` rewritten with an ASCII `x`, obligation otherwise intact | **RED** (false) | **GREEN** |
+>
+> `8.4b`–`8.4f` share `8.4a`'s exact shape and were equally vacuous; `8.4c`–`8.4f` are **Task 9's** gates and
+> are tightened here too, by user ruling — *fix the class, not the instance*.
+>
+> **What each fix does, and the one trap that nearly reproduced the bug inside its own repair:**
+>
+> - **8.1** was `grep -rn -i … --include='*.go' endpoint/`. Anchoring it to `endpoint/` (the first repair this
+>   session) shrank the directory but **not the hole** — `--include='*.go'` matches `_test.go`, which the
+>   repair's own prose had named as the defect. It is now `go doc` on the **package**, so only the package
+>   godoc can satisfy it, which is exactly what the checkbox asks for.
+> - **8.3** required `amqp` case-insensitively **anywhere in `spi.go`**. Now two conjuncts on
+>   `RequestReplyExchange`'s own godoc: `NOT AMQP` and `routing table`.
+> - **8.4a–f** required the bare word `spring` anywhere in the type's doc. Now the FQN
+>   `org.springframework.integration`, matched with `grep -qF` so the dots are literal.
+> - **11c2** had **one working arm, not two**: `grep -Eq 'per instance'` is case-**sensitive** and the godoc
+>   writes `COUNTED PER INSTANCE`, so the whole gate rested on the single non-ASCII `×` (U+00D7). Adding `-i`
+>   restores the intended redundancy; measured, the gate now survives the ASCII-`x` rewrite.
+> - **8.7** required the literal `QueueChannel` in two **files**, which a passing `// NOTE: QueueChannel.`
+>   satisfies. It is now `go doc` on both symbols, requiring `QueueChannel` **and `ChannelStore`** — the
+>   second conjunct is the machine-checkable form of the review's MAJOR finding (the godoc promised durability
+>   unconditionally when durability belongs to the injected store).
+>   **THE TRAP:** the obvious conjunct here is `MessageChannel`, and it is **vacuous** — `go doc` prints the
+>   **signature**, and `ServeAsync`'s reads `target msgin.MessageChannel`, so that conjunct self-satisfies with
+>   the entire obligation deleted. **Never gate on a word `go doc`'s own signature line prints.** This is the
+>   same shape as round 6's §8.10, which self-satisfied on the declaration it was meant to gate.
+>
+> **Global Constraint 10 is unaffected — none of these ten has a Spec §8.0b counterpart**, and the six that do
+> are untouched and still diff-identical. Spec §8's obligation-1 and obligation-4 evidence cells are updated
+> to cite the gate ids rather than restate commands, which is what Global Constraint 10 asks for anyway.
+
 > **ROUND-7 CORRECTION (X-B8), AS AMENDED BY ROUND 8 (C4/C5) — the gates are pinned PER TASK, and the tasks
 > that turn them green are the tasks that WRITE the godoc.** The block above is RED on the untouched tree. But
 > Task 11 runs **after Task 9.6** (stated at the head of this task), and Task 9.6 writes the very godoc that
@@ -2899,12 +2970,12 @@ Most are RED for the *"symbol does not exist yet"* reason, which `go doc` report
 > obligation 10/11/11a/12/13. **If a gate is RED on arrival, that is a Task 9.6 regression — do not write the
 > godoc here.** Task 11's own RED → GREEN work is the eight checkboxes under "§8.1" onward plus 11c.
 
-- [ ] **§8.10 — `SubscribableChannel`'s godoc cross-references `ExclusiveSubscribable`** (D-J). Without it the
+- [x] **§8.10 — `SubscribableChannel`'s godoc cross-references `ExclusiveSubscribable`** (D-J). Without it the
       optional capability is undiscoverable from its own supertype, and a third-party channel author never
       learns the probe exists — leaving the accept-unknown arm permanent for exactly the fan-out-capable
       channels ADR 0030 §Topology's second topology describes.
       **Written by Task 9.6** → verify with **gate 8.10, §11 block** (expected GREEN on arrival).
-- [ ] **§8.11 — `SingleSubscriber`'s godoc states the END-TO-END definition (D-L revised), requires
+- [x] **§8.11 — `SingleSubscriber`'s godoc states the END-TO-END definition (D-L revised), requires
       INVARIANCE, requires concurrency safety, and forbids blocking/panicking (D-O).** **Five parts (a)–(e)**,
       per Spec §8 obligation 11; the gate asserts **seven phrases independently**. *(Round-8 correction: this
       said "All three, and the gate asserts two of them" — a count left over from before D-L was revised and
@@ -2931,7 +3002,7 @@ Most are RED for the *"symbol does not exist yet"* reason, which `go doc` report
         `SingleSubscriber`, so a wrapper silently opts out of the probe.
       **Written by Task 9.6** (verbatim from ADR 0030 §1) → verify with **gate 8.11, §11 block** — **seven**
       conjuncts, expected GREEN on arrival.
-- [ ] **§8.11a — the same godoc states that EMBEDDING CUTS BOTH WAYS** (D-L; Spec §8 obligation **11a**).
+- [x] **§8.11a — the same godoc states that EMBEDDING CUTS BOTH WAYS** (D-L; Spec §8 obligation **11a**).
       Method promotion is the **hazard** as well as ADR 0030 §5's remedy: a type embedding
       `*channel.DirectChannel` or `*channel.PublishSubscribeChannel` reports on the **embedded** channel even
       when it overrides `Subscribe` with its own fan-out. Compile-proven: `struct{ *PublishSubscribeChannel }`
@@ -2940,7 +3011,7 @@ Most are RED for the *"symbol does not exist yet"* reason, which `go doc` report
       *(Round-8 C1: this obligation had **no checkbox in this task at all**, while the Risks table claimed
       Task 11 owned every one — §8's founding failure mode reproduced inside the fix for it. The gate existed
       in the §11 block from round 7; only the checkbox was missing.)*
-- [ ] **§8.12 — `NewChannelExchange`'s godoc states FOUR outcomes and enumerates `ErrChannelSubscribed`.**
+- [x] **§8.12 — `NewChannelExchange`'s godoc states FOUR outcomes and enumerates `ErrChannelSubscribed`.**
       rejected · accepted-exclusive · accepted-no-probe · **accepted but exclusive only within this process**.
       `ErrChannelSubscribed` is returned unwrapped from `reply.Subscribe` (`endpoint/exchange.go:250`) and is
       absent from the doc's error list (`:221-224`, which names only `ErrNilChannel`,
@@ -2951,7 +3022,7 @@ Most are RED for the *"symbol does not exist yet"* reason, which `go doc` report
       **Written by Task 9.6** → verify with **gate 8.12, §11 block** — **four** conjuncts, expected GREEN on
       arrival. *(The arrow deleted here was the line-counting `grep -c … -ge 4` form that round 7 replaced in
       the block and did not replace here — round-8 C1.)*
-- [ ] **§8.13 — `WithSharedReplyChannel`'s godoc says it SUPPRESSES THE PROBE, not that it confers
+- [x] **§8.13 — `WithSharedReplyChannel`'s godoc says it SUPPRESSES THE PROBE, not that it confers
       shareability.** On a `DirectChannel` the second exchange still gets `ErrChannelSubscribed`; neither the
       option's name nor that sentinel's text hints the option cannot help. *(This wording is only true if the
       guard tests `cfg.allowShared` **first** — see the note in Task 9.6.)*
@@ -2960,14 +3031,14 @@ Most are RED for the *"symbol does not exist yet"* reason, which `go doc` report
 
 **Task 11's own RED → GREEN work starts here.**
 
-- [ ] **§8.1 — name Correlation Identifier.** "Return Address" is present; the *in-process* pattern is never
+- [x] **§8.1 — name Correlation Identifier.** "Return Address" is present; the *in-process* pattern is never
       named. Add it to `endpoint`'s `ChannelExchange`/`doc.go` prose.
       → **gate 8.1, §11 block.**
-- [ ] **§8.3 — the AMQP disclaimer on `RequestReplyExchange`.** Currently **absent workspace-wide**, despite
+- [x] **§8.3 — the AMQP disclaimer on `RequestReplyExchange`.** Currently **absent workspace-wide**, despite
       Spec 014 §6 and ADR 0029 §2 both asserting in the present tense that it exists. The gate requires the hit
       to be in `spi.go`, not merely *somewhere* — that assertion used to live in prose beside a weaker command.
       → **gate 8.3, §11 block.**
-- [ ] **§8.4 — every named behavior type names its Spring equivalent, per type.** Currently only the *package*
+- [x] **§8.4 — every named behavior type names its Spring equivalent, per type.** Currently only the *package*
       docs name Spring; `routing.CorrelationStrategy` and `routing.ReleaseStrategy` do not. This is the
       mitigation that justifies dropping the Spring names (ADR 0029 §4), so it is **not** discharged by a
       package-level mention. **Task 11 writes the two shipped types** (`CorrelationStrategy`,
@@ -2976,7 +3047,7 @@ Most are RED for the *"symbol does not exist yet"* reason, which `go doc` report
       → **gates 8.4a–8.4b, §11 block** (this task) and **gates 8.4c–8.4f** (Task 9's, re-run here as a
       no-regression check). *(The old arrow's `grep -B10 'type <T>' <file>` window is long gone; `go doc`
       needs neither a file name nor a window.)*
-- [ ] **§8.7 — `msghttp.ServeAsync` and `stdlib.NewInbound` state the widened `target` contract.** Neither
+- [x] **§8.7 — `msghttp.ServeAsync` and `stdlib.NewInbound` state the widened `target` contract.** Neither
       godoc mentions that any `MessageChannel` — a durable `QueueChannel`, a `PublishSubscribeChannel`, any
       `OutboundAdapter` — now qualifies, which is the whole user-visible payoff of §5.0 rows 7–8. The gate
       requires **both** files to hit, which is why it is an `&&` of two file-scoped greps rather than one
@@ -2985,7 +3056,7 @@ Most are RED for the *"symbol does not exist yet"* reason, which `go doc` report
 
 ### 11c — Spec 014 §10's unmet multi-instance obligations (CLAUDE.md mandatory)
 
-- [ ] **`channel.WithSingleSubscriber` states it is a SINGLE-PROCESS guard.** ADR 0028 §6.2 requires it in so
+- [x] **`channel.WithSingleSubscriber` states it is a SINGLE-PROCESS guard.** ADR 0028 §6.2 requires it in so
       many words — *"must not be documented as a distributed exclusivity guarantee"* — and the godoc
       (`channel/pubsub.go:66-82`) never mentions the process boundary. Two instances each holding their own
       `PublishSubscribeChannel` still each accept a subscriber.
@@ -2995,7 +3066,7 @@ Most are RED for the *"symbol does not exist yet"* reason, which `go doc` report
       *(Was `grep -A22 'func WithSingleSubscriber' channel/pubsub.go | grep -i …` — **unsatisfiable**: the
       body is one line, so `-A22` read 22 lines of the NEXT declarations. Also note the old text cited the
       godoc as `:69-83`; it is `:66-82`.)*
-- [ ] **`RetryPolicy.MaxAttempts` states the per-instance bound.** `retry.go:37-41` says nothing about
+- [x] **`RetryPolicy.MaxAttempts` states the per-instance bound.** `retry.go:37-41` says nothing about
       topology, so a caller sizing a poison-message threshold behind a load balancer gets `N ×` what they
       asked for. Say: attempts are tracked per instance (`endpoint/attempts.go:26`), so across N nodes the
       effective global bound is `N × MaxAttempts`; this applies **only** to sources without a native
@@ -3027,6 +3098,101 @@ RED on arrival — which the pinning table directly above it contradicts. A "bef
 what round-6's counter-rule 4 wants it to prove; it just is not all-RED.)* A gate with only an "after"
 transcript proves nothing — that is round-6's counter-rule 4, and it is the reason three of these four gates
 shipped decorative. `go vet ./...` clean.
+
+**BOTH TRANSCRIPTS, run 2026-08-11 — recorded HERE, not only in the ledger, because
+`.superpowers/sdd/…/progress.md` is git-ignored and does not survive a fresh clone.** Baseline re-derived at
+`e120d10` (the coordinator's run and the implementer's agreed byte-for-byte). **Both columns are measured
+under the TIGHTENED gate block above**, so the "before" column is what the pre-Task-11 tree scores against the
+gates as they now stand — the honest comparison, and it is unchanged from the pre-tightening run because the
+tightening only removed ways to pass *without* the obligation:
+
+```
+BEFORE (Task 11's RED baseline)          AFTER (all sixteen)
+GREEN: 8.10  GREEN: 8.11  GREEN: 8.11a   GREEN: 8.10  GREEN: 8.11  GREEN: 8.11a
+GREEN: 8.12  GREEN: 8.13  RED:   11c1    GREEN: 8.12  GREEN: 8.13  GREEN: 11c1
+RED:   8.1   RED:   8.3                  GREEN: 8.1   GREEN: 8.3
+RED:   8.4a  RED:   8.4b                 GREEN: 8.4a  GREEN: 8.4b
+GREEN: 8.4c  GREEN: 8.4d                 GREEN: 8.4c  GREEN: 8.4d
+GREEN: 8.4e  GREEN: 8.4f                 GREEN: 8.4e  GREEN: 8.4f
+RED:   8.7   RED:   11c2                 GREEN: 8.7   GREEN: 11c2
+```
+
+**Per-gate mutation kill — the check that a gate is not merely green.** Reverting each file to its
+**pre-Task-11** state (`928cbba^`) and re-running the block; a gate that survives its own file's reversion
+would be green for some other reason:
+
+```
+revert endpoint/doc.go                  -> RED: 8.1
+revert spi.go                           -> RED: 8.3
+revert routing/aggregator.go            -> RED: 8.4a 8.4b
+revert adapter/http/inbound.go          -> RED: 8.7
+revert adapter/http/stdlib/inbound.go   -> RED: 8.7
+revert channel/pubsub.go                -> RED: 11c1
+revert retry.go                         -> RED: 11c2
+all restored                            -> 0 RED
+```
+
+Every gate dies to exactly its own edit and nothing else, and **8.7 dies to *either* of its two files** —
+which is the property its `&&` form exists to have, now measured rather than assumed.
+
+**The comments-only property was PROBED, not asserted.** The check is two greps over `git diff -U0 -- '*.go'`
+for added and removed non-comment lines. Both arms print empty on the real diff — but an empty result from an
+unrun check is indistinguishable from a pass, which is exactly how this program's vacuous gates were born, so
+the check was made to fail on demand first: planting `var probeSentinel = 1` and deleting the
+`Backoff BackoffStrategy` field made the two arms report `+var probeSentinel = 1` and
+`-\tBackoff     BackoffStrategy` respectively; reverting returned both to empty. *(The removed-arm's first
+form, `grep -v '^---'`, **errored** — BSD `grep` reads the leading `---` as a flag bundle and the pipeline
+"passed" without running. It is `grep -v -e '---'`. This is the third gate in this program to pass by not
+executing.)*
+
+**THE REVIEW ROUND (2026-08-11) — what the adversarial review caught that 16/16 GREEN did not.** The task was
+green, comments-only and mutation-killed on every gate, and still shipped **a false promise in a public
+godoc**: `adapter/http/stdlib/inbound.go` and `adapter/http/inbound.go` both said a `QueueChannel` parks the
+request **durably** and it therefore *"survives the instance that accepted it"*. Durability is a property of
+the injected `ChannelStore`, not of `QueueChannel` — `adapter/memory.QueueStore`, the **default**, states
+*"LOST on process exit (at-most-once across a restart)"* at `:16-19`, and `channel/doc.go:24-26` already said
+*"only as far as its ChannelStore reaches"*. **Every upstream artifact carried the qualifier**
+([ADR 0028](../adrs/0028-channel-interface-segregation.md) §4, Spec 014 §5.0) and only the new godoc dropped
+it. That is precisely the class CLAUDE.md's multi-instance rule forbids — *"never let an in-process construct
+silently leak into a contract a distributed deployment would break"* — **introduced by 11c, the sub-task that
+exists to enforce that rule**. It is now conditioned at both entry points, and gate 8.7's `ChannelStore`
+conjunct is the machine-checkable form of the fix. Four smaller inaccuracies went with it: the retry godoc
+attributed the tracker bypass to `NativeReliability` (a two-boolean capability that obliges nobody to stamp
+`HeaderDeliveryCount`, which is what `endpoint/consumer.go:854-859` actually tests), called the tracker
+per-process when it is **per-`NewConsumer`**, stated `N × MaxAttempts` as an exact bound when TTL eviction
+makes it an upper-bound approximation, and named the **unexported** `attemptTracker` in a public godoc; and
+`endpoint/doc.go` read as though the minted correlation id leaks onward, where `OutboundGateway` restores the
+caller's own id and strips the minted one (`gateway.go:66-70`).
+
+**The lesson, and it is the same one three times over: a gate proves only what it is anchored to.** Ten of
+these sixteen gates were satisfiable without their obligation (see the review-round block above), and the
+first repair of 8.1 **reproduced the defect its own prose had just named**. Two traps are worth carrying
+forward: `--include='*.go'` matches `_test.go`, and `go doc` prints the **signature**, so any conjunct naming
+a parameter type self-satisfies.
+
+> **AND A FOURTH, WORSE ONE — THE GATES MEASURE THE WORKING TREE, NOT THE COMMIT.** The first amend of this
+> task **silently dropped three files' work** (`spi.go`, `routing/aggregator.go`, `channel/pubsub.go` reverted
+> to pre-Task-11) and **every one of the sixteen gates still reported GREEN**, because `go doc` and `grep`
+> read the filesystem while the artifact being shipped is the commit. Cause: `git checkout <sha> -- <file>`,
+> used by the per-file mutation-kill loop, writes to the worktree **and the index**; restoring the worktree
+> with `cp` does not unstage, so a later `git add` of only the changed files plus `--amend` committed a stale
+> index. It was caught only by reading `git status --short` **after** the amend and seeing three files still
+> modified, then confirmed with `git show <sha>:spi.go | grep -c 'NOT AMQP'` → **0** against a worktree
+> reading **1**, and by stashing the worktree and re-running the block against the commit → **4 RED**.
+> **Standing rules:** (1) after any `git checkout <sha> -- <file>`, also `git restore --staged <file>`, or run
+> mutation tests in a throwaway worktree; (2) **no gate result may be cited as evidence about a commit until
+> `worktree == HEAD` is proven** — `git status --short` empty *and* `git diff HEAD --stat` empty — or the gate
+> is run on a pristine checkout; (3) `git status --short` after an amend is a required check. The final commit
+> was verified this way, with both emptiness proofs pasted above the transcript.
+
+**Other gates, same run:** `gofmt -l .` empty · `go vet ./...` clean · `CGO_ENABLED=0 go build ./...` ok ·
+`golangci-lint run ./...` → 0 issues ·
+package-doc loop silent · docs-link ARM 1 = only the two documented false positives, ARM 2 clean ·
+**8/8 modules green standalone** under `GOWORK=off … -race -shuffle=on` · root 11/11 · coverage unmoved on
+every touched package (root 95.5%, `endpoint` 99.2%, `routing`/`channel`/`adapter/http`/`adapter/http/stdlib`
+100.0%). `gofumpt -l .` reports **43 files on both sides of the diff** — a pre-existing repo-wide condition,
+zero delta; its one hit in a touched file (`adapter/http/inbound.go`) is at `:74`, far from this task's edit,
+and **CI gates on `gofmt`, not `gofumpt`** (`ci.yml:71`).
 
 **Commit:** `docs(core): package docs and the godoc obligations Spec 014 §8/§10 require`
 

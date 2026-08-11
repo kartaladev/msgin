@@ -35,6 +35,30 @@ import (
 //
 // See WithProducerRetry, WithProducerRetryBudget and ADR 0025 §1.1.
 type RetryPolicy struct {
+	// MaxAttempts is COUNTED PER INSTANCE, not across the deployment. What the
+	// consumer actually tests is THE PRESENCE OF THE HeaderDeliveryCount HEADER
+	// on the delivery: carry one and that native count wins. Carry none and the
+	// count comes from an in-memory attempt tracker owned by the Consumer —
+	// one tracker per NewConsumer call, so even two Consumers draining the same
+	// source in the SAME process keep independent counts. (A source stamping
+	// that header typically also reports NativeReliability.NativeRedelivery,
+	// but that capability is two booleans and obliges nobody to stamp
+	// anything: a source claiming native redelivery while omitting the header
+	// still falls back to the tracker.)
+	//
+	// A message redelivered to a DIFFERENT node therefore starts its count at
+	// zero, so behind a load balancer with N nodes the effective global bound
+	// is N × MaxAttempts, and a caller sizing a poison-message threshold
+	// silently gets N times what they asked for. Read that as an UPPER-BOUND
+	// APPROXIMATION rather than an exact bound: the tracker also evicts ids
+	// idle for longer than endpoint.WithAttemptTTL, so a message bouncing among
+	// the other nodes can age out of a given node's map and restart its count
+	// there. A source that DOES stamp HeaderDeliveryCount is unaffected: the
+	// broker counts, and every node reads the same number.
+	//
+	// The distributed answer is that native redelivery count, or a shared
+	// idempotency/dedup store keyed by message id — not a smaller MaxAttempts,
+	// which only moves the error (Spec 014 §10).
 	MaxAttempts int
 	Backoff     BackoffStrategy
 	DeadLetter  OutboundAdapter

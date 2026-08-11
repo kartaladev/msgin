@@ -80,6 +80,22 @@ func WithPubSubLogger(l *slog.Logger) PubSubOption {
 // that mis-wiring into a typed error at Subscribe time instead of a godoc
 // warning nobody reads (ADR 0028 §6.2).
 //
+// THIS IS A SINGLE-PROCESS GUARD, exactly like [DirectChannel]'s, and it MUST
+// NOT be read as a distributed exclusivity guarantee. The subscriber slot is a
+// field on this Go value: N instances behind a load balancer each hold their
+// OWN PublishSubscribeChannel, so each one independently accepts its own
+// subscriber and none of them can see — let alone reject — the other N−1. What
+// the option guarantees is "at most one subscriber on THIS channel value in
+// THIS process", never "at most one subscriber across the deployment".
+//
+// The distributed answer is the Return Address pattern (EIP ch.5): carry the
+// reply destination in the request and make that destination private to the
+// subscribing process — a per-instance NATS _INBOX subject, an exclusive
+// auto-delete AMQP reply queue — so exclusivity comes from the broker's own
+// topology rather than from a local flag. See [msgin.ExclusiveSubscribable],
+// whose SingleSubscriber probe is the end-to-end predicate a broker-backed
+// channel must answer honestly (ADR 0028 §6.2; Spec 014 §10).
+//
 // Passed to NewPubSub it applies to every topic channel the registry creates,
 // making each topic single-subscriber.
 func WithSingleSubscriber() PubSubOption { return func(c *pubSubConfig) { c.single = true } }

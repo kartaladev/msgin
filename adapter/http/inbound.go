@@ -108,6 +108,25 @@ func recoverHandler(w *responseTracker, cfg *Config, op string) {
 // authorization, NO CSRF and NO CORS defense either; see the
 // adapter/http/stdlib package godoc.
 //
+// target may be ANY [msgin.MessageChannel]. Since ADR 0028 narrowed that
+// interface to Send alone, the set of things that qualify is every channel the
+// library ships and every [msgin.OutboundAdapter]: a channel.QueueChannel, a
+// channel.PublishSubscribeChannel, a channel.DirectChannel, or an adapter
+// writing straight out to SQL or a broker. The practical payoff is that an HTTP
+// request can be PARKED IN A QUEUE CHANNEL — Send enqueues, the handler returns
+// 202, and a separate consumer drains the queue — instead of requiring a
+// synchronous subscriber attached to a DirectChannel on this very goroutine.
+//
+// WHETHER THAT PARKED REQUEST SURVIVES THE INSTANCE IS A PROPERTY OF THE
+// INJECTED [msgin.ChannelStore], NOT OF THE QUEUE. Decoupling alone buys
+// nothing across instances — an in-memory queue is just as decoupled and does
+// not survive. Back the channel.QueueChannel with a DURABLE, SHARED
+// ChannelStore (the adapter/database/sql one) and the request outlives the
+// instance that accepted it, so a peer behind the load balancer can drain it.
+// Back it with the library's default in-memory store (adapter/memory.QueueStore)
+// and the buffered request is LOST on process exit — at-most-once across a
+// restart, and reachable by no other instance (Spec 014 §5.0).
+//
 // target is assumed non-nil: ServeAsync is a framework-neutral handler core
 // meant to be wrapped by a constructor (e.g. adapter/http/stdlib.NewInbound)
 // that validates it before ever building an http.Handler around this function.

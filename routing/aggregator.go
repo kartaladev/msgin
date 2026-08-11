@@ -20,13 +20,22 @@ type aggregatorConfig struct {
 	clock     clockwork.Clock
 }
 
-// CorrelationStrategy derives a message's group key. A returned error is a
-// correlation failure: the message is routed to the invalid-message channel — or
-// to the dead-letter sink when none is configured ([msgin.Permanent] states all
-// three arms) — rather than grouped.
+// CorrelationStrategy derives a message's group key. It is one of the two named
+// behavior types behind the Aggregator pattern (EIP ch. 7); Spring Integration
+// calls the equivalent contract
+// org.springframework.integration.aggregator.CorrelationStrategy.
+//
+// A returned error is a correlation failure: the message is routed to the
+// invalid-message channel — or to the dead-letter sink when none is configured
+// ([msgin.Permanent] states all three arms) — rather than grouped.
 type CorrelationStrategy func(m msgin.Message[any]) (string, error)
 
 // ReleaseStrategy decides whether a group is complete and ready to aggregate.
+// It is the other named behavior type behind the Aggregator pattern (EIP
+// ch. 7); Spring Integration calls the equivalent contract
+// org.springframework.integration.aggregator.ReleaseStrategy — which returns a
+// BARE BOOLEAN, where this one is deliberately fallible (decision D-E, ADR 0029
+// §3), so a strategy that cannot decide says so instead of guessing "not yet".
 //
 // It is fallible: a strategy that reads member headers or evaluates a
 // runtime-defined rule can fail on the group's data, and that failure must be

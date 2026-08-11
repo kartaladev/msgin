@@ -105,6 +105,14 @@ type TopicSubscriber interface {
 // in-process implementation; a future HTTP/NATS adapter implements Exchange for
 // a real external round-trip, so both gateway façades work over it unchanged.
 //
+// "EXCHANGE" HERE IS THE EIP REQUEST-REPLY OPERATION — send a request, receive
+// the reply correlated to it — and is NOT AMQP's exchange. An AMQP exchange is a
+// broker-side routing table that binds routing keys to queues; it is a topology
+// object you declare on a broker. This SPI names an operation a gateway
+// delegates to, which is a different kind of thing entirely. An AMQP-backed
+// adapter would implement RequestReplyExchange OVER an AMQP exchange — publish
+// to it, wait on a reply queue — rather than BE one (ADR 0029 §2).
+//
 // Contract: an implementation MUST release every piece of request-scoped state
 // it acquires — a correlator entry, an in-flight connection, a response body —
 // on EVERY exit path, including a panic unwinding out of a downstream call.
