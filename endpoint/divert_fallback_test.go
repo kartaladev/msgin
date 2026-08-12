@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -518,6 +519,125 @@ func TestDivertTerminalShutdownCancellationNacks(t *testing.T) {
 	assert.Contains(t, buf.String(), "aborted by shutdown", "the WARN says the divert was cut short, not refused")
 	assert.NotContains(t, buf.String(), "discarding invalid message",
 		"the single-shot discard WARN must not claim a refusal the sink never made")
+}
+
+// TestDivertTerminalHookErrorSignalsSinkDownDiscard pins the ONE
+// machine-detectable difference between a HEALTHY divert and D-P's single-shot
+// DISCARD: the error OnInvalidMessage receives.
+//
+// The regression it guards against is a silent, unobservable message LOSS. A
+// caller who wires WithInvalidMessageSink at a remote store AND
+// Hooks.OnInvalidMessage at their metrics has, on paper, full coverage of the
+// invalid path. But when that sink is down, D-P discards the message
+// single-shot: no OnRetry, no OnDeadLetter, an Ack, and — before this contract —
+// an OnInvalidMessage indistinguishable from the healthy divert two lines above
+// it. Same message, same error, no extra hook. The loss existed only as a WARN
+// string, so nothing a caller can count or alert on ever moved.
+//
+// The signal is deliberately a JOIN, not a new sentinel: errors.Is(hookErr,
+// cause) stays TRUE, so every consumer classifying on the cause is unaffected,
+// while errors.Is(hookErr, <the sink's error>) becomes the positive test for
+// "we lost one". The nil-sink arm keeps the BARE cause on purpose — no sink
+// configured is a STATIC misconfiguration, knowable at construction, not the
+// transient mid-flight loss this contract is about.
+func TestDivertTerminalHookErrorSignalsSinkDownDiscard(t *testing.T) {
+	sinkErr := errors.New("invalid-sink-down")
+	cause := msgin.Permanent(msgin.ErrNilFunc)
+
+	type testCase struct {
+		name string
+		// sink is WithInvalidMessageSink; nil means the option is not passed, so
+		// with no DeadLetter either the divert reaches the nil-sink discard arm.
+		sink   *recordingSink
+		assert func(t *testing.T, hookErr error)
+	}
+
+	cases := []testCase{
+		{
+			name: "healthy sink fires the hook with the BARE cause",
+			sink: &recordingSink{},
+			assert: func(t *testing.T, hookErr error) {
+				require.Error(t, hookErr)
+				assert.ErrorIs(t, hookErr, msgin.ErrNilFunc, "the classification cause reaches the hook")
+				assert.Equal(t, cause.Error(), hookErr.Error(),
+					"a successful divert must NOT join anything onto the cause")
+				assert.NotErrorIs(t, hookErr, sinkErr, "no sink error exists on this arm")
+			},
+		},
+		{
+			name: "sink DOWN fires the hook with the cause JOINED to the sink error",
+			sink: &recordingSink{failWith: sinkErr},
+			assert: func(t *testing.T, hookErr error) {
+				require.Error(t, hookErr)
+				assert.ErrorIs(t, hookErr, msgin.ErrNilFunc,
+					"the join is non-breaking: a caller classifying on the cause still matches")
+				assert.ErrorIs(t, hookErr, sinkErr,
+					"THE SIGNAL: the discarded-because-the-sink-refused-it case is machine-detectable")
+				assert.NotEqual(t, cause.Error(), hookErr.Error(),
+					"the hook error must differ from the healthy-divert one, or the loss is invisible")
+			},
+		},
+		{
+			name: "no sink configured fires the hook with the BARE cause",
+			assert: func(t *testing.T, hookErr error) {
+				require.Error(t, hookErr)
+				assert.ErrorIs(t, hookErr, msgin.ErrNilFunc)
+				assert.Equal(t, cause.Error(), hookErr.Error(),
+					"a static misconfiguration is not the transient loss the join reports")
+				assert.NotErrorIs(t, hookErr, sinkErr)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var (
+				mu      sync.Mutex
+				fired   int
+				hookErr error
+			)
+			st := &settle{}
+			src := &scriptedSource{deliveries: []msgin.Delivery{
+				newSettleDelivery(order{ID: "a"}, "m1", st),
+			}}
+			opts := []endpoint.ConsumerOption[order]{
+				endpoint.WithHooks[order](msgin.Hooks{
+					OnInvalidMessage: func(_ context.Context, _ msgin.Message[any], err error) {
+						mu.Lock()
+						defer mu.Unlock()
+						fired++
+						hookErr = err
+					},
+				}),
+				endpoint.WithLogger[order](slog.New(slog.NewTextHandler(&lockedBuffer{}, nil))),
+			}
+			if tc.sink != nil {
+				opts = append(opts, endpoint.WithInvalidMessageSink[order](tc.sink))
+			}
+
+			c, err := endpoint.NewConsumer[order](src, func(context.Context, msgin.Message[order]) error {
+				return cause
+			}, opts...)
+			require.NoError(t, err)
+
+			ctx, cancel := context.WithCancel(t.Context())
+			done := make(chan error, 1)
+			go func() { done <- c.Run(ctx) }()
+			require.Eventually(t, func() bool { acks, _, _ := st.snapshot(); return acks >= 1 },
+				3*time.Second, 2*time.Millisecond, "the message must settle terminally")
+			cancel()
+			require.ErrorIs(t, <-done, context.Canceled)
+
+			acks, nacks, _ := st.snapshot()
+			assert.Equal(t, 1, acks, "every arm of the invalid path Acks")
+			assert.Zero(t, nacks, "D-P: the discard is single-shot, never a Nack")
+
+			mu.Lock()
+			defer mu.Unlock()
+			require.Equal(t, 1, fired, "OnInvalidMessage fires exactly once")
+			tc.assert(t, hookErr)
+		})
+	}
 }
 
 // TestDivertInvalidFallbackUnderNativeDeadLetter pins the DELIBERATE absence of

@@ -965,7 +965,7 @@ func (c *consumer[T]) warnInvalidFallback(id string) {
 //   - sink.Send FAILS (ctx still live) → the attempt is SINGLE-SHOT (D-P): log
 //     a WARN naming BOTH the classification cause (via causeForLog, which keeps
 //     a caller-supplied codec's free text out of the log) and the sink error,
-//     fire terminalHook with the UNREDACTED cause, Ack
+//     fire terminalHook with the UNREDACTED cause JOINED to the sink error, Ack
 //     — i.e. fall through to ADR 0007 D7's discard. There is deliberately no
 //     Nack and no OnRetry: requeueing a permanent message against a down sink
 //     is the unbounded-redelivery trap D7's own reasoning rejects, and no
@@ -990,10 +990,25 @@ func (c *consumer[T]) warnInvalidFallback(id string) {
 // already shutting down, which is bounded by C1 and cannot loop. terminalHook
 // deliberately does not fire — no terminal event happened.
 //
+// THE SEND-FAILURE ARM IS THE ONLY ONE WHOSE HOOK ERROR IS NOT THE BARE CAUSE.
+// Everything D-P's discard does — Ack, one terminal hook, no OnRetry, no
+// OnDeadLetter — is what a HEALTHY divert does, so at the hook the two are
+// indistinguishable: same message, same cause. A caller who wired both an
+// invalid-message sink and OnInvalidMessage would see a sink outage as a
+// perfectly ordinary stream of diverts while every message in the window was
+// discarded, the loss recorded only in a WARN string nothing can count. So that
+// arm fires errors.Join(cause, sendErr): errors.Is against the CAUSE still
+// matches — the join is deliberately non-breaking for anyone classifying on it
+// — while errors.Is against the SINK's error is the machine-detectable "we lost
+// one". The nil-sink arm keeps the bare cause on purpose: no sink configured is
+// a STATIC misconfiguration, knowable at construction, not a transient
+// mid-flight loss, and its WARN already names the option to set.
+//
 // The bool return gates the caller's tracker eviction (D8) and is therefore
 // gated on the Ack succeeding in every settling arm, mirroring the dispatch
 // success path: a failed source-Ack must not drop the attempt count.
 func (c *consumer[T]) divertTerminal(ctx context.Context, sink msgin.OutboundAdapter, d msgin.Delivery, terminalHook func(context.Context, msgin.Message[any], error), cause error) bool {
+	hookErr := cause
 	if sink == nil {
 		// No sink to divert to: discarding is the terminal invalid event (ADR
 		// 0007 D7). One line per message — the id is the only record the message
@@ -1027,8 +1042,11 @@ func (c *consumer[T]) divertTerminal(ctx context.Context, sink msgin.OutboundAda
 		// refused it.
 		c.logger.Warn("msgin: discarding invalid message; the sink rejected it and the divert is single-shot",
 			"id", d.Msg.ID(), "cause", causeForLog(cause), "err", err)
+		// The join is this discard's ONLY machine-detectable record (see above):
+		// the WARN is a string, and no other hook fires.
+		hookErr = errors.Join(cause, err)
 	}
-	c.safeFire(terminalHook, ctx, d.Msg, cause)
+	c.safeFire(terminalHook, ctx, d.Msg, hookErr)
 	ackErr := c.safeAck(ctx, d)
 	c.finish(ackErr)
 	return ackErr == nil

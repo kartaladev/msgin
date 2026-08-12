@@ -80,6 +80,22 @@ func (p RetryPolicy) Validate() error {
 // Hooks are optional, nil-safe callbacks fired on the operationally important
 // settlement events (spec §7 observability). The error argument carries the
 // triggering error (nil on a successful Ack).
+//
+// ONE EXCEPTION, ON OnInvalidMessage. An invalid message is diverted to the
+// invalid-message sink (or, failing that, the dead-letter sink) and the divert
+// is SINGLE-SHOT: when a CONFIGURED sink refuses the message, it is discarded
+// rather than retried, and OnInvalidMessage is the only event that fires — no
+// OnRetry, no OnDeadLetter. To keep that discard from being indistinguishable
+// from a healthy divert, OnInvalidMessage then receives the triggering error
+// JOINED (errors.Join) with the sink's send failure.
+//
+// The join is safe to ignore: errors.Is against the triggering error still
+// matches, so a callback that classifies on it behaves exactly as before. It is
+// also the ONLY machine-detectable signal that a message was lost here — a
+// callback that wants to count or alert on the loss tests errors.Is against the
+// sink's own error, or simply compares the received error to the triggering one.
+// A successful divert, and the case where no sink is configured at all, both
+// pass the bare triggering error.
 type Hooks struct {
 	OnRetry          func(ctx context.Context, msg Message[any], err error)
 	OnDeadLetter     func(ctx context.Context, msg Message[any], err error)

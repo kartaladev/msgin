@@ -131,10 +131,14 @@ func (c *consumer[T]) clampExcess(settleCtx context.Context, rows []msgin.Delive
 //
 // Deliberately NOT resilience.ExponentialBackoff: that type is public and
 // unconstrained, so it carries float/NaN/overflow guards this call site cannot
-// need. pollInterval is validated > 0 (ErrInvalidPollInterval) and the result is
-// hard-capped at maxPollErrorBackoff (30s), so the doubling is bounded to at most
-// six iterations. Keeping it local keeps endpoint free of any subpackage import
-// (Spec 014 decision D-A).
+// need. pollInterval is validated > 0 (ErrInvalidPollInterval) and the loop is
+// bounded TWICE — by n, and by its own `d < maxPollErrorBackoff` guard, which
+// stops the doubling the moment d reaches the 30s cap. So d never exceeds just
+// under 2*maxPollErrorBackoff before the loop exits, whatever pollInterval is:
+// the six iterations the 1s default happens to need are NOT the bound (a
+// WithPollInterval(1ns) consumer takes ~35), and no pollInterval a caller can
+// set makes the doubling overflow. Keeping it local keeps endpoint free of any
+// subpackage import (Spec 014 decision D-A).
 func (c *consumer[T]) pollErrorBackoff(n int) time.Duration {
 	d := c.pollInterval
 	for i := 1; i < n && d < maxPollErrorBackoff; i++ {
