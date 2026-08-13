@@ -81,6 +81,13 @@ func Predicate[A any](expression string) (routing.Predicate[A], error) {
 // expr.RouteFunc[Order]("…", routes). Note the routes map is a second
 // parameter: this provider's shape is deliberately not uniform with the others.
 //
+// The key is read BY KIND: the expression is compiled with a string-KIND
+// constraint, so a named string type (type Region string) is a valid key and
+// routes on its underlying text. A result that is not of string kind — only
+// reachable through header("k"), which is typed any and so cannot be rejected
+// at compile time — is [msgin.ErrPayloadType] rather than a silent route on the
+// empty key.
+//
 // A non-A payload is [msgin.ErrPayloadType]; an evaluation failure carries the
 // source expression text. Same trade-offs and security posture as [Predicate].
 func RouteFunc[A any](expression string, routes map[string]msgin.MessageChannel) (routing.RouteFunc, error) {
@@ -107,7 +114,10 @@ func RouteFunc[A any](expression string, routes map[string]msgin.MessageChannel)
 		if err != nil {
 			return nil, err
 		}
-		key, _ := out.(string)  // AsKind(String) guarantees a string result
+		key, err := stringResult(expression, out)
+		if err != nil {
+			return nil, err
+		}
 		return routes[key], nil // miss -> nil -> NewRouter's default/ErrNoRoute handling
 	}, nil
 }
@@ -206,6 +216,14 @@ func SplitFunc[A, B any](expression string) (routing.SplitFunc[A, B], error) {
 // A IS NOT INFERABLE from a string argument, so instantiate it explicitly —
 // expr.Correlation[Order]("…").
 //
+// The key is read BY KIND: the compile-time constraint is on the string KIND,
+// so a named string type (type Region string) is a valid correlation key and
+// correlates on its underlying text. A result that is not of string kind — only
+// reachable through header("k"), which is typed any and so cannot be rejected
+// at compile time — is [msgin.ErrPayloadType], NOT ErrNoCorrelation: a
+// wrongly-typed key is a type fault and must not be misreported as a missing
+// one.
+//
 // At each call the message is asserted to A (a non-A payload is
 // [msgin.ErrPayloadType]) and the expression evaluated. An EMPTY evaluated key
 // is Permanent([msgin.ErrNoCorrelation]) rather than a silently-empty group
@@ -229,7 +247,10 @@ func Correlation[A any](expression string) (routing.CorrelationStrategy, error) 
 		if err != nil {
 			return "", err
 		}
-		key, _ := out.(string) // AsKind(String) guarantees a string
+		key, err := stringResult(expression, out)
+		if err != nil {
+			return "", err
+		}
 		if key == "" {
 			return "", msgin.Permanent(msgin.ErrNoCorrelation)
 		}

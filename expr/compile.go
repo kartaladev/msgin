@@ -107,6 +107,31 @@ func resultTypeError(expression string, got, want any) error {
 		msgin.ErrPayloadType, got, want, expression)
 }
 
+// stringResult reads a string-typed provider result (a routing key, a
+// correlation key) out of an evaluated expression value.
+//
+// It extracts BY KIND, not by an exact `out.(string)` assertion, because
+// outputString compiles with expr.AsKind(reflect.String) — a KIND constraint.
+// A named string type (type Region string) therefore compiles and evaluates
+// successfully, and an exact assertion would silently yield "": a routing key
+// of "" misses every route and the message diverts to the default channel or
+// ErrNoRoute with NO diagnostic, and a correlation key of "" is misreported as
+// ErrNoCorrelation. Accepting the named type is the intended contract; the
+// exact assertion was what was out of step.
+//
+// A non-string-kind result is still possible — header("k") is typed any, so
+// AsKind cannot reject it at compile time — and is reported as
+// msgin.ErrPayloadType via resultTypeError. A nil result lands here too:
+// reflect.ValueOf(nil).Kind() is reflect.Invalid, so it takes the error branch
+// rather than degrading into an empty key.
+func stringResult(expression string, out any) (string, error) {
+	rv := reflect.ValueOf(out)
+	if rv.Kind() != reflect.String {
+		return "", resultTypeError(expression, out, "")
+	}
+	return rv.String(), nil
+}
+
 // groupMember is one group member as seen by a group-scoped expression: the
 // typed payload and a header(key) accessor, matching messageEnv's
 // single-message shape (a raw msgin.Message[A] is unusable here — its Header

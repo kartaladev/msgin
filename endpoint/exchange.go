@@ -343,6 +343,14 @@ func NewChannelExchange(request msgin.MessageChannel, reply msgin.SubscribableCh
 		// returns (nil, nil) breaks Subscribe's contract. Reject it here, where the
 		// offending input is still named, instead of letting Close nil-deref on
 		// e.replySub.Cancel() much later (CLAUDE.md: never panic on caller input).
+		//
+		// Rejecting does NOT undo the subscription: Subscribe has already
+		// registered e.receiver(), and the (nil, nil) return denied us the handle
+		// needed to cancel it, so the receiver stays registered for the life of
+		// that channel — holding, on a DirectChannel-style sink, its single
+		// subscriber slot. That residue is unavoidable from here and is the SPI
+		// violation's cost, not something this guard can contain; what the guard
+		// does contain is the deferred nil-deref and the half-built exchange.
 		return nil, msgin.ErrNilSubscription
 	}
 	e.replySub = sub

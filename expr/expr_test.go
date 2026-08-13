@@ -24,6 +24,16 @@ type exprOrder struct {
 	Currency string
 }
 
+// exprRegion is a NAMED string type — reflect.Kind is String, but the dynamic
+// type is expr_test.exprRegion, NOT string. compile's AsKind(reflect.String)
+// accepts it (kind, not type), so RouteFunc/Correlation must extract the key
+// by kind too; an exact `out.(string)` assertion silently yields "".
+type exprRegion string
+
+// exprRegional is the payload carrying a named-string field, the shape that
+// exposed the silent-misroute bug: payload.Region evaluates to an exprRegion.
+type exprRegional struct{ Region exprRegion }
+
 // exprItem is the element type SplitFunc fans a batch's Items into.
 type exprItem struct{ Name string }
 
@@ -736,6 +746,54 @@ func TestRouteFunc(t *testing.T) {
 			},
 		},
 		{
+			name: "a NAMED string key type routes to the mapped channel, not to the default",
+			assert: func(t *testing.T) {
+				eu, def := &collector{}, &collector{}
+				// payload.Region is an exprRegion, not a string: AsKind(String)
+				// admits it at compile time, so the key must be read by KIND.
+				// An exact out.(string) assertion yields "" -> routes[""] is nil
+				// -> the message SILENTLY lands in the default channel.
+				pick, err := expr.RouteFunc[exprRegional]("payload.Region",
+					map[string]msgin.MessageChannel{"EU": eu})
+				require.NoError(t, err)
+				r := routing.NewRouter(pick, routing.WithDefaultChannel(def))
+				require.NoError(t, r.Handle(t.Context(), msgin.New[any](exprRegional{Region: "EU"})))
+				require.Equal(t, 1, eu.count(), "a named string type is a valid routing key")
+				require.Zero(t, def.count(), "a silent misroute to the default is the bug under test")
+			},
+		},
+		{
+			name: "a non-string-KIND result is ErrPayloadType naming the expression",
+			assert: func(t *testing.T) {
+				eu := &collector{}
+				// header() is typed `any`, so AsKind(String) cannot reject it at
+				// compile time; the result type is only known per message.
+				const src = `header("region")`
+				pick, err := expr.RouteFunc[exprOrder](src, map[string]msgin.MessageChannel{"EU": eu})
+				require.NoError(t, err)
+				_, err = pick(t.Context(), msgin.New[any](exprOrder{},
+					msgin.WithHeaders(map[string]any{"region": 42})))
+				require.ErrorIs(t, err, msgin.ErrPayloadType)
+				require.True(t, msgin.IsPermanent(err))
+				require.ErrorContains(t, err, "expr result int is not string")
+				require.ErrorContains(t, err, fmt.Sprintf("(expression %q)", src))
+			},
+		},
+		{
+			name: "a nil result is ErrPayloadType, not an empty routing key",
+			assert: func(t *testing.T) {
+				eu := &collector{}
+				// A missing header evaluates to a nil interface;
+				// reflect.ValueOf(nil).Kind() is Invalid, which must take the
+				// error branch rather than degrade into routes[""].
+				pick, err := expr.RouteFunc[exprOrder](`header("absent")`,
+					map[string]msgin.MessageChannel{"EU": eu})
+				require.NoError(t, err)
+				_, err = pick(t.Context(), msgin.New[any](exprOrder{}))
+				require.ErrorIs(t, err, msgin.ErrPayloadType)
+			},
+		},
+		{
 			name: "miss with default routes to default; without default is ErrNoRoute",
 			assert: func(t *testing.T) {
 				eu, def := &collector{}, &collector{}
@@ -887,6 +945,61 @@ func TestCorrelation(t *testing.T) {
 				require.Error(t, err)
 				require.NotErrorIs(t, err, msgin.ErrNoCorrelation)
 				requireNamesExpression(t, err, src)
+			},
+		},
+		{
+			name: "a NAMED string key type yields that key, not ErrNoCorrelation",
+			assert: func(t *testing.T) {
+				// payload.Region is an exprRegion, not a string. An exact
+				// out.(string) assertion yields "", which then trips the
+				// empty-key arm and misreports a correlatable message as
+				// Permanent(ErrNoCorrelation) — the WRONG cause.
+				corr, err := expr.Correlation[exprRegional]("payload.Region")
+				require.NoError(t, err)
+				key, err := corr(msgin.New[any](exprRegional{Region: "EU"}))
+				require.NoError(t, err)
+				require.Equal(t, "EU", key)
+			},
+		},
+		{
+			name: "a plain string key type yields that key",
+			assert: func(t *testing.T) {
+				corr, err := expr.Correlation[exprGroupItem]("payload.Region")
+				require.NoError(t, err)
+				key, err := corr(msgin.New[any](exprGroupItem{Region: "EU"}))
+				require.NoError(t, err)
+				require.Equal(t, "EU", key)
+			},
+		},
+		{
+			name: "a non-string-KIND result is ErrPayloadType, not ErrNoCorrelation",
+			assert: func(t *testing.T) {
+				// header() is typed `any`, so AsKind(String) cannot reject it at
+				// compile time; the result type is only known per message.
+				const src = `header("tenant")`
+				corr, err := expr.Correlation[exprGroupItem](src)
+				require.NoError(t, err)
+				_, err = corr(msgin.New[any](exprGroupItem{},
+					msgin.WithHeaders(map[string]any{"tenant": 42})))
+				require.ErrorIs(t, err, msgin.ErrPayloadType)
+				require.NotErrorIs(t, err, msgin.ErrNoCorrelation,
+					"a wrongly-typed key is a type fault, not a missing correlation")
+				require.True(t, msgin.IsPermanent(err))
+				require.ErrorContains(t, err, "expr result int is not string")
+				require.ErrorContains(t, err, fmt.Sprintf("(expression %q)", src))
+			},
+		},
+		{
+			name: "a nil result is ErrPayloadType, not an empty key",
+			assert: func(t *testing.T) {
+				// A missing header evaluates to a nil interface;
+				// reflect.ValueOf(nil).Kind() is Invalid, which must take the
+				// error branch rather than degrade into the empty-key arm.
+				corr, err := expr.Correlation[exprGroupItem](`header("absent")`)
+				require.NoError(t, err)
+				_, err = corr(msgin.New[any](exprGroupItem{}))
+				require.ErrorIs(t, err, msgin.ErrPayloadType)
+				require.NotErrorIs(t, err, msgin.ErrNoCorrelation)
 			},
 		},
 		{
