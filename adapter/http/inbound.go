@@ -55,7 +55,7 @@ func (t *responseTracker) Write(b []byte) (int, error) {
 // would otherwise take the whole server down with it. Recovering here keeps
 // the panic inside a single request regardless of what runs downstream — do
 // not remove this recover. (As of Spec 012 / ADR 0022 Addendum A,
-// msgin.ChannelExchange.Exchange also reclaims its reply-waiter slot on a
+// endpoint.ChannelExchange.Exchange also reclaims its reply-waiter slot on a
 // panic unwind, closing a former residual of this boundary; that is a
 // property of the exchange, not a reason to drop the recover.)
 func recoverHandler(w *responseTracker, cfg *Config, op string) {
@@ -107,6 +107,25 @@ func recoverHandler(w *responseTracker, cfg *Config, op string) {
 // concern, not this handler core's. It applies NO authentication, NO
 // authorization, NO CSRF and NO CORS defense either; see the
 // adapter/http/stdlib package godoc.
+//
+// target may be ANY [msgin.MessageChannel]. Since ADR 0028 narrowed that
+// interface to Send alone, the set of things that qualify is every channel the
+// library ships and every [msgin.OutboundAdapter]: a channel.QueueChannel, a
+// channel.PublishSubscribeChannel, a channel.DirectChannel, or an adapter
+// writing straight out to SQL or a broker. The practical payoff is that an HTTP
+// request can be PARKED IN A QUEUE CHANNEL — Send enqueues, the handler returns
+// 202, and a separate consumer drains the queue — instead of requiring a
+// synchronous subscriber attached to a DirectChannel on this very goroutine.
+//
+// WHETHER THAT PARKED REQUEST SURVIVES THE INSTANCE IS A PROPERTY OF THE
+// INJECTED [msgin.ChannelStore], NOT OF THE QUEUE. Decoupling alone buys
+// nothing across instances — an in-memory queue is just as decoupled and does
+// not survive. Back the channel.QueueChannel with a DURABLE, SHARED
+// ChannelStore (the adapter/database/sql one) and the request outlives the
+// instance that accepted it, so a peer behind the load balancer can drain it.
+// Back it with the library's default in-memory store (adapter/memory.QueueStore)
+// and the buffered request is LOST on process exit — at-most-once across a
+// restart, and reachable by no other instance (Spec 014 §5.0).
 //
 // target is assumed non-nil: ServeAsync is a framework-neutral handler core
 // meant to be wrapped by a constructor (e.g. adapter/http/stdlib.NewInbound)
@@ -167,7 +186,7 @@ func ServeAsync(w http.ResponseWriter, r *http.Request, target msgin.MessageChan
 //     LOGGED ONLY. No second status is written; there is no way to signal the
 //     failure to a client that is already gone.
 //
-// A PANIC raised by the flow — msgin.ChannelExchange runs a DirectChannel
+// A PANIC raised by the flow — endpoint.ChannelExchange runs a DirectChannel
 // subscriber on this goroutine — is recovered and answered with a plain 500
 // when the response is not yet committed, so the panic never escapes the
 // request and the server keeps serving subsequent ones.
@@ -175,7 +194,7 @@ func ServeAsync(w http.ResponseWriter, r *http.Request, target msgin.MessageChan
 // The recover contains the panic to this request and yields a clean 500
 // instead of crashing the process — that fault isolation is required
 // regardless of what the exchange does with its own state. As of Spec 012 /
-// ADR 0022 Addendum A, msgin.ChannelExchange.Exchange also reclaims its
+// ADR 0022 Addendum A, endpoint.ChannelExchange.Exchange also reclaims its
 // reply-waiter slot on a panic unwind (RequestReplyExchange's godoc now
 // states this as part of the SPI contract), closing a former residual of
 // this boundary: a panicking flow used to leak one correlator-map entry per

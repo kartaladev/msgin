@@ -15,7 +15,18 @@ import (
 
 	"github.com/kartaladev/msgin"
 	msghttp "github.com/kartaladev/msgin/adapter/http"
+	"github.com/kartaladev/msgin/channel"
+	"github.com/kartaladev/msgin/endpoint"
 )
+
+// mustSubscribe registers h on ch and fails the test if Subscribe errors. Since
+// ADR 0028 Subscribe returns (Subscription, error); these call sites do not need
+// the handle, and this keeps the original require.NoError assertion intact.
+func mustSubscribe(t *testing.T, ch msgin.SubscribableChannel, h msgin.MessageHandler) {
+	t.Helper()
+	_, err := ch.Subscribe(h)
+	require.NoError(t, err)
+}
 
 // errBoom is a plain, non-sentinel error simulating a downstream
 // target.Send failure — distinct from any msgin.* sentinel so it exercises
@@ -222,12 +233,12 @@ func TestServeAsync(t *testing.T) {
 			cfg, err := msghttp.NewConfig(opts...)
 			require.NoError(t, err)
 
-			target := msgin.NewDirectChannel()
+			target := channel.NewDirectChannel()
 			var (
 				sendCalled bool
 				captured   msgin.Message[any]
 			)
-			require.NoError(t, target.Subscribe(msgin.HandlerFunc(func(_ context.Context, msg msgin.Message[any]) error {
+			mustSubscribe(t, target, msgin.HandlerFunc(func(_ context.Context, msg msgin.Message[any]) error {
 				sendCalled = true
 				captured = msg
 				if tc.handlerPanic {
@@ -237,7 +248,7 @@ func TestServeAsync(t *testing.T) {
 					panic("flow handler exploded")
 				}
 				return tc.handlerErr
-			})))
+			}))
 
 			rec := httptest.NewRecorder()
 			if tc.wantPanicPropagate {
@@ -274,10 +285,10 @@ func TestServeGateway(t *testing.T) {
 			name: "real ChannelExchange echo round-trip returns 200 with the request body",
 			exchange: func(t *testing.T) msgin.RequestReplyExchange {
 				t.Helper()
-				request := msgin.NewDirectChannel()
-				reply := msgin.NewDirectChannel()
-				require.NoError(t, request.Subscribe(msgin.Chain(msgin.To(reply))))
-				x, err := msgin.NewChannelExchange(request, reply)
+				request := channel.NewDirectChannel()
+				reply := channel.NewDirectChannel()
+				mustSubscribe(t, request, msgin.Chain(msgin.To(reply)))
+				x, err := endpoint.NewChannelExchange(request, reply)
 				require.NoError(t, err)
 				t.Cleanup(func() { assert.NoError(t, x.Close()) })
 				return x
@@ -438,7 +449,7 @@ func TestServeGateway(t *testing.T) {
 
 // TestServeGateway_panickingFlowIsContainedEndToEnd is the end-to-end
 // regression test for the whole-branch review's F1: a panic raised by a flow
-// handler unwinds out of msgin.ChannelExchange.Exchange and, without a
+// handler unwinds out of endpoint.ChannelExchange.Exchange and, without a
 // recover() at this adapter's boundary, escapes into net/http — which aborts
 // the connection, so the client sees a transport error instead of a response.
 // With the recover in place every request gets a clean 500 and the server
@@ -455,12 +466,12 @@ func TestServeGateway(t *testing.T) {
 func TestServeGateway_panickingFlowIsContainedEndToEnd(t *testing.T) {
 	t.Parallel()
 
-	request := msgin.NewDirectChannel()
-	reply := msgin.NewDirectChannel()
-	require.NoError(t, request.Subscribe(msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error {
+	request := channel.NewDirectChannel()
+	reply := channel.NewDirectChannel()
+	mustSubscribe(t, request, msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error {
 		panic("flow handler exploded")
-	})))
-	exchange, err := msgin.NewChannelExchange(request, reply)
+	}))
+	exchange, err := endpoint.NewChannelExchange(request, reply)
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, exchange.Close()) })
 
@@ -549,10 +560,10 @@ func TestHandlerCores_toleratesAHandBuiltConfig(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			target := msgin.NewDirectChannel()
-			require.NoError(t, target.Subscribe(msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error {
+			target := channel.NewDirectChannel()
+			mustSubscribe(t, target, msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error {
 				return nil
-			})))
+			}))
 
 			// DecodeRequest: a zero maxBodyBytes must back-fill to the 1 MiB
 			// default rather than rejecting every non-empty body.
@@ -573,10 +584,10 @@ func TestHandlerCores_toleratesAHandBuiltConfig(t *testing.T) {
 			assert.Equal(t, http.StatusAccepted, rec.Code)
 
 			// ServeAsync failure: a nil logger and nil error mapper must not panic.
-			failing := msgin.NewDirectChannel()
-			require.NoError(t, failing.Subscribe(msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error {
+			failing := channel.NewDirectChannel()
+			mustSubscribe(t, failing, msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error {
 				return errBoom
-			})))
+			}))
 			rec = httptest.NewRecorder()
 			require.NotPanics(t, func() {
 				msghttp.ServeAsync(rec, httptest.NewRequest(http.MethodPost, "/", strings.NewReader("x")), failing, tc.cfg)

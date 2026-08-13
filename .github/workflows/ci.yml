@@ -1,11 +1,14 @@
 name: CI
 
-# msgin is a multi-module monorepo (ADR 0003 / ADR 0011): the engine (repo
-# root) plus five sql-adapter modules (harness, postgres, mysql, sqlite,
-# dbtest). Each
-# module MUST build and test standalone against its own go.mod, so the
+# msgin is a multi-module monorepo (ADR 0003 / ADR 0011). go.work `use`s EIGHT
+# modules: the engine (repo root), five sql-adapter modules (harness, postgres,
+# mysql, sqlite, dbtest), adapter/cron/crontest and expr (Plan 027 Task 10).
+# Each module MUST build and test standalone against its own go.mod, so the
 # per-module jobs below force GOWORK=off (audit F5, spec 002 §8) -- the local
 # go.work workspace is exercised only by the separate `workspace` job.
+#
+# Both jobs below cover all eight -- adapter/cron/crontest and expr were the
+# pre-existing / newly-created gaps and Plan 027 Task 10 closed both.
 
 on:
   push:
@@ -43,6 +46,10 @@ jobs:
             dir: adapter/database/sql/sqlite
           - name: dbtest
             dir: adapter/database/sql/dbtest
+          - name: crontest
+            dir: adapter/cron/crontest
+          - name: expr
+            dir: expr
     env:
       GOWORK: "off"
     steps:
@@ -94,9 +101,10 @@ jobs:
           working-directory: ${{ matrix.module.dir }}
           args: --timeout=5m
 
-      # dbtest's conformance suite needs Docker (testcontainers-go); the
-      # ubuntu-latest runner ships Docker pre-installed and running, so no
-      # extra service setup is required for that module.
+      # dbtest's and crontest's conformance suites need Docker
+      # (testcontainers-go); the ubuntu-latest runner ships Docker
+      # pre-installed and running, so no extra service setup is required for
+      # either module.
       - name: go test -race
         working-directory: ${{ matrix.module.dir }}
         run: go test ./... -race -shuffle=on
@@ -106,8 +114,9 @@ jobs:
     runs-on: ubuntu-latest
     # No GOWORK=off here: this job deliberately lets `go` auto-discover the
     # committed repo-root go.work, proving the workspace itself still resolves
-    # coherently across all 6 modules (spec 002 §8 "one separate
-    # workspace-build job for the aggregate").
+    # coherently across the 8 modules enumerated below (spec 002 §8 "one
+    # separate workspace-build job for the aggregate"). go.work `use`s 8, and
+    # this loop now covers all of them (Plan 027 Task 10).
     steps:
       - uses: actions/checkout@v6
 
@@ -119,7 +128,7 @@ jobs:
       - name: Build every workspace member
         run: |
           set -e
-          for dir in . adapter/database/sql/harness adapter/database/sql/postgres adapter/database/sql/mysql adapter/database/sql/sqlite adapter/database/sql/dbtest; do
+          for dir in . adapter/database/sql/harness adapter/database/sql/postgres adapter/database/sql/mysql adapter/database/sql/sqlite adapter/database/sql/dbtest adapter/cron/crontest expr; do
             echo "== $dir =="
             (cd "$dir" && go build ./...)
           done

@@ -1,76 +1,199 @@
 # Session handover — msgin
 
-> **READ FIRST, before doing anything.** Read `CLAUDE.md` (root), then the traceability pointers in §3. Trust those
-> files over this handover and over any memory. **Safepoint: on `main` @ `fa57091` (merge commit, PUSHED to `origin`).
-> Plan 026 (HTTP SSE Phase 4, S-in SSE client) is DONE & MERGED. Working tree is clean but for the permanently-dirty
-> `.claude/settings.json` (never commit it). `go test ./... -race` green, both `adapter/http` packages at 100%
-> coverage.** There is NO active branch and NO in-flight task — the next increment (Phase 5 / gin) is not yet
-> spec'd or planned.
+> **READ FIRST.** Read `CLAUDE.md`, then `docs/plans/027-core-package-layout.md` (its **Progress table** is
+> the authority on what is done), then `docs/specs/014-core-package-layout.md`. **Trust those files and
+> `git log` over this one**, and over any memory.
+>
+> ### ✅ TASK 12'S WORK IS WRITTEN AND VERIFIED, **UNCOMMITTED**. ONE GATE REMAINS.
+> ### Plan 027 has no task after this one.
+>
+> **Nothing has been committed this session.** **Twelve** files sit in the working tree (§2) — eleven
+> modified, one untracked. Before they land:
+>
+> | Blocker | State |
+> |---|---|
+> | `/code-review` over `main..HEAD` | ✅ **RUN** — 5 findings, **all verified and all fixed** (§5a) |
+> | `/security-review` over `main..HEAD` | ✅ **RUN — ZERO findings** (second consecutive clean round) |
+> | The commit itself | ✅ **GATE SATISFIED.** Task 12's commit is spelled out in the plan, so it is **pre-authorized** under CLAUDE.md's per-task-commit exception. 12 files staged, `index == worktree` proven |
+>
+> **Every other gate is green on the final tree**, re-run *after* the review fixes: 8/8 modules `-race`,
+> 16/16 godoc gates, `apidiff` unchanged at 97/9, both staleness arms empty, docs-link clean.
+>
+> `git push`, the merge, and branch deletion each need **separate** explicit approval. None has been given.
 
-## 1. Objective & roadmap position
+## 1. Objective & position
 
-`msgin` is a Go 1.25 Enterprise Integration Patterns library (`github.com/kartaladev/msgin`). The HTTP adapter's SSE
-work is being delivered in phases: **Phase 3 (S-out SSE *server*) — MERGED** (Plan 025); **Phase 4 (S-in SSE
-*client*) — MERGED** (Plan 026, this session). **The only remaining SSE-adjacent increment is Phase 5: the gin
-binding (Plan 027), which does not yet exist** — no spec section, no plan, no ADR beyond the placeholders. Starting it
-means brainstorming first (`superpowers:brainstorming`), then a spec/plan, then the mandatory adversarial design audit,
-then SDD — the full CLAUDE.md loop.
+`msgin` is a Go 1.25 Enterprise Integration Patterns library. The active effort is the **pre-v1 core
+refactor** (Plan 027): flatten-to-packages, channel interface segregation, EIP lexical alignment.
+
+| Task | Size | State |
+|---|---|---|
+| **11** — package docs + unowned godoc obligations | M | **DONE** (`88e3e38`) |
+| **12** — migration guide, doc sync, whole-branch gate | M | **WRITTEN & VERIFIED, UNCOMMITTED — finish here** |
 
 ## 2. Exact state
 
-- **`main` @ `fa57091`** — `Merge branch 'feat/http-sse-client'` (Plan 026), pushed to `origin/main`. The branch
-  `feat/http-sse-client` has been **deleted** (local; it was never pushed to origin).
-- Plan 026's 6 commits (now on `main` via the merge): `1ea29bc` (Task 0 spec/ADR deltas), `cd5befc` (handover),
-  `973cc86` (options+constructor), `496c7c9` (Stream), `953912b` (hardening+watchdog), `ba282bf` (e2e+docs+100%+gate fixes).
-- `git status --short`: only ` M .claude/settings.json` (permanently dirty — NEVER commit).
-- Delivery gate that cleared the merge: whole-branch `/code-review` (opus) = READY TO MERGE; `/security-review` (opus)
-  = no high-confidence vulns; **5/5 mutation spot-checks** confirm the INV-C1/C2/C4/C7 + MAJOR-1 tests are load-bearing;
-  100% coverage; `-race` green; golangci-lint 0; govulncheck clean; `go mod tidy` no-op.
-- **This handover (`docs/HANDOVER.md`) is currently UNCOMMITTED** on `main` — offer to commit it as a standalone
-  `docs:` commit if a fresh clone/machine needs it (approval-gated).
+**VERIFY THESE, NEVER COPY THEM** — they have been wrong in eight consecutive handovers:
+`git rev-parse --short main '@{u}'` · `git rev-list --count main..HEAD`.
+Measured **before** this file's own commit: `main` = `0de54e9`, `@{u}` = `6f44db6`, **32 ahead of `main`**,
+**29 unpushed**, 0 behind. Branch `claude/repo-structure-refactor-jt79t1`.
 
-## 3. Traceability pointers (read first, in this order)
+**This file cannot state its own commit's SHA.** Identify `HEAD` by *subject*: `git log --oneline -3`.
+`3c27224` and every SHA below it are ancestors and safe to cite.
 
-1. `CLAUDE.md` (root) — the workflow, gates, and conventions that OVERRIDE defaults.
-2. `docs/specs/011-http-adapter.md` — the HTTP adapter spec; §3.5/§3.6/§4/§7 (SSE), §3.0 (layout).
-3. `docs/adrs/0023-http-channel-adapter.md` — Addendum C (SSE decisions): C1–C8, C7 (client placement), and the
-   dated "Pacing precedence" note (server `retry:` wins over event-reset — user-decided 2026-07-24).
-4. `docs/plans/025-http-sse-server.md` and `docs/plans/026-http-sse-client.md` — the two delivered SSE plans.
-5. `.superpowers/sdd/progress.md` — Plan 026's SDD ledger (git-ignored scratch): per-task commits, review outcomes,
-   the full delivery-gate record (mutation results, the G1 fix). Recover from `git log` if `git clean -fdx` wipes it.
+### ⚠️ THE TREE IS NOT CLEAN — this is a deliberate safepoint, not a broken state
 
-## 4. Decisions & deviations this session
+```
+ M CLAUDE.md
+ M MESSAGING.md
+ M docs/HANDOVER.md
+ M docs/RELEASE.md
+ M docs/adrs/0028-channel-interface-segregation.md
+ M docs/plans/027-core-package-layout.md
+ M docs/specs/014-core-package-layout.md
+ M endpoint/exchange.go          <- COMMENT ONLY
+ M expr/compile.go               <- code: new unexported stringResult
+ M expr/provider.go              <- code: both call sites
+ M expr/expr_test.go             <- +7 test cases
+?? MIGRATION.md                  <- MUST be `git add`ed; 10+ tracked files link to it
+```
 
-- **Reconnect-backoff precedence (user-decided 2026-07-24):** `hasRetry > gotEvent > doubling` — a server `retry:`
-  directive takes precedence over the event-reset-to-min heuristic when a connection both emits an event and carries a
-  `retry:`. Corrected the plan text (which said reset-to-min unconditionally) + ADR 0023 Addendum C.
-- **Controller scope split (Task 2↔3):** the `WithReadTimeout` idle watchdog code was deferred from Task 2 to Task 3
-  so it landed TDD-first alongside its tests; Task 2 built the rest of the `Stream` loop.
-- **Gate finding G1 (mutation-surfaced):** the MAJOR-1 "no-Timeout default" test was NOT load-bearing (its ctx window
-  was shorter than the reconnect backoff, masking a finite-Timeout abort). Fixed by a short `WithReconnectBackoff` in
-  the test; re-verified the mutation now goes RED. Both whole-branch reviews had passed the branch clean — the mutation
-  gate is what caught it.
-- No pending approvals; no open questions. The merge was user-approved and executed.
+**Eight are documentation; three are the `/code-review` fixes.** `docs/plans/027-tools/symmap.tsv` is
+deliberately absent: it was regenerated and came back **byte-identical**, which is itself the evidence that
+Task 11 was comments-only — and it stays identical after the `expr` fix, because that fix adds no exported
+symbol.
 
-## 5. Next actions
+### What Task 12 delivered
 
-**No in-flight work.** To start the next increment (Phase 5 / gin binding, Plan 027):
-1. Branch off `main`: `git checkout -b feat/http-sse-gin` (or similar) — do NOT work on `main`.
-2. `superpowers:brainstorming` to settle the gin-binding design (it mirrors `adapter/http/stdlib`'s net/http binding;
-   note ADR 0023 B4/C7 already argued a gin SSE *client* has no place — Phase 5 is the *server*-side gin binding).
-3. Write the spec delta (`docs/specs/011` §Phase 5) + `docs/plans/027-*` + any ADR, then run the **mandatory
-   adversarial design audit** (fresh Opus subagent, full spec+ADR+plan bundle) BEFORE any code. ASK before implementing.
-4. Execute via SDD; close with the whole-branch `/code-review` + `/security-review` + mutation gate, then merge (approval-gated).
+| File | Change |
+|---|---|
+| **`MIGRATION.md`** (new) | Every moved symbol old→new; the 97 removals in five classes; the `*Expr` → `expr` move; the six signature/behavior changes |
+| `CLAUDE.md` | All **five** enumerated sync sites (module counts 7→8, artifact counts, the Dependency-policy *"Still outstanding"* sentence, the CI-gap paragraph, the sentinel/exported counts) |
+| `docs/specs/014-…` | §4.1 gains the **fifth removal class**; §5.0's census corrected **16 → 17** with a ninth public position; AC-7's two drifted `poller.go` line numbers |
+| `docs/adrs/0028-…` | The two stale `NOT YET IMPLEMENTED` blocks (`:364`, `:401`) — both shipped in Task 9.6 |
+| `docs/plans/027-…` | The orphaned pre-amend SHA → `e120d10`; the `/code-review` finding table |
+| `MESSAGING.md` | Layer-vs-package note; the governor options marked `endpoint.*`; **`expr-lang` removed from the "core dependencies" list**, where it was flatly wrong |
+| `docs/RELEASE.md` | **Was stale and named `expr` zero times.** Now 8 modules, an `expr` tag row, the closed `crontest` CI gap — plus a new warning that **`release.yml` has NO trigger pattern and NO title case for `expr/v*`** |
+| `expr/*` + `endpoint/exchange.go` | The `/code-review` fixes — see §5a |
 
-If instead the user wants something else, there is no half-done state to resume — start from their request + the loop above.
+## 3. Read in this order
 
-## 6. Gotchas / environment
+1. `CLAUDE.md` — hard rules. **SDD is the default execution mode; ask before writing any implementation code.**
+2. `docs/plans/027-core-package-layout.md` — **Task 12 is at `^## Task 12`.** Progress table is authoritative.
+3. `docs/specs/014-core-package-layout.md` — §4.1 (five removal classes), §5.0 (the census), §9 AC-7.
+4. `.superpowers/sdd/027-core-package-layout/progress.md` — the SDD ledger. **Git-ignored, so it is NOT in a
+   fresh clone — but it IS on disk on this machine.**
 
-- Go 1.25 pin: always `GOTOOLCHAIN=go1.25.12` (bare `go1.25` rejected). `govulncheck` at `$(go env GOPATH)/bin/govulncheck`;
-  `gofumpt` not installed (`gofmt` only — use `test -z "$(gofmt -l .)"`); `golangci-lint` on PATH (`0 issues`);
-  `gopls`/`LSP` at `$(go env GOPATH)/bin/gopls` (was NOT available inside SDD subagents — they read source directly).
-- All SSE code (core, server, client) lives in `package msghttp` (`adapter/http/sse.go`, `sse_server.go`, `sseclient.go`);
-  `adapter/http/stdlib` is the thin net/http binding. Tests are blackbox `package msghttp_test`; `goleak.VerifyTestMain`
-  is wired in `encode_test.go` — no per-test `goleak.VerifyNone`.
-- `.claude/settings.json` is permanently dirty — never commit it. Stage explicit pathspecs, never `git add .`.
-- Repo has zero git tags — do NOT propose tagging (unreleased, no consumers).
+## 4. Verification run this session — all green, all re-derived
+
+Every number below was **measured, not transcribed**. Commands are in Plan 027 Task 12.
+
+| Gate | Result |
+|---|---|
+| 16-gate godoc block | **16/16 GREEN**, regenerated from the plan; **vacuity-probed** (planting a defect in `channel/pubsub.go` drove `11c1` RED, restoring returned GREEN) |
+| `apidiff` vs Task 0 baseline | **97 removals / 9 additions** — exactly the projection |
+| Removal partition | 87 relocated + 6 `*Expr` + 1 renamed + 1 segregation + 2 D-I sentinels = **97**, **empty residual** |
+| Root surface | **103** exported · **43** sentinels · **14** root `.go` files |
+| Dependency direction | root→subpackages **EMPTY**; subpackage→subpackage/root **EMPTY** |
+| Staleness sweep (Spec §8.1) | both arms **EMPTY**; **both vacuity-probed** (a planted `msgin.Consumer` and a planted `WithTotallyBogusOption` were each reported) |
+| `MessageChannel` census | **17** — the spec's 16 was stale (see §5) |
+| 8-module `GOWORK=off` test loop | **8/8 green**, `-race -shuffle=on`; `harness` by `go vet` (it has no tests) |
+| vet · gofmt · `CGO_ENABLED=0` · `go mod tidy` | clean in **all 8**; tidy a genuine no-op (no `go.mod`/`go.sum` churn) |
+| `govulncheck` · `golangci-lint` | **0 vulnerabilities, 0 issues** in all 8 |
+| Coverage `-coverpkg=./...` | **93.7%**; **5** uncovered blocks, all in AC-7's accepted six (the sixth is the flaky `consumer.go:467` arm, covered this run). **Zero unexplained.** |
+| SHA reachability sweep | one `ORPHAN` **found and fixed** (§5); now only the known gist-id `UNRESOLVABLE` |
+| Docs-link gate | arm 1 = the 2 known Go-identifier false positives; arm 2 clean over **52** anchor links |
+
+## 5. Findings this session — things that were WRONG in the bundle
+
+Task 12 is a measurement task, and measuring found four defects no previous gate caught:
+
+1. **Spec §5.0's `MessageChannel` census was stale — a FOURTH recurrence of the class that section opens by
+   warning about.** Published **16** (measured at `c83dde9`); delivered is **17**. Task 9 took it to 15 (the
+   plan's Progress row recorded that; the spec was never updated) and Task 10's `expr` module took it to 17.
+   A **ninth public send-only position** — `expr.RouteFunc`'s `routes` map — was listed nowhere. Every line
+   number in that table had also drifted.
+2. **An orphaned SHA in the plan.** It named the parent of Task 11's **pre-amend** commit. The amend
+   orphaned it: present in this machine's reflog, **absent from a fresh clone**. Replaced with `e120d10`
+   (same tree — amending preserves the parent).
+3. **`MESSAGING.md` listed `expr-lang/expr` as a core dependency.** It has not been one since Task 1.
+4. **Two `poller.go` block ids in AC-7 had drifted +4 lines** from Task 11's comment-only edits. The blocks
+   are byte-identical; a shifted id must not be read as a new gap. The table now says so.
+
+**None of those four required a code change.** All were documentation asserting something the tree contradicts.
+
+## 5a. `/code-review` over `main..HEAD` — RUN, 5 findings, ALL FIXED
+
+**Every finding was verified independently before action; two by writing a throwaway probe test.**
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | **`expr.RouteFunc` SILENTLY MISROUTES a named string type.** `AsKind(reflect.String)` constrains the KIND, so `type Region string` compiles — but `key, _ := out.(string)` is an EXACT-type assertion, which fails, yielding `""`; `routes[""]` is nil, which `NewRouter` reads as "no destination". Probe returned **`(nil, nil)`** — no channel, no error, no hook | New unexported `stringResult` extracts **by kind** (`reflect.ValueOf(out).String()`). User ruling: accept named string types, because `AsKind` was deliberately chosen over an exact-type check |
+| 2 | **`expr.Correlation` reports the WRONG cause**, same root | same helper; a non-string *kind* is now `ErrPayloadType`, not `ErrNoCorrelation` |
+| 3 | `docs/RELEASE.md` stale, `expr` named zero times | fixed; `release.yml` gaps documented, not silently patched |
+| 4 | `MIGRATION.md` untracked while 10+ tracked files link to it | **`git add MIGRATION.md` in the delivery commit — do not forget** |
+| 5 | `ErrNilSubscription` guard leaks the subscription (LOW) | comment-only; control flow untouched |
+
+**No exported symbol moved** — `stringResult` is unexported and `resultTypeError` already reuses root's
+`ErrPayloadType` (D-K), so `apidiff` is still **97 / 9** and `expr` still exports exactly **7** symbols.
+`expr` coverage stayed **100.0%**.
+
+**The lesson: findings 1 and 2 sat behind a 100%-coverage module, 16/16 green godoc gates and a clean
+8-module `-race` suite.** Coverage proves lines RAN, not that they ran with the input that breaks them.
+
+## 6. Next actions
+
+1. **Ask the user to run `/code-review` and `/security-review` over `main..HEAD`.** Both are required; the
+   assistant cannot launch either. Task 11's round proved the branch-wide sweep finds what per-task review
+   passed — its two findings were in code from *earlier* tasks.
+2. **Resolve or triage every finding**, then re-run the affected review and the `-race` suite.
+3. **Commit** the seven files as one unit — the plan spells this commit out, so it is pre-authorized once the
+   gate passes:
+   ```
+   docs: migration guide and doc sync for the core restructure
+
+   Spec: 014
+   Plan: 027
+   ADR: 0007
+   ADR: 0027
+   ADR: 0028
+   ADR: 0029
+   ADR: 0030
+   RFC: 0001
+   RFC: 0002
+   RFC: 0003
+   ```
+4. **Then Plan 027 is complete.** Push, merge and branch deletion each need **separate** approval.
+
+## 7. Backlog — triaged, NOT fixed
+
+- **24 nil-option-element sites** (carried, unchanged). Every `for _, opt := range opts { opt(&cfg) }` calls
+  the element unguarded, so `NewConsumer(src, h, nil)` panics. A **uniform class needing one uniform answer**.
+  **Re-derive the list; do not trust any written copy.**
+- **`admit`'s ctx-done arm has no test forcing it** — coverage there is incidental.
+- **The no-sink discard arm is still not machine-detectable** (Spec §2.1 row 10 states why this is deliberate).
+- **`endpoint/consumer.go:467`'s ctx-done arm is genuinely flaky** — ~1 run in 3. Do not gate on it.
+
+## 8. Gotchas & environment
+
+- **`export GOTOOLCHAIN=go1.25.12`** always; **`export PATH="$(go env GOPATH)/bin:$PATH"`** — `apidiff`,
+  `gopls`, `govulncheck`, `gofumpt` live there and none are on `PATH`.
+- **`./...` is not the repo — there are EIGHT modules.** CI now covers all eight (`grep -c 'dir:' ci.yml` → 8).
+- **Regenerate the 16-gate script; it does not survive the session:**
+  ```bash
+  awk '/^# ==== CANONICAL GATE BLOCK/{p=1} p{print} /^g 11c2 /{exit}' \
+    docs/plans/027-core-package-layout.md > /tmp/gate11.sh   # 44 lines, 16 `g ` ids
+  bash /tmp/gate11.sh                                        # expect 16 GREEN, 0 RED
+  ```
+- **A coverage block id rots when ANY line above it moves**, including a pure comment edit. Diff the source at
+  the two revisions before calling a shifted id a new gap.
+- **`43 ≠ 43`.** Root's sentinel count reads 43 across several revisions but the **sets differ**. Reconcile by
+  name, never by count.
+- `.golangci.yml` sets `linters.default: none` — **`ST1000` and `unused` are both off**, so missing package
+  docs and dead code after a move are reported by nothing.
+- `gofumpt -l .` reports **43 files repo-wide** and always has — pre-existing, zero delta. **CI gates
+  `gofmt`**, which is clean.
+- `gopls` has **no Move refactoring**. Repo has **zero git tags** — do NOT propose tagging.
+- Never commit `.claude/settings.json`; stage explicit pathspecs.
+- **Per-task commits are pre-authorized** by the approved plan; `git push`, merges, tags and branch deletion
+  are **not**.

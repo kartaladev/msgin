@@ -12,6 +12,8 @@ import (
 
 	msgin "github.com/kartaladev/msgin"
 	msginsql "github.com/kartaladev/msgin/adapter/database/sql"
+	"github.com/kartaladev/msgin/endpoint"
+	"github.com/kartaladev/msgin/resilience"
 	"github.com/stretchr/testify/require"
 )
 
@@ -66,11 +68,11 @@ func RunSource(t *testing.T, kit TestKit, db *sql.DB) {
 			return nil
 		}
 
-		consumer, err := msgin.NewConsumer[string](src, handler,
-			msgin.WithConcurrency[string](3),
-			msgin.WithMaxInFlight[string](4),
-			msgin.WithPollInterval[string](200*time.Millisecond),
-			msgin.WithShutdownTimeout[string](10*time.Second),
+		consumer, err := endpoint.NewConsumer[string](src, handler,
+			endpoint.WithConcurrency[string](3),
+			endpoint.WithMaxInFlight[string](4),
+			endpoint.WithPollInterval[string](200*time.Millisecond),
+			endpoint.WithShutdownTimeout[string](10*time.Second),
 		)
 		require.NoError(t, err)
 
@@ -107,12 +109,12 @@ func RunSource(t *testing.T, kit TestKit, db *sql.DB) {
 			return nil
 		}
 
-		consumer, err := msgin.NewConsumer[string](src, handler,
-			msgin.WithRetryPolicy[string](msgin.RetryPolicy{
-				Backoff: msgin.ExponentialBackoff{Initial: 300 * time.Millisecond, Mult: 1},
+		consumer, err := endpoint.NewConsumer[string](src, handler,
+			endpoint.WithRetryPolicy[string](msgin.RetryPolicy{
+				Backoff: resilience.ExponentialBackoff{Initial: 300 * time.Millisecond, Mult: 1},
 			}),
-			msgin.WithPollInterval[string](200*time.Millisecond),
-			msgin.WithShutdownTimeout[string](10*time.Second),
+			endpoint.WithPollInterval[string](200*time.Millisecond),
+			endpoint.WithShutdownTimeout[string](10*time.Second),
 		)
 		require.NoError(t, err)
 
@@ -148,13 +150,13 @@ func RunSource(t *testing.T, kit TestKit, db *sql.DB) {
 			return nil
 		}
 
-		consumer, err := msgin.NewConsumer[string](src, handler,
-			msgin.WithConcurrency[string](2),
-			msgin.WithMaxInFlight[string](2),
-			msgin.WithPollInterval[string](300*time.Millisecond),
-			msgin.WithShutdownTimeout[string](10*time.Second),
-			msgin.WithLogger[string](logger),
-			msgin.WithHooks[string](msgin.Hooks{
+		consumer, err := endpoint.NewConsumer[string](src, handler,
+			endpoint.WithConcurrency[string](2),
+			endpoint.WithMaxInFlight[string](2),
+			endpoint.WithPollInterval[string](300*time.Millisecond),
+			endpoint.WithShutdownTimeout[string](10*time.Second),
+			endpoint.WithLogger[string](logger),
+			endpoint.WithHooks[string](msgin.Hooks{
 				OnAck: func(_ context.Context, _ msgin.Message[any], _ error) { acks.Add(1) },
 			}),
 		)

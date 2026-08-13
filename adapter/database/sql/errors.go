@@ -58,7 +58,7 @@ var (
 
 	// ErrInvalidPayload is returned by Outbound.Send when the message's payload
 	// is not []byte. The Outbound is a wire adapter, not a LiveValueSource, so
-	// msgin.NewProducer always JSON-encodes T to []byte before calling Send; a
+	// endpoint.NewProducer always JSON-encodes T to []byte before calling Send; a
 	// non-[]byte payload here means Send was invoked directly (bypassing the
 	// producer) with the wrong payload shape — a defensive case trusted
 	// producers do not hit (ADR 0010 D8).

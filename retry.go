@@ -2,10 +2,6 @@ package msgin
 
 import (
 	"context"
-	"sync"
-	"time"
-
-	"github.com/jonboulle/clockwork"
 )
 
 // RetryPolicy governs how the runtime settles a failed delivery (spec §7).
@@ -39,6 +35,30 @@ import (
 //
 // See WithProducerRetry, WithProducerRetryBudget and ADR 0025 §1.1.
 type RetryPolicy struct {
+	// MaxAttempts is COUNTED PER INSTANCE, not across the deployment. What the
+	// consumer actually tests is THE PRESENCE OF THE HeaderDeliveryCount HEADER
+	// on the delivery: carry one and that native count wins. Carry none and the
+	// count comes from an in-memory attempt tracker owned by the Consumer —
+	// one tracker per NewConsumer call, so even two Consumers draining the same
+	// source in the SAME process keep independent counts. (A source stamping
+	// that header typically also reports NativeReliability.NativeRedelivery,
+	// but that capability is two booleans and obliges nobody to stamp
+	// anything: a source claiming native redelivery while omitting the header
+	// still falls back to the tracker.)
+	//
+	// A message redelivered to a DIFFERENT node therefore starts its count at
+	// zero, so behind a load balancer with N nodes the effective global bound
+	// is N × MaxAttempts, and a caller sizing a poison-message threshold
+	// silently gets N times what they asked for. Read that as an UPPER-BOUND
+	// APPROXIMATION rather than an exact bound: the tracker also evicts ids
+	// idle for longer than endpoint.WithAttemptTTL, so a message bouncing among
+	// the other nodes can age out of a given node's map and restart its count
+	// there. A source that DOES stamp HeaderDeliveryCount is unaffected: the
+	// broker counts, and every node reads the same number.
+	//
+	// The distributed answer is that native redelivery count, or a shared
+	// idempotency/dedup store keyed by message id — not a smaller MaxAttempts,
+	// which only moves the error (Spec 014 §10).
 	MaxAttempts int
 	Backoff     BackoffStrategy
 	DeadLetter  OutboundAdapter
@@ -57,100 +77,28 @@ func (p RetryPolicy) Validate() error {
 	return nil
 }
 
-// delayFor returns the redelivery delay for the given 1-based attempt count,
-// converting to the 0-based retry index the BackoffStrategy expects. A nil
-// Backoff means immediate redelivery.
-func (p RetryPolicy) delayFor(attempt int) time.Duration {
-	if p.Backoff == nil {
-		return 0
-	}
-	return p.Backoff.Delay(attempt - 1)
-}
-
 // Hooks are optional, nil-safe callbacks fired on the operationally important
 // settlement events (spec §7 observability). The error argument carries the
 // triggering error (nil on a successful Ack).
+//
+// ONE EXCEPTION, ON OnInvalidMessage. An invalid message is diverted to the
+// invalid-message sink (or, failing that, the dead-letter sink) and the divert
+// is SINGLE-SHOT: when a CONFIGURED sink refuses the message, it is discarded
+// rather than retried, and OnInvalidMessage is the only event that fires — no
+// OnRetry, no OnDeadLetter. To keep that discard from being indistinguishable
+// from a healthy divert, OnInvalidMessage then receives the triggering error
+// JOINED (errors.Join) with the sink's send failure.
+//
+// The join is safe to ignore: errors.Is against the triggering error still
+// matches, so a callback that classifies on it behaves exactly as before. It is
+// also the ONLY machine-detectable signal that a message was lost here — a
+// callback that wants to count or alert on the loss tests errors.Is against the
+// sink's own error, or simply compares the received error to the triggering one.
+// A successful divert, and the case where no sink is configured at all, both
+// pass the bare triggering error.
 type Hooks struct {
 	OnRetry          func(ctx context.Context, msg Message[any], err error)
 	OnDeadLetter     func(ctx context.Context, msg Message[any], err error)
 	OnInvalidMessage func(ctx context.Context, msg Message[any], err error)
 	OnAck            func(ctx context.Context, msg Message[any], err error)
-}
-
-// attemptEntry is one tracked message: its running attempt count plus the clock
-// time of the most recent observe, used by the TTL sweep to age out idle ids.
-type attemptEntry struct {
-	count    int
-	lastSeen time.Time
-}
-
-// attemptTracker counts delivery attempts per message id for sources without a
-// native msgin.delivery-count header. Entries are evicted on terminal settle
-// (Ack/DLQ/invalid) and, additionally, reclaimed by a periodic TTL sweep once an
-// id has been idle for >= ttl (ADR 0008 D8) — bounding the map so a stream of
-// distinct one-shot ids cannot grow it without limit. An id still being
-// redelivered is re-observed each attempt (refreshing lastSeen), so it is never
-// swept mid-flight: the poison count cannot reset while a message is in flight
-// (NF-2).
-type attemptTracker struct {
-	clock clockwork.Clock
-	ttl   time.Duration
-	mu    sync.Mutex
-	m     map[string]attemptEntry
-}
-
-func newAttemptTracker(clock clockwork.Clock, ttl time.Duration) *attemptTracker {
-	return &attemptTracker{clock: clock, ttl: ttl, m: make(map[string]attemptEntry)}
-}
-
-// observe records one more attempt for id, refreshes its lastSeen, and returns
-// the new count (1-based).
-func (t *attemptTracker) observe(id string) int {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	e := t.m[id]
-	e.count++
-	e.lastSeen = t.clock.Now()
-	t.m[id] = e
-	return e.count
-}
-
-// evict forgets id (call only on terminal settle).
-func (t *attemptTracker) evict(id string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	delete(t.m, id)
-}
-
-// sweep reclaims entries idle for >= ttl. An actively-redelivering id is
-// re-observed each attempt (gap <= Backoff.Max << ttl), so it is never swept
-// mid-flight (NF-2); only ids that stopped arriving age out.
-func (t *attemptTracker) sweep() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	now := t.clock.Now()
-	for id, e := range t.m {
-		if now.Sub(e.lastSeen) >= t.ttl {
-			delete(t.m, id)
-		}
-	}
-}
-
-// sweepLoop runs the periodic sweep until ctx is done. ttl is always > 0:
-// NewConsumer defaults the unset case to defaultAttemptTTL and validates an
-// explicit WithAttemptTTL, rejecting a non-positive value with
-// ErrInvalidAttemptTTL (ADR 0009 D3) — so the tracker always receives a
-// positive ttl and sweepLoop needs no ttl<=0 guard (it would be uncoverable
-// dead code under the blackbox coverage gate).
-func (t *attemptTracker) sweepLoop(ctx context.Context) {
-	ticker := t.clock.NewTicker(t.ttl)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.Chan():
-			t.sweep()
-		}
-	}
 }

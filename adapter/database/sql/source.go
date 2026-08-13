@@ -7,6 +7,7 @@ import (
 	"time"
 
 	msgin "github.com/kartaladev/msgin"
+	"github.com/kartaladev/msgin/resilience"
 )
 
 // Corrupt-row penalty backoff (ADR 0010 D4, coordinator review). A row whose
@@ -78,7 +79,7 @@ type Source struct {
 // dialect is ErrNilDialect.
 //
 // The returned Source implements msgin.PollingSource and
-// msgin.NativeReliability; pass it to msgin.NewConsumer. Call Ready once at boot
+// msgin.NativeReliability; pass it to endpoint.NewConsumer. Call Ready once at boot
 // to fail fast on an un-provisioned schema (ADR 0010 D2), and prefer a non-zero
 // RetryPolicy.Backoff so a repeatedly-failing row idles the poll loop instead of
 // hot-looping the DB (ADR 0010 D1 poison-recycle caveat).
@@ -172,7 +173,7 @@ func (s *Source) pollLease(ctx context.Context, max int) ([]msgin.Delivery, erro
 			// the hot claim window instead of churning the DB / spamming this log
 			// every poll interval (the log is thereby naturally throttled to the
 			// penalty cadence). See the corruptRow*Backoff consts.
-			penalty := msgin.ExponentialBackoff{
+			penalty := resilience.ExponentialBackoff{
 				Initial: corruptRowInitialBackoff,
 				Max:     corruptRowMaxBackoff,
 				Mult:    2,
@@ -232,7 +233,7 @@ func (s *Source) pollLock(ctx context.Context, max int) ([]msgin.Delivery, error
 		// can never decode is pushed out of the hot claim window instead of churning
 		// the DB / spamming this log. Then skip it (empty batch). Same policy as the
 		// lease path's corrupt-row Nack.
-		penalty := msgin.ExponentialBackoff{
+		penalty := resilience.ExponentialBackoff{
 			Initial: corruptRowInitialBackoff,
 			Max:     corruptRowMaxBackoff,
 			Mult:    2,

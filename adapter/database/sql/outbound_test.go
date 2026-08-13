@@ -117,7 +117,7 @@ func TestNewOutboundAdapter_Construction(t *testing.T) {
 }
 
 // TestOutbound_NotLiveValueSource pins the wire-adapter contract: Outbound must
-// NOT implement msgin.LiveValueSource, so msgin.NewProducer always
+// NOT implement msgin.LiveValueSource, so endpoint.NewProducer always
 // JSON-encodes the payload to []byte before calling Send (ADR 0010 D8).
 func TestOutbound_NotLiveValueSource(t *testing.T) {
 	t.Parallel()

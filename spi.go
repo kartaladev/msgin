@@ -33,12 +33,26 @@ type PollingSource interface {
 	Poll(ctx context.Context, max int) ([]Delivery, error)
 }
 
-// StreamingSource is a pushed inbound adapter that owns a blocking, cancellable loop.
-type StreamingSource interface {
+// EventDrivenSource is a pushed inbound adapter that owns a blocking,
+// cancellable loop. The name follows EIP's Event-Driven Consumer (Spring
+// Integration: EventDrivenConsumer); the Stream method keeps its name because it
+// describes the mechanism and has no Spring counterpart to align with
+// (ADR 0029 §1).
+type EventDrivenSource interface {
 	Stream(ctx context.Context, out chan<- Delivery) error
 }
 
-// OutboundAdapter writes a message to the external system.
+// OutboundAdapter writes a message to the external system — the EIP Channel
+// Adapter at a system boundary (EIP ch.4).
+//
+// METHOD-IDENTICAL TO [MessageChannel] BY DESIGN. Since ADR 0028 narrowed
+// MessageChannel to Send, the two interfaces declare the same single method and
+// are interchangeable under Go's structural typing. Both are kept because they
+// name two different patterns: MessageChannel is the Pipe of Pipes and Filters
+// (EIP ch.3), OutboundAdapter is the Channel Adapter here. A consequence worth
+// stating plainly: every shipped OutboundAdapter is now also a legal filter
+// discard target, router default channel, router destination, and exchange
+// request channel.
 type OutboundAdapter interface {
 	Send(ctx context.Context, msg Message[any]) error
 }
@@ -69,4 +83,46 @@ type LiveValueSource interface {
 // adapter.
 type ScheduledSender interface {
 	SendAfter(ctx context.Context, msg Message[any], delay time.Duration) error
+}
+
+// TopicPublisher publishes a message to a named topic. Native-topic broker
+// adapters (Kafka, NATS, Redis) implement this using their own topics, so topic
+// support is handled generically through one SPI.
+type TopicPublisher interface {
+	Publish(ctx context.Context, topic string, msg Message[any]) error
+}
+
+// TopicSubscriber subscribes a handler to a named topic, returning a Subscription
+// whose Cancel unsubscribes. The counterpart SPI to TopicPublisher (split per the
+// interface-segregation principle: a publish-only or subscribe-only adapter is
+// legitimate).
+type TopicSubscriber interface {
+	Subscribe(topic string, h MessageHandler) (Subscription, error)
+}
+
+// RequestReplyExchange is the narrow SPI a gateway delegates to: it sends a
+// request and returns the correlated reply (or an error). ChannelExchange is the
+// in-process implementation; a future HTTP/NATS adapter implements Exchange for
+// a real external round-trip, so both gateway façades work over it unchanged.
+//
+// "EXCHANGE" HERE IS THE EIP REQUEST-REPLY OPERATION — send a request, receive
+// the reply correlated to it — and is NOT AMQP's exchange. An AMQP exchange is a
+// broker-side routing table that binds routing keys to queues; it is a topology
+// object you declare on a broker. This SPI names an operation a gateway
+// delegates to, which is a different kind of thing entirely. An AMQP-backed
+// adapter would implement RequestReplyExchange OVER an AMQP exchange — publish
+// to it, wait on a reply queue — rather than BE one (ADR 0029 §2).
+//
+// Contract: an implementation MUST release every piece of request-scoped state
+// it acquires — a correlator entry, an in-flight connection, a response body —
+// on EVERY exit path, including a panic unwinding out of a downstream call.
+// Deferred cleanup is the only reliable way to honour this; an implementation
+// that cleans up at each return site alone will leak whenever a caller-supplied
+// handler panics. An implementation MUST NOT recover such a panic into an error
+// return: the panic belongs to the caller's code and must propagate with its
+// original value and stack (ADR 0022 Addendum A3; Spec 012) — unless a
+// CALLER-SUPPLIED hook on the cleanup path itself panics, which replaces the
+// original (see WithUnmatchedReplySink and WithExchangeLogger).
+type RequestReplyExchange interface {
+	Exchange(ctx context.Context, req Message[any]) (Message[any], error)
 }

@@ -1,6 +1,11 @@
 # ADR 0010 — Poller + `database/sql` adapter (credit-at-fetch pull path, dialect-owned SQL)
 
-- **Status:** Proposed (2026-07-17) — pending the two adversarial audits + reconciliation
+- **Status:** **Accepted (2026-07-17) — implemented in [Plan 005](../plans/005-poller-sql-adapter.md),
+  commits `b9e87b1`…`e401cd4`.** *(Status corrected 2026-07-28, audit round 6 finding M-3: the line still read
+  "Proposed (2026-07-17) — pending the two adversarial audits + reconciliation" long after the code shipped.
+  Evidence in non-test code today: the credit-at-fetch pull path `c.pollLoop(...)` at `endpoint/consumer.go:313`,
+  and the `database/sql` adapter's lease/lock claim at `adapter/database/sql/source.go:158`/`:217` over the
+  `LeaseDialect` SPI at `adapter/database/sql/dialect.go:46`.)*
 - **Context source:** [Spec 001 — Messaging core](../specs/001-messaging-core.md) §7.4.1 (credit-at-fetch),
   §7 (runtime settlement), §8 (framing), §9 (the `sql` adapter);
   [Plan 005 — Poller + SQL adapter](../plans/005-poller-sql-adapter.md); `docs/HANDOVER.md` §1/§4/§5.

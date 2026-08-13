@@ -30,7 +30,7 @@ func (JSONPayloadCodec[T]) Decode(b []byte) (T, error) {
 //
 // Pair it EXPLICITLY whenever T is []byte and the adapter is a wire adapter:
 //
-//	msgin.NewProducer[[]byte](out, msgin.WithProducerCodec[[]byte](msgin.BytesPayloadCodec{}))
+//	endpoint.NewProducer[[]byte](out, endpoint.WithProducerCodec[[]byte](msgin.BytesPayloadCodec{}))
 //
 // Without it, the codec resolution defaults to JSONPayloadCodec, and
 // json.Marshal of a []byte is a quoted base64 STRING — so a raw body would go on

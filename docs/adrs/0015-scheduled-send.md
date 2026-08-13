@@ -1,12 +1,16 @@
 # ADR 0015 — Scheduled / delayed send (ScheduledSender capability + producer sugar)
 
-- **Status:** Proposed (2026-07-19) — pending the mandatory adversarial audit of the full spec + ADR + plan
-  bundle and an explicit go-ahead before implementation (CLAUDE.md design-time gate).
+- **Status:** **Accepted (2026-07-19) — implemented in [Plan 010](../plans/010-scheduled-send.md),
+  merged as `410a45e`.** *(Status corrected 2026-07-28, audit round 6 finding M-3; the line read
+  "Proposed (2026-07-19) — pending the mandatory adversarial audit … before implementation" long after
+  scheduled send shipped. Evidence in non-test code today: the `ScheduledSender` capability at `spi.go:84`,
+  the producer sugar at `endpoint/producer.go:586`, and the SQL implementation at
+  `adapter/database/sql/outbound.go:93`.)*
 - **Spec:** [Spec 005 — Scheduled / delayed send](../specs/005-scheduled-send.md).
 - **Plan:** [Plan 010 — Scheduled / delayed send](../plans/010-scheduled-send.md).
 - **Relates to:** [ADR 0002 — Adapter SPI](0002-adapter-spi.md) (OutboundAdapter + optional-capability pattern),
   [ADR 0010 — Poller + database/sql adapter](0010-poller-sql-adapter.md) (`visible_after` / `LeaseDialect.Insert(delay)`),
-  [ADR 0007 D10](0007-composition-endpoints.md) (`WithConsumerClock` naming), [ADR 0004](0004-clockwork-dependency.md)
+  [ADR 0007 D10](0007-reliability-settlement-api.md) (`WithConsumerClock` naming), [ADR 0004](0004-clockwork-dependency.md)
   (`clockwork`), [ADR 0003](0003-multi-module-repository-layout.md) (module layout, for the deferred O5-5 module).
 
 ## Context

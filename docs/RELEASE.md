@@ -14,10 +14,43 @@ publishes a GitHub Release with auto-generated notes, nothing is compiled or upl
 | postgres | `github.com/kartaladev/msgin/adapter/database/sql/postgres` | `adapter/database/sql/postgres/go.mod` |
 | mysql | `github.com/kartaladev/msgin/adapter/database/sql/mysql` | `adapter/database/sql/mysql/go.mod` |
 | sqlite | `github.com/kartaladev/msgin/adapter/database/sql/sqlite` | `adapter/database/sql/sqlite/go.mod` |
+| **expr** (provider module, **consumer-importable — must be tagged**) | `github.com/kartaladev/msgin/expr` | `expr/go.mod` |
 | dbtest (runner, never published/tagged — nobody imports it) | `github.com/kartaladev/msgin/adapter/database/sql/dbtest` | `adapter/database/sql/dbtest/go.mod` |
+| crontest (runner, never published/tagged — nobody imports it) | `github.com/kartaladev/msgin/adapter/cron/crontest` | `adapter/cron/crontest/go.mod` |
 
-`dbtest` is a leaf test-only runner (spec 002 §4, "Structure Z") that a real consumer never imports, so it is
-never tagged or released independently — it only needs to stay green in CI.
+**Eight modules** — `go.work`'s `use` block lists all eight, and
+`find . -name go.mod -not -path './.git/*' | wc -l` → `8` confirms them on disk.
+
+`dbtest` and `crontest` are leaf test-only runners (spec 002 §4, "Structure Z"; ADR 0017 for `crontest`) that a
+real consumer never imports, so neither is ever tagged or released independently — they only need to stay green
+in CI. Both are now in `.github/workflows/ci.yml`: **Plan 027 Task 10 added `expr` to the `module` matrix and
+the `workspace` job AND closed the pre-existing `crontest` gap in both**, so `grep -c 'dir:' ci.yml` → `8`,
+matching `go.work` exactly.
+
+> ### ✅ `expr` IS RELEASABLE — the two `release.yml` gaps are CLOSED
+>
+> `expr` is unlike `dbtest`/`crontest`: it is **imported by consumers** (it is where the `*Expr` constructors
+> went when `expr-lang/expr` was dropped from the core), so it needs a tag like the dialect modules. When
+> Plan 027 Task 12 synced this document, `.github/workflows/release.yml` did not know about it — **it had no
+> `on.push.tags` pattern for `expr/v*`, so pushing `expr/v0.1.0` would have fired no workflow at all**, and
+> its title `case` special-cased only `adapter/database/sql/*/v*.*.*`, so an `expr` release would have been
+> mislabelled `github.com/kartaladev/msgin expr/v0.1.0`.
+>
+> **Both are closed.** `expr/v[0-9]+.[0-9]+.[0-9]+*` is now a trigger pattern, and the metadata step's case
+> arm reads `adapter/database/sql/*/v*.*.* | expr/v*.*.*`. Verified by executing the case logic against six
+> tag shapes rather than by reading it:
+>
+> | Tag | Title | Pre-release |
+> |---|---|---|
+> | `v0.0.1` | `github.com/kartaladev/msgin v0.0.1` | false |
+> | `v0.0.1-rc.1` | `github.com/kartaladev/msgin v0.0.1-rc.1` | **true** |
+> | `expr/v0.1.0` | **`expr v0.1.0`** | false |
+> | `expr/v0.1.0-rc.1` | **`expr v0.1.0-rc.1`** | **true** |
+> | `adapter/database/sql/postgres/v0.1.0` | `adapter/database/sql/postgres v0.1.0` | false |
+>
+> **The prefixes stay ENUMERATED, deliberately** — a bare `*/v*.*.*` catch-all would misparse the root tag
+> (which carries no prefix) and any future root pre-release containing a slash. Adding a ninth module means
+> adding its pattern here **and** its case arm; there is no wildcard doing it for you.
 
 ## Tag order — root FIRST, then dialect/harness modules
 
@@ -30,18 +63,22 @@ published tag to pin to. Hence the fixed order:
 
 1. **Tag the root module first:** `git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z`. The `release`
    workflow fires on the `v[0-9]+.[0-9]+.[0-9]+*` tag pattern and publishes the GitHub Release for the engine.
-2. **For each dialect/harness module being released** (`harness`, `postgres`, `mysql`, `sqlite`):
+2. **For each consumer-importable non-root module being released** (`harness`, `postgres`, `mysql`, `sqlite`,
+   and **`expr`**):
    - Edit that module's `go.mod`: remove the dev-time
-     `replace github.com/kartaladev/msgin => ../../../..` line, and change
+     `replace github.com/kartaladev/msgin => ../../../..` line — **`expr/go.mod`'s is `=> ..`, one level, not
+     four** — and change
      `require github.com/kartaladev/msgin v0.0.0` to the pinned, just-published version, e.g.
      `require github.com/kartaladev/msgin vX.Y.Z`.
    - Run `GOWORK=off go mod tidy` inside that module directory and commit the updated `go.mod`/`go.sum`.
    - Tag it with its **module-path-prefixed** SemVer, matching its module path exactly:
      `git tag -a adapter/database/sql/postgres/vA.B.C -m "postgres vA.B.C"` (same pattern for `mysql`,
-     `sqlite`, and `harness`), then `git push origin adapter/database/sql/postgres/vA.B.C`.
+     `sqlite`, and `harness`; `expr/vA.B.C` for `expr`), then
+     `git push origin adapter/database/sql/postgres/vA.B.C`.
    - The `release` workflow's module-prefixed tag patterns
-     (`adapter/database/sql/{postgres,mysql,sqlite,harness}/v[0-9]+.[0-9]+.[0-9]+*`) pick this up and publish
-     a GitHub Release titled with the module path and version.
+     (`adapter/database/sql/{postgres,mysql,sqlite,harness}/v[0-9]+.[0-9]+.[0-9]+*` **and
+     `expr/v[0-9]+.[0-9]+.[0-9]+*`**) pick this up and publish a GitHub Release titled with the module path
+     and version.
 3. A tag with a `-` suffix in its version (e.g. `v0.0.1-rc.1`, `adapter/database/sql/postgres/v0.1.0-rc.1`) is
    published as a **pre-release** — the workflow detects the `-` and passes `--prerelease` to
    `gh release create`.
@@ -55,15 +92,16 @@ convenience of the local `go.work` workspace.
 ## `go.work`
 
 The repo-root `go.work` is **committed** (unlike the historical default of gitignoring it) — it ties the
-6 modules (root + harness + postgres + mysql + sqlite + dbtest) together for local development, so a contributor gets
+8 modules (root + expr + harness + postgres + mysql + sqlite + dbtest + crontest) together for local development, so a contributor gets
 one coherent workspace with `go build ./...` resolving across all of them without hand-editing `replace`
 directives. `go.work.sum` is deliberately **not** committed (still gitignored): it accumulates whatever the
 workspace happens to have built locally (including `dbtest`'s heavy testcontainers/Docker/OTel closure) and is
 not a stable, reproducible artifact across machines — each module's own `go.sum` remains the source of truth.
 
 CI never relies on `go.work` for the per-module correctness jobs (`GOWORK=off`, see above); a separate
-`workspace` job in `ci.yml` builds every module with the workspace active (`GOWORK` unset/default) purely to
-prove the workspace itself stays coherent.
+`workspace` job in `ci.yml` builds the modules with the workspace active (`GOWORK` unset/default) purely to
+prove the workspace itself stays coherent. **As of Plan 027 Task 10 that job enumerates all eight `use`
+entries**, and so does the `module` matrix — the earlier `adapter/cron/crontest` gap in both is closed.
 
 ## A known, temporary go.sum artifact of the dev-time local `replace`
 

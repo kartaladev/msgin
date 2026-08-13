@@ -32,6 +32,17 @@ msgin/                              module github.com/kartaladev/msgin   (CORE: 
   non-stdlib dependencies are `clockwork` (ADR 0004) and `cenkalti/backoff/v4` (ADR 0005). `memory`
   stays in-core because it is the reference test double the core's own blackbox tests use; `http`
   and `database/sql` stay in-core because they need only the standard library.
+
+  > **The dependency list above is stale — annotated 2026-07-27 (audit round 1, finding D7).** It has been
+  > wrong since [ADR 0016](0016-robfig-cron-dependency.md) added `robfig/cron/v3`, and
+  > [ADR 0019](0019-runtime-expression-evaluation.md) later added `expr-lang/expr`. `cenkalti/backoff/v4` was
+  > also subsequently dropped in favour of the in-house `BackoffStrategy`. The **decision** this ADR records —
+  > the module split — is unaffected and stands; only this illustrative dependency list drifted.
+  >
+  > **The current, authoritative list is CLAUDE.md's Dependency policy.** As of Spec 014 / ADR 0029 the core
+  > module's direct non-stdlib dependencies are **`clockwork`** and **`robfig/cron/v3`**; `expr-lang/expr`
+  > leaves the core module for its own `expr` module. This note is annotation, not a new decision — per the
+  > project's ADR convention, superseding decisions live in the ADRs that make them.
 - **`database/pgx`, `redis`, `nats`** are **separate modules**, each `require`-ing the core module
   and importing its real client directly, shipping turnkey constructors. Consumers `go get` only the
   adapter modules they use.

@@ -91,7 +91,8 @@
     boundary, the outbound response→error classification (`4xx = Permanent`), and the per-mode delivery guarantees.
   - **ADR 0024 — `gin` dependency (isolated module):** justifies adding `github.com/gin-gonic/gin` as a direct
     dependency of the **`adapter/http/gin` module only**, following the Dependency-policy rule that every dependency is
-    ADR-justified and the heavy-client-adapter-as-separate-module precedent (ADR 0003). Authored with Plan 027 (Phase 5).
+    ADR-justified and the heavy-client-adapter-as-separate-module precedent (ADR 0003). Authored with **Plan 028**
+    (Phase 5). **Neither ADR 0024 nor Plan 028 exists yet** — both are forward references to unwritten artifacts.
 
 ## 1. Motivation
 
@@ -625,8 +626,15 @@ the *client* retries on `5xx`. A body-write failure after the committed `200` is
 | **1** ✅ **DELIVERED** | [020](../plans/020-http-adapter-inbound.md) | `adapter/http` shared encode core + `adapter/http/stdlib` inbound (I1, I2) → `http.Handler`; ADR 0023 (+ Addendum A) | ADR 0022 |
 | **2** ✅ **DELIVERED** | [024](../plans/024-http-outbound.md) | `adapter/http` outbound (O1 webhook `OutboundAdapter`, O2 `RequestReplyExchange`); ADR 0023 (+ Addendum B) | Phase 1; Plan 023 (`WithProducerRetry`) |
 | **3** | 025 | `adapter/http` (`msghttp`): shared SSE core (`sse.go`) + SSE server (S-out, `sse_server.go` — Addendum C8, not `stdlib`); ADR 0023 (+ Addendum C) | Phase 1 |
-| **4** | 026 | `adapter/http` (`msghttp`) SSE client (S-in, `StreamingSource`, `sseclient.go` — Addendum C7, not `stdlib`) | Phase 3 (the `sse.go` core + Addendum C) |
-| **5** | 027 | `adapter/http/gin` module — gin bindings for I1/I2/S-out + `RegisterRoutes`; ADR 0024 (gin dependency) | Phases 1, 3 |
+| **4** | 026 | `adapter/http` (`msghttp`) SSE client (S-in, `EventDrivenSource`, `sseclient.go` — Addendum C7, not `stdlib`) | Phase 3 (the `sse.go` core + Addendum C) |
+| **5** | **028** | `adapter/http/gin` module — gin bindings for I1/I2/S-out + `RegisterRoutes`; ADR 0024 (gin dependency) | Phases 1, 3 |
+
+> **Two corrections to this table, 2026-07-28.**
+> **(a) Phase 5 is Plan 028, not 027** (audit round 1 finding D3; round 2 §D9 found this row still stale
+> after the §8 note below had already been corrected — the file contradicted itself). Plan 027 is the
+> [core package layout](../plans/027-core-package-layout.md) window, sequenced first; see §8.
+> **(b) `StreamingSource` is now `EventDrivenSource`** ([ADR 0029 §1](../adrs/0029-eip-lexical-alignment.md)).
+> `adapter/http/sseclient.go` implements the renamed interface.
 
 Each phase: its plan is authored with the driving ADR content, the **spec + ADR + plan are adversarially audited by a
 fresh Opus subagent before any code** (two rounds if fixes destabilize the design), then implemented via
@@ -674,9 +682,17 @@ precedent).
   [ADR 0022](../adrs/0022-messaging-gateway.md) / [Spec 010](010-messaging-gateway.md).
 - **New ADRs:** [ADR 0023](../adrs/0023-http-channel-adapter.md) (HTTP adapter architecture — with Plan 020; **Addendum
   A** records the Phase-1 review-driven design changes, **Addendum B** the Phase-2 outbound delivery decisions,
-  **Addendum C** the Phases-3+4 SSE design decisions C1–C6), ADR 0024 (gin dependency — with Plan 027).
+  **Addendum C** the Phases-3+4 SSE design decisions C1–C6), ADR 0024 (gin dependency — with Plan 028; *not yet
+  written*).
+
+  > **Plan renumber, 2026-07-27 (audit round 1, finding D3).** This spec's Phase 5 (gin) was numbered **027**.
+  > That number is now taken by [Plan 027 — Core package layout](../plans/027-core-package-layout.md), the
+  > pre-v1 breaking window, which is sequenced **first**, ahead of the feature roadmap
+  > ([ADR 0027](../adrs/0027-core-package-restructure.md)). **The gin binding becomes Plan 028.** Until this
+  > edit the renumber existed only in `docs/HANDOVER.md` and inside Plan 027 itself.
 - **Plans:** [020](../plans/020-http-adapter-inbound.md) (Phase 1 — **delivered**),
-  [024](../plans/024-http-outbound.md) (Phase 2), 025 (Phase 3), 026 (Phase 4), 027 (Phase 5). Plan 021 is
+  [024](../plans/024-http-outbound.md) (Phase 2), 025 (Phase 3), 026 (Phase 4), **028** (Phase 5 — gin,
+  renumbered from 027). Plan 021 is
   [Spec 012](012-exchange-panic-safe-cleanup.md) — the core `ChannelExchange` panic-safe-cleanup fix, which lands first
   and tightens the `RequestReplyExchange` contract Phase 2's O2 implements.
 - **Spawned follow-up, now resolved:** [Spec 012 — panic-safe `ChannelExchange` cleanup](012-exchange-panic-safe-cleanup.md)

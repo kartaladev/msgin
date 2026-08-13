@@ -29,13 +29,13 @@ import (
 // instance-addressable callback URL and correlate the late reply through a
 // durable store — an ADAPTER change, not a core change.
 //
-// Gateway limitation (verified against msgin.Gateway): a msgin.Gateway over this
+// Gateway limitation (verified against endpoint.Gateway): an endpoint.Gateway over this
 // Exchange works ONLY for a request payload that is []byte or string (what
 // EncodeRequest accepts) and a reply type of []byte (what Exchange produces).
-// msgin.Gateway carries NO codec — it type-asserts the reply — so
+// endpoint.Gateway carries NO codec — it type-asserts the reply — so
 // NewGateway[MyStruct, MyStruct] fails with msgin.ErrPayloadType, and so does
 // NewGateway[[]byte, string]. Only NewGateway[[]byte, []byte] (or a request of
-// string) round-trips. msgin.OutboundGateway, which forwards the reply message
+// string) round-trips. endpoint.OutboundGateway, which forwards the reply message
 // itself, is not so restricted.
 //
 // SSRF non-guarantee (INV-1): the default no-follow redirect policy stops a
@@ -46,7 +46,7 @@ import (
 // URL is never derived from a message, so message-driven SSRF cannot arise.
 //
 // A hand-built &Exchange{} that skips NewExchange is unsupported and will
-// nil-deref, exactly as a hand-built &msgin.ChannelExchange{} does — the
+// nil-deref, exactly as a hand-built &endpoint.ChannelExchange{} does — the
 // resolved *Config it reads directly (the no-follow client, maxResponseBytes) is
 // only ever the one NewConfig produced.
 type Exchange struct {

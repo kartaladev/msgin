@@ -1,6 +1,11 @@
 # ADR 0020 — Splitter, Aggregator & the `MessageGroupStore` model (sequence-header reassembly, hold-until-release settlement)
 
-- **Status:** Proposed (2026-07-20) — records the architectural decisions of [Spec 009](../specs/009-splitter-aggregator-endpoints.md),
+- **Status:** **Accepted (2026-07-20) — implemented in [Plan 015](../plans/015-splitter.md) (merged as
+  `e4b346d`) and [Plan 016](../plans/016-aggregator.md) (merged as `94cda1f`).** *(Status corrected 2026-07-28,
+  audit round 6 finding M-3; the line read "Proposed (2026-07-20)" even while its own body already recorded
+  Phase 1 as "SHIPPED & MERGED". Evidence in non-test code today — relocated by Plan 027's `c83dde9`:
+  `routing/splitter.go:30` `Split`, `routing/aggregator.go:228` `Aggregator`, and the `MessageGroupStore` SPI
+  at `groupstore.go:37`.)* Records the architectural decisions of [Spec 009](../specs/009-splitter-aggregator-endpoints.md),
   settled with the user in brainstorming (durable group store now; opt-in expiry → discard channel; full expr sugar;
   `Run(ctx)`-owning Aggregator). **Phase-1 (Splitter) adversarial audit round 1 folded** (Opus, verified against the
   real API + sql framing): **H-1** deterministic child id `parentID#seq` added to the sequence-header convention

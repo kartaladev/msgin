@@ -15,6 +15,7 @@ import (
 
 	"github.com/kartaladev/msgin"
 	msghttp "github.com/kartaladev/msgin/adapter/http"
+	"github.com/kartaladev/msgin/endpoint"
 )
 
 // =============================================================================
@@ -252,7 +253,7 @@ func TestSSEClient_resumesFromSSEServerAcrossReconnect(t *testing.T) {
 
 // =============================================================================
 // Consumer.Run integration smoke: NewConsumer over an SSEClient — the first
-// NETWORKED/untrusted-remote StreamingSource wired to the runtime (audit
+// NETWORKED/untrusted-remote EventDrivenSource wired to the runtime (audit
 // MINOR-4; adapter/cron's Source is the earlier in-process one). SSEClient
 // emits []byte payloads (a WIRE source, not a LiveValueSource), so it is
 // paired with msgin.BytesPayloadCodec explicitly (mirrors outbound_test.go's
@@ -286,8 +287,8 @@ func TestConsumer_overSSEClient_smoke(t *testing.T) {
 		return nil
 	}
 
-	consumer, err := msgin.NewConsumer[[]byte](client, handler,
-		msgin.WithConsumerCodec[[]byte](msgin.BytesPayloadCodec{}))
+	consumer, err := endpoint.NewConsumer[[]byte](client, handler,
+		endpoint.WithConsumerCodec[[]byte](msgin.BytesPayloadCodec{}))
 	require.NoError(t, err)
 
 	runErr := make(chan error, 1)

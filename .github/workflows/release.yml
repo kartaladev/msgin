@@ -16,6 +16,7 @@ on:
       - "adapter/database/sql/mysql/v[0-9]+.[0-9]+.[0-9]+*"
       - "adapter/database/sql/sqlite/v[0-9]+.[0-9]+.[0-9]+*"
       - "adapter/database/sql/harness/v[0-9]+.[0-9]+.[0-9]+*"
+      - "expr/v[0-9]+.[0-9]+.[0-9]+*"
 
 permissions:
   contents: write
@@ -35,8 +36,12 @@ jobs:
           set -e
           TAG="${GITHUB_REF_NAME}"
 
+          # Any module-path-prefixed tag: strip the trailing /vX.Y.Z to recover the
+          # module path. Keep each prefix ENUMERATED rather than matching a bare
+          # */v*.*.* -- the root tag is vX.Y.Z with no prefix, and a catch-all
+          # would misparse a future root pre-release containing a slash.
           case "$TAG" in
-            adapter/database/sql/*/v*.*.*)
+            adapter/database/sql/*/v*.*.* | expr/v*.*.*)
               MODULE_PATH="${TAG%/*}"
               TITLE="${MODULE_PATH} ${TAG##*/}"
               ;;

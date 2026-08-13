@@ -15,9 +15,9 @@ type Broker struct {
 }
 
 var (
-	_ msgin.StreamingSource = (*Broker)(nil)
-	_ msgin.OutboundAdapter = (*Broker)(nil)
-	_ msgin.LiveValueSource = (*Broker)(nil)
+	_ msgin.EventDrivenSource = (*Broker)(nil)
+	_ msgin.OutboundAdapter   = (*Broker)(nil)
+	_ msgin.LiveValueSource   = (*Broker)(nil)
 )
 
 // Option configures a Broker.

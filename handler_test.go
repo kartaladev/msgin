@@ -49,6 +49,33 @@ func TestChain(t *testing.T) {
 			assert: func(t *testing.T, err error, log []string) { require.NoError(t, err); assert.Empty(t, log) },
 		},
 		{
+			// A nil element is a WIRING mistake — steps built conditionally
+			// (`steps = append(steps, maybeStep())`) can produce one. Chain must
+			// not panic on it (CLAUDE.md: no panic on caller input) and must not
+			// silently skip it either: skipping would delete a step the caller
+			// wrote, so a nil Filter would stop filtering and a nil To would
+			// discard. It degrades exactly like To(nil)/Activate(nil) instead.
+			name: "a nil step is a permanent ErrNilFunc naming its index",
+			steps: func(log *[]string) []msgin.Step {
+				return []msgin.Step{appendStep(log, "a"), nil, appendStep(log, "c")}
+			},
+			assert: func(t *testing.T, err error, log []string) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.True(t, msgin.IsPermanent(err), "must be permanent — the nil is fixed at composition")
+				assert.Contains(t, err.Error(), "msgin.Chain: nil step at index 1")
+				assert.Equal(t, []string{"a"}, log, "the chain stops AT the nil step, not before it")
+			},
+		},
+		{
+			name:  "a chain of only a nil step degrades rather than panicking",
+			steps: func(*[]string) []msgin.Step { return []msgin.Step{nil} },
+			assert: func(t *testing.T, err error, log []string) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "msgin.Chain: nil step at index 0")
+				assert.Empty(t, log)
+			},
+		},
+		{
 			name: "a mid-chain error stops the chain and propagates",
 			steps: func(log *[]string) []msgin.Step {
 				boom := func(next msgin.MessageHandler) msgin.MessageHandler {
@@ -85,9 +112,16 @@ func TestTo(t *testing.T) {
 			assert: func(t *testing.T, err error) { require.NoError(t, err) },
 		},
 		{
-			name:   "To(nil) is ErrNilSink",
-			run:    func(t *testing.T) error { return msgin.Chain(msgin.To(nil)).Handle(t.Context(), msgin.New[any](1)) },
-			assert: func(t *testing.T, err error) { assert.ErrorIs(t, err, msgin.ErrNilSink) },
+			// Spec 014 §2.1 row 6 (decision D-M): sink is captured by To's closure
+			// at construction, so the fault cannot change for the message's
+			// lifetime — it is Permanent and names its position.
+			name: "To(nil) is a permanent ErrNilSink naming its position",
+			run:  func(t *testing.T) error { return msgin.Chain(msgin.To(nil)).Handle(t.Context(), msgin.New[any](1)) },
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilSink)
+				assert.True(t, msgin.IsPermanent(err), "must be permanent")
+				assert.Contains(t, err.Error(), "msgin.To: nil sink")
+			},
 		},
 		{
 			name: "To propagates the sink send error",

@@ -15,6 +15,21 @@ import (
 // WithSuccessStatus (default 202 Accepted) — see msghttp.ServeAsync for the
 // full decode/send/status-mapping behavior this handler wraps.
 //
+// target may be ANY [msgin.MessageChannel] — ADR 0028 narrowed that interface
+// to Send alone, so a channel.QueueChannel, a channel.PublishSubscribeChannel,
+// a channel.DirectChannel, and any [msgin.OutboundAdapter] all qualify. Handing
+// it a QueueChannel parks each request in a queue and answers 202 immediately,
+// leaving a separate consumer to drain it; nothing requires a synchronous
+// subscriber on the request's own goroutine.
+//
+// That parked request survives the instance which accepted it ONLY when the
+// QueueChannel is backed by a durable, shared [msgin.ChannelStore] — the
+// adapter/database/sql one. With the library's default in-memory store
+// (adapter/memory.QueueStore) the queued request is LOST on process exit and is
+// reachable by no other instance, so behind a load balancer it is at-most-once
+// across a restart. The decoupling is the same either way; only the
+// ChannelStore decides whether the request outlives the process (Spec 014 §5.0).
+//
 // target MUST be non-nil: a nil target returns msghttp.ErrNilTarget rather
 // than deferring the failure to the first request. An invalid opt (e.g.
 // msghttp.WithMaxBodyBytes(0)) surfaces msghttp.NewConfig's typed

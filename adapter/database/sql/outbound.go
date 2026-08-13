@@ -13,7 +13,7 @@ import (
 // its optional msgin.ScheduledSender capability.
 //
 // Outbound is a WIRE adapter: it deliberately does NOT implement
-// msgin.LiveValueSource, so msgin.NewProducer always JSON-encodes the payload
+// msgin.LiveValueSource, so endpoint.NewProducer always JSON-encodes the payload
 // to []byte before calling Send (ADR 0010 D8). Go has no negative-interface
 // compile check, so that property cannot be asserted here — it is enforced by
 // the runtime test TestOutbound_NotLiveValueSource.
@@ -26,7 +26,7 @@ var (
 // a new, immediately-visible row (visible_after = now(), delay 0). Paired with
 // a Task-5 Source polling the SAME table, it forms a durable, at-least-once
 // produce/consume queue; Outbound is also usable directly as a
-// msgin.RetryPolicy.DeadLetter sink or a msgin.WithInvalidMessageSink target,
+// msgin.RetryPolicy.DeadLetter sink or an endpoint.WithInvalidMessageSink target,
 // since both are just an OutboundAdapter (but see WithSharedTransaction's
 // DLQ-sink caveat before using a strict shared-tx Outbound that way).
 type Outbound struct {
@@ -47,8 +47,8 @@ type Outbound struct {
 // error (ErrNilResolver), never a deferred nil-func panic on the first Send.
 //
 // The returned Outbound implements msgin.OutboundAdapter; pass it to
-// msgin.NewProducer, msgin.RetryPolicy.DeadLetter, or
-// msgin.WithInvalidMessageSink. Call Ready once at boot to fail fast on an
+// endpoint.NewProducer, msgin.RetryPolicy.DeadLetter, or
+// endpoint.WithInvalidMessageSink. Call Ready once at boot to fail fast on an
 // un-provisioned schema (ADR 0010 D2).
 func NewOutboundAdapter(db *stdsql.DB, table string, dialect LeaseDialect, opts ...Option) (*Outbound, error) {
 	cfg := config{logger: discardLogger()}
@@ -78,7 +78,7 @@ func (o *Outbound) Send(ctx context.Context, msg msgin.Message[any]) error {
 // visible_after = <db-now> + delay, computed on the DB server clock
 // (skew-free). A delay <= 0 makes the row immediately visible. Implements
 // msgin.ScheduledSender. msg's payload MUST be []byte — Outbound is a wire
-// adapter (not a LiveValueSource), so msgin.NewProducer always JSON-encodes T
+// adapter (not a LiveValueSource), so endpoint.NewProducer always JSON-encodes T
 // to []byte before calling Send/SendAfter; a non-[]byte payload here is a
 // defensive case (ErrInvalidPayload) that trusted producers do not hit.
 //

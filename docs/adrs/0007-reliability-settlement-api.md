@@ -1,8 +1,18 @@
 # ADR 0007 — Reliability & settlement API
 
-- **Status:** Accepted (2026-07-17)
+- **Status:** Accepted (2026-07-17) · **D7 amended 2026-07-28 by decision D-N, and again 2026-07-30 by
+  decision D-P** — see the amendment notes in D7 below. The amendments are recorded here rather than by
+  superseding this ADR: D7's reasoning stands unchanged for the case it weighed (discard vs. keep-retrying);
+  D-N adds a case it could not have weighed, created by decision **D-M** in
+  [ADR 0029 §5.0b](0029-eip-lexical-alignment.md), and **D-P makes D-N's fallback single-shot** so that a
+  **down** fallback sink falls through to D7's discard instead of re-creating the infinite-retry trap D7's own
+  sentence rejects. **D7 amended a third time 2026-08-09** — `ErrPayloadTooLarge` is **exempt** from D-N's
+  dead-letter fallback, so a byte cap's rejects are never persisted into the operator's durable store.
 - **Context source:** [Spec 001 — Messaging core](../specs/001-messaging-core.md) §5–§8;
   [Plan 002 — Reliability](../plans/002-reliability.md)
+- **Amended by:** [ADR 0029 §5.0b](0029-eip-lexical-alignment.md) (D-N and D-P, D7 only) ·
+  **Spec:** [014 §2.1](../specs/014-core-package-layout.md) · **Plan:** [027](../plans/027-core-package-layout.md)
+  Task 9.7
 - **Related:** [ADR 0002 — Adapter SPI](0002-adapter-spi.md) (runtime-owned reliability, `Delivery`/
   `Ack`/`Nack`, `NativeReliability` escape hatch), [ADR 0004 — clockwork](0004-clockwork-dependency.md),
   [ADR 0005 — cenkalti/backoff](0005-cenkalti-backoff-dependency.md) (backoff placement)
@@ -165,11 +175,193 @@ retrying anyway would only convert a configuration gap (no sink configured) into
 trap, which is worse than a logged, observable discard. Task 5 implements the call site; this decision
 fixes the *policy* so Task 5 has nothing left to decide.
 
+> **AMENDED 2026-07-28 by decision D-N** — [ADR 0029 §5.0b](0029-eip-lexical-alignment.md#50b-the-two-sentinels-are-not-symmetric-and-a-deterministic-fault-needs-a-retry-classification--decisions-d-k-revised-and-d-m),
+> [Spec 014 §2.1](../specs/014-core-package-layout.md#21-the-deliberate-behavior-changes-the-register), realized
+> by [Plan 027](../plans/027-core-package-layout.md) Task 9.7. **The discard is no longer the immediate
+> fallback: the dead-letter sink is tried first.**
+>
+> When `invalidSink == nil` **and** `policy.DeadLetter != nil`, the invalid-message divert routes to the
+> **DeadLetter sink**. The discard above remains the terminal behavior only when **neither** sink is
+> configured. `OnInvalidMessage` still fires in both cases — the hook reports the *classification*, the sink is
+> only the *destination* — and the fallback is announced with its own WARN naming both facts (no invalid-message
+> sink configured; message sent to the dead-letter sink instead).
+>
+> **Why D7's original reasoning does not cover this case.** D7 weighed *discard* against *keep retrying* and
+> chose discard, correctly — but it never weighed *discard* against *a durable sink the caller already
+> configured*, because when it was written no permanent fault could arrive at a consumer that had a DeadLetter
+> and no invalid sink. Decision **D-M** creates exactly that arrival: it reclassifies deterministic endpoint
+> faults (`ErrNilFunc`, `ErrNilSink`) as `Permanent`, which moves them off the retry-exhaustion path that had
+> been depositing them in the DeadLetter sink. Measured, one message,
+> `RetryPolicy{MaxAttempts: 3, DeadLetter: dlq}`, no `WithInvalidMessageSink`:
+>
+> ```
+> BEFORE D-M       bare ErrNilFunc         OnRetry=2 OnDeadLetter=1 OnInvalidMessage=0 | dlqSink=1 discarded=false
+> AFTER  D-M       Permanent(ErrNilFunc)   OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1 | dlqSink=0 discarded=true
+> AFTER  D-M + D-N Permanent(ErrNilFunc)   OnRetry=0 OnDeadLetter=0 OnInvalidMessage=1 | dlqSink=1 discarded=false
+> ```
+>
+> Without D-N a message this library previously captured **durably** would start being **dropped**. That is not
+> a corner case: a finite `MaxAttempts` **requires** a `DeadLetter` (`RetryPolicy.Validate`, `retry.go:46-53`)
+> while `WithInvalidMessageSink` is optional and unset by default, so "DeadLetter present, invalid sink absent"
+> is the shape of every finite-retry consumer that has not opted in. CLAUDE.md: *"When a wrong default could
+> silently corrupt (… lose data …), pick the value that fails safe."*
+>
+> **Scope:** both invalid-message divert call sites — the decode-failure path and the permanent-handler-error
+> path. The decode arm's change (discard → dead-letter) is a behavior change in its own right and a strict
+> improvement over the discard; it is recorded rather than inherited silently.
+>
+> ---
+>
+> **AMENDED AGAIN 2026-07-30 by decision D-P — the fallback is SINGLE-SHOT** ([round 8 §1](../plans/027-audit-round-8.md),
+> [ADR 0029 §5.0b](0029-eip-lexical-alignment.md), [Spec 014 §2.1](../specs/014-core-package-layout.md#21-the-deliberate-behavior-changes-the-register)
+> row 7, realized by [Plan 027](../plans/027-core-package-layout.md) Task 9.7). **When the fallback target's
+> `Send` fails, this decision's discard is what happens next.**
+>
+> The amendment above said only *where* the message goes. It never said what happens when that target is
+> **down** — and D8's send-failure arm (`endpoint/consumer.go:774-782`) `Nack`s with `requeue=true`. A
+> **permanent** message therefore re-entered the flow, forever, and **every bound this library owns is
+> structurally blind to that loop**:
+>
+> - **MaxAttempts** — never consulted. The permanent arm deliberately bypasses `c.attempts(d)` (M8) and passes
+>   `attempt = 1`.
+> - **Backoff** — `retryDelay(policy, 1)` is `p.Backoff.Delay(0)` (`endpoint/consumer.go:948-953`), the *first*
+>   step, on every iteration. It never escalates.
+> - **Circuit breaker** — `endpoint/consumer.go:614` records `err == nil || msgin.IsPermanent(err)` as
+>   **healthy**, so the breaker is told the flow is fine while the message spins.
+>
+> Measured in round 8 in the default configuration, against a dead-letter sink whose `Send` returns an error:
+>
+> ```
+> BEFORE D-N: deliveries=1   acks=1  nacks=0   dlqSends=0   OnInvalid=1  OnDeadLetter=0  OnRetry=0
+> AFTER  D-N: deliveries=41  acks=0  nacks=40  dlqSends=40  OnInvalid=0  OnDeadLetter=0  OnRetry=40
+> ```
+>
+> (41 was the harness's redelivery cap, reached in under 10 ms. The loop is **unbounded** in reality.)
+>
+> **This is the trap D7's own sentence rejects,** verbatim: *"retrying anyway would only convert a
+> configuration gap (no sink configured) into an infinite-retry trap, which is **worse** than a logged,
+> observable discard."* D-N re-created it because its note argued only the discard-vs-durable-sink axis and
+> never re-weighed the axis D7 had actually decided.
+>
+> **The amended behavior, stated in full.** The scope is the **whole invalid-message path** — every divert of
+> a message classified permanent, whatever sink it targets — not only the `invalidSink == nil` case that
+> exposed the defect:
+>
+> 1. `invalidSink != nil` → send there. On success: fire `OnInvalidMessage`, `Ack`.
+> 2. `invalidSink == nil` and `policy.DeadLetter != nil` → send THERE instead (**D-N**). On success: fire
+>    `OnInvalidMessage`, `Ack`. This is **one** attempt — there is no second.
+> 3. **Either** of those `Send`s **fails** → **do not `Nack`.** Log a WARN naming **both** the classification
+>    cause *and* the sink error, fire `OnInvalidMessage`, and `Ack` — i.e. fall through to this decision's
+>    discard (**D-P**). The single shot applies to a **configured** invalid-message sink exactly as it does to
+>    the D-N fallback.
+> 4. Neither sink configured → the original D7 discard, unchanged.
+>
+> **Why arm 3 covers the configured sink too.** The reasoning that forbids the requeue is a property of the
+> *message*, not of *which sink* refused it. The invalid path deliberately never consults the attempt tracker
+> (M8), so a `Nack` here is invisible to `MaxAttempts`, invisible to the circuit breaker (`IsPermanent`
+> records **healthy**), and — with the default `nil` `Backoff` — hot-spins; worse, the redelivery holds its
+> `WithMaxInFlight` credit indefinitely, so a down invalid sink starves **valid** traffic. A permanent message
+> cannot succeed on redelivery, so the loop buys nothing to pay for that.
+>
+> **The accepted cost, stated plainly:** a *transient* outage of a **configured** `WithInvalidMessageSink`
+> discards that window's invalid messages rather than holding them until the sink recovers. This is a
+> disclosed limitation, not an oversight — it is the price of the termination guarantee, and it is paid
+> loudly: every discard emits a WARN naming the message id, the classification cause and the sink error, and
+> fires `OnInvalidMessage`. An operator who must not lose them should point `WithInvalidMessageSink` at a sink
+> that is durable-on-write (a local spool, an outbox table) rather than at a remote service whose availability
+> the consumer cannot assume.
+>
+> **The one exception to arm 3 — a `Send` that fails only because the settle context is ALREADY cancelled**
+> (added by the Task 9.7 code review; `divertTerminal`'s `ctx.Err() != nil` branch). `ctx` there is `Run`'s
+> `settleCtx`, which `drainWorkers` cancels when the **shutdown deadline** expires (D9/C1). Once that happens
+> a **healthy** sink's `Send` returns an error too — its context was cancelled — and that error is
+> indistinguishable at the call site from a refusal. Routing it into arm 3 would `Ack` a message the sink may
+> never have received, and because a `Delivery.Ack` is free to ignore its context (`adapter/memory`'s is
+> `func(context.Context) error { return nil }`) that `Ack` **succeeds** and the tracker evicts: the message is
+> lost with the sink perfectly healthy. So this arm **`Nack`s with requeue**, fires **no** terminal hook, and
+> returns *not settled* (the tracker entry is kept) — matching every other ctx-done settle arm in the consumer
+> (see the I4 note on `admit`).
+>
+> **This does not weaken D-P.** In normal operation `ctx.Err()` is `nil`, so the single shot is exactly as
+> stated in arms 1–4; the `Nack` is reachable only while the consumer is already shutting down, a window D9
+> bounds by construction, so it cannot loop. The unbounded-redelivery trap D7 rejects needs a *live* consumer
+> to spin in, and this arm exists only when there isn't one.
+>
+> D-N's gain (a reachable dead-letter sink captures the message) is kept; D7's guarantee (**an invalid message
+> always terminates**) is not surrendered. The rejected alternative — threading a real attempt count into the
+> invalid-path `divert` to bound the loop — is more code and more state, and still spends retry budget on a
+> fault that cannot resolve.
+>
+> **This does NOT change D8** for the dead-letter and transient paths: a `divert` whose sink is
+> `c.policy.DeadLetter` (`endpoint/consumer.go:726`) still `Nack`s with backoff on send failure, because that
+> message is retryable and requeueing it is not a loop. The single-shot rule is specific to the **invalid**
+> path, whose messages are permanent by classification.
+>
+> **The class this violated — record it, not just the instance:** *a settlement path that is terminal by
+> construction must not become non-terminal without a bound.* Before D-N the no-invalid-sink path had exactly
+> one outcome (Ack); D-N gave it a retry loop that no counter, no backoff and no breaker could observe. Any
+> future amendment that adds a `Send` to a terminal path must state what happens when that `Send` fails.
+>
+> **Operational disclosure (D-N/D-P consequence):** a dead-letter sink now receives **two operationally
+> distinct classes** — retries-exhausted (may be replayable) and permanently-invalid (replaying is pointless) —
+> and msgin stamps **no settlement-reason header**, so the distinction does not survive the process. See
+> [ADR 0029 §5.0b](0029-eip-lexical-alignment.md) (decision D-N's Consequences) for the full record and the
+> remedy available to operators today.
+>
+> ---
+>
+> **AMENDED A THIRD TIME 2026-08-09 — `ErrPayloadTooLarge` is EXEMPT from D-N's fallback** (whole-branch
+> `/code-review` of Task 9.5; [Spec 014 §2.1](../specs/014-core-package-layout.md#21-the-deliberate-behavior-changes-the-register)
+> row 7). **Arm 2 above (`invalidSink == nil` → DeadLetter) does not apply to the byte-cap reject.**
+>
+> `endpoint.WithMaxPayloadBytes` (ADR 0009 D5) caps a wire payload's length *before* the codec sees it,
+> specifically to bound **memory and storage** consumed by **untrusted** input. D-N routes every invalid
+> message to `RetryPolicy.DeadLetter` when no invalid sink is configured — and "DeadLetter set, invalid sink
+> unset" is, by D-N's own argument above, **the default shape of every finite-retry consumer**. The composition
+> of the two is that an attacker posting over-size bodies to a capped consumer gets each rejected payload
+> written **verbatim** into the operator's durable dead-letter store. **The defence becomes the vector**: the
+> cap stops the decode-time allocation it was written for and then pays for it with unbounded durable writes,
+> which is the larger of the two costs it was protecting.
+>
+> | configuration | oversize (`ErrPayloadTooLarge`) | every other permanent class |
+> |---|---|---|
+> | no invalid sink | **WARN + `Ack` (discard)** — the pre-D-N behavior | dead-letter fallback (D-N, unchanged) |
+> | invalid sink set | invalid sink (unchanged — the operator opted in) | invalid sink (unchanged) |
+>
+> **Why this does not violate D-N's premise.** D-N exists so that *"no configuration that previously captured a
+> message starts dropping it"* — its measured table above shows a fault moving **off** the retry-exhaustion path
+> that had been depositing it in the DeadLetter sink. `ErrPayloadTooLarge` was never on that path: `IsPermanent`
+> has always been true for it (`reliability.go`), so before D-N it was **discarded** under this decision's
+> original text, not captured. Exempting it **restores** the prior behavior for this class rather than losing
+> anything D-N promised. The exemption is scoped to the *fallback*, not to the class: a caller who sets
+> `WithInvalidMessageSink` has deliberately asked for invalid messages and still receives over-size ones there.
+>
+> The discard stays **loud** — a WARN naming the message id and the classification, `OnInvalidMessage` fires,
+> the delivery is `Ack`ed — and its WARN is distinct from arm 4's, because a DeadLetter sink may well be
+> configured on this arm and a message claiming none was would send the operator to the wrong option.
+>
+> **The class, not the instance:** *a defence that bounds a resource must not be routed into a path that
+> re-spends that resource.* Any future settlement arm added downstream of a cap, quota or filter must state
+> what it does with the rejects, or it will re-create this.
+
 ### D8 — `divert` settlement contract (Task 5)
 
-*Stub — fleshed out in Task 5.* `divert` acks the original delivery only if the target sink accepts the
-message; otherwise it fires the relevant hook and `Nack`s the original (never Ack-and-lose). A
-send-failure `Nack` carries a non-zero backoff delay (not `0`) so a down sink is not hammered.
+*Stub — fleshed out in Task 5; **scoped to `divert` in Task 9.7**, see the amendment below.* `divert` — the
+**dead-letter** settlement helper (`endpoint/consumer.go`, `func (c *consumer[T]) divert`) — acks the original
+delivery only if the target sink accepts the message; otherwise it fires the relevant hook and `Nack`s the
+original (never Ack-and-lose). A send-failure `Nack` carries a non-zero backoff delay (not `0`) so a down sink
+is not hammered.
+
+> **Amended by D-P (Plan 027 Task 9.7) — this contract is `divert`'s alone.** As originally written, D8 spoke
+> for *both* settlement helpers, because there was only one: the same `divert` served the invalid-message path
+> and the dead-letter path. Task 9.7 split them, and **`divertTerminal` — the invalid-message path — does NOT
+> follow the sentence above**. There, a failed `Send` is settled TERMINALLY: WARN + `OnInvalidMessage` + `Ack`,
+> single-shot, never a `Nack` (see D7's amendment, arm 3). "Never Ack-and-lose" holds only where the message is
+> **transient by classification** — a retry-exhausted message *can* succeed on redelivery, so requeueing it is
+> not a loop; a **permanent** one cannot, so requeueing it is exactly the unbounded trap D7 rejects.
+>
+> Read D8 as: **`divert` (dead-letter) → Nack-with-backoff on send failure. `divertTerminal` (invalid) →
+> discard, loudly, on send failure.** The dead-letter contract above is otherwise unchanged.
 
 ### D9 — Shutdown is always finite (Task 7; revises the earlier "wait fully" default — C1)
 

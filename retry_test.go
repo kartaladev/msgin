@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/msgin"
+	"github.com/kartaladev/msgin/resilience"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -23,7 +24,7 @@ func TestRetryPolicy_Validate(t *testing.T) {
 		{"zero value = retry forever, valid", msgin.RetryPolicy{},
 			func(t *testing.T, err error) { assert.NoError(t, err) }},
 		{"finite with dead-letter is valid",
-			msgin.RetryPolicy{MaxAttempts: 3, DeadLetter: nopSink{}, Backoff: msgin.ExponentialBackoff{Initial: time.Millisecond}},
+			msgin.RetryPolicy{MaxAttempts: 3, DeadLetter: nopSink{}, Backoff: resilience.ExponentialBackoff{Initial: time.Millisecond}},
 			func(t *testing.T, err error) { assert.NoError(t, err) }},
 		{"finite without dead-letter is rejected",
 			msgin.RetryPolicy{MaxAttempts: 3},

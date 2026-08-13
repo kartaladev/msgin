@@ -3,7 +3,36 @@ package msgin
 import "errors"
 
 var (
-	// ErrPayloadType is returned when a Message[any] payload cannot be asserted to T.
+	// ErrPayloadType is returned when a value cannot be asserted to the type the
+	// caller declared for it. It has TWO producer classes and errors.Is cannot
+	// tell them apart:
+	//
+	//   - PAYLOAD SIDE — a Message[any] payload cannot be asserted to T. Its
+	//     producers wrap INCONSISTENTLY and live in more than one module, so do
+	//     not identify this side by a wrap: PayloadOf wraps as "want %T, got
+	//     %T"; the consumer's live-value and wire type assertions return it
+	//     BARE; and each msgin/expr provider's payload assertion wraps with the
+	//     source expression. What they share is the ABSENCE of the expression
+	//     side's marker, below.
+	//   - EXPRESSION SIDE (the msgin/expr provider module, and any future
+	//     CEL/starlark provider) — a compiled expression EVALUATED to a value
+	//     that is not the declared result type. Wrapped as
+	//     "expr result %T is not %T" (ADR 0029 §5.0b, decision D-K).
+	//
+	// Both classes are deterministic: the same input yields the same wrong type
+	// on every redelivery. IsPermanent names this sentinel (reliability.go), so
+	// neither is ever retried, and each is diverted WITHOUT a Permanent wrap —
+	// to WithInvalidMessageSink if one is configured, else single-shot to
+	// RetryPolicy.DeadLetter, else logged and discarded (ADR 0007 D7, as
+	// amended by D-N and D-P). That is D-K's whole reason for reusing this
+	// sentinel.
+	//
+	// ACCEPTED TRADE-OFF, not an absence: errors.Is(err, ErrPayloadType) does
+	// not separate the two, which buys callers ONE target instead of one per
+	// expression provider — but the two remedies are disjoint (fix the codec or
+	// the producing adapter, versus fix the expression). Match the string
+	// "expr result" to tell them apart: only the expression side carries a
+	// discriminator, so its ABSENCE is what identifies the payload side.
 	ErrPayloadType = errors.New("msgin: payload is not of the expected type")
 	// ErrPayloadDecode is returned when a wire payload ([]byte) cannot be decoded into T.
 	ErrPayloadDecode = errors.New("msgin: payload decode failed")
@@ -11,15 +40,17 @@ var (
 	ErrNilAdapter = errors.New("msgin: adapter is nil")
 	// ErrPayloadTooLarge is returned when a wire payload ([]byte) exceeds the
 	// WithMaxPayloadBytes cap. It is PERMANENT (an over-size payload will not
-	// shrink on redelivery), so the message is diverted to the invalid sink like
-	// a decode failure rather than retried (ADR 0009 D5).
+	// shrink on redelivery), so the message is diverted like a decode failure
+	// rather than retried (ADR 0009 D5) — to the invalid-message sink, or the
+	// dead-letter sink when none is configured ([Permanent] states all three
+	// arms).
 	ErrPayloadTooLarge = errors.New("msgin: payload exceeds the configured maximum size")
 	// ErrUnexpectedCodec is returned when a live-value source (memory) is given a codec.
 	ErrUnexpectedCodec = errors.New("msgin: live-value source must not have a payload codec")
 	// ErrInvalidConcurrency is returned when WithConcurrency is < 1.
 	ErrInvalidConcurrency = errors.New("msgin: concurrency must be >= 1")
 	// ErrUnsupportedSource is returned when a Source is neither Polling nor Streaming.
-	ErrUnsupportedSource = errors.New("msgin: source implements neither PollingSource nor StreamingSource")
+	ErrUnsupportedSource = errors.New("msgin: source implements neither PollingSource nor EventDrivenSource")
 	// ErrHandlerPanic wraps a value recovered from a panicking handler. It is a
 	// TRANSIENT failure (retried per the RetryPolicy), not permanent.
 	ErrHandlerPanic = errors.New("msgin: handler panicked")
@@ -104,7 +135,7 @@ var (
 	// an OUTER divert fails, the joined inner error can carry ErrDeadLettered from
 	// the INNER producer. errors.Is then reports true although the outer divert
 	// did not happen. The same applies when p.out is a nested retrying Producer,
-	// whose error passes through the isPermanent and no-DLQ arms unchanged. The
+	// whose error passes through the IsPermanent and no-DLQ arms unchanged. The
 	// sentinel therefore answers "was something dead-lettered somewhere in this
 	// chain", not "is this message in the sink I configured". Where the
 	// distinction matters, give each level its own sink and inspect that sink.
@@ -135,10 +166,67 @@ var (
 	ErrNoSubscriber = errors.New("msgin: channel has no subscriber")
 	// ErrNilHandler is returned when a nil MessageHandler is subscribed.
 	ErrNilHandler = errors.New("msgin: nil message handler")
-	// ErrNilSink is returned by To when its OutboundAdapter sink is nil.
+	// ErrNilSubscription is returned when a SubscribableChannel breaks its
+	// Subscribe contract by returning a nil Subscription together with a nil
+	// error. Subscribe must return either a usable Subscription or a non-nil
+	// error; a nil-nil pair leaves the caller holding a handle it cannot Cancel.
+	//
+	// SubscribableChannel is public SPI that third-party adapters implement, so a
+	// faulty implementation is caller input: it is rejected at CONSTRUCTION with
+	// this typed error — naming the contract that was broken — rather than
+	// deferred into a nil-pointer panic when the owner later cancels the
+	// subscription. Constructors that own a subscription for their lifetime (e.g.
+	// NewChannelExchange) return it.
+	ErrNilSubscription = errors.New("msgin: channel returned a nil subscription")
+	// ErrSharedReplyChannel is returned by endpoint.NewChannelExchange when the
+	// reply channel reports (via ExclusiveSubscribable) that its POLICY permits
+	// recipients other than this exchange — not that another subscriber exists.
+	// That covers a local fan-out channel and a channel whose deliveries reach
+	// other processes alike. Such a channel delivers a full copy of every reply to
+	// every other recipient. Pass channel.WithSingleSubscriber() to the channel, or
+	// endpoint.WithSharedReplyChannel() to accept the fan-out deliberately.
+	//
+	// THERE IS A THIRD CAUSE, and it is not a policy report at all: the channel's
+	// SingleSubscriber PANICKED. msgin recovers it and fails closed (the probe
+	// proved nothing, so the conservative answer is non-exclusive), and the
+	// recovered value is WRAPPED INTO THIS ERROR — read err.Error(), or errors.As
+	// past this sentinel, before hunting for a second subscriber. The channel may
+	// well be exclusive; what failed is the probe. See ExclusiveSubscribable's
+	// "MUST NOT block and MUST NOT panic" clause.
+	ErrSharedReplyChannel = errors.New("msgin: reply channel permits multiple subscribers; it is not exclusive to this exchange")
+	// ErrNilSink is returned, wrapped in [Permanent], by To when its
+	// OutboundAdapter sink is nil.
+	//
+	// To captures sink at construction, so the fault cannot change for the
+	// message's lifetime: the handler returns it wrapped in [Permanent] with the
+	// position ("msgin.To: nil sink"), and the driving Consumer routes the
+	// message to the invalid-message channel rather than retrying it to the
+	// dead-letter sink. errors.Is(err, ErrNilSink) still matches; the sentinel
+	// itself stays bare, so [IsPermanent] on the bare value reports false.
 	ErrNilSink = errors.New("msgin: nil outbound sink")
-	// ErrNilFunc is returned by an endpoint (Transform/Filter/Activate/Consume/
-	// Router) constructed with a nil function, instead of panicking at dispatch.
+	// ErrNilFunc is returned, wrapped in [Permanent], by an endpoint
+	// (Transform/Filter/Activate/Consume/Router/Split) constructed with a nil
+	// function — and by [Chain] for a nil Step ELEMENT, which is a nil function
+	// too — instead of panicking at dispatch.
+	//
+	// The governing invariant, which decides whether any msgin sentinel is
+	// wrapped in [Permanent] at the point it is produced:
+	//
+	// every typed error msgin returns from inside a MessageHandler body msgin
+	// itself constructs, whose cause was fixed at construction and cannot change
+	// for the message's lifetime, is Permanent; a fault a later Subscribe, config
+	// reload or drain could resolve stays bare and transient; every one returned
+	// from a constructor is bare, because construction never reaches a
+	// RetryPolicy; and everything else — handed to a caller from a
+	// non-constructor API — is bare too.
+	//
+	// Applied here: an endpoint's handler returns it wrapped in [Permanent] with
+	// the position that names the mis-wired constructor (e.g.
+	// "transform.Transform: nil fn", or "msgin.Chain: nil step at index 1" for a
+	// nil element), errors.Is(err, ErrNilFunc) still matches,
+	// and the CONSTRUCTORS — routing.NewAggregator (nil fn or nil strategy) and
+	// endpoint.NewConsumer (nil handler) — return it bare. The sentinel
+	// itself is never wrapped, so [IsPermanent] on the bare value reports false.
 	ErrNilFunc = errors.New("msgin: nil endpoint function")
 	// ErrNoRoute is returned by a Router when pick resolves no destination and no
 	// WithDefaultChannel is configured (Spring resolutionRequired=true).
@@ -153,16 +241,12 @@ var (
 	// ErrInvalidCapacity is returned by a bounded store constructor (e.g.
 	// memory.NewQueueStore) when an explicit capacity is <= 0.
 	ErrInvalidCapacity = errors.New("msgin: capacity must be > 0")
-	// ErrInvalidExpression is returned by FilterExpr/RouterExpr when an
-	// expression is empty, unparseable, or fails type-checking against the
-	// payload type at construction. The wrapped error names the offending
-	// expression. Runtime evaluation errors are NOT this — they propagate as the
-	// endpoint's handler error into the runtime's retry/DLQ path.
-	ErrInvalidExpression = errors.New("msgin: invalid expression")
 	// ErrNoCorrelation is returned when an Aggregator's correlation strategy
 	// yields no key for a message. It is always wrapped with Permanent (a
 	// missing correlation id will not appear on redelivery), so the runtime
-	// routes it to the invalid-message channel rather than retrying.
+	// diverts it rather than retrying — to the invalid-message channel, or the
+	// dead-letter sink when none is configured ([Permanent] states all three
+	// arms).
 	ErrNoCorrelation = errors.New("msgin: message has no correlation key")
 	// ErrNilOutput is returned by NewAggregator when no output channel is set
 	// (WithOutputChannel is required).
@@ -171,16 +255,31 @@ var (
 	// WithGroupTimeout is set without WithExpiredGroupChannel — an expired
 	// partial group must have a visible sink, never a silent drop.
 	ErrExpiryChannelRequired = errors.New("msgin: group timeout requires an expired-group channel")
-	// ErrExprResultType is returned (as the endpoint's handler error) by
-	// TransformExpr/SplitExpr when a compiled expression evaluates to a value that
-	// is not the asserted output type — a non-B TransformExpr result, or a
-	// non-slice SplitExpr result / non-B SplitExpr element. It is an EVALUATION
-	// (not construction) error: ErrInvalidExpression covers compile-time faults,
-	// this covers a well-typed-at-compile expression whose runtime value is the
-	// wrong Go type (possible when A/B is an interface, so expr cannot type-check
-	// the result). It propagates into the runtime's retry/DLQ path like any eval
-	// error.
-	ErrExprResultType = errors.New("msgin: expression result type mismatch")
+	// ErrNilMessageGroup is returned when a MessageGroupStore breaks its Add
+	// contract by returning a nil MessageGroup together with a nil error. Add
+	// must return either a usable group snapshot or a non-nil error; a nil-nil
+	// pair leaves the Aggregator holding a group it cannot read.
+	//
+	// MessageGroupStore is public SPI that third-party adapters implement, so a
+	// faulty implementation is caller input: it is rejected with this typed
+	// error — naming the contract that was broken — rather than deferred into a
+	// nil-pointer panic inside whichever release strategy is configured.
+	//
+	// It catches a nil INTERFACE only. A store that returns a typed nil — a
+	// (*myGroup)(nil) boxed into the interface — is not nil by this test and
+	// still fails inside the release strategy; distinguishing it would need
+	// reflection on the Aggregator's hot path, for every message. No shipped
+	// store does this. The same caveat applies to expr.RouteFunc's nil-channel
+	// check.
+	//
+	// It is always wrapped with Permanent: a store that returns nil snapshots is
+	// a deterministic implementation fault, so redelivery cannot fix it and
+	// retrying only burns MaxAttempts. The runtime therefore diverts it — to the
+	// invalid-message channel, or the dead-letter sink when none is configured
+	// ([Permanent] states all three arms). It is NOT a hold: returning nil here
+	// would Ack the source for a message the store just said it cannot read
+	// back, which risks a message durable nowhere.
+	ErrNilMessageGroup = errors.New("msgin: message group store returned a nil group")
 
 	// ErrGatewayClosed is returned by ChannelExchange.Exchange (and any Gateway
 	// built on it) once Close has been called: new exchanges are rejected and
@@ -197,6 +296,13 @@ var (
 	// nil. adapter/http/stdlib.NewInboundGateway (the I2 sync inbound gateway
 	// constructor) is a second legitimate caller: it returns this same
 	// sentinel when its exchange argument is nil.
+	//
+	// endpoint.OutboundGateway is the third, and the only one that wraps it in
+	// [Permanent]: it returns a Step rather than an error, so the nil surfaces
+	// from inside a handler body at EVALUATION ("endpoint.OutboundGateway: nil
+	// exchange") instead of at construction. That is ErrNilFunc's invariant
+	// applied to this sentinel — see [ErrNilFunc] — and the reason the two
+	// constructor call sites above stay bare while this one does not.
 	ErrNilExchange = errors.New("msgin: request-reply exchange is nil")
 
 	// ErrNilChannel is returned by NewChannelExchange when the request or reply

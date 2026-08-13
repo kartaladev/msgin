@@ -17,30 +17,41 @@ import (
 	"github.com/kartaladev/msgin"
 	msghttp "github.com/kartaladev/msgin/adapter/http"
 	"github.com/kartaladev/msgin/adapter/http/stdlib"
+	"github.com/kartaladev/msgin/channel"
+	"github.com/kartaladev/msgin/endpoint"
 )
+
+// mustSubscribe registers h on ch and fails the test if Subscribe errors. Since
+// ADR 0028 Subscribe returns (Subscription, error); these call sites do not need
+// the handle, and this keeps the original require.NoError assertion intact.
+func mustSubscribe(t *testing.T, ch msgin.SubscribableChannel, h msgin.MessageHandler) {
+	t.Helper()
+	_, err := ch.Subscribe(h)
+	require.NoError(t, err)
+}
 
 func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 
-// acceptingTarget returns an msgin.MessageChannel with a single subscriber
+// acceptingTarget returns a msgin.MessageChannel with a single subscriber
 // that accepts every message (returns a nil error).
 func acceptingTarget(t *testing.T) msgin.MessageChannel {
 	t.Helper()
-	ch := msgin.NewDirectChannel()
-	require.NoError(t, ch.Subscribe(msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error {
+	ch := channel.NewDirectChannel()
+	mustSubscribe(t, ch, msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error {
 		return nil
-	})))
+	}))
 	return ch
 }
 
-// echoExchange returns an msgin.RequestReplyExchange whose request channel
+// echoExchange returns a msgin.RequestReplyExchange whose request channel
 // forwards straight to its reply channel (an identity echo). It is closed via
 // t.Cleanup so no reply waiter lingers (goleak).
 func echoExchange(t *testing.T) msgin.RequestReplyExchange {
 	t.Helper()
-	request := msgin.NewDirectChannel()
-	reply := msgin.NewDirectChannel()
-	require.NoError(t, request.Subscribe(msgin.Chain(msgin.To(reply))))
-	x, err := msgin.NewChannelExchange(request, reply)
+	request := channel.NewDirectChannel()
+	reply := channel.NewDirectChannel()
+	mustSubscribe(t, request, msgin.Chain(msgin.To(reply)))
+	x, err := endpoint.NewChannelExchange(request, reply)
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, x.Close()) })
 	return x
@@ -258,8 +269,8 @@ func TestNewInboundGateway_clientCannotChooseTheResponseContentType(t *testing.T
 // fire-and-forget handoff has no reply body to show, so a deterministic 202
 // is the whole observable outcome.
 func ExampleNewInbound() {
-	target := msgin.NewDirectChannel()
-	if err := target.Subscribe(msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error {
+	target := channel.NewDirectChannel()
+	if _, err := target.Subscribe(msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error {
 		return nil // accept every message
 	})); err != nil {
 		panic(err)
@@ -290,20 +301,20 @@ func ExampleNewInbound() {
 // msgin.HeaderCorrelationID — dropping it would leave the reply unmatched to
 // the waiting caller (Plan 019 G6).
 func ExampleNewInboundGateway() {
-	request := msgin.NewDirectChannel()
-	reply := msgin.NewDirectChannel()
+	request := channel.NewDirectChannel()
+	reply := channel.NewDirectChannel()
 
 	flow := msgin.Chain(
-		msgin.Activate(func(_ context.Context, m msgin.Message[[]byte]) (msgin.Message[[]byte], error) {
+		endpoint.Activate(func(_ context.Context, m msgin.Message[[]byte]) (msgin.Message[[]byte], error) {
 			return msgin.WithPayload(m, bytes.ToUpper(m.Payload())), nil
 		}),
 		msgin.To(reply),
 	)
-	if err := request.Subscribe(flow); err != nil {
+	if _, err := request.Subscribe(flow); err != nil {
 		panic(err)
 	}
 
-	exchange, err := msgin.NewChannelExchange(request, reply)
+	exchange, err := endpoint.NewChannelExchange(request, reply)
 	if err != nil {
 		panic(err)
 	}

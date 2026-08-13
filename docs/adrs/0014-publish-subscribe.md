@@ -1,7 +1,10 @@
 # ADR 0014 — Publish-Subscribe channel + topic pub/sub SPI
 
-- **Status:** Proposed (2026-07-19) — pending adversarial audit + user go-ahead. Realizes Spec 003 **§3 D7
-  Phase 3**.
+- **Status:** **Accepted (2026-07-19) — implemented in [Plan 009](../plans/009-publish-subscribe-phase3.md),
+  merged as `e0f4004`.** Realizes Spec 003 **§3 D7 Phase 3**. *(Status corrected 2026-07-28, audit round 6
+  finding M-3; the line read "Proposed (2026-07-19) — pending adversarial audit + user go-ahead" long after
+  pub-sub shipped. Evidence in non-test code today — relocated by Plan 027's `c83dde9`:
+  `channel/pubsub.go:104` `PublishSubscribeChannel`, `channel/pubsub_registry.go:25` `NewPubSub`.)*
 - **Context source:** [Spec 004 — Publish-Subscribe](../specs/004-publish-subscribe.md); companion to
   [ADR 0013 — Composition model](0013-composition-endpoints.md); un-defers publish-subscribe from
   [ADR 0002 §4](0002-adapter-spi.md).

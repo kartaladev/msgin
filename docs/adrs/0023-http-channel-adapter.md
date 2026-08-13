@@ -29,8 +29,12 @@
     the typed runtime owns `PayloadCodec[T]`; header framing is the type-agnostic adapter concern.
   - [ADR 0003 — Multi-module layout](0003-multi-module-repository-layout.md) — the heavy-client-adapter-as-separate-module
     precedent (`database/pgx`) applied to the gin binding.
-- **Scoped follow-on ADR:** **ADR 0024** — the `gin` dependency justification (authored with Plan 027, Phase 5). This
-  ADR fixes the *architecture* that keeps gin isolated; ADR 0024 fixes the *dependency admission*.
+- **Scoped follow-on ADR:** **ADR 0024** — the `gin` dependency justification (authored with **Plan 028**,
+  Phase 5). This ADR fixes the *architecture* that keeps gin isolated; ADR 0024 fixes the *dependency
+  admission*. *(Corrected 2026-07-28, audit round 6 finding M-4: this read "Plan 027", which is now the
+  [core package layout](../plans/027-core-package-layout.md) window. Round-1 finding D3 renumbered the gin
+  phase to 028 but was applied only in [Spec 011 §8](../specs/011-http-adapter.md). Neither ADR 0024 nor
+  Plan 028 exists yet — both are forward references.)*
 
 ## Context
 
@@ -196,7 +200,8 @@ statement, and both constructors' godoc point at it.
 - `gin` remains a *future* admitted dependency (ADR 0024); this ADR only guarantees it can be isolated when admitted.
 
 **Follow-ups**
-- ADR 0024 admits `github.com/gin-gonic/gin` to the `adapter/http/gin` module (Plan 027).
+- ADR 0024 admits `github.com/gin-gonic/gin` to the `adapter/http/gin` module (**Plan 028** — corrected
+  2026-07-28, audit round 6 M-4; this read "Plan 027", now the core-package-layout window).
 - The async-callback request-reply variant (cross-instance Return Address) is a named future increment.
 - [Plan 023](../plans/023-producer-outbound-retry.md) resolved the outbound-retry open point (§5); Plan 024 (Addendum B)
   delivers the O1/O2 adapters that consume it.

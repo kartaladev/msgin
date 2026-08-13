@@ -11,7 +11,7 @@
 - **Spec:** [002 — sql multi-module split + SQLite](../specs/002-sql-multi-module-and-sqlite.md) (increment A;
   §4–§8 are authoritative, post-audit-round-1, **Structure Z**).
 - **ADR:** [0011 — sql engine/dialect module split](../adrs/0011-sql-engine-dialect-module-split.md); amends
-  [0003](0003-multi-module-repository-layout.md) + [0010](0010-poller-sql-adapter.md).
+  [0003](../adrs/0003-multi-module-repository-layout.md) + [0010](../adrs/0010-poller-sql-adapter.md).
 - **Audit:** round 1 `.superpowers/sdd/plan-006-audit-round-1.md` (F1–F9, folded) + round 2
   `.superpowers/sdd/plan-006-audit-round-2.md` (R2-1…R2-7, folded — SOUND WITH FIXES, no topology change → no
   round 3). Both folded into this bundle before execution.

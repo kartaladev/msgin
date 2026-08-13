@@ -4,11 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-**Greenfield.** The repo is bootstrapped (git remote, `.claude/` skills) but has **no Go module or source yet**. Everything under "Architecture blueprint" below is the **target design**, not existing code — treat it as the brief to build toward, not something to reverse-engineer.
+**Active, pre-v1.** The module exists and is substantially implemented: the pattern core at the repo root, the five core subpackages `endpoint`/`routing`/`transform`/`channel`/`resilience`, `adapter/{memory,cron,http,http/stdlib,database/sql}`, and the `expr` provider module — delivered across **27 plans** (`docs/plans/001`–`027`) / **29 ADRs** (`docs/adrs/0001`–`0030` — 30 numbers but 29 files: **there is no ADR 0024**, the `gin` dependency ADR is a forward reference to an unwritten artifact) / **14 specs** (`docs/specs/001`–`014`) / **5 RFCs** (`docs/rfcs/0001`–`0005`). Re-derive rather than trust: `ls docs/adrs/[0-9]*.md | wc -l` → 29, `ls docs/specs/[0-9]*.md | wc -l` → 14 (`docs/plans/` holds more *files* than plans — Plan 027 has satellite audit-round and derivation records). **Nothing is tagged or released** — there are no consumers, so breaking API changes are still free. Read [`docs/HANDOVER.md`](docs/HANDOVER.md) first: it names the active increment and the last safepoint.
+
+"Architecture blueprint" below is a **mix of shipped and planned** — see the adapter list there for which is which. Treat shipped parts as code to read, not a brief to build.
 
 `msgin` is a Go **library** implementing the messaging patterns from Gregor Hohpe & Bobby Woolf's *Enterprise Integration Patterns* (EIP) — the same conceptual model as the Spring Integration project, reimplemented in idiomatic, minimal-dependency Go. The scope is a **focused subset**, not all of Spring Integration (see "What this is — and is not").
 
-**Do first, as ADRs** (before or with the first `feat` commit): ratify the module path `github.com/kartaladev/msgin` (matches the git remote), the top-level package/API naming, and the open design decisions listed under "Architecture blueprint → Open decisions". As the module takes shape, keep this file's architecture section in sync with the code and add concrete build commands to "Commands".
+Keep this file's architecture section and commands in sync as the module evolves. The design decisions once open here are now ratified — see "Design decisions — RESOLVED" below.
 
 ## Development workflow (mandatory)
 
@@ -70,6 +72,11 @@ Persist the workflow's written outputs under `docs/`, each **prefixed with an in
 - **Code and commits** must reference the driving artifact (e.g. `Implements spec 003 / plan 003; see ADR-0007`) so reviewers can follow the chain.
 - Do not merge or commit work whose governing spec/rfc/plan/ADR link is missing. A new artifact with no traceable parent (or a decision with no ADR) is incomplete.
 
+Two long-lived documents sit outside the numbered artifacts:
+
+- **[`MESSAGING.md`](MESSAGING.md)** (repo root) — the narrative EIP companion explaining *why* the design is what it is (settlement lifecycle, credit/flow-control diagrams). Explanatory; the spec and ADRs are normative — where they disagree, the spec wins.
+- **[`docs/RELEASE.md`](docs/RELEASE.md)** — the per-module tagging choreography for this multi-module monorepo. Consult it before any tag; "License & release" below is only a summary.
+
 ## Session handover
 
 To survive context limits without hallucinating, hand off through a written document rather than relying on a cluttered context.
@@ -91,6 +98,45 @@ To survive context limits without hallucinating, hand off through a written docu
 6. **Gotchas/environment** — anything non-obvious needed to continue (tools, paths, credentials-by-reference).
 
 Begin the document with an explicit instruction to the next session: *read CLAUDE.md and the referenced spec/plan/ADR before acting, and trust those files over any memory.*
+
+## Reporting to the user (mandatory format)
+
+This project generates a lot of coded shorthand — decisions (`D-J`…`D-O`), audit findings (`R-B3`, `X-B2`,
+`D-B4`), lenses, gates, joins, rounds. **That shorthand is for the documents, not for the user.** A reply the
+user cannot follow has not communicated anything, however accurate it is. These rules are as binding as the
+technical ones.
+
+**Use ONE structure, every time.** Do not invent a new shape per message — a format that changes each turn
+forces the user to re-learn how to read every reply. The default skeleton, with `##`-numbered sections:
+
+1. **What happened** — the outcome, in plain language, first.
+2. **What it means** — why it matters; the consequence, not the mechanism.
+3. **What needs a decision** — explicitly separated, with options and a recommendation. If nothing needs a
+   decision, say so in one line rather than omitting the section.
+4. **What happens next** — the concrete next step.
+
+**Define every code before using it, in the reply that uses it.** Never write `D-N` or `X-B7` bare. Either
+gloss it inline (*"**D-N** — dead-letter instead of discard"*) or open with a short vocabulary table when a
+reply carries more than two or three codes. Assume the user has not memorised the audit records.
+
+**Lead with the point; put the evidence after it.** Commands, transcripts, `file:line` citations and diff
+stats are *support*, not the headline. The reader should never have to parse a transcript to discover the
+conclusion. (This is the opposite of the rule for the audit records themselves, where evidence is primary —
+know which artifact you are writing.)
+
+**Keep detail proportionate to the medium.** One or two sentences per finding in a chat reply; the exhaustive
+record belongs in `docs/plans/027-audit-round-*.md` and its equivalents. Volume is not rigor — if a summary
+needs a page per finding, the summary is wrong, not the finding.
+
+**Formatting conventions:**
+- **Numbered lists** for sequence, status and steps. **Tables** for per-item comparison. Do not use both for
+  the same purpose in one reply.
+- Bold the load-bearing claim in a paragraph, not every third phrase — emphasis everywhere is emphasis nowhere.
+- Prefer a table over a wall of prose whenever there are ≥3 items with the same shape (findings, commits,
+  modules, options).
+
+**When the user says they cannot follow a reply, that is a defect report — fix the format, not the wording.**
+Re-explain from the beginning with the structure above; do not simply restate the same content more slowly.
 
 ## Commit discipline
 
@@ -127,7 +173,7 @@ This keeps the spec→plan→ADR→commit chain greppable (`git log --grep`), su
 
 ## Go conventions & skills
 
-**Go 1.25 — required.** This project targets **Go 1.25**: `go.mod` carries the `go 1.25` directive, and builds/tests run on a Go 1.25 toolchain. `GOTOOLCHAIN` needs a full patch version (bare `go1.25` is rejected — "a language version but not a toolchain version"), so when a newer Go is the local default (currently **1.26**), force 1.25 with `GOTOOLCHAIN=go1.25.12` (bump the patch as 1.25.x security releases land — bumped from `go1.25.0` in Plan 006 Task 6 after `govulncheck` flagged a stdlib CVE fixed by `go1.25.3`+). The module must not silently build on 1.26+. Do not use language/stdlib features newer than 1.25. CI pins 1.25.
+**Go 1.25 — required.** This project targets **Go 1.25**: every `go.mod` in the workspace carries `go 1.25.0`, and builds/tests run on a Go 1.25 toolchain. `GOTOOLCHAIN` needs a full patch version (bare `go1.25` is rejected — "a language version but not a toolchain version"), so when a newer Go is the local default (currently **1.26**), force 1.25 with `GOTOOLCHAIN=go1.25.12` (bump the patch as 1.25.x security releases land — bumped from `go1.25.0` in Plan 006 Task 6 after `govulncheck` flagged a stdlib CVE fixed by `go1.25.3`+). The module must not silently build on 1.26+. Do not use language/stdlib features newer than 1.25. CI pins 1.25.
 
 **Tooling — mandatory.** Use **`gopls`** (the Go language server) for all Go code navigation, diagnostics, and refactoring — go-to-definition, find-references, rename, extract/inline, package API, post-edit diagnostics — via the native `LSP` tool (or gopls' MCP/CLI). Prefer semantic gopls operations over text search/`grep` when reasoning about Go symbols. → See `cc-skills-golang:golang-gopls`.
 
@@ -151,7 +197,7 @@ Three **project-local skills override samber's testing guidance** where they con
 ## What this is — and is not
 
 - **Is:** an importable Go **library** providing Enterprise Integration Pattern building blocks — messages, channels, endpoints, and **channel adapters** to external systems — that an application composes into a message flow. Consumed via `go get` + import; the exported API is the product.
-- **Is:** deliberately **scoped**. The pattern core plus **six shipped adapters** — **in-memory**, **SQL** (`adapter/database/sql`, generic `database/sql`; v1 dialects PostgreSQL + MySQL), **pgx** (`adapter/database/pgx`, PostgreSQL-native incl. `LISTEN`/`NOTIFY`), **Redis**, **NATS**, and **HTTP** (`adapter/http`, sync request-reply / async / outbound webhook). Not a port of all of Spring Integration. See [`docs/specs/001-messaging-core.md`](docs/specs/001-messaging-core.md).
+- **Is:** deliberately **scoped**. **Shipped today:** **in-memory** (`adapter/memory`), **SQL** (`adapter/database/sql`; dialects **PostgreSQL, MySQL, SQLite** as separate modules), **cron** (`adapter/cron`), and **HTTP** (`adapter/http` + `adapter/http/stdlib`; sync request-reply, async, outbound webhook, SSE in/out) — plus the **`expr`** provider module (expressions, not an adapter). **Planned, not yet written:** **pgx**, **Redis**, **NATS** — the blueprint below describes their intended shape, not existing code. Not a port of all of Spring Integration. See [`docs/specs/001-messaging-core.md`](docs/specs/001-messaging-core.md).
 - **Is:** **open for extension.** The adapter contract is a first-class, public **SPI** (service-provider interface) so that new adapters — Kafka, RabbitMQ, NATS, SQS, … — can be added later by us or contributors **without changing the core**. New adapters live in their own subpackage and implement the same inbound/outbound interfaces; the core neither knows nor imports them.
 - **Is:** **production-grade.** Robustness is a requirement, not an afterthought — see "Production robustness (mandatory design constraints)" below.
 - **Is not:** a full ESB/BRMS, a workflow engine, or a message broker. It orchestrates flow *between* systems and brokers; it is not itself the broker. No UI, no config-authoring surface, no governance layer.
@@ -171,14 +217,22 @@ The vocabulary is EIP's; the shape mirrors Spring Integration but is pure, idiom
   - **Outbound channel adapter** — subscribes to a channel and writes messages out to the external system.
   - Both sides are defined by **narrow public interfaces (the adapter SPI)** in the core. A shipped adapter (memory/database/redis) is just an implementation; a future Kafka/RabbitMQ adapter is another implementation of the *same* interfaces. The core must never `import` an adapter package — dependency points inward only.
 
-**The six shipped adapters** (full detail in [`docs/specs/001-messaging-core.md`](docs/specs/001-messaging-core.md) §9):
+**The adapters** (full detail in [`docs/specs/001-messaging-core.md`](docs/specs/001-messaging-core.md) §9).
+
+***Shipped*** — real code; read it rather than redesigning it:
 
 - **In-memory** (`adapter/memory`, core module) — reference adapter and fast test double; Go channels, zero-copy, no codec. The model contributors copy for new adapters.
-- **SQL** (`adapter/database/sql`, core module) — generic `database/sql`; polling `SELECT … FOR UPDATE SKIP LOCKED` inbound + `INSERT` outbound; at-least-once. v1 ships **PostgreSQL + MySQL** dialects via a `Dialect` seam; driver injected by the caller.
-- **pgx** (`adapter/database/pgx`, own module) — PostgreSQL-native (`jackc/pgx/v5`) + wire-compatible derivatives; adds **`LISTEN`/`NOTIFY` event-driven** (`StreamingSource`) alongside polling, `pgxpool`, `COPY` bulk outbound.
+- **SQL** (`adapter/database/sql`, core module) — generic `database/sql`; polling `SELECT … FOR UPDATE SKIP LOCKED` inbound + `INSERT` outbound; at-least-once. Dialects ship as **separate modules** — **PostgreSQL, MySQL, SQLite** ([ADR 0011](docs/adrs/0011-sql-engine-dialect-module-split.md), [ADR 0012](docs/adrs/0012-sqlite-dialect.md)) behind a `Dialect` seam, with `harness` (shared dialect test kit) and `dbtest` (Docker-backed conformance runner, never published); driver injected by the caller.
+- **Cron** (`adapter/cron`, core module) — recurring/scheduled inbound source over `robfig/cron/v3` ([ADR 0017](docs/adrs/0017-cron-source.md)); `crontest` is its own Docker-backed test module.
+- **HTTP** (`adapter/http` + `adapter/http/stdlib`, core module) — `net/http`; inbound server (sync request-reply → `Ack`=2xx/`Nack`=5xx, or async 202) + outbound webhook `POST`, retried by the producer's `RetryPolicy` ([ADR 0025](docs/adrs/0025-producer-outbound-retry.md)); SSE server (S-out) and SSE client (S-in) shipped in plans 025/026.
+
+**Not an adapter, but shipped alongside them:** **`expr`** (own module) — runtime expression **providers**, not a channel adapter. Six constructors (`Predicate`, `RouteFunc`, `Transformer`, `SplitFunc`, `Correlation`, `Release`) compile an expression eagerly and return a `routing`/`transform` behavior plus an error, so a bad expression fails at construction. It owns the `expr-lang/expr` dependency ([ADR 0029](docs/adrs/0029-eip-lexical-alignment.md); Plan 027 Task 10) so no core consumer pays for it.
+
+***Planned*** — design only, no code yet; the shape below is intent, not fact:
+
+- **pgx** (`adapter/database/pgx`, own module) — PostgreSQL-native (`jackc/pgx/v5`) + wire-compatible derivatives; adds **`LISTEN`/`NOTIFY` event-driven** (`EventDrivenSource`) alongside polling, `pgxpool`, `COPY` bulk outbound.
 - **Redis** (`adapter/redis`, own module) — list (`LPUSH`/`BRPOP`, at-most-once) or streams (`XADD`/`XREADGROUP`/`XACK`, consumer groups, at-least-once, native redelivery).
 - **NATS** (`adapter/nats`, own module) — core subject pub/sub (at-most-once) or JetStream (pull *and* push, at-least-once, `Ack`/`Nak`/`Term`).
-- **HTTP** (`adapter/http`, core module) — `net/http`; inbound server (sync request-reply → `Ack`=2xx/`Nack`=5xx, or async 202) + outbound webhook `POST`, retried by the producer's `RetryPolicy` (ADR 0025).
 
 Payload (de)serialization (`T`↔`[]byte`) lives in the typed **runtime** (a `PayloadCodec[T]`, which knows `T`); adapters do only type-agnostic **envelope framing** (headers+body↔storage) — see [ADR 0001](docs/adrs/0001-message-payload-typing.md). Heavy-client adapters (`pgx`, `redis`, `nats`) are separate modules importing their real client directly (ADR 0003).
 
@@ -195,7 +249,7 @@ These were the open decisions; all are now ratified in [`docs/specs/001-messagin
 
 1. **Module layout → multi-module monorepo** ([ADR 0003](docs/adrs/0003-multi-module-repository-layout.md)). Core (stdlib + clockwork, incl. `memory` + `database/sql`); `database/pgx`, `redis`, `nats` are separate modules. **Supersedes the earlier single-module lean** — release tags are now module-path-prefixed; local dev uses `go.work`.
 2. **Message payload typing → generics + split codec** ([ADR 0001](docs/adrs/0001-message-payload-typing.md)). `Message[T]` on the caller API; non-generic SPI over `Message[any]`; payload codec (`T`↔`[]byte`) in the runtime, envelope framing in the adapter.
-3. **Adapter SPI → non-generic, dual inbound, runtime-owned reliability** ([ADR 0002](docs/adrs/0002-adapter-spi.md)). `PollingSource` (shared Poller) + `StreamingSource`; `Delivery` with `Ack`/`Nack` closures; `NativeReliability` escape hatch.
+3. **Adapter SPI → non-generic, dual inbound, runtime-owned reliability** ([ADR 0002](docs/adrs/0002-adapter-spi.md)). `PollingSource` (shared Poller) + `EventDrivenSource`; `Delivery` with `Ack`/`Nack` closures; `NativeReliability` escape hatch.
 4. **Error handling → runtime-owned** ([ADR 0002](docs/adrs/0002-adapter-spi.md)). One configurable `RetryPolicy` (max-attempts → dead-letter, backoff); adapters expose only raw ack/nack.
 5. **Concurrency → point-to-point + worker pool** ([ADR 0002](docs/adrs/0002-adapter-spi.md)). Default 1 (ordered), `N>1` = Competing Consumers; consumer groups via adapters; pub-sub deferred.
 6. **`clockwork` core dependency → ratified** ([ADR 0004](docs/adrs/0004-clockwork-dependency.md)).
@@ -216,10 +270,13 @@ These were the open decisions; all are now ratified in [`docs/specs/001-messagin
 
 Minimal dependencies is a **hard requirement** for this library — every direct dep is a transitive dep forced on every consumer.
 
-- **The core (root module) depends on the Go standard library only — with three accepted, ADR-justified third-party exceptions**, each verified/required to add **zero net-new transitive dependencies**:
+- **The core (root module) depends on the Go standard library only — with two accepted, ADR-justified third-party exceptions**, each verified/required to add **zero net-new transitive dependencies**:
   - **`github.com/jonboulle/clockwork`** — injectable time, used directly by the pattern core (see Testing rules; [ADR 0004](docs/adrs/0004-clockwork-dependency.md)).
   - **`github.com/robfig/cron/v3`** — cron/recurring schedule parser, imported by the `adapter/cron` package (root module; [ADR 0016](docs/adrs/0016-robfig-cron-dependency.md)).
-  - **`github.com/expr-lang/expr`** — runtime expression evaluation for `FilterExpr`/`RouterExpr` in the pattern core ([ADR 0019](docs/adrs/0019-runtime-expression-evaluation.md)); v1.17.8 verified zero-transitive (`go mod tidy` after `go get` touched only `expr-lang/expr` lines in `go.sum`).
+
+  **`github.com/expr-lang/expr` is no longer a core dependency — DELIVERED.** It was one ([ADR 0019](docs/adrs/0019-runtime-expression-evaluation.md)) while the expression-backed endpoints lived in the pattern core; the Plan 027 restructure removed them and dropped `expr-lang/expr` from the root `go.mod`. Runtime expression evaluation now lives in the separate **`expr` provider module** (Plan 027 Task 10), which owns that dependency so no consumer of the core pays for it: `grep -rn 'expr-lang' --include='go.mod' .` hits **only `expr/go.mod`**. The two orphaned sentinels (`ErrInvalidExpression`, `ErrExprResultType`) LEFT root in Task 9.5 (decision D-I), and **Task 10 had the `expr` module declare `ErrInvalidExpression` itself** — `expr/errors.go`, message-prefixed `msgin/expr:` — matching how every shipped adapter mints sentinels for its own faults. The goal state holds: **root has a producer, inside the root module, for every sentinel it declares.** Related: **D-K, REVISED 2026-07-28 (audit round 6)** — the `expr` module does **not** declare an `ErrExprResultType` at all, and nothing in the workspace does. A result-type mismatch is returned as `fmt.Errorf("%w: expr result %T is not %T", msgin.ErrPayloadType, got, want)`, reusing root's existing sentinel so every future expression provider (CEL, starlark, …) shares one `errors.Is` target; no `msgin.Permanent` wrap is needed, because `ErrPayloadType` is already inside `IsPermanent` (`reliability.go:46`). **This supersedes the earlier D-K**, which had the provider mint its own `ErrExprResultType` and wrap it in `msgin.Permanent`. See [ADR 0029 §5.0a/§5.0b](docs/adrs/0029-eip-lexical-alignment.md), [Spec 014 §3.2/§7](docs/specs/014-core-package-layout.md), and the audit record [`docs/plans/027-audit-round-6.md`](docs/plans/027-audit-round-6.md) §1.
+
+  **Root's exported surface, as delivered by Plan 027** — measured, not transcribed; **re-derive before citing**: **103** exported symbols, **43** error sentinels in `errors.go`, and `apidiff` against [`docs/plans/027-root-api-baseline.txt`](docs/plans/027-root-api-baseline.txt) reporting **97 removals / 9 additions**. The removals partition into five classes (Spec 014 §4.1) and every symbol is reconciled in [`MIGRATION.md`](MIGRATION.md). **`43 ≠ 43`:** root's sentinel count also read 43 before Task 9.5, but the *sets differ* — D-I removed two and Tasks 9.6/10 added three. **Reconcile sentinels by name, never by count.** The generating commands live in Plan 027 Task 12.
 
   No *other* third-party imports in the pattern core or the in-memory/`http`/`database/sql` adapters. `database/sql` is stdlib; the SQL *driver* is the caller's choice, injected — msgin does not import a driver.
 - **Adapters that need a heavy client declare a narrow interface and let the consumer inject the implementation** (the Redis case above). Prefer "accept an interface" over "import a client." This keeps the dep out of the module graph, and makes the adapter trivially testable (the interface is mockable via `use-mockgen`).
@@ -254,17 +311,35 @@ Because the deliverable is a package other code imports, the exported surface *i
 - **Pure Go, no cgo:** `CGO_ENABLED=0 go build ./...` must succeed — keeps the library cross-compilable and debuggable (see debuggability criterion above).
 - **Runnable examples & coverage:** exported behavior is covered by `Example…` tests (they double as godoc) and table tests. The **Test-coverage gate** (Development workflow §5) applies: target ≥ 85% on changed packages and — the hard requirement — every hot-path logic branch and every typed-error branch has a covering test. Watch coverage on the public packages; don't just chase a number.
 - **Vulnerability scan:** `govulncheck ./...` is clean.
-- **Pinned Go version:** builds/tests on **Go 1.25** (the `go 1.25` directive), not whatever newer toolchain is installed locally. CI runs 1.25; verify locally with `GOTOOLCHAIN=go1.25.12`.
+- **Pinned Go version:** builds/tests on **Go 1.25** (the `go 1.25.0` directive), not whatever newer toolchain is installed locally. CI runs 1.25; verify locally with `GOTOOLCHAIN=go1.25.12`.
+- **Docs links resolve — repo-wide, as a PRE-MERGE gate.** Traceability (see "Documentation artifacts") is only real if the links work, and the recurring break is mechanical: a `docs/plans/*` or `docs/specs/*` file citing an ADR by **bare filename** (`[0003](0003-multi-module-repository-layout.md)`), which resolves relative to the *citing* file's directory and silently 404s. Fix the **class**, not the instance — run this over every tracked Markdown file before merging, and treat any output as a blocker:
+
+  ```bash
+  # ARM 1 — every relative link resolves to a file that exists.
+  for f in $(git ls-files '*.md'); do d=$(dirname "$f")
+    awk '/^[ \t]*```/{fence=!fence; next} !fence' "$f" | sed 's/`[^`]*`//g' \
+    | grep -oE '\]\(([^)#[:space:]]+)(#[^)]*)?\)' | sed -E 's/^\]\(//; s/\)$//; s/#.*$//' \
+    | while read -r l; do case "$l" in http*|mailto*) continue;; esac
+        [ -e "$d/$l" ] || echo "BROKEN  $f -> $d/$l"; done
+  done
+
+  # ARM 2 — every #anchor names a real heading in the target file (GitHub slug rules).
+  for f in $(git ls-files '*.md'); do d=$(dirname "$f")
+    awk '/^[ \t]*```/{fence=!fence; next} !fence' "$f" | sed 's/`[^`]*`//g' \
+    | grep -oE '\]\([^)[:space:]]*#[^)[:space:]]+\)' | sed -E 's/^\]\(//; s/\)$//' \
+    | while read -r l; do case "$l" in http*) continue;; esac
+        p="${l%%#*}"; a="${l#*#}"; t="$d/$p"; [ -z "$p" ] && t="$f"; [ -e "$t" ] || continue
+        grep -hE '^#{1,6} ' "$t" | sed -E 's/^#+ //' | tr 'A-Z' 'a-z' \
+          | sed -E 's/[^a-z0-9 _-]//g; s/ /-/g' | grep -qx "$a" || echo "ANCHOR  $f -> $l"; done
+  done
+  ```
+
+  **Known limitation — read before trusting a hit.** This is `grep`, not a Markdown parser. It strips fenced code blocks and single-line inline code spans **only**, so an inline code span that *wraps across a line* (a Go signature like `Foo[A](x string)` split over two lines) or a code fence nested inside a blockquote (a fence line prefixed with a `>` marker) leaks Go generics into arm 1 as false positives of the shape `-> docs/plans/m`. Two such exist today; both are code, not links. **A hit that names a plausible `.md` path is real; a hit that names a Go identifier or contains a space is the parser limitation.** Arm 2 is exact (34 anchor links today, all resolving) — verify it is not vacuous by planting a bad anchor and re-running.
 
 ## Commands
 
-Standard Go tooling once the module is scaffolded (`go mod init github.com/kartaladev/msgin`):
-
 ```bash
-# One-time scaffold with the Go 1.25 pin (local default is newer, so force 1.25)
-go mod init github.com/kartaladev/msgin
-go mod edit -go=1.25                        # pin language version to 1.25
-export GOTOOLCHAIN=go1.25.12                # build/test on the 1.25 toolchain; CI sets this too
+export GOTOOLCHAIN=go1.25.12                # always — local default is newer; CI sets this too
 go install golang.org/x/tools/gopls@latest  # LSP server: code nav / diagnostics / refactor
 
 go build ./...
@@ -275,11 +350,39 @@ go test -run TestName/subtest ./path      # single subtest
 go test -run '^Example' ./...             # runnable example tests
 go vet ./...
 gofmt -l .                                # or: gofumpt -l .
-golangci-lint run ./...                   # once .golangci.yml is added (see cc-skills-golang:golang-lint)
+golangci-lint run ./...                   # config lives at the repo root (see cc-skills-golang:golang-lint)
 govulncheck ./...                         # vulnerability scan (library quality gate)
 
 # Release (library — the tag is the distribution; the workflow publishes a GitHub Release)
+# Tags are MODULE-PATH-PREFIXED in this monorepo — read docs/RELEASE.md before tagging.
 git tag -a v0.0.1 -m "v0.0.1" && git push origin v0.0.1
 ```
+
+**`./...` does NOT mean "the repo" — this is an 8-module workspace.** The root `go test ./...` covers **11 packages** (`go list ./... | wc -l` → 11): the core, its five subpackages `endpoint`/`routing`/`transform`/`channel`/`resilience` (added by the Plan 027 restructure), and `adapter/{cron,database/sql,http,http/stdlib,memory}`. The other seven modules — `expr`, `adapter/database/sql/{harness,postgres,mysql,sqlite,dbtest}` and `adapter/cron/crontest` — are separate `go.mod`s joined only by the repo-root `go.work`, and a root-level `./...` never sees them. **`expr` is a module, not a root package: `go list ./...` does not include `github.com/kartaladev/msgin/expr`.** The pre-commit gate is only satisfied when every module you touched is green **standalone**.
+
+**The two loops below MATCH CI in MODULE COVERAGE — 8 directories to CI's 8 — and are a SUBSET of CI IN STEPS. Passing them locally does NOT mean CI passes.**
+
+- **Modules (parity, as of Plan 027 Task 10).** CI's `module` matrix and its `workspace` job each cover **8** directories, matching `go.work` exactly (`grep -c 'dir:' .github/workflows/ci.yml` → `8`; `grep -v '^\s*#' .github/workflows/ci.yml | grep -c crontest` → `3`, and the same for `expr` → `3`). Task 10 added `expr` to both jobs **and** closed the pre-existing `crontest` gap in both. Strip the comments before grepping either name, since the file's own comments discuss them.
+- **Steps (CI wins).** CI's `module` job runs **eight** steps per module — `go build ./...`, `go vet ./...`, `gofmt -l .` (fail on diff), `CGO_ENABLED=0 go build ./...`, `go mod tidy` + `git diff --exit-code -- go.mod go.sum`, `govulncheck`, `golangci-lint`, `go test ./... -race -shuffle=on` (`grep -n '^      - name:' .github/workflows/ci.yml` → 9 named steps, of which `Set up Go` is setup). The loops below run **two** of those eight. The other six live in **Library quality gates** above — run them per touched module before you claim the gate is met.
+
+Run all eight locally:
+
+```bash
+# per module, the way CI's `module` matrix does it —
+# GOWORK=off proves each module builds against its own go.mod, without the workspace
+for d in . expr adapter/database/sql/{harness,postgres,mysql,sqlite,dbtest} adapter/cron/crontest; do
+  (cd "$d" && GOWORK=off go test ./... -race -shuffle=on) || echo "FAILED: $d"
+done
+
+# workspace coherence — go.work auto-discovered (GOWORK unset). CI's `workspace` job runs
+# exactly this shape, over the same 8 directories.
+for d in . expr adapter/database/sql/{harness,postgres,mysql,sqlite,dbtest} adapter/cron/crontest; do
+  (cd "$d" && go build ./...) || echo "FAILED: $d"
+done
+```
+
+**`harness` has no test files**, so `go test` there reports a false pass — check it with `go vet ./...` instead.
+
+`dbtest` and `crontest` are Docker-backed (testcontainers-go) conformance runners — they need a running Docker daemon. `.golangci.yml` lives only at the repo root and is found by walking up, so `golangci-lint run ./...` works unchanged from inside any leaf module.
 
 Prefer runnable **Example tests** (`func Example...() { ... // Output: ... }`) for documenting behavior — they double as compilable docs.

@@ -1049,7 +1049,7 @@ Spec 012." Change it to record the residual as **resolved** by Spec 012 / Plan 0
 a known residual in Phase 1) rather than deleting the sentence.
 
 In `docs/adrs/0023-http-channel-adapter.md`, append a resolution line to Addendum A5 pointing at
-[ADR 0022 Addendum A](0022-messaging-gateway.md#addendum-a--panic-safe-cleanup-2026-07-21).
+[ADR 0022 Addendum A](../adrs/0022-messaging-gateway.md#addendum-a--panic-safe-cleanup-2026-07-21).
 
 - [ ] **Step 3: Verify no code behaviour changed**
 

@@ -1,6 +1,11 @@
 # ADR 0018 — Persistent queue channel + `ChannelStore` SPI
 
-- **Status:** Proposed (2026-07-20) — **both adversarial audit rounds complete (the 2-round norm); bundle SOUND.**
+- **Status:** **Accepted (2026-07-20) — implemented in [Plan 013](../plans/013-persistent-queue-channel.md),
+  merged as `26f16b8`.** *(Status corrected 2026-07-28, audit round 6 finding M-3; the line read
+  "Proposed (2026-07-20)" long after the channel shipped. Evidence in non-test code today: the `ChannelStore`
+  SPI at `store.go:13`, `channel/queuechannel.go:20` `QueueChannel` (relocated by Plan 027's `c83dde9`), and
+  the memory + SQL stores.)* Pre-implementation record, retained: **both adversarial audit rounds complete
+  (the 2-round norm); bundle SOUND.**
   Round 1 (NEEDS-REVISION): B-1..B-4, H-1/H-2, M-1..M-3, L-1..L-3 + all placeholders folded. Round 2 verified every
   fix VERIFIED-FIXED and the rewritten material sound (shed token-accounting, `NativeReliability` forwarding with no
   runtime regression, memory-store concurrency, e2e determinism, SQL-facade option-inertness); the only residual

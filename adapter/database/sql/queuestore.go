@@ -15,7 +15,7 @@ import (
 // memory.QueueStore.
 //
 // Delivery guarantee: at-least-once across restarts/crashes (Guaranteed
-// Delivery). Back a msgin.QueueChannel with this store when the flow segment must
+// Delivery). Back a channel.QueueChannel with this store when the flow segment must
 // survive a restart.
 type QueueStore struct {
 	out *Outbound

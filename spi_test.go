@@ -19,7 +19,7 @@ type stubOut struct{}
 func (stubOut) Send(ctx context.Context, m msgin.Message[any]) error { return nil }
 
 func TestSPI_InterfacesSatisfiable(t *testing.T) {
-	var _ msgin.StreamingSource = stubSource{}
+	var _ msgin.EventDrivenSource = stubSource{}
 	var _ msgin.LiveValueSource = stubSource{}
 	var _ msgin.OutboundAdapter = stubOut{}
 

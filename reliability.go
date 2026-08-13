@@ -5,17 +5,65 @@ import (
 	"time"
 )
 
-// permanentError marks a handler error as non-retryable: the runtime routes it
-// straight to the invalid-message sink instead of retrying. Wrapping is
-// transparent to errors.Is/As via Unwrap.
+// permanentError marks a handler error as non-retryable: the runtime diverts it
+// to the invalid-message sink instead of retrying — see [Permanent] for that
+// destination's three arms. Wrapping is transparent to errors.Is/As via Unwrap.
 type permanentError struct{ err error }
 
 func (e *permanentError) Error() string { return "msgin: permanent: " + e.err.Error() }
 func (e *permanentError) Unwrap() error { return e.err }
 
 // Permanent marks err as permanent (non-retryable). A handler that returns
-// Permanent(err) sends the message to the invalid-message sink without
-// consuming retry attempts. Permanent(nil) returns nil.
+// Permanent(err) diverts the message without consuming retry attempts.
+// Permanent(nil) returns nil.
+//
+// THE DESTINATION, canonically — every other "routed to the invalid-message
+// sink" statement in msgin is shorthand for these three arms (ADR 0007 D7 as
+// amended by decisions D-N and D-P):
+//
+//  1. the consumer's invalid-message sink, when one is configured
+//     (endpoint.WithInvalidMessageSink);
+//  2. otherwise the RetryPolicy's DeadLetter sink, when one is configured — so
+//     a fault this library used to capture durably is never downgraded to a
+//     discard;
+//  3. otherwise it is logged at WARN and discarded.
+//
+// EXACTLY ONE CLASS SKIPS ARM 2: [ErrPayloadTooLarge], the byte-cap reject from
+// endpoint.WithMaxPayloadBytes, goes straight from arm 1 to arm 3. That cap
+// exists to bound memory and durable storage against untrusted wire input, so
+// writing its rejects into the operator's dead-letter store — which arm 2 would
+// do in the default shape of every finite-retry consumer — would turn the
+// defence into the vector. The class was already discarded before arm 2 existed,
+// so this loses nothing arm 2 had captured. See endpoint.WithMaxPayloadBytes.
+//
+// The divert is SINGLE-SHOT on ALL of them: one attempt at one sink. If that
+// Send fails — arm 1's configured sink and arm 2's fallback alike — the message
+// is logged at WARN (naming the classification cause and the sink error) and
+// discarded, never requeued, because requeueing a permanent message is an
+// unbounded loop no retry budget, backoff or circuit breaker can observe. The
+// accepted cost is that a transient outage of a configured invalid-message sink
+// discards that window's invalid messages; see endpoint.WithInvalidMessageSink.
+// The DEAD-LETTER path is the opposite: a retry-exhausted message IS transient,
+// so a failed dead-letter Send is Nacked with backoff, not discarded. The one
+// exception to "never requeued" is SHUTDOWN: a Send that fails only because the
+// consumer's settle context was already cancelled by the shutdown deadline
+// proved nothing about the sink, so the message is Nacked for redelivery and no
+// terminal event is reported.
+//
+// KEEP PAYLOAD AND PII OUT OF err. That WARN renders the cause VERBATIM, so
+// Permanent(fmt.Errorf("invalid email %q", m.Payload().Email)) — an ordinary
+// validation shape — writes the email to the log. msgin redacts exactly one
+// class, the payload-decode one (ErrPayloadDecode, whose text comes from a
+// caller-supplied codec quoting untrusted wire bytes); every other cause,
+// including this one, is logged as written. Sensitive detail belongs behind the
+// OnInvalidMessage hook, which always receives the UNREDACTED cause under the
+// caller's own disclosure policy. See endpoint.WithInvalidMessageSink.
+//
+// OnInvalidMessage fires on all three (it reports the CLASSIFICATION, not the
+// destination); OnRetry and OnDeadLetter fire on none of them. An operator who
+// must tell retries-exhausted from permanently-invalid in a shared dead-letter
+// store has to configure endpoint.WithInvalidMessageSink: msgin stamps no
+// settlement-reason header.
 //
 // msgin uses its own marker rather than a third-party backoff library's
 // Permanent so the core runtime stays stdlib + clockwork (ADR 0007). ADR 0005
@@ -30,12 +78,12 @@ func Permanent(err error) error {
 	return &permanentError{err: err}
 }
 
-// isPermanent reports whether err must skip retry: an explicit Permanent marker,
+// IsPermanent reports whether err must skip retry: an explicit Permanent marker,
 // a decode/type mismatch (ErrPayloadDecode / ErrPayloadType), or an over-size
 // payload (ErrPayloadTooLarge — an over-size message will not shrink on
 // redelivery). A recovered handler panic (ErrHandlerPanic) is NOT permanent — it
 // is retried.
-func isPermanent(err error) bool {
+func IsPermanent(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -47,15 +95,6 @@ func isPermanent(err error) bool {
 		errors.Is(err, ErrPayloadDecode) ||
 		errors.Is(err, ErrPayloadTooLarge)
 }
-
-// noNativeReliability is the NativeReliability default for sources that do not
-// implement the optional capability (e.g. memory): neither native redelivery
-// nor native dead-letter. Using a value (never nil) upholds NF-11 — the runtime
-// never nil-calls the capability.
-type noNativeReliability struct{}
-
-func (noNativeReliability) NativeRedelivery() bool { return false }
-func (noNativeReliability) NativeDeadLetter() bool { return false }
 
 // retryAfterError marks a transient error with a server-instructed minimum
 // delay. Wrapping is transparent to errors.Is/As via Unwrap.
@@ -107,13 +146,13 @@ func RetryAfter(err error, d time.Duration) error {
 	return &retryAfterError{err: err, d: d}
 }
 
-// retryAfterOf reports the server-instructed minimum delay carried by err, if
-// any, matching isPermanent's structure (errors.As over the wrap chain).
+// RetryAfterOf reports the server-instructed minimum delay carried by err, if
+// any, matching IsPermanent's structure (errors.As over the wrap chain).
 //
 // Deliberately NO `if err == nil` guard: errors.As(nil, &re) already returns
 // false, and the only caller (nextDelay) never passes nil, so the guard would be
 // both redundant and blackbox-unreachable.
-func retryAfterOf(err error) (time.Duration, bool) {
+func RetryAfterOf(err error) (time.Duration, bool) {
 	var re *retryAfterError
 	if errors.As(err, &re) {
 		return re.d, true
