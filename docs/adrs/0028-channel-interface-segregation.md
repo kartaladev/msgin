@@ -361,9 +361,11 @@ losing them. `ChannelExchange.Close` — which **already existed** — now relea
 > default wiring **is** changed: that two-exchange program no longer constructs. See ADR 0030 §3/§5,
 > [Spec 014 §5.1](../specs/014-core-package-layout.md), and Plan 027 Task 9.6.
 >
-> **NOT YET IMPLEMENTED.** ADR 0030 is written before its code (its own status block says so); at `dadc775`
-> the probe does not exist and the default wiring above still holds in the tree. Task 9.6 is what makes this
-> paragraph's replacement true.
+> **IMPLEMENTED — Plan 027 Task 9.6** (`f460610`). ADR 0030 was written before its code, and this block
+> previously read *"NOT YET IMPLEMENTED … at `dadc775` the probe does not exist"*. The probe now ships:
+> `msgin.ExclusiveSubscribable` and `msgin.ErrSharedReplyChannel` are exported from root,
+> `endpoint.WithSharedReplyChannel()` is the opt-out, and the paragraph's replacement above is true of the
+> tree. *(Corrected in Task 12 — the block was already stale before Task 10 began.)*
 >
 > **What survives unchanged.** The reasoning: the exchange does not own the channel it is handed and cannot
 > know whether the caller wants fan-out — which is exactly why ADR 0030 rejects rather than silently opts in,
@@ -398,7 +400,8 @@ interface. **All five of those stubs are gone; all five fakes remain**, migrated
   > **bounded and stated**: a channel that does not implement `msgin.ExclusiveSubscribable` is accepted
   > (ADR 0030 §4), a decorator that embeds the `msgin.SubscribableChannel` *interface* does not inherit the
   > probe (ADR 0030 §1/§4, decision **D-L**), and no local answer can speak for another process (ADR 0030
-  > §Topology). **NOT YET IMPLEMENTED** — Plan 027 Task 9.6.
+  > §Topology). **IMPLEMENTED — Plan 027 Task 9.6** (`f460610`); this line read *"NOT YET IMPLEMENTED"*
+  > until Task 12 corrected it.
 - **`Close`'s post-close reply behavior changes** (§6.1a) — a late reply now errors at the sender instead of
   landing in `WithUnmatchedReplySink`.
 - **Call-form churn at every `Subscribe` site, including two satellite-module files** (§8).

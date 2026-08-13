@@ -390,7 +390,7 @@ and defined nowhere; it is defined here.
 | **9.7** | Classify the **five** shipped producers (`ErrNilFunc` ×4 + `ErrNilSink`) as `Permanent` (**D-M**), add the dead-letter fallback (**D-N**) and make it single-shot (**D-P**) | **DONE** — committed `64963ad`, ledger §F15. Ran **FIRST**, before Task 9, per the round-7 correction. All five gates green; `apidiff` empty on all four packages; zero net-new uncovered blocks |
 | **10** | The `expr` provider module | **DONE** — the eighth module ships with its own `go.mod` (`require` + `replace`), `go.work` `use` entry, and **three** CI edits (`expr` in both jobs, plus the pre-existing `adapter/cron/crontest` gap closed in both; `dir:` 6 → 8). **One** sentinel (`ErrInvalidExpression`), six providers, the **12** reinstated `*Expr` test functions under their new names, and **D-K's acceptance fixture** — a real `Consumer` + `RetryPolicy{MaxAttempts: 3, DeadLetter}` + `WithInvalidMessageSink` over a **re-emitting** source, so `dlq.count()==0` is load-bearing rather than vacuous. Root's `ErrPayloadType` godoc widened (**AC-10's fifth arm**, four `go doc` phrase gates RED → GREEN). **Fix round 1** closed a second vacuity of the same class in the CONSTRUCTION path (expr-lang echoes the offending source line in its *compile* error too, so `Contains(err.Error(), src)` passed with msgin's `%q` wrap deleted), and routed all three `msgin.PayloadOf` sites through one `payloadError` helper so a dead-letter record names WHICH expression rejected the payload. **Fix round 2** added **decision D-Q** (ADR 0029 §5.0d, Spec 014 §2.1 row 9): a `MessageGroupStore` whose `Add` returns a nil snapshot with a nil error is caller input, and it panicked **all four** release strategies; it is now rejected once at the choke point in `Handle` with `Permanent(ErrNilMessageGroup)`. That **supersedes** the `defaultRelease`-local guard of round 1, which closed only 1 of 4 and was removed. Root: **103** exported / **43** sentinels; `apidiff` **97 removals / 9 additions**, the ninth being `ErrNilMessageGroup`; `./routing` apidiff empty. `expr` and `routing` both at **100.0%** coverage, **37 mutants planted, 37 killed** — two of which caught vacuous assertions (`M5`, `M31`) and one of which (`M38`) proves each of the four release-strategy cases is necessary rather than redundant |
 | **11** | Package docs + Spec 014 §8/§10 godoc obligations | **DONE** — 11a (`doc.go` × 5) landed earlier in `1d7fc80`; **11b and 11c complete**. All **seven** of Task 11's own gates RED → GREEN (8.1, 8.3, 8.4a, 8.4b, 8.7, 11c1, 11c2) and the **nine** it does not own (Task 9.6's five, Task 9's four) GREEN on arrival and still GREEN after — **16/16**. The diff is **comments-only, proven in both directions** (a planted code addition AND a planted field deletion each trip the check; the real diff trips neither). **Every gate mutation-killed**: reverting each file individually turns RED exactly its own gate and nothing else — 8.7 correctly dies on reverting *either* of its two files. **An adversarial review then found a MAJOR defect behind that green suite** — both HTTP inbound godocs promised a `QueueChannel` parks the request **durably**, when durability belongs to the injected `ChannelStore` and the default in-memory store loses it on process exit — **and four gates that stayed GREEN with the obligation deleted outright.** All nine findings were re-verified against the code, fixed, and folded into this same commit. **All ten Plan-only gates were rewritten**, each proven by counterexample to reject what its predecessor accepted; the six shared with Spec §8.0b are untouched and Global Constraint 10 re-verified identical |
-| **12** | `MIGRATION.md`, doc sync, whole-branch gate | **NOT STARTED** |
+| **12** | `MIGRATION.md`, doc sync, whole-branch gate | **WRITTEN & VERIFIED, UNCOMMITTED** — seven documentation files, **no `.go` change**. Every projected number **measured and confirmed**: `apidiff` **97 removals / 9 additions**, the removal partition **87 + 6 + 1 + 1 + 2 = 97 with an empty residual** (the fifth class is now a real row in Spec §4.1, not a projection), root **103 exported / 43 sentinels / 14 files**, both dependency-direction arms empty, both staleness-sweep arms empty **and vacuity-probed**, 8/8 modules green under `GOWORK=off -race -shuffle=on`, vet/gofmt/cgo0/tidy/govulncheck/golangci-lint clean in all eight, coverage **93.7%** with **five** uncovered blocks all inside AC-7's accepted six. **Four bundle defects found by measuring:** Spec §5.0's census was stale at 16 against a delivered **17** and was missing a ninth public position (`expr.RouteFunc`'s `routes` map) — a fourth recurrence of the class that section warns about; the plan cited an **orphaned** pre-amend SHA, unresolvable in a fresh clone, now `e120d10`; `MESSAGING.md` still listed `expr-lang` as a **core** dependency; and two AC-7 `poller.go` block ids had drifted +4 lines from Task 11's comment-only edits. **Blocked on the user running `/code-review` + `/security-review` over `main..HEAD`** before the commit |
 
 ```
 $ git log --oneline -3          # re-quoted 2026-07-28, before the D-I/D-J doc pass
@@ -3118,8 +3118,15 @@ RED:   8.7   RED:   11c2                 GREEN: 8.7   GREEN: 11c2
 ```
 
 **Per-gate mutation kill — the check that a gate is not merely green.** Reverting each file to its
-**pre-Task-11** state (`928cbba^`) and re-running the block; a gate that survives its own file's reversion
+**pre-Task-11** state (`e120d10`) and re-running the block; a gate that survives its own file's reversion
 would be green for some other reason:
+
+> **SHA CORRECTED IN TASK 12.** This read `<pre-amend-sha>^` — the parent of Task 11's **pre-amend** commit. Task 11
+> was amended, which orphaned that commit: it survives in this machine's reflog but **is not an ancestor of
+> `HEAD` and does not exist in a fresh clone**, so the citation was unresolvable for anyone else. Task 12's
+> reachability sweep caught it as the branch's only `ORPHAN:` line. `e120d10` is the same tree — amending
+> preserves the parent, so the pre-amend parent and `88e3e38^` both resolve to it — and it is reachable. **Name the
+> commit, not the parent of a commit that may be amended.**
 
 ```
 revert endpoint/doc.go                  -> RED: 8.1
@@ -3214,7 +3221,7 @@ ADR 0027; RFC 0002 backs ADRs 0028 and 0030.)*
 
 ## Task 12 — Migration guide, doc sync, and the whole-branch gate · **M** · NOT STARTED
 
-- [ ] **`MIGRATION.md`**, covering at minimum:
+- [x] **`MIGRATION.md`**, covering at minimum:
       - every moved symbol old→new — **97 removals reconciled against Spec 014 §4.1's five classes** (the
         fifth being D-I's two deleted sentinels);
       - the `DirectChannel.Subscribe` signature change;
@@ -3230,7 +3237,7 @@ ADR 0027; RFC 0002 backs ADRs 0028 and 0030.)*
       - **`ChannelExchange.Close`'s post-`Close` reply behavior change** (Spec 014 §5.2a);
       - the two-import shape for a retry policy:
         `msgin.RetryPolicy{Backoff: resilience.ExponentialBackoff{…}}`.
-- [ ] **CLAUDE.md, same commit** (traceability, non-optional). **FIVE sites, enumerated — the first two were
+- [x] **CLAUDE.md, same commit** (traceability, non-optional). **FIVE sites, enumerated — the first two were
       the whole checkbox until Task 10's fix rounds found sites three through five unowned** (see the round-6
       correction below, which is about the first two only):
       1. the **"Commands" section's** *"`./...` does NOT mean 'the repo'"* block — it must name the
@@ -3308,7 +3315,7 @@ ADR 0027; RFC 0002 backs ADRs 0028 and 0030.)*
       > inside the dependency-policy bullet list, nowhere near what the checkbox described; (3) the
       > `./...`-is-not-the-repo block was **already updated in round 5** and correctly describes a 7-module
       > workspace today. Only the **eighth module** remains, and it lands with Task 10's `go.work` + CI edits.
-- [ ] **Backfill the final commit SHAs, and cite by TASK until then.** Task 10 was amended three times, and
+- [x] **Backfill the final commit SHAs, and cite by TASK until then.** Task 10 was amended three times, and
       each amend destroyed the SHA the previous round's prose had cited, and both are now unreachable
       (`git merge-base --is-ancestor <sha> HEAD` fails; a fresh clone cannot resolve either). The two values
       are recorded in Task 10's fix-round report and are deliberately NOT repeated here — quoting a dead SHA
@@ -3339,13 +3346,13 @@ ADR 0027; RFC 0002 backs ADRs 0028 and 0030.)*
       **EXPECTED OUTPUT: one line**, and it is not a defect —
       `UNRESOLVABLE: 416f41e34fe32840c5634a660df790e1`, a GitHub **gist id** inside a URL in
       `docs/rfcs/README.md`. Any `ORPHAN:` line, or any other `UNRESOLVABLE:`, is real.
-- [ ] **Regenerate `docs/HANDOVER.md` wholesale.** It predates Tasks 9.6 and 10 and carries a stale status
+- [x] **Regenerate `docs/HANDOVER.md` wholesale.** It predates Tasks 9.6 and 10 and carries a stale status
       table, a stale `git log`, stale commit counts and *"seven modules"* throughout; Task 10's fix round 3
       added a staleness banner rather than patching it, because a partially-updated handover contradicts
       itself. Rewrite from the delivered safepoint per CLAUDE.md's handover contract.
-- [ ] **`MESSAGING.md`** reconciled against the new package names (it carries 3 `EventDrivenSource` mentions
+- [x] **`MESSAGING.md`** reconciled against the new package names (it carries 3 `EventDrivenSource` mentions
       and is named nowhere in the bundle — F10.4).
-- [ ] **Assert every invariant mechanically**, into the ledger:
+- [x] **Assert every invariant mechanically**, into the ledger:
       ```bash
       go list -deps . | grep -E 'kartaladev/msgin/(endpoint|routing|transform|channel|resilience)'        # EMPTY
       go list -deps ./endpoint ./routing ./transform ./channel ./resilience \
@@ -3379,9 +3386,9 @@ ADR 0027; RFC 0002 backs ADRs 0028 and 0030.)*
       > have been sunk by a transcribed number; do not add a fourth.
       Then diff root's exported surface against **Spec 014 §4's closed list** — every symbol accounted for,
       nothing extra.
-- [ ] **Re-run the `MessageChannel` scope-rule census** (Spec 014 §5.0) rather than citing a number. Three
+- [x] **Re-run the `MessageChannel` scope-rule census** (Spec 014 §5.0) rather than citing a number. Three
       documents have now quoted three different wrong counts; the check is the contract.
-- [ ] **Re-run Spec §8.1's two-arm staleness sweep to empty — AGAIN, on the delivered tree** (round-7 X-B7).
+- [x] **Re-run Spec §8.1's two-arm staleness sweep to empty — AGAIN, on the delivered tree** (round-7 X-B7).
       **Regenerate `docs/plans/027-tools/symmap.tsv` first** — it is derived, and Tasks 9–11 add symbols
       (`SubscribableChannel`, `ExclusiveSubscribable`, `channel.WithSingleSubscriber`,
       `endpoint.WithSharedReplyChannel`, the `expr` providers), so an un-regenerated map makes arm 1 report
@@ -3397,15 +3404,15 @@ ADR 0027; RFC 0002 backs ADRs 0028 and 0030.)*
       > `ErrExprResultType` cross-reference (round-7 X-B5). The Risks table names this sweep as the mitigation
       > for *"a change is invisible to the compiler"*, so the mitigation has to sit at the end of the branch,
       > not in its middle.
-- [ ] Run the full per-module `GOWORK=off` loop across **eight** modules, `go vet`, `golangci-lint`,
+- [x] Run the full per-module `GOWORK=off` loop across **eight** modules, `go vet`, `golangci-lint`,
       `test -z "$(gofmt -l .)"`, `govulncheck`, `go mod tidy` (no-op in every module), and
       `CGO_ENABLED=0 go build ./...`.
-- [ ] `apidiff`/`gorelease` against the Task 0 baseline; reconcile **every** entry against Spec 014 §4.1's
+- [x] `apidiff`/`gorelease` against the Task 0 baseline; reconcile **every** entry against Spec 014 §4.1's
       decomposition — **projected 97 removals / 9 additions** (the ninth is `ErrNilMessageGroup`, added by
       Task 10's fix round 2), i.e. the measured 87 + 6 + 1 + 1 = 95 partition
       **plus a fifth class**: `ErrInvalidExpression` and `ErrExprResultType`, removed by D-I. Add that row to
       §4.1's table when the measurement confirms it. An unexplained entry blocks the merge.
-- [ ] Coverage with **`-coverpkg=./...` on both sides**. **SIX** accepted uncovered blocks are pre-recorded in
+- [x] Coverage with **`-coverpkg=./...` on both sides**. **SIX** accepted uncovered blocks are pre-recorded in
       Spec 014 §9 AC-7, each with a written disposition; none is a regression and none may be reported as a
       drop:
 
@@ -3427,7 +3434,53 @@ ADR 0027; RFC 0002 backs ADRs 0028 and 0030.)*
       > plan would have reported the other **four** as regressions and blocked the merge. (The `breaker.go`
       > line number was also off: it is `:179.28,181.3`, not `:176`.) The Risks table carried the same
       > *"two"*; both are swept.
-- [ ] Whole-branch `/code-review` and `/security-review` over `main..HEAD`; resolve or triage every finding.
+- [x] Whole-branch `/code-review` and `/security-review` over `main..HEAD`; resolve or triage every finding.
+
+      **`/security-review` — RUN 2026-08-13 over `main..HEAD`. ZERO findings.** The identification pass
+      produced **no candidates** meeting the >80%-confidence exploitability bar, so the false-positive
+      filtering pass had nothing to process. **This is the second consecutive clean security round** (Task 11's
+      was also zero) — recorded so a later reader does not mistake "no findings" for "not run".
+
+      Areas examined, and why each is clean:
+
+      | Area | Verdict |
+      |---|---|
+      | **`expr/` — the whole module is new** | The `expr-lang` compile options are **byte-for-byte identical to `main`'s** (`expr.Env` + `AsBool`/`AsKind`); **no sandbox option was dropped in the move**. `AllowUndefinedVariables`, custom `expr.Function`s and patch hooks are all absent. Probed empirically: `os.Exit(1)` is compile-rejected (`unknown name os`), `$env` resolves only to `messageEnv`. A payload **method call** does succeed — expr's documented behavior, bounded to the caller's own type, and only a risk if the EXPRESSION is attacker-controlled, which the trust boundary forbids. Moving `expr-lang` out of root is a **net reduction** in core attack surface |
+      | `adapter/http/` | Non-test diff is **documentation only**. No request-construction, redirect, header-writing, body-read or TLS code changed; no added `InsecureSkipVerify`/`CheckRedirect`/`exec.Command`/`unsafe.` anywhere on the branch |
+      | `adapter/database/sql/` | **No query-construction code changed.** No added `Sprintf` near any SQL keyword |
+      | `endpoint/consumer.go` | Clean, and D-N's `ErrPayloadTooLarge` **exemption is a hardening**: it stops an attacker-sized payload being amplified into the durable DLQ. The byte cap is checked BEFORE decode and is not bypassable on the wire path. `causeForLog` **improves** log hygiene by collapsing a decode failure to the bare sentinel instead of the codec's error string |
+      | `msgin.NewID` (newly EXPORTED) | Still **`crypto/rand`**, 16 bytes hex-encoded — the rename is the only change. Gateway correlation ids remain 128-bit CSPRNG. The one `math/rand/v2` use is backoff jitter, moved verbatim |
+      | `ExclusiveSubscribable` probe | `safeSingleSubscriber` **fails closed** on a panicking caller probe, so it cannot smuggle a shared reply channel past the check; it runs BEFORE `Subscribe`, so a rejection leaves no subscription residue |
+
+      **Two informational notes, deliberately NOT findings:** (1) if expression strings were ever sourced from
+      a lower-trust store (a rules table, tenant config), a rule author could invoke any exported method
+      reachable from `A` — keep the "operator-authored only" wording prominent if sourcing is ever loosened;
+      (2) `b, _ := out.(bool)` in `Predicate`/`Release` fails closed and is **identical to `main`**, so it is
+      not a branch finding. *(It is the same SHAPE as the `/code-review` finding fixed in the string path —
+      left alone because bool has no named-type analogue that `AsBool` would admit.)*
+
+      **`/code-review` ROUND 1 — RUN 2026-08-13 over `main..HEAD` (208 files) + the working tree. FIVE
+      findings, ALL INDEPENDENTLY VERIFIED before action** (a review report is a hypothesis, not a verdict —
+      two of these were checked by writing a throwaway probe test, not by reading):
+
+      | # | Finding | Verified how | Disposition |
+      |---|---|---|---|
+      | 1 | **`expr.RouteFunc` silently misroutes a named string type.** `expr.AsKind(reflect.String)` checks the KIND, so `type Region string` compiles — but `key, _ := out.(string)` is an EXACT-type assertion that fails, yielding `""`, and `routes[""]` is nil, which `NewRouter` reads as "no destination" | probe: `RouteFunc[Order]("payload.Region", routes)` on `Region("EU")` returned **`(nil, nil)`** — no channel, no error, no hook | **FIXED** (user ruling: ACCEPT named string types via `reflect.ValueOf(out).String()`, because `AsKind` was deliberately chosen over an exact-type check — the assertion is what was out of step) |
+      | 2 | **`expr.Correlation` reports the wrong cause**, same root cause | probe returned `key=""`, `err="msgin: permanent: msgin: message has no correlation key"` — a correlatable message classified permanent | **FIXED**, same shape |
+      | 3 | **`docs/RELEASE.md` stale and omits `expr`** | `grep -c expr docs/RELEASE.md` → **0**; the file claimed "Seven modules" and `wc -l → 7` against an actual **8** | **FIXED.** Also newly documented: **`release.yml` has NO trigger pattern and NO title case for `expr/v*`**, so tagging it today would fire no workflow. Left as a stated prerequisite, not silently patched — a CI change is out of a doc-sync task's remit |
+      | 4 | **`MIGRATION.md` untracked while 10+ tracked files link to it** | `git ls-files MIGRATION.md` empty | **FIXED** by staging it in the delivery commit. The docs-link gate passed only because the file exists in the worktree — it would have 404'd on GitHub |
+      | 5 | **`ErrNilSubscription` guard leaks the subscription it guards against** (LOW) | `reply.Subscribe(e.receiver())` has already registered the receiver when the `sub == nil` check runs, and there is no handle to cancel | **FIXED, comment-only** — the godoc overstated its containment; the residual leak is now stated. No control-flow change |
+
+      **Findings 1 and 2 were fixed by an SDD implementer subagent** (TDD red→green, blackbox
+      `package expr_test`, assert-closure tables, every new assertion mutation-killed), per CLAUDE.md's
+      default execution mode. **Neither fix moves the exported surface** — `resultTypeError` already reuses
+      root's `msgin.ErrPayloadType` (D-K), so no sentinel is minted and Task 12's pinned counts
+      (**103 exported / 43 sentinels / 97 removals + 9 additions**) are unchanged.
+
+      **The lesson worth keeping: findings 1 and 2 sat behind a 100.0%-coverage `expr` module, 16/16 GREEN
+      godoc gates, and a clean 8-module `-race` suite.** Every one of those gates was satisfied by a
+      provider that silently drops messages on a domain-typed string. Coverage proves lines RAN, not that
+      they ran with the input that breaks them.
 
 **Commit:** `docs: migration guide and doc sync for the core restructure`
 

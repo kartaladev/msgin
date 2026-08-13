@@ -1164,7 +1164,20 @@ against the symbol→destination map (`docs/plans/027-tools/symmap.tsv`), not by
 | Deleted outright (`*Expr`) | 6 | `FilterExpr`, `RouterExpr`, `TransformExpr`, `SplitExpr`, `WithCorrelationExpr`, `WithReleaseExpr` |
 | Renamed | 1 | `StreamingSource` (its replacement `EventDrivenSource` is on the additions side) |
 | The segregation itself | 1 | `MessageChannel.Subscribe` |
-| | **95** | |
+| **Sentinels moved out of root (D-I)** | **2** | **`ErrInvalidExpression`, `ErrExprResultType` — the fifth class, added when Task 12 MEASURED the delivered tree** |
+| | **97** | |
+
+> **THE FIFTH ROW IS NO LONGER A PROJECTION — Plan 027 Task 12 measured it (2026-08-13).** The four rows above
+> it summed to **95** at `dadc775`; D-I's two removals take the total to **97**, and the partition was
+> re-verified on the delivered tree with an **empty residual**:
+>
+> ```
+> total removals 97 | relocated 87 | *Expr 6 | renamed 1 | segregation 1 | D-I sentinels 2
+> residual (removed, minus symmap, minus the four named classes) -> EMPTY
+> ```
+>
+> `symmap.tsv` was regenerated first and came back **byte-identical at 96 entries**, confirming Task 11 was
+> comments-only. Additions measured **9**, matching the projection below.
 
 ```
 $ apidiff docs/plans/027-root-api-baseline.txt . \
@@ -1292,22 +1305,38 @@ module boundary. The measured answer is **nine**.
 
 ```bash
 grep -rn "msgin\.MessageChannel\|MessageChannel interface" --include="*.go" . \
-  | grep -v "_test.go" | grep -v "^./docs" | grep -v '// '        # → 16 lines: 1 declaration + 15 uses
+  | grep -v "_test.go" | grep -v "^./docs" | grep -v '// '        # → 17 lines: 1 declaration + 16 uses
 ```
 
-The nine public positions this yields — **eight send-only, one subscribing**:
+The ten public positions this yields — **nine send-only, one subscribing**:
 
 | # | Position | File |
 |---|---|---|
 | 1 | `routing.WithDiscardChannel` | `routing/filter.go:18` |
-| 2 | `routing.WithDefaultChannel` | `routing/router.go:18` |
-| 3 | `routing.NewRouter`'s `pick` return | `routing/router.go:29,37` |
-| 4 | `routing.WithOutputChannel` | `routing/aggregator.go:55` |
-| 5 | `routing.WithExpiredGroupChannel` | `routing/aggregator.go:133` |
-| 6 | `endpoint.NewChannelExchange`'s `request` | `endpoint/exchange.go:225` |
-| 7 | **`msghttp.ServeAsync`'s `target`** | `adapter/http/inbound.go:116` |
-| 8 | **`stdlib.NewInbound`'s `target`** | `adapter/http/stdlib/inbound.go:33` |
-| — | `endpoint.NewChannelExchange`'s `reply` — the only subscriber, now `SubscribableChannel` | `endpoint/exchange.go:225` |
+| 2 | `routing.WithDefaultChannel` | `routing/router.go:19` |
+| 3 | `routing.RouteFunc`'s return — `NewRouter`'s `pick` | `routing/router.go:49` |
+| 4 | `routing.WithOutputChannel` | `routing/aggregator.go:66` |
+| 5 | `routing.WithExpiredGroupChannel` | `routing/aggregator.go:164` |
+| 6 | `endpoint.NewChannelExchange`'s `request` | `endpoint/exchange.go:297` |
+| 7 | **`msghttp.ServeAsync`'s `target`** | `adapter/http/inbound.go:135` |
+| 8 | **`stdlib.NewInbound`'s `target`** | `adapter/http/stdlib/inbound.go:48` |
+| 9 | **`expr.RouteFunc`'s `routes` map** — added by Task 10's `expr` module | `expr/provider.go:86` |
+| — | `endpoint.NewChannelExchange`'s `reply` — the only subscriber, now `SubscribableChannel` | `endpoint/exchange.go:297` |
+
+> **RE-MEASURED BY PLAN 027 TASK 12 (2026-08-13) — the count above was stale, a FOURTH recurrence of exactly
+> the class this section opens by warning about.** The published figure was **16**, measured at `c83dde9`.
+> Traced across the branch by re-running the census at each commit:
+>
+> | Commit | Census | What moved it |
+> |---|--:|---|
+> | `c83dde9` | 16 | the extraction — the figure this section quoted |
+> | `544cb5b` | **15** | Task 9 named the behavior types; `RouteFunc`'s declaration RELOCATES an occurrence rather than removing one. Plan 027's Progress row recorded 15; **this spec was never updated** |
+> | `5e7829c` | **17** | Task 10's `expr` module added two (`expr/provider.go:86` and `:101`) |
+>
+> Delivered = **17 = 1 declaration + 16 uses**. Row 9 is new and was listed nowhere: `expr.RouteFunc` takes a
+> `map[string]msgin.MessageChannel`, so an expression-routed flow can send to a **durable `QueueChannel`** per
+> route — the same widening rows 3 and 7–8 record, reached through the `expr` module. The line numbers in the
+> table were also re-derived; every one had drifted. **The scope rule, not the number, is the contract.**
 
 **Rows 7–8 are a user-visible capability widening that no artifact previously recorded.** The HTTP inbound
 handler's `target` now accepts a `QueueChannel`, a `PublishSubscribeChannel`, and any `OutboundAdapter` — so
@@ -2262,12 +2291,26 @@ Both arms must be empty (arm 2 modulo the allow-list above). Run the sweep **aft
    | `endpoint/consumer.go:467.20,469.15` | **Accepted, flaky.** The `case <-ctx.Done():` arm of the dispatch select — covered in roughly 1 run in 3 (F10.8). A gate that diffs one run against another produces false regressions here. |
    | `endpoint/gateway.go:30.27,32.3` | **Accepted, pre-existing.** Byte-identical before and after the split. |
    | `endpoint/nativereliability.go:9.52,9.68` | **Accepted, pre-existing.** The `noNativeReliability` no-op, relocated unchanged (§3.3a). |
-   | `endpoint/poller.go:152.11,153.80` | **Accepted, pre-existing.** |
-   | `endpoint/poller.go:164.12,166.3` | **Accepted, pre-existing.** |
+   | `endpoint/poller.go:156.11,157.80` | **Accepted, pre-existing.** *(Was `:152.11,153.80`; +4 line drift — see the note below.)* |
+   | `endpoint/poller.go:168.12,170.3` | **Accepted, pre-existing.** *(Was `:164.12,166.3`; same drift.)* |
    | `resilience/breaker.go:179.28,181.3` | **Accepted, pre-existing** — this is the `toHalfOpen` gap at **87.5%**, 87.5% before the split too (round-2 §D7). |
    | ~~`handler.go:66.25,67.45` · `:67.45,68.64` · `:68.64,68.85`~~ | **FIXED** — root's dead `nilFuncStep` deleted (F12.4). |
    | ~~`payload.go:30.51,32.2`~~ | **FIXED** — root's dead `boxMessage` deleted (F12.4). |
    | ~~`reliability.go:39.16,41.3`~~ | **FIXED** — `IsPermanent`'s `err == nil` arm, now covered by `TestIsPermanent` (F12.3). |
+
+   > **RE-MEASURED BY PLAN 027 TASK 12 (2026-08-13) — the six hold, and TWO LINE NUMBERS HAD DRIFTED.** The
+   > delivered tree reports **five** uncovered blocks in this scope; `endpoint/consumer.go:467.20,469.15` is
+   > absent because it is the **flaky** arm and this run happened to cover it, exactly as its disposition
+   > predicts. **Zero unexplained blocks.**
+   >
+   > Both `poller.go` entries moved **+4 lines** — Task 11 added 8 comment lines and removed 4 in that file.
+   > The blocks are byte-identical: `sed -n '154,171p' endpoint/poller.go` and
+   > `git show e120d10:endpoint/poller.go | sed -n '150,167p'` print the same text.
+   >
+   > **THE CLASS, NOT THE INSTANCE.** A block id is `file:line.col,line.col`, so **every entry in this table
+   > rots whenever any line above it moves — including a pure comment edit.** Do not read a shifted id as a
+   > new gap or a fixed one. Verify by diffing the *source* at the two revisions, as above; a disposition is
+   > about a piece of code, not about a line number.
 
    **Root now has zero uncovered blocks.** Any block not in the six-row accepted list above is a finding.
 8. **Docs** — `MIGRATION.md` written; CLAUDE.md's architecture blueprint and dependency policy updated in the

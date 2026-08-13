@@ -79,6 +79,13 @@ Layer 2 — SPI (untyped, monomorphic)  Message[any] · PollingSource · EventDr
 Layer 3 — BACKEND                     memory · sql · pgx · redis · nats · http
 ```
 
+> **Layers are not packages.** Plan 027 split the flat root into five subpackages, so layer 1's
+> `Producer`/`Consumer`/`Handler` live in **`msgin/endpoint`**, while `Message[T]` and all of layer 2 stay in
+> root. Channels are in **`msgin/channel`**, the EIP routing endpoints in **`msgin/routing`** and
+> **`msgin/transform`**, and the governors below in **`msgin/endpoint`** (backoff and breaker primitives in
+> **`msgin/resilience`**). This document names symbols unqualified for readability;
+> [`MIGRATION.md`](MIGRATION.md) is the authoritative old→new map.
+
 Dependency points **inward** (L3 → L2 → L1); the core never imports an adapter.
 
 **The two encodings** (this is the subtle bit an audit caught early — see Part 8, C1):
@@ -212,6 +219,9 @@ rate-limit ─► CREDIT GATE (acquire@fetch) ─► bounded buffer ─► worke
                          (open ⇒ pause poller AND stop draining buffer)            │ release credit
 ```
 
+*Every option in this list is `endpoint.WithX` — they are consumer options and moved out of root with
+`NewConsumer` (Plan 027).*
+
 - **`WithMaxInFlight(n)`** — credit gate (mandatory, always bounded). The flood defense.
 - **`WithRateLimit(RateLimiter)`** — optional token-bucket rps/burst cap; default clockwork-driven, no
   forced dep; plug `x/time/rate` if preferred.
@@ -273,11 +283,13 @@ publish-subscribe is deferred.
 | [0006](docs/adrs/0006-resilience-flow-control.md) | Resilience | Credit-based backpressure (mandatory) + rate-limit/breaker/handler-timeout/overflow, as clockwork-driven interfaces with dep-free defaults. |
 | [0025](docs/adrs/0025-producer-outbound-retry.md) | Producer retry | `WithProducerRetry` applies `RetryPolicy` to `Producer.Send` in **core**, so every outbound adapter benefits; `RetryAfter(err, d)` marker as a **minimum** wait; four bounds (`ErrUnboundedRetry`, 100 ms floor, always-on budget, timed+detached divert); divert on cancel; at-least-once with caller-visible duplicates. |
 
-**Core third-party dependencies (corrected per ADR 0025 §4):** `clockwork`, `robfig/cron`,
-`expr-lang/expr`. **`cenkalti/backoff/v4` is NOT among them** — ADR 0005 ratified it for an
-outbound-HTTP loop that never shipped, and the producer-side design reuses the existing
-`RetryPolicy`/`ExponentialBackoff` machinery instead, so it stays out of `go.mod`. Everything else is
-stdlib or an adapter-module's own client.
+**Core third-party dependencies:** `clockwork` and `robfig/cron` — **two, not three.** `expr-lang/expr` was
+a core dependency while the expression endpoints lived in root; **Plan 027 moved them to the separate `expr`
+module, which now owns that dependency**, so no consumer of the core pays for it (`grep -rn 'expr-lang'
+--include='go.mod' .` hits only `expr/go.mod`). **`cenkalti/backoff/v4` is NOT among them** — ADR 0005
+ratified it for an outbound-HTTP loop that never shipped, and the producer-side design reuses the existing
+`RetryPolicy` (root) / `ExponentialBackoff` (`msgin/resilience`) machinery instead, so it stays out of
+`go.mod`. Everything else is stdlib or an adapter-module's own client.
 
 ## Part 8 — Design audits (what was caught and fixed)
 
