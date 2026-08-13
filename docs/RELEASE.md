@@ -27,23 +27,30 @@ in CI. Both are now in `.github/workflows/ci.yml`: **Plan 027 Task 10 added `exp
 the `workspace` job AND closed the pre-existing `crontest` gap in both**, so `grep -c 'dir:' ci.yml` → `8`,
 matching `go.work` exactly.
 
-> ### ⚠️ `expr` IS NOT RELEASABLE YET — two `release.yml` gaps must be closed first
+> ### ✅ `expr` IS RELEASABLE — the two `release.yml` gaps are CLOSED
 >
 > `expr` is unlike `dbtest`/`crontest`: it is **imported by consumers** (it is where the `*Expr` constructors
-> went when `expr-lang/expr` was dropped from the core), so it needs a tag like the dialect modules. But
-> `.github/workflows/release.yml` does not know about it — verified, not assumed:
+> went when `expr-lang/expr` was dropped from the core), so it needs a tag like the dialect modules. When
+> Plan 027 Task 12 synced this document, `.github/workflows/release.yml` did not know about it — **it had no
+> `on.push.tags` pattern for `expr/v*`, so pushing `expr/v0.1.0` would have fired no workflow at all**, and
+> its title `case` special-cased only `adapter/database/sql/*/v*.*.*`, so an `expr` release would have been
+> mislabelled `github.com/kartaladev/msgin expr/v0.1.0`.
 >
-> 1. **No trigger.** `on.push.tags` lists `v*`, and `adapter/database/sql/{postgres,mysql,sqlite,harness}/v*`
->    only. Pushing `expr/v0.1.0` fires **no workflow at all** — the tag would exist with no GitHub Release.
-> 2. **No title case.** The "Determine release metadata" step special-cases only
->    `adapter/database/sql/*/v*.*.*`; everything else falls through to `*)` and is titled
->    `github.com/kartaladev/msgin <tag>`, so an `expr` release would be mislabelled
->    `github.com/kartaladev/msgin expr/v0.1.0`.
+> **Both are closed.** `expr/v[0-9]+.[0-9]+.[0-9]+*` is now a trigger pattern, and the metadata step's case
+> arm reads `adapter/database/sql/*/v*.*.* | expr/v*.*.*`. Verified by executing the case logic against six
+> tag shapes rather than by reading it:
 >
-> **Both are one-line additions** (a tags pattern, and an `expr/v*.*.*)` case arm mirroring the dialect one).
-> They are deliberately NOT made as part of Plan 027 Task 12, which is a documentation-sync task. **The repo
-> has zero tags and nothing has ever been released**, so nothing is broken today — but this must be closed
-> before the first release that includes `expr`.
+> | Tag | Title | Pre-release |
+> |---|---|---|
+> | `v0.0.1` | `github.com/kartaladev/msgin v0.0.1` | false |
+> | `v0.0.1-rc.1` | `github.com/kartaladev/msgin v0.0.1-rc.1` | **true** |
+> | `expr/v0.1.0` | **`expr v0.1.0`** | false |
+> | `expr/v0.1.0-rc.1` | **`expr v0.1.0-rc.1`** | **true** |
+> | `adapter/database/sql/postgres/v0.1.0` | `adapter/database/sql/postgres v0.1.0` | false |
+>
+> **The prefixes stay ENUMERATED, deliberately** — a bare `*/v*.*.*` catch-all would misparse the root tag
+> (which carries no prefix) and any future root pre-release containing a slash. Adding a ninth module means
+> adding its pattern here **and** its case arm; there is no wildcard doing it for you.
 
 ## Tag order — root FIRST, then dialect/harness modules
 
@@ -69,9 +76,9 @@ published tag to pin to. Hence the fixed order:
      `sqlite`, and `harness`; `expr/vA.B.C` for `expr`), then
      `git push origin adapter/database/sql/postgres/vA.B.C`.
    - The `release` workflow's module-prefixed tag patterns
-     (`adapter/database/sql/{postgres,mysql,sqlite,harness}/v[0-9]+.[0-9]+.[0-9]+*`) pick this up and publish
-     a GitHub Release titled with the module path and version. **`expr` is NOT among those patterns yet** —
-     see the warning under "Modules in this repo"; close both gaps before tagging it.
+     (`adapter/database/sql/{postgres,mysql,sqlite,harness}/v[0-9]+.[0-9]+.[0-9]+*` **and
+     `expr/v[0-9]+.[0-9]+.[0-9]+*`**) pick this up and publish a GitHub Release titled with the module path
+     and version.
 3. A tag with a `-` suffix in its version (e.g. `v0.0.1-rc.1`, `adapter/database/sql/postgres/v0.1.0-rc.1`) is
    published as a **pre-release** — the workflow detects the `-` and passes `--prerelease` to
    `gh release create`.
