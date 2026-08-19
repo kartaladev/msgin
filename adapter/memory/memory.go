@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/kartaladev/msgin"
@@ -12,6 +13,11 @@ import (
 // test double. Delivery guarantee: at-most-once.
 type Broker struct {
 	ch chan msgin.Message[any]
+	// err latches a construction fault New cannot return (it has no error
+	// return): the first nil ELEMENT of opts. Set once in New, read-only
+	// thereafter — so it needs no lock — and reported by Send and Stream.
+	// Spec 015 §3.2 (family R2).
+	err error
 }
 
 var (
@@ -36,16 +42,37 @@ func WithBuffer(n int) Option {
 }
 
 // New builds an in-memory Broker.
+//
+// A nil ELEMENT of opts is not a panic (no panic on caller input). New has no
+// error return, so the FIRST nil element is LATCHED and both error-returning
+// methods — [Broker.Send] and [Broker.Stream] — report it as a PERMANENT
+// msgin.ErrNilFunc naming the element's 0-based index ("memory.New: nil
+// option at index 1"). The degradation is permanent because an option
+// element is fixed here and cannot become non-nil later, so retrying can
+// never succeed. Every non-nil option still applies, including any after the
+// nil (ADR 0031 D-U), and the latch is checked at the TOP of each method,
+// before its own logic (D-V).
 func New(opts ...Option) *Broker {
 	b := &Broker{ch: make(chan msgin.Message[any])}
-	for _, opt := range opts {
+	for i, opt := range opts {
+		if opt == nil {
+			if b.err == nil { // first-nil-wins (D-U: latch only when unlatched)
+				b.err = fmt.Errorf("%w: %s: nil option at index %d",
+					msgin.Permanent(msgin.ErrNilFunc), "memory.New", i)
+			}
+			continue // D-U: the surviving options are the caller's stated intent
+		}
 		opt(b)
 	}
 	return b
 }
 
-// Send enqueues a message (outbound adapter).
+// Send enqueues a message (outbound adapter). A nil option element latched by
+// New is reported FIRST (ADR 0031 D-V), before anything is enqueued.
 func (b *Broker) Send(ctx context.Context, m msgin.Message[any]) error {
+	if b.err != nil {
+		return b.err
+	}
 	select {
 	case b.ch <- m:
 		return nil
@@ -55,8 +82,13 @@ func (b *Broker) Send(ctx context.Context, m msgin.Message[any]) error {
 }
 
 // Stream delivers messages until ctx is cancelled (streaming source). Ack/Nack
-// are no-ops for at-most-once; Nack with requeue re-enqueues.
+// are no-ops for at-most-once; Nack with requeue re-enqueues. A nil option
+// element latched by New is reported FIRST (ADR 0031 D-V), before any
+// delivery loop runs.
 func (b *Broker) Stream(ctx context.Context, out chan<- msgin.Delivery) error {
+	if b.err != nil {
+		return b.err
+	}
 	for {
 		select {
 		case <-ctx.Done():

@@ -80,10 +80,14 @@ var _ Elector = (*SQLElector)(nil)
 
 // NewSQLElector builds an SQLElector over db using dialect (PostgresElector()/
 // MySQLElector()/SQLiteElector() or your own). A nil db is msgin.ErrNilAdapter; a
-// nil dialect is ErrNilDialect; an invalid table is ErrInvalidTableName; a
-// non-positive WithLeaseTTL is ErrInvalidLeaseTTL — checked in that order
-// (nil-arg checks before value validation, matching NewSQLLocker's db -> dialect
-// -> table order).
+// nil dialect is ErrNilDialect; a nil ELEMENT of opts is a bare
+// [msgin.ErrNilFunc] naming the element's 0-based index ("cron.NewSQLElector:
+// nil option at index 1"), checked as opts is applied, so it runs AFTER the
+// db/dialect checks and BEFORE the table/TTL validation below; an invalid
+// table is ErrInvalidTableName; a non-positive WithLeaseTTL is
+// ErrInvalidLeaseTTL — checked in that order (nil-arg checks, then the nil
+// option, then value validation, matching NewSQLLocker's db -> dialect ->
+// option -> table order).
 func NewSQLElector(db *stdsql.DB, dialect ElectorDialect, opts ...ElectorOption) (*SQLElector, error) {
 	if db == nil {
 		return nil, msgin.ErrNilAdapter
@@ -96,7 +100,10 @@ func NewSQLElector(db *stdsql.DB, dialect ElectorDialect, opts ...ElectorOption)
 		instanceID: randomID(),
 		leaseTTL:   defaultLeaseTTL,
 	}
-	for _, o := range opts {
+	for i, o := range opts {
+		if o == nil {
+			return nil, nilOptionAt("cron.NewSQLElector", i)
+		}
 		o(&cfg)
 	}
 	if err := validateIdent(cfg.table); err != nil {

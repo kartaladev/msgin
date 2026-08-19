@@ -163,7 +163,12 @@ func WithLocker(l Locker) Option {
 
 // NewSource parses spec once (cron 5-field + "@every" + descriptors — or a
 // required 6-field seconds schedule when WithSeconds is set) and builds
-// a Source emitting factory(fireTime) on each fire. An unparseable spec, OR a
+// a Source emitting factory(fireTime) on each fire. A nil ELEMENT of opts is a
+// bare [msgin.ErrNilFunc] naming the element's 0-based index ("cron.NewSource:
+// nil option at index 1"), not a panic — checked as opts is applied (the loop
+// is the first statement), so it runs BEFORE every check below (an
+// unparseable spec, a nil factory, an unsatisfiable schedule, a conflicting
+// coordinator, …) and beats all of them. An unparseable spec, OR a
 // syntactically valid spec with no future occurrence (e.g. "0 0 30 2 *"), is
 // ErrInvalidSchedule; a nil factory is ErrNilFactory; both a WithElector and a
 // WithLocker set is ErrConflictingCoordinator (Task 2); a WithLocker paired
@@ -176,7 +181,10 @@ func NewSource[T any](spec string, factory func(fire time.Time) T, opts ...Optio
 		location: time.UTC,
 		logger:   discardLogger(),
 	}
-	for _, opt := range opts {
+	for i, opt := range opts {
+		if opt == nil {
+			return nil, nilOptionAt("cron.NewSource", i)
+		}
 		opt(&cfg)
 	}
 

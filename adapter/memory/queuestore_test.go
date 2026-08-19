@@ -286,3 +286,62 @@ func TestQueueStore_ConcurrentStress(t *testing.T) {
 	assert.ErrorIs(t, err, context.DeadlineExceeded,
 		"buffer should be exactly full now (no double-free leaking an extra slot)")
 }
+
+// TestNewQueueStore_NilOptionElement proves a nil ELEMENT of opts is a bare
+// ErrNilFunc naming the computed 0-based index (Spec 015 §3.1, family R1: the
+// loop runs BEFORE the WithCapacity validation, so a nil option wins over an
+// invalid explicit capacity).
+func TestNewQueueStore_NilOptionElement(t *testing.T) {
+	tests := []struct {
+		name   string
+		opts   []memory.QueueStoreOption
+		assert func(t *testing.T, err error)
+	}{
+		{
+			name: "nil element alone",
+			opts: []memory.QueueStoreOption{nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.False(t, msgin.IsPermanent(err), "R1 nil-option error must be BARE, not Permanent-wrapped")
+				assert.Contains(t, err.Error(), "memory.NewQueueStore: nil option at index 0")
+			},
+		},
+		{
+			name: "nil element after a valid option asserts the COMPUTED index and the FULL position",
+			opts: []memory.QueueStoreOption{memory.WithCapacity(5), nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "memory.NewQueueStore: nil option at index 1")
+			},
+		},
+		{
+			// AC-3: first-nil-wins — an implementation reporting the LAST nil
+			// passes every other assertion here.
+			name: "first of two nils wins",
+			opts: []memory.QueueStoreOption{nil, nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "memory.NewQueueStore: nil option at index 0")
+			},
+		},
+		{
+			// Precedence (Spec 015 §3.5): NewQueueStore is LOOP-FIRST — the
+			// apply loop runs before the WithCapacity <= 0 validation, so a
+			// nil option wins over an invalid explicit capacity.
+			name: "nil option precedes the WithCapacity validation",
+			opts: []memory.QueueStoreOption{memory.WithCapacity(0), nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.NotErrorIs(t, err, msgin.ErrInvalidCapacity)
+				assert.Contains(t, err.Error(), "memory.NewQueueStore: nil option at index 1")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := memory.NewQueueStore(tc.opts...)
+			tc.assert(t, err)
+		})
+	}
+}
