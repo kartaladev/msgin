@@ -316,31 +316,44 @@ func TestNewSource_NilOptionElement(t *testing.T) {
 		name    string
 		spec    string
 		factory func(time.Time) string
+		assert  func(t *testing.T, err error)
 	}{
 		{
 			name:    "nil option precedes the invalid-spec check",
 			spec:    "not a cron",
 			factory: func(time.Time) string { return "x" },
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.NotErrorIs(t, err, cron.ErrInvalidSchedule)
+				assert.Contains(t, err.Error(), "cron.NewSource: nil option at index 0")
+			},
 		},
 		{
 			name:    "nil option precedes the unsatisfiable-schedule check",
 			spec:    "0 0 30 2 *", // Feb 30 — syntactically valid, no future occurrence
 			factory: func(time.Time) string { return "x" },
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.NotErrorIs(t, err, cron.ErrInvalidSchedule)
+				assert.Contains(t, err.Error(), "cron.NewSource: nil option at index 0")
+			},
 		},
 		{
 			name:    "nil option precedes the nil-factory check",
 			spec:    "@every 1h",
 			factory: nil,
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.NotErrorIs(t, err, cron.ErrNilFactory)
+				assert.Contains(t, err.Error(), "cron.NewSource: nil option at index 0")
+			},
 		},
 	}
 	for _, tc := range precedence {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			_, err := cron.NewSource[string](tc.spec, tc.factory, nil)
-			require.ErrorIs(t, err, msgin.ErrNilFunc)
-			assert.NotErrorIs(t, err, cron.ErrInvalidSchedule)
-			assert.NotErrorIs(t, err, cron.ErrNilFactory)
-			assert.Contains(t, err.Error(), "cron.NewSource: nil option at index 0")
+			tc.assert(t, err)
 		})
 	}
 }
