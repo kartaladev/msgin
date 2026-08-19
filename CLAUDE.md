@@ -173,7 +173,7 @@ This keeps the spec→plan→ADR→commit chain greppable (`git log --grep`), su
 
 ## Go conventions & skills
 
-**Go 1.25 — required.** This project targets **Go 1.25**: every `go.mod` in the workspace carries `go 1.25.0`, and builds/tests run on a Go 1.25 toolchain. `GOTOOLCHAIN` needs a full patch version (bare `go1.25` is rejected — "a language version but not a toolchain version"), so when a newer Go is the local default (currently **1.26**), force 1.25 with `GOTOOLCHAIN=go1.25.12` (bump the patch as 1.25.x security releases land — bumped from `go1.25.0` in Plan 006 Task 6 after `govulncheck` flagged a stdlib CVE fixed by `go1.25.3`+). The module must not silently build on 1.26+. Do not use language/stdlib features newer than 1.25. CI pins 1.25.
+**Go 1.25 — required.** This project targets **Go 1.25**: every `go.mod` in the workspace carries `go 1.25.0`, and builds/tests run on a Go 1.25 toolchain. `GOTOOLCHAIN` needs a full patch version (bare `go1.25` is rejected — "a language version but not a toolchain version"), so when a newer Go is the local default (currently **1.26**), force 1.25 with `GOTOOLCHAIN=go1.25.13` (bump the patch as 1.25.x security releases land — bumped from `go1.25.0` in Plan 006 Task 6 after `govulncheck` flagged a stdlib CVE fixed by `go1.25.3`+). The module must not silently build on 1.26+. Do not use language/stdlib features newer than 1.25. CI pins 1.25.
 
 **Tooling — mandatory.** Use **`gopls`** (the Go language server) for all Go code navigation, diagnostics, and refactoring — go-to-definition, find-references, rename, extract/inline, package API, post-edit diagnostics — via the native `LSP` tool (or gopls' MCP/CLI). Prefer semantic gopls operations over text search/`grep` when reasoning about Go symbols. → See `cc-skills-golang:golang-gopls`.
 
@@ -311,7 +311,7 @@ Because the deliverable is a package other code imports, the exported surface *i
 - **Pure Go, no cgo:** `CGO_ENABLED=0 go build ./...` must succeed — keeps the library cross-compilable and debuggable (see debuggability criterion above).
 - **Runnable examples & coverage:** exported behavior is covered by `Example…` tests (they double as godoc) and table tests. The **Test-coverage gate** (Development workflow §5) applies: target ≥ 85% on changed packages and — the hard requirement — every hot-path logic branch and every typed-error branch has a covering test. Watch coverage on the public packages; don't just chase a number.
 - **Vulnerability scan:** `govulncheck ./...` is clean.
-- **Pinned Go version:** builds/tests on **Go 1.25** (the `go 1.25.0` directive), not whatever newer toolchain is installed locally. CI runs 1.25; verify locally with `GOTOOLCHAIN=go1.25.12`.
+- **Pinned Go version:** builds/tests on **Go 1.25** (the `go 1.25.0` directive), not whatever newer toolchain is installed locally. CI runs 1.25; verify locally with `GOTOOLCHAIN=go1.25.13`.
 - **Docs links resolve — repo-wide, as a PRE-MERGE gate.** Traceability (see "Documentation artifacts") is only real if the links work, and the recurring break is mechanical: a `docs/plans/*` or `docs/specs/*` file citing an ADR by **bare filename** (`[0003](0003-multi-module-repository-layout.md)`), which resolves relative to the *citing* file's directory and silently 404s. Fix the **class**, not the instance — run this over every tracked Markdown file before merging, and treat any output as a blocker:
 
   ```bash
@@ -339,7 +339,7 @@ Because the deliverable is a package other code imports, the exported surface *i
 ## Commands
 
 ```bash
-export GOTOOLCHAIN=go1.25.12                # always — local default is newer; CI sets this too
+export GOTOOLCHAIN=go1.25.13                # always — local default is newer; CI sets this too
 go install golang.org/x/tools/gopls@latest  # LSP server: code nav / diagnostics / refactor
 
 go build ./...

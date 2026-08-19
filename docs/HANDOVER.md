@@ -10,10 +10,16 @@
 >
 > | | State |
 > |---|---|
-> | `main` | **`d86ef3d`** + the two bundle commits below. Tree clean |
-> | Branch | **none yet.** `feat/nil-option-elements` must be created off `main` |
+> | `main` | **`2da63d9`** — the design bundle. **Not pushed** (`origin/main` is still `d86ef3d`) |
+> | Bundle commits | `7f0e5ba` `spec(core):` Spec 015 · `2da63d9` `docs(plan):` ADR 0031 + Plan 028 + 4 audit records |
+> | Working tree | **clean**, verified by `git status --short` at the moment of writing |
+> | Branch | **none yet.** You are on `main`; `feat/nil-option-elements` must be created off it |
 > | Code written | **none.** Not one line |
+> | Suite at `2da63d9` | **11/11 root packages green** — `GOWORK=off go test ./... -race -shuffle=on`. No code changed, so this is `main`'s own state |
 > | Tags | **zero, as always.** Do NOT propose tagging |
+>
+> **This is a SAME-MACHINE handover.** Anything git-ignored is still on disk — the `.superpowers/` SDD ledgers, the
+> `$(go env GOPATH)/bin` tools, the Docker images `dbtest`/`crontest` pull. A fresh *clone* would not have them.
 
 ## 1. What this session did
 
@@ -98,7 +104,7 @@ D-V. Round 4: **no blocker** — D-U and D-V compile-proven, full suite green un
 
 ## 7. Gotchas & environment
 
-- **`export GOTOOLCHAIN=go1.25.12`** always; **`export PATH="$(go env GOPATH)/bin:$PATH"`** — `apidiff`, `gopls`,
+- **`export GOTOOLCHAIN=go1.25.13`** always; **`export PATH="$(go env GOPATH)/bin:$PATH"`** — `apidiff`, `gopls`,
   `govulncheck`, `gofumpt` all live there and none is on `PATH`.
 - **`./...` is not the repo.** Root `go list ./...` → 11 packages; `expr` is a separate module. Use CLAUDE.md's
   8-directory loops.
@@ -107,7 +113,10 @@ D-V. Round 4: **no blocker** — D-U and D-V compile-proven, full suite green un
   apart) rather than debugging, and **never** trust `git rev-parse origin/<branch>` as evidence a push landed; use
   `git ls-remote origin <branch>`.
 - The docs-link gate emits exactly **two** known false positives (`docs/plans/m`, `docs/specs/factory(fireTime`) —
-  both Go identifiers, not links. Arm 1 is **clean** on all five bundle files as of this writing.
+  both Go identifiers, not links. Arm 1 is **clean** on all **seven** bundle files as of this writing.
+- **`apidiff` is NOT installed** (`which apidiff` → not found). Task 0 step 0 installs it; do not skip that.
+- **Nothing is pushed.** `origin/main` is still `d86ef3d`. Pushing needs explicit per-action approval, and this
+  machine's SSH to GitHub is intermittent (see above).
 - `.golangci.yml` sets `linters.default: none` — `ST1000` and `unused` are both off.
 - `gofumpt -l .` reports 43 files repo-wide and always has; CI gates `gofmt`, which is clean.
 - `gopls` has **no Move refactoring**. Never commit `.claude/settings.json`.

@@ -23,8 +23,14 @@ env:
   # is rejected by GOTOOLCHAIN ("a language version but not a toolchain
   # version"), and govulncheck flags known stdlib CVEs fixed after go1.25.0
   # (discovered while wiring this workflow -- Plan 006 Task 6), so CI runs
-  # go1.25.12, not the toolchain's own default.
-  GOTOOLCHAIN: go1.25.12
+  # go1.25.13, not the toolchain's own default.
+  #
+  # Bumped go1.25.12 -> go1.25.13 during Plan 028 Task 8: govulncheck reported
+  # four stdlib advisories reachable from adapter/http (GO-2026-6218 net/url,
+  # GO-2026-6090 crypto/tls, GO-2026-5972 encoding/asn1, GO-2026-5026 net/http
+  # via x/net/idna), all fixed in go1.25.13. No go.mod changes -- the `go
+  # 1.25.0` directive is a LANGUAGE version and is unaffected.
+  GOTOOLCHAIN: go1.25.13
 
 jobs:
   module:
@@ -58,7 +64,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
 
       - name: go build
         working-directory: ${{ matrix.module.dir }}
@@ -123,7 +129,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
 
       - name: Build every workspace member
         run: |
