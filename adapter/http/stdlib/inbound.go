@@ -35,6 +35,15 @@ import (
 // msghttp.WithMaxBodyBytes(0)) surfaces msghttp.NewConfig's typed
 // construction error unchanged.
 //
+// A nil ELEMENT of opts is a bare [msgin.ErrNilFunc] naming the element's
+// 0-based index ("stdlib.NewInbound: nil option at index 1"), not a panic. It
+// is checked HERE, by a standalone pre-check above the delegation to
+// msghttp.NewConfig, so the position names stdlib.NewInbound rather than
+// msghttp.NewConfig — a function the caller never invoked (Spec 015 §3.4).
+// The pre-check is this function's first statement, so the nil-option check
+// runs BEFORE the msghttp.NewConfig and target checks below it, and wins over
+// both.
+//
 // The returned handler does NOT restrict the request's HTTP method — a GET
 // reaches the same decode+send path as a POST/PUT. Mount it behind whatever
 // method filtering the caller's mux/router applies (e.g.
@@ -46,6 +55,15 @@ import (
 // ReadTimeout, IdleTimeout) the caller MUST set — before exposing this
 // handler.
 func NewInbound(target msgin.MessageChannel, opts ...msghttp.Option) (http.Handler, error) {
+	// Delegator pre-check (Spec 015 §3.4, ADR 0031 D-R): msghttp.NewConfig
+	// re-scans opts and finds nothing. The duplicated pass is deliberate — it
+	// buys a truthful position at this entry point.
+	for i, opt := range opts {
+		if opt == nil {
+			return nil, nilOptionAt("stdlib.NewInbound", i)
+		}
+	}
+
 	cfg, err := msghttp.NewConfig(opts...)
 	if err != nil {
 		return nil, err
@@ -83,6 +101,15 @@ func NewInbound(target msgin.MessageChannel, opts ...msghttp.Option) (http.Handl
 // (e.g. msghttp.WithMaxBodyBytes(0)) surfaces msghttp.NewConfig's typed
 // construction error unchanged.
 //
+// A nil ELEMENT of opts is a bare [msgin.ErrNilFunc] naming the element's
+// 0-based index ("stdlib.NewInboundGateway: nil option at index 1"), not a
+// panic. It is checked HERE, by a standalone pre-check above the delegation
+// to msghttp.NewConfig, so the position names stdlib.NewInboundGateway rather
+// than msghttp.NewConfig — a function the caller never invoked (Spec 015
+// §3.4). The pre-check is this function's first statement, so the nil-option
+// check runs BEFORE the msghttp.NewConfig and exchange checks below it, and
+// wins over both.
+//
 // The returned handler does NOT restrict the request's HTTP method — a GET
 // reaches the same decode+exchange path as a POST/PUT. Mount it behind
 // whatever method filtering the caller's mux/router applies (e.g.
@@ -94,6 +121,15 @@ func NewInbound(target msgin.MessageChannel, opts ...msghttp.Option) (http.Handl
 // (ReadHeaderTimeout, ReadTimeout, IdleTimeout) the caller MUST set — before
 // exposing this handler.
 func NewInboundGateway(exchange msgin.RequestReplyExchange, opts ...msghttp.Option) (http.Handler, error) {
+	// Delegator pre-check (Spec 015 §3.4, ADR 0031 D-R): msghttp.NewConfig
+	// re-scans opts and finds nothing. The duplicated pass is deliberate — it
+	// buys a truthful position at this entry point.
+	for i, opt := range opts {
+		if opt == nil {
+			return nil, nilOptionAt("stdlib.NewInboundGateway", i)
+		}
+	}
+
 	cfg, err := msghttp.NewConfig(opts...)
 	if err != nil {
 		return nil, err
