@@ -44,9 +44,25 @@ func WithSharedMemory() DSNOption { return func(c *dsnConfig) { c.sharedMemory =
 // package doc for why both are required). DSN imports no driver — it only
 // assembles a string; the caller opens the *sql.DB with their chosen driver.
 // For DSNs more exotic than these options cover, construct the string yourself.
+//
+// A nil element in opts is ignored — DSN returns a string and has no error to
+// return, so there is nowhere to report the fault (Spec 015 §3.3). The skip is
+// therefore SILENT, and the cost is the caller's to avoid: the resulting DSN
+// carries msgin's defaults for whatever the dropped option would have set — WAL
+// journal mode, a 5s busy_timeout, and a file-backed database — so a dropped
+// [WithJournalMode]("") silently keeps WAL rather than omitting the pragma, a
+// dropped [WithBusyTimeout] silently keeps 5s, and a dropped [WithSharedMemory]
+// silently targets a different database (a file instead of the shared in-memory
+// one). The returned string looks valid and opens fine either way, so build the
+// option unconditionally rather than relying on this. Every non-nil element
+// still applies, whether it sits before or after the nil one. (A nil opts SLICE
+// — DSN(path) or DSN(path, nils...) — is a normal zero-option call, unaffected.)
 func DSN(path string, opts ...DSNOption) string {
 	cfg := dsnConfig{journalMode: defaultJournalMode, busyTimeout: defaultBusyTimeout}
 	for _, o := range opts {
+		if o == nil {
+			continue // R3: skip; there is no surface to report the fault through.
+		}
 		o(&cfg)
 	}
 

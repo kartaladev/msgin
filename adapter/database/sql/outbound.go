@@ -50,9 +50,19 @@ type Outbound struct {
 // endpoint.NewProducer, msgin.RetryPolicy.DeadLetter, or
 // endpoint.WithInvalidMessageSink. Call Ready once at boot to fail fast on an
 // un-provisioned schema (ADR 0010 D2).
+//
+// A nil ELEMENT of opts is a bare [msgin.ErrNilFunc] naming the element's
+// 0-based index ("sql.NewOutboundAdapter: nil option at index 1"), not a panic
+// — checked as opts is applied. The apply loop is this constructor's first
+// statement, so the nil-option check runs BEFORE every other validation here —
+// the ErrNilResolver check, then the nil-db/nil-dialect/table checks — and wins
+// over all of them.
 func NewOutboundAdapter(db *stdsql.DB, table string, dialect LeaseDialect, opts ...Option) (*Outbound, error) {
 	cfg := config{logger: discardLogger()}
-	for _, o := range opts {
+	for i, o := range opts {
+		if o == nil {
+			return nil, nilOptionAt("sql.NewOutboundAdapter", i)
+		}
 		o(&cfg)
 	}
 

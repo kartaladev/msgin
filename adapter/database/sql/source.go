@@ -83,9 +83,20 @@ type Source struct {
 // to fail fast on an un-provisioned schema (ADR 0010 D2), and prefer a non-zero
 // RetryPolicy.Backoff so a repeatedly-failing row idles the poll loop instead of
 // hot-looping the DB (ADR 0010 D1 poison-recycle caveat).
+//
+// A nil ELEMENT of opts is a bare [msgin.ErrNilFunc] naming the element's
+// 0-based index ("sql.NewPollingSource: nil option at index 1"), not a panic —
+// checked as opts is applied. The apply loop is this constructor's first
+// statement, so the nil-option check runs BEFORE every other validation here —
+// the nil-db/nil-dialect/table checks named above, the strategy and
+// lock-dialect checks, and the WithLeaseTTL range check — and wins over all of
+// them.
 func NewPollingSource(db *stdsql.DB, table string, dialect LeaseDialect, opts ...Option) (*Source, error) {
 	cfg := config{logger: discardLogger()}
-	for _, o := range opts {
+	for i, o := range opts {
+		if o == nil {
+			return nil, nilOptionAt("sql.NewPollingSource", i)
+		}
 		o(&cfg)
 	}
 

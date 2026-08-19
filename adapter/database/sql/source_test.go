@@ -131,3 +131,99 @@ func TestSource_NativeReliabilityContract(t *testing.T) {
 	assert.True(t, src.NativeRedelivery(), "sql source redelivers natively (nacked/expired rows persist)")
 	assert.False(t, src.NativeDeadLetter(), "sql source has no native dead-letter; the runtime policy governs it")
 }
+
+// TestNewPollingSource_NilOptionElement proves a nil ELEMENT of opts is a bare
+// ErrNilFunc naming the computed 0-based index (Spec 015 §3.1, family R1) rather
+// than a panic. NewPollingSource is LOOP-FIRST (Spec 015 §3.5): the apply loop is
+// the constructor's first statement, so a nil option beats newAdapterBase's
+// db/table/dialect validation AND the WithLeaseTTL range check, both after it.
+func TestNewPollingSource_NilOptionElement(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		db      func(t *testing.T) *sql.DB // nil => pass a nil *sql.DB
+		table   string
+		dialect msginsql.LeaseDialect
+		opts    []msginsql.Option
+		assert  func(t *testing.T, err error)
+	}{
+		{
+			// AC-1 (no panic) + AC-5 (the R1 wrap is BARE).
+			name:    "nil element alone",
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
+			table:   "msgs",
+			dialect: newFakeDialect(),
+			opts:    []msginsql.Option{nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.False(t, msgin.IsPermanent(err),
+					"R1 nil-option error must be BARE, not Permanent-wrapped")
+				assert.Contains(t, err.Error(), "sql.NewPollingSource: nil option at index 0")
+			},
+		},
+		{
+			// AC-2: computed index, asserted as the FULL position string.
+			name:    "nil element after a valid option reports the computed index",
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
+			table:   "msgs",
+			dialect: newFakeDialect(),
+			opts:    []msginsql.Option{msginsql.WithLockedBy("worker-1"), nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "sql.NewPollingSource: nil option at index 1")
+			},
+		},
+		{
+			// AC-3: first-nil-wins.
+			name:    "first of two nils wins",
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
+			table:   "msgs",
+			dialect: newFakeDialect(),
+			opts:    []msginsql.Option{nil, nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "sql.NewPollingSource: nil option at index 0")
+			},
+		},
+		{
+			// Precedence (Spec 015 §3.5): LOOP-FIRST, so the nil option beats
+			// the nil-db check inside newAdapterBase.
+			name:    "nil option precedes the nil-db validation",
+			db:      nil,
+			table:   "msgs",
+			dialect: newFakeDialect(),
+			opts:    []msginsql.Option{nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.NotErrorIs(t, err, msgin.ErrNilAdapter)
+				assert.Contains(t, err.Error(), "sql.NewPollingSource: nil option at index 0")
+			},
+		},
+		{
+			// Precedence: also beats the explicit-WithLeaseTTL range check,
+			// which sits well after the loop.
+			name:    "nil option precedes the WithLeaseTTL validation",
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
+			table:   "msgs",
+			dialect: newFakeDialect(),
+			opts:    []msginsql.Option{msginsql.WithLeaseTTL(-time.Second), nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.NotErrorIs(t, err, msginsql.ErrInvalidLeaseTTL)
+				assert.Contains(t, err.Error(), "sql.NewPollingSource: nil option at index 1")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var db *sql.DB
+			if tc.db != nil {
+				db = tc.db(t)
+			}
+			_, err := msginsql.NewPollingSource(db, tc.table, tc.dialect, tc.opts...)
+			tc.assert(t, err)
+		})
+	}
+}
