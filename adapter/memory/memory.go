@@ -16,7 +16,10 @@ type Broker struct {
 	// err latches a construction fault New cannot return (it has no error
 	// return): the first nil ELEMENT of opts. Set once in New, read-only
 	// thereafter — so it needs no lock — and reported by Send and Stream.
-	// Spec 015 §3.2 (family R2).
+	// Unlike the other R2 latches, this holds only as long as no
+	// caller-supplied Option lets the live *Broker escape New: Option is
+	// func(*Broker), exported, so a hostile option could stash b and read
+	// err concurrently with New's write. Spec 015 §3.2 (family R2).
 	err error
 }
 
