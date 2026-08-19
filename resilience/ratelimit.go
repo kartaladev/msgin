@@ -34,6 +34,11 @@ func WithTokenBucketClock(c clockwork.Clock) TokenBucketOption {
 
 // NewTokenBucket builds the default RateLimiter. rps must be > 0 and burst >= 1,
 // else ErrInvalidRateLimit. It starts full (burst tokens).
+//
+// A nil ELEMENT of opts is a bare [msgin.ErrNilFunc] naming the element's
+// 0-based index ("resilience.NewTokenBucket: nil option at index 1"), not a
+// panic — checked as opts is applied, so it runs AFTER the rps/burst check
+// above and loses to it.
 func NewTokenBucket(rps float64, burst int, opts ...TokenBucketOption) (msgin.RateLimiter, error) {
 	if rps <= 0 || burst < 1 {
 		return nil, msgin.ErrInvalidRateLimit
@@ -44,7 +49,10 @@ func NewTokenBucket(rps float64, burst int, opts ...TokenBucketOption) (msgin.Ra
 		burst:    float64(burst),
 		tokens:   float64(burst),
 	}
-	for _, opt := range opts {
+	for i, opt := range opts {
+		if opt == nil {
+			return nil, nilOptionAt("resilience.NewTokenBucket", i)
+		}
 		opt(b)
 	}
 	b.last = b.clock.Now()

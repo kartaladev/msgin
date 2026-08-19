@@ -94,3 +94,65 @@ func TestTokenBucket_Wait_RefillCappedAtBurst(t *testing.T) {
 		t.Fatal("token after burst exhaustion did not unblock after a refill interval")
 	}
 }
+
+// TestNewTokenBucket_NilOptionElement proves a nil ELEMENT of opts (as opposed
+// to a nil options SLICE, which is a normal zero-option call) is a BARE
+// ErrNilFunc naming the computed 0-based index, not a panic (Spec 015 §3.1,
+// family R1; ADR 0031 D-P/D-Q/D-R). rps and burst are both valid here — this
+// is about the THIRD argument, opts, never about the two already covered by
+// TestNewTokenBucket_Validation.
+func TestNewTokenBucket_NilOptionElement(t *testing.T) {
+	tests := []struct {
+		name   string
+		opts   []resilience.TokenBucketOption
+		assert func(t *testing.T, err error)
+	}{
+		{
+			name: "nil element alone",
+			opts: []resilience.TokenBucketOption{nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.False(t, msgin.IsPermanent(err), "R1 nil-option error must stay bare")
+				assert.Contains(t, err.Error(), "resilience.NewTokenBucket: nil option at index 0")
+			},
+		},
+		{
+			name: "nil element after a valid option asserts the COMPUTED index and the FULL position",
+			opts: []resilience.TokenBucketOption{resilience.WithTokenBucketClock(clockwork.NewFakeClock()), nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "resilience.NewTokenBucket: nil option at index 1")
+			},
+		},
+		{
+			name: "first of two nils wins",
+			opts: []resilience.TokenBucketOption{nil, nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "resilience.NewTokenBucket: nil option at index 0")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rl, err := resilience.NewTokenBucket(10, 5, tc.opts...)
+			assert.Nil(t, rl)
+			tc.assert(t, err)
+		})
+	}
+}
+
+// TestNewTokenBucket_NilOptionElement_ValidateFirst proves NewTokenBucket is
+// VALIDATE-FIRST (Spec 015 §3.5). Its pre-loop guard is NUMERIC
+// (rps <= 0 || burst < 1), not a nil/empty check — an earlier derivation
+// script pattern-matched it into the wrong family (round-3 audit, M-L) — and
+// it still wins over a nil option sitting at the SAME index 0. Standalone
+// rather than folded into the table above because its setup (invalid rps and
+// burst) is a different shape than "rps/burst valid, an option is nil" — the
+// table-test skill's documented divergence exception.
+func TestNewTokenBucket_NilOptionElement_ValidateFirst(t *testing.T) {
+	_, err := resilience.NewTokenBucket(0, 0, nil)
+
+	require.ErrorIs(t, err, msgin.ErrInvalidRateLimit)
+	assert.NotErrorIs(t, err, msgin.ErrNilFunc)
+}

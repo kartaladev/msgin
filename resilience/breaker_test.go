@@ -13,11 +13,12 @@ import (
 
 func TestCircuitBreaker_OpensClosesAndHalfOpenWakeup(t *testing.T) {
 	clk := clockwork.NewFakeClock()
-	b := resilience.NewCircuitBreaker(
+	b, err := resilience.NewCircuitBreaker(
 		resilience.WithBreakerClock(clk),
 		resilience.WithBreakerThreshold(2),
 		resilience.WithBreakerCooldown(3*time.Second),
 	)
+	require.NoError(t, err)
 
 	assert.True(t, b.Allow(), "starts closed")
 	b.Record(false)
@@ -47,7 +48,8 @@ func TestCircuitBreaker_OpensClosesAndHalfOpenWakeup(t *testing.T) {
 
 func TestCircuitBreaker_HalfOpenProbeFailureReopens(t *testing.T) {
 	clk := clockwork.NewFakeClock()
-	b := resilience.NewCircuitBreaker(resilience.WithBreakerClock(clk), resilience.WithBreakerThreshold(1), resilience.WithBreakerCooldown(time.Second))
+	b, err := resilience.NewCircuitBreaker(resilience.WithBreakerClock(clk), resilience.WithBreakerThreshold(1), resilience.WithBreakerCooldown(time.Second))
+	require.NoError(t, err)
 	b.Record(false)
 	require.False(t, b.Allow())
 
@@ -78,11 +80,12 @@ func TestCircuitBreaker_HalfOpenProbeFailureReopens(t *testing.T) {
 // the interleaving is deterministic, rather than racing real workers.
 func TestCircuitBreaker_RecordSuccessFromOpen_DoesNotReclose(t *testing.T) {
 	clk := clockwork.NewFakeClock()
-	b := resilience.NewCircuitBreaker(
+	b, err := resilience.NewCircuitBreaker(
 		resilience.WithBreakerClock(clk),
 		resilience.WithBreakerThreshold(1),
 		resilience.WithBreakerCooldown(time.Minute), // long enough that the cooldown never fires in this test
 	)
+	require.NoError(t, err)
 
 	b.Record(false) // trips closed->open on threshold 1
 	require.False(t, b.Allow(), "open after tripping")
@@ -112,7 +115,8 @@ func halfOpen(t *testing.T, clk *clockwork.FakeClock, b msgin.CircuitBreaker, co
 // Record settles it) — the fix for the N>1 half-open probe storm.
 func TestCircuitBreaker_ProbeGate_SingleProbeInHalfOpen(t *testing.T) {
 	clk := clockwork.NewFakeClock()
-	b := resilience.NewCircuitBreaker(resilience.WithBreakerClock(clk), resilience.WithBreakerThreshold(1), resilience.WithBreakerCooldown(time.Second))
+	b, err := resilience.NewCircuitBreaker(resilience.WithBreakerClock(clk), resilience.WithBreakerThreshold(1), resilience.WithBreakerCooldown(time.Second))
+	require.NoError(t, err)
 	pg, ok := b.(msgin.ProbeGate)
 	require.True(t, ok, "NewCircuitBreaker must implement ProbeGate")
 
@@ -140,7 +144,8 @@ func TestCircuitBreaker_ProbeGate_SingleProbeInHalfOpen(t *testing.T) {
 // wedge. This asserts the flag is reset across cycles.
 func TestCircuitBreaker_ProbeGate_ReopenAdmitsFreshProbeNextCycle(t *testing.T) {
 	clk := clockwork.NewFakeClock()
-	b := resilience.NewCircuitBreaker(resilience.WithBreakerClock(clk), resilience.WithBreakerThreshold(1), resilience.WithBreakerCooldown(time.Second))
+	b, err := resilience.NewCircuitBreaker(resilience.WithBreakerClock(clk), resilience.WithBreakerThreshold(1), resilience.WithBreakerCooldown(time.Second))
+	require.NoError(t, err)
 	pg := b.(msgin.ProbeGate)
 
 	b.Record(false) // → open (cycle 1)
@@ -154,4 +159,53 @@ func TestCircuitBreaker_ProbeGate_ReopenAdmitsFreshProbeNextCycle(t *testing.T) 
 	halfOpen(t, clk, b, time.Second) // cycle 2
 	assert.True(t, pg.TryProbe(), "cycle 2: a FRESH probe is admitted (toHalfOpen reset the flag — no wedge)")
 	assert.False(t, pg.TryProbe(), "cycle 2: single-probe still holds")
+}
+
+// TestNewCircuitBreaker_NilOptionElement proves a nil ELEMENT of opts (as
+// opposed to a nil options SLICE, which is a normal zero-option call) is a
+// BARE ErrNilFunc naming the computed 0-based index, not a panic. The
+// CircuitBreaker interface has no error-returning method, so the fault cannot
+// ride the product to first use (family R2 is structurally impossible) —
+// NewCircuitBreaker instead gained an error return, moving it to family R1
+// (Spec 015 §3.6, ADR 0031 D-T). It is LOOP-FIRST (Spec 015 §3.5): it has no
+// argument checks at all, so nothing precedes the option loop.
+func TestNewCircuitBreaker_NilOptionElement(t *testing.T) {
+	tests := []struct {
+		name   string
+		opts   []resilience.CircuitBreakerOption
+		assert func(t *testing.T, err error)
+	}{
+		{
+			name: "nil element alone",
+			opts: []resilience.CircuitBreakerOption{nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.False(t, msgin.IsPermanent(err), "R1 nil-option error must stay bare")
+				assert.Contains(t, err.Error(), "resilience.NewCircuitBreaker: nil option at index 0")
+			},
+		},
+		{
+			name: "nil element after a valid option asserts the COMPUTED index and the FULL position",
+			opts: []resilience.CircuitBreakerOption{resilience.WithBreakerThreshold(2), nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "resilience.NewCircuitBreaker: nil option at index 1")
+			},
+		},
+		{
+			name: "first of two nils wins",
+			opts: []resilience.CircuitBreakerOption{nil, nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "resilience.NewCircuitBreaker: nil option at index 0")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := resilience.NewCircuitBreaker(tc.opts...)
+			assert.Nil(t, b)
+			tc.assert(t, err)
+		})
+	}
 }

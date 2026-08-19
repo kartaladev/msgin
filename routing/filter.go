@@ -2,6 +2,7 @@ package routing
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/kartaladev/msgin"
 )
@@ -27,13 +28,25 @@ func WithDiscardChannel(ch msgin.MessageChannel) FilterOption {
 // (D-M): routed to the invalid-message channel rather than retried to the
 // dead-letter sink, with errors.Is(err, msgin.ErrNilFunc) still matching (see
 // [msgin.ErrNilFunc]).
+//
+// A nil ELEMENT of opts degrades the Step the same way — a PERMANENT ErrNilFunc
+// naming the element's 0-based index ("routing.Filter: nil option at index 1"),
+// reported by the Step's handler at dispatch, since Filter has no error return
+// of its own. It is checked BEFORE the nil-pred check above (ADR 0031 D-V: the
+// option fault happened at construction, so it is chronologically earlier and
+// is reported uniformly first across this family), so Filter[A](nil, nil)
+// reports the nil option; Filter[A](nil) with no options still reports
+// "nil pred".
 func Filter[A any](pred Predicate[A], opts ...FilterOption) msgin.Step {
+	var cfg filterConfig
+	for i, opt := range opts {
+		if opt == nil {
+			return nilFuncStep(fmt.Sprintf("routing.Filter: nil option at index %d", i))
+		}
+		opt(&cfg)
+	}
 	if pred == nil {
 		return nilFuncStep("routing.Filter: nil pred")
-	}
-	var cfg filterConfig
-	for _, opt := range opts {
-		opt(&cfg)
 	}
 	return func(next msgin.MessageHandler) msgin.MessageHandler {
 		return msgin.HandlerFunc(func(ctx context.Context, msg msgin.Message[any]) error {

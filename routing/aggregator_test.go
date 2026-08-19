@@ -1570,3 +1570,64 @@ func TestAggregator_ReleaseDrainLoopTransientClaimError(t *testing.T) {
 	require.Equal(t, 1, out.count())
 	assert.Equal(t, 3, out.last().Payload())
 }
+
+// TestNewAggregator_NilOptionElement proves a nil ELEMENT of opts (as opposed
+// to a nil options SLICE, which is a normal zero-option call) is a BARE
+// ErrNilFunc naming the computed 0-based index, not a panic (Spec 015 §3.1,
+// family R1; ADR 0031 D-P/D-Q/D-R). store and fn are both valid here — this is
+// about the THIRD argument, opts, never about the two already covered by
+// TestNewAggregator_Validation.
+func TestNewAggregator_NilOptionElement(t *testing.T) {
+	tests := []struct {
+		name   string
+		opts   []routing.AggregatorOption
+		assert func(t *testing.T, err error)
+	}{
+		{
+			name: "nil element alone",
+			opts: []routing.AggregatorOption{nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.False(t, msgin.IsPermanent(err), "R1 nil-option error must stay bare")
+				assert.Contains(t, err.Error(), "routing.NewAggregator: nil option at index 0")
+			},
+		},
+		{
+			name: "nil element after a valid option asserts the COMPUTED index and the FULL position",
+			opts: []routing.AggregatorOption{routing.WithOutputChannel(&fakeAggChannel{}), nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "routing.NewAggregator: nil option at index 1")
+			},
+		},
+		{
+			name: "first of two nils wins",
+			opts: []routing.AggregatorOption{nil, nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "routing.NewAggregator: nil option at index 0")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			agg, err := routing.NewAggregator[int, int](newIntStore(t), sumFn, tc.opts...)
+			assert.Nil(t, agg)
+			tc.assert(t, err)
+		})
+	}
+}
+
+// TestNewAggregator_NilOptionElement_ValidateFirst proves NewAggregator is
+// VALIDATE-FIRST (Spec 015 §3.5): its existing store/fn argument checks
+// precede the option loop, so an earlier-validated fault wins over a nil
+// option sitting at the SAME index 0 the nil-option guard would otherwise
+// report. Standalone rather than folded into the table above because its setup
+// (a nil store) is a different shape than "store/fn valid, an option is nil" —
+// the table-test skill's documented divergence exception.
+func TestNewAggregator_NilOptionElement_ValidateFirst(t *testing.T) {
+	_, err := routing.NewAggregator[int, int](nil, sumFn, nil)
+
+	require.ErrorIs(t, err, msgin.ErrNilStore)
+	assert.NotErrorIs(t, err, msgin.ErrNilFunc)
+}

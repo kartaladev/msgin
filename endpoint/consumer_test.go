@@ -1928,7 +1928,8 @@ func TestConsumer_HandlerTimeout_CancelsStuckHandlerAndRetries(t *testing.T) {
 // driving it into the failing downstream, and the flow recovers on half-open.
 func TestConsumer_CircuitBreaker_GatesDispatchAndRecovers(t *testing.T) {
 	clk := clockwork.NewFakeClock()
-	b := resilience.NewCircuitBreaker(resilience.WithBreakerClock(clk), resilience.WithBreakerThreshold(1), resilience.WithBreakerCooldown(5*time.Second))
+	b, breakerErr := resilience.NewCircuitBreaker(resilience.WithBreakerClock(clk), resilience.WithBreakerThreshold(1), resilience.WithBreakerCooldown(5*time.Second))
+	require.NoError(t, breakerErr)
 
 	broker := memory.New(memory.WithBuffer(8))
 	var ok atomic.Int64
@@ -1977,7 +1978,8 @@ func TestConsumer_CircuitBreaker_GatesDispatchAndRecovers(t *testing.T) {
 // messages keep flowing to the invalid sink.
 func TestConsumer_CircuitBreaker_PermanentErrorsDoNotTrip(t *testing.T) {
 	clk := clockwork.NewFakeClock()
-	b := resilience.NewCircuitBreaker(resilience.WithBreakerClock(clk), resilience.WithBreakerThreshold(1), resilience.WithBreakerCooldown(5*time.Second))
+	b, breakerErr := resilience.NewCircuitBreaker(resilience.WithBreakerClock(clk), resilience.WithBreakerThreshold(1), resilience.WithBreakerCooldown(5*time.Second))
+	require.NoError(t, breakerErr)
 
 	broker := memory.New(memory.WithBuffer(8))
 	sink := &recordingSink{}
@@ -2013,7 +2015,8 @@ func TestConsumer_CircuitBreaker_PermanentErrorsDoNotTrip(t *testing.T) {
 // shutdown happens while ingress is parked.
 func TestConsumer_CircuitBreaker_ShutdownWhileOpen(t *testing.T) {
 	clk := clockwork.NewFakeClock()
-	b := resilience.NewCircuitBreaker(resilience.WithBreakerClock(clk), resilience.WithBreakerThreshold(1), resilience.WithBreakerCooldown(time.Hour))
+	b, breakerErr := resilience.NewCircuitBreaker(resilience.WithBreakerClock(clk), resilience.WithBreakerThreshold(1), resilience.WithBreakerCooldown(time.Hour))
+	require.NoError(t, breakerErr)
 
 	broker := memory.New(memory.WithBuffer(8))
 	h := func(context.Context, msgin.Message[order]) error {

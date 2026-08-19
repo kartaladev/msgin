@@ -89,6 +89,12 @@ func TestConsumer_ProbeGate_GobreakerCliffWarn(t *testing.T) {
 	const warnSubstr = "does not implement ProbeGate"
 	h := func(context.Context, msgin.Message[order]) error { return nil }
 
+	// Built out here rather than inline in the table row below: since ADR 0031
+	// D-T, NewCircuitBreaker returns an error too, and the opts closures have
+	// no *testing.T to assert it on.
+	defaultBreaker, breakerErr := resilience.NewCircuitBreaker()
+	require.NoError(t, breakerErr)
+
 	tests := []struct {
 		name   string
 		opts   func(logger *slog.Logger) []endpoint.ConsumerOption[order]
@@ -109,7 +115,7 @@ func TestConsumer_ProbeGate_GobreakerCliffWarn(t *testing.T) {
 			func(logger *slog.Logger) []endpoint.ConsumerOption[order] {
 				return []endpoint.ConsumerOption[order]{
 					endpoint.WithConcurrency[order](2),
-					endpoint.WithCircuitBreaker[order](resilience.NewCircuitBreaker()),
+					endpoint.WithCircuitBreaker[order](defaultBreaker),
 					endpoint.WithLogger[order](logger),
 				}
 			},

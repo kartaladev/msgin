@@ -62,6 +62,10 @@ type RouteFunc func(ctx context.Context, m msgin.Message[any]) (msgin.MessageCha
 type Router struct {
 	pick RouteFunc
 	cfg  routerConfig
+	// err latches a construction fault NewRouter cannot return (it has no
+	// error return): the first nil ELEMENT of opts. Set once in NewRouter,
+	// read-only thereafter, reported by Handle. Spec 015 §3.2 (family R2).
+	err error
 }
 
 var _ msgin.MessageHandler = (*Router)(nil)
@@ -70,16 +74,35 @@ var _ msgin.MessageHandler = (*Router)(nil)
 // construction and surfaces as a permanent ErrNilFunc at Handle time, named
 // with its position (no panic on input) — pick is fixed here and cannot become
 // non-nil later, so retrying can never succeed.
+//
+// A nil ELEMENT of opts is tolerated the same way and for the same reason:
+// NewRouter has no error return, so the FIRST nil element is LATCHED and
+// [Router.Handle] reports it as a PERMANENT ErrNilFunc naming the element's
+// 0-based index ("routing.NewRouter: nil option at index 1"). Every non-nil
+// option still applies, including any after the nil (ADR 0031 D-U), and the
+// latch is checked at the TOP of Handle, before its own nil-pick check
+// (D-V), so NewRouter(nil, nil).Handle reports the nil option.
 func NewRouter(pick RouteFunc, opts ...RouterOption) *Router {
 	r := &Router{pick: pick}
-	for _, opt := range opts {
+	for i, opt := range opts {
+		if opt == nil {
+			if r.err == nil { // first-nil-wins (D-U: latch only when unlatched)
+				r.err = fmt.Errorf("%w: %s: nil option at index %d",
+					msgin.Permanent(msgin.ErrNilFunc), "routing.NewRouter", i)
+			}
+			continue // D-U: the surviving options are the caller's stated intent
+		}
 		opt(&r.cfg)
 	}
 	return r
 }
 
-// Handle routes msg to the channel pick selects.
+// Handle routes msg to the channel pick selects. A nil option element latched
+// by NewRouter is reported here first, before the nil-pick check (D-V).
 func (r *Router) Handle(ctx context.Context, msg msgin.Message[any]) error {
+	if r.err != nil {
+		return r.err
+	}
 	if r.pick == nil {
 		// D-M (ADR 0029 §5.0b): pick is set once in NewRouter, so the fault
 		// cannot change for the message's lifetime — permanent, not retried.
