@@ -206,10 +206,17 @@ var (
 	ErrNilSink = errors.New("msgin: nil outbound sink")
 	// ErrNilFunc is returned, wrapped in [Permanent], by an endpoint
 	// (Transform/Filter/Activate/Consume/Router/Split) constructed with a nil
-	// function — by [Chain] for a nil Step ELEMENT, which is a nil function
-	// too — and by any exported functional-option constructor for a nil
-	// option ELEMENT, which is a nil function too — instead of panicking at
-	// dispatch.
+	// function, and by [Chain] for a nil Step ELEMENT, which is a nil
+	// function too — instead of panicking at dispatch. A nil OPTION ELEMENT
+	// of a constructor's variadic opts is a nil function too, but which of
+	// three things happens to it depends on what the constructor can report
+	// through: most constructors return it BARE, at construction, instead of
+	// panicking there; a few with no error return of their own — e.g.
+	// routing.NewRouter, via Handle — latch it and return it wrapped in
+	// [Permanent] at the product's first use, exactly like the two dispatch
+	// cases above; and msgin.New and sqlite.DSN, which have no
+	// error-returning surface at all, silently skip it and never return
+	// ErrNilFunc for it.
 	//
 	// The governing invariant, which decides whether any msgin sentinel is
 	// wrapped in [Permanent] at the point it is produced:

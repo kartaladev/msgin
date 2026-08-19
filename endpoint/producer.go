@@ -336,7 +336,9 @@ type producer[T any] struct {
 // nil out is [msgin.ErrNilAdapter], checked before opts is ever applied. A
 // nil ELEMENT of opts is a bare [msgin.ErrNilFunc], naming the element's
 // 0-based index ("endpoint.NewProducer: nil option at index 1"), checked as
-// opts is applied — so it runs AFTER the out check and loses to it.
+// opts is applied — so it runs AFTER the out check and loses to it, but
+// BEFORE the codec-pairing validation mentioned above, which runs after the
+// loop and so loses to the nil-option error.
 func NewProducer[T any](out msgin.OutboundAdapter, opts ...ProducerOption[T]) (Producer[T], error) {
 	if out == nil {
 		return nil, msgin.ErrNilAdapter
