@@ -313,7 +313,24 @@ var _ msgin.OutboundAdapter = (*Outbound)(nil)
 // options (NewConfig), then the URL (validateURL — non-empty, http/https,
 // non-empty host), then resolves the redirect-safe *http.Client ONCE
 // (resolveClient), so the no-follow policy is not re-derived on every Send.
+//
+// A nil ELEMENT of opts is a bare [msgin.ErrNilFunc] naming the element's
+// 0-based index ("msghttp.NewOutbound: nil option at index 1"), not a panic. It
+// is checked HERE, by a standalone pre-check above the delegation, so the
+// position names msghttp.NewOutbound rather than msghttp.NewConfig — a function
+// the caller never invoked (Spec 015 §3.4). The pre-check is this function's
+// first statement, so the nil-option check runs BEFORE the validateURL step and
+// wins over ErrInvalidURL.
 func NewOutbound(url string, opts ...Option) (*Outbound, error) {
+	// Delegator pre-check (Spec 015 §3.4, ADR 0031 D-R): NewConfig re-scans
+	// opts and finds nothing. The duplicated pass is deliberate — it buys a
+	// truthful position at this entry point.
+	for i, opt := range opts {
+		if opt == nil {
+			return nil, nilOptionAt("msghttp.NewOutbound", i)
+		}
+	}
+
 	cfg, err := NewConfig(opts...)
 	if err != nil {
 		return nil, err

@@ -54,7 +54,24 @@ var (
 // *http.Client ONCE via resolveSSEClient — deliberately NOT outbound's
 // resolveClient, which would carry NewConfig's 30s defaultHTTPClientTimeout
 // back-fill and abort every long-lived stream (Plan 026 audit MAJOR-1).
+//
+// A nil ELEMENT of opts is a bare [msgin.ErrNilFunc] naming the element's
+// 0-based index ("msghttp.NewSSEClient: nil option at index 1"), not a panic. It
+// is checked HERE, by a standalone pre-check above the delegation, so the
+// position names msghttp.NewSSEClient rather than msghttp.NewConfig — a function
+// the caller never invoked (Spec 015 §3.4). The pre-check is this function's
+// first statement, so the nil-option check runs BEFORE the validateURL step and
+// wins over ErrInvalidURL.
 func NewSSEClient(url string, opts ...Option) (*SSEClient, error) {
+	// Delegator pre-check (Spec 015 §3.4, ADR 0031 D-R): NewConfig re-scans
+	// opts and finds nothing. The duplicated pass is deliberate — it buys a
+	// truthful position at this entry point.
+	for i, opt := range opts {
+		if opt == nil {
+			return nil, nilOptionAt("msghttp.NewSSEClient", i)
+		}
+	}
+
 	cfg, err := NewConfig(opts...)
 	if err != nil {
 		return nil, err

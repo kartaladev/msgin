@@ -1103,9 +1103,25 @@ func WithReadTimeout(d time.Duration) Option {
 // unset option resolves to its default, while an explicitly-set-but-invalid
 // value is a construction error (ErrInvalidMaxBodyBytes /
 // ErrInvalidStatusCode) rather than a silently-substituted default.
+//
+// A nil ELEMENT of opts is a bare [msgin.ErrNilFunc] naming the element's
+// 0-based index ("msghttp.NewConfig: nil option at index 1"), not a panic. It is
+// checked as opts is applied — the apply loop is this function's first statement
+// — so the nil-option check runs BEFORE every value check below (
+// ErrInvalidMaxBodyBytes, ErrInvalidStatusCode, ErrInvalidMaxResponseBytes and
+// the rest) and wins over all of them.
+//
+// This is the one entry point in the package that APPLIES the options; the five
+// constructors that forward to it (NewExchange, NewOutbound, NewSSEServer,
+// NewSSEClient, NewSSEParser) each run their own pre-check first, so a caller is
+// never told "msghttp.NewConfig" for a function they did not call (Spec 015
+// §3.4).
 func NewConfig(opts ...Option) (*Config, error) {
 	cfg := &Config{}
-	for _, opt := range opts {
+	for i, opt := range opts {
+		if opt == nil {
+			return nil, nilOptionAt("msghttp.NewConfig", i)
+		}
 		opt(cfg)
 	}
 
