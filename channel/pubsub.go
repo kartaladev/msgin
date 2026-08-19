@@ -123,6 +123,16 @@ type PublishSubscribeChannel struct {
 	mu   sync.RWMutex
 	subs []*subscription
 	cfg  pubSubConfig
+	// err latches a construction fault NewPublishSubscribeChannel cannot return
+	// (it has no error return): the first nil ELEMENT of opts. Set once in the
+	// constructor, read-only thereafter — so it needs no lock — and reported by
+	// Send and Subscribe. Spec 015 §3.2 (family R2).
+	//
+	// It lives on the STRUCT and deliberately NOT in pubSubConfig: withConfig
+	// copies a whole config into a new channel, so a latch held in the config
+	// would propagate a PubSub registry's fault into every topic channel it
+	// creates.
+	err error
 }
 
 var (
@@ -139,12 +149,36 @@ var (
 // into the fan-out. The value is set once by NewPublishSubscribeChannel and
 // never written again, so it is constant for the channel's lifetime and safe
 // for concurrent use, as msgin.ExclusiveSubscribable requires (ADR 0030 §2).
+//
+// It returns no error and so is NOT a reporting surface for a latched nil
+// option element: it reports exactly what the caller's non-nil options set,
+// even on a channel whose Send and Subscribe fail (Spec 015 §3.2).
 func (c *PublishSubscribeChannel) SingleSubscriber() bool { return c.cfg.single }
 
 // NewPublishSubscribeChannel returns an empty channel; Subscribe handlers, then Send.
+//
+// A nil ELEMENT of opts is not a panic (no panic on caller input). This
+// constructor has no error return, so the FIRST nil element is LATCHED and
+// both error-returning methods — [PublishSubscribeChannel.Send] and
+// [PublishSubscribeChannel.Subscribe] — report it as a PERMANENT
+// msgin.ErrNilFunc naming the element's 0-based index
+// ("channel.NewPublishSubscribeChannel: nil option at index 1"). The
+// degradation is permanent because an option element is fixed here and cannot
+// become non-nil later, so retrying can never succeed. Every non-nil option
+// still applies, including any after the nil (ADR 0031 D-U), and the latch is
+// checked at the TOP of each method, before its own argument checks (D-V), so
+// a latched Subscribe(nil) reports the nil OPTION rather than
+// msgin.ErrNilHandler.
 func NewPublishSubscribeChannel(opts ...PubSubOption) *PublishSubscribeChannel {
 	c := &PublishSubscribeChannel{cfg: defaultPubSubConfig()}
-	for _, opt := range opts {
+	for i, opt := range opts {
+		if opt == nil {
+			if c.err == nil { // first-nil-wins (D-U: latch only when unlatched)
+				c.err = fmt.Errorf("%w: %s: nil option at index %d",
+					msgin.Permanent(msgin.ErrNilFunc), "channel.NewPublishSubscribeChannel", i)
+			}
+			continue // D-U: the surviving options are the caller's stated intent
+		}
 		opt(&c.cfg)
 	}
 	return c
@@ -154,7 +188,14 @@ func NewPublishSubscribeChannel(opts ...PubSubOption) *PublishSubscribeChannel {
 // ErrNilHandler. Under WithSingleSubscriber a second concurrent subscriber is
 // ErrChannelSubscribed; without it (the default) any number of subscribers is
 // accepted and every one receives every message.
+//
+// A nil option element latched by NewPublishSubscribeChannel is reported FIRST,
+// above the nil-handler check (ADR 0031 D-V) — the option fault happened
+// earlier, at construction.
 func (c *PublishSubscribeChannel) Subscribe(h msgin.MessageHandler) (msgin.Subscription, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
 	if h == nil {
 		return nil, msgin.ErrNilHandler
 	}
@@ -202,7 +243,14 @@ func (c *PublishSubscribeChannel) isEmpty() bool {
 // last Cancel may fan out to zero subscribers and return nil (delivered-to-none).
 // A panicking subscriber is recovered per-subscriber (ErrHandlerPanic, transient)
 // so it never aborts the fan-out — the loop always reaches every subscriber.
+//
+// A nil option element latched by NewPublishSubscribeChannel is reported before
+// anything is dispatched: no subscriber is invoked and the permanent
+// msgin.ErrNilFunc is returned instead.
 func (c *PublishSubscribeChannel) Send(ctx context.Context, msg msgin.Message[any]) error {
+	if c.err != nil {
+		return c.err
+	}
 	c.mu.RLock()
 	snapshot := make([]*subscription, len(c.subs))
 	copy(snapshot, c.subs)

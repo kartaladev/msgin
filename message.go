@@ -153,9 +153,23 @@ func WithHeaders(m map[string]any) MessageOption {
 // in an external system (its id/timestamp were framed at publish time and
 // decoded back from storage) must use NewMessage instead, which preserves the
 // pre-built Headers verbatim.
+//
+// A nil element in opts is ignored — New has no error to return, and
+// [Message] has no error-returning method to degrade at, so there is nowhere
+// to report the fault (Spec 015 §3.3). It is therefore SILENT, and the
+// consequence is the caller's to avoid: a dropped [WithID] means New stamps a
+// fresh random id, a dropped [WithHeaders] means those headers are absent, and
+// a dropped [WithClock] means the timestamp comes from the real clock; if the
+// id is an idempotency key, build the option unconditionally. Every non-nil
+// element still applies, whether it sits before or after the nil one. (A nil
+// opts SLICE — New(payload) or New(payload, nils...) — is a normal
+// zero-option call, unaffected.)
 func New[T any](payload T, opts ...MessageOption) Message[T] {
 	cfg := msgConfig{clock: clockwork.NewRealClock()}
 	for _, opt := range opts {
+		if opt == nil {
+			continue // R3: skip; there is no surface to report the fault through.
+		}
 		opt(&cfg)
 	}
 	m := make(map[string]any, len(cfg.headers)+2)

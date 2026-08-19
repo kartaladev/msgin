@@ -138,6 +138,81 @@ func TestNew_StampsIDAndTimestamp(t *testing.T) {
 	}
 }
 
+// TestNew_NilOptionElement proves New SKIPS a nil ELEMENT of opts instead of
+// panicking on caller input. New is family R3 (Spec 015 §3.3, ADR 0031 D-P):
+// Message[T] has no error-returning method, so there is nowhere to report the
+// fault and the element is dropped silently — the godoc names what that costs.
+//
+// The AC-4 PAIR is the load-bearing part: the option BEFORE the nil and the
+// option AFTER it must BOTH still apply, so the skip is a `continue` and not a
+// `break`.
+func TestNew_NilOptionElement(t *testing.T) {
+	clk := clockwork.NewFakeClockAt(time.Unix(500, 0))
+
+	tests := []struct {
+		name   string
+		opts   []msgin.MessageOption
+		assert func(t *testing.T, m msgin.Message[string])
+	}{
+		{
+			name: "AC-1: a nil element alone is skipped, not a panic",
+			opts: []msgin.MessageOption{nil},
+			assert: func(t *testing.T, m msgin.Message[string]) {
+				assert.NotEmpty(t, m.ID(), "the random-id default still applies")
+				_, ok := m.Header(msgin.HeaderTimestamp)
+				assert.True(t, ok, "the real-clock default still stamps a timestamp")
+			},
+		},
+		{
+			name: "AC-4: the option BEFORE the nil still applies",
+			opts: []msgin.MessageOption{msgin.WithID("x"), nil},
+			assert: func(t *testing.T, m msgin.Message[string]) {
+				assert.Equal(t, "x", m.ID())
+			},
+		},
+		{
+			// The `continue` half of the skip: under a `break` the surviving
+			// WithID never runs and New stamps a random id instead — exactly the
+			// consequence the godoc names.
+			name: "AC-4: the option AFTER the nil still applies",
+			opts: []msgin.MessageOption{nil, msgin.WithID("x")},
+			assert: func(t *testing.T, m msgin.Message[string]) {
+				assert.Equal(t, "x", m.ID())
+			},
+		},
+		{
+			name: "every surviving option after the nil applies, not just the first",
+			opts: []msgin.MessageOption{
+				nil,
+				msgin.WithID("x"),
+				msgin.WithClock(clk),
+				msgin.WithHeaders(map[string]any{"k": "v"}),
+			},
+			assert: func(t *testing.T, m msgin.Message[string]) {
+				assert.Equal(t, "x", m.ID())
+				ts, ok := m.Header(msgin.HeaderTimestamp)
+				require.True(t, ok)
+				assert.Equal(t, time.Unix(500, 0), ts)
+				v, ok := m.Header("k")
+				require.True(t, ok)
+				assert.Equal(t, "v", v)
+			},
+		},
+		{
+			name: "several nils are each skipped",
+			opts: []msgin.MessageOption{nil, nil, msgin.WithID("x"), nil},
+			assert: func(t *testing.T, m msgin.Message[string]) {
+				assert.Equal(t, "x", m.ID())
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.assert(t, msgin.New("body", tc.opts...))
+		})
+	}
+}
+
 func TestMessage_WithHeader_CopyOnWrite(t *testing.T) {
 	m := msgin.New("x", msgin.WithID("id1"))
 	m2 := m.WithHeader("k", "v")

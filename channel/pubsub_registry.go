@@ -2,6 +2,7 @@ package channel
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/kartaladev/msgin"
@@ -14,6 +15,15 @@ type PubSub struct {
 	mu     sync.Mutex
 	topics map[string]*PublishSubscribeChannel
 	cfg    pubSubConfig
+	// err latches a construction fault NewPubSub cannot return (it has no error
+	// return): the first nil ELEMENT of opts. Set once in the constructor,
+	// read-only thereafter — so it needs no lock — and reported by Publish and
+	// Subscribe. Spec 015 §3.2 (family R2).
+	//
+	// It lives on the STRUCT and deliberately NOT in cfg: Subscribe seeds every
+	// topic channel with withConfig(p.cfg), so a latch held in the config would
+	// propagate this registry's fault into every topic channel it creates.
+	err error
 }
 
 var (
@@ -22,9 +32,29 @@ var (
 )
 
 // NewPubSub returns an empty registry. Options apply to every topic channel it creates.
+//
+// A nil ELEMENT of opts is not a panic (no panic on caller input). This
+// constructor has no error return, so the FIRST nil element is LATCHED and both
+// error-returning methods — [PubSub.Publish] and [PubSub.Subscribe] — report it
+// as a PERMANENT msgin.ErrNilFunc naming the element's 0-based index
+// ("channel.NewPubSub: nil option at index 1"). The degradation is permanent
+// because an option element is fixed here and cannot become non-nil later, so
+// retrying can never succeed. Every non-nil option still applies, including any
+// after the nil (ADR 0031 D-U), and the latch is checked at the TOP of each
+// method, before its own argument checks (D-V), so a latched
+// Subscribe(topic, nil) reports the nil OPTION rather than msgin.ErrNilHandler.
+// The latch is the registry's own: no topic channel is created while it is set,
+// and none inherits it.
 func NewPubSub(opts ...PubSubOption) *PubSub {
 	p := &PubSub{topics: make(map[string]*PublishSubscribeChannel), cfg: defaultPubSubConfig()}
-	for _, opt := range opts {
+	for i, opt := range opts {
+		if opt == nil {
+			if p.err == nil { // first-nil-wins (D-U: latch only when unlatched)
+				p.err = fmt.Errorf("%w: %s: nil option at index %d",
+					msgin.Permanent(msgin.ErrNilFunc), "channel.NewPubSub", i)
+			}
+			continue // D-U: the surviving options are the caller's stated intent
+		}
 		opt(&p.cfg)
 	}
 	return p
@@ -33,7 +63,14 @@ func NewPubSub(opts ...PubSubOption) *PubSub {
 // Publish fans msg out to the topic's subscribers. A topic with no subscribers is
 // a no-op (never an error): publishing before anyone subscribes is normal for
 // broadcast. It returns the topic channel's joined fan-out error (see FanOutPolicy).
+//
+// A nil option element latched by NewPubSub is reported before the topic is
+// looked up: nothing is dispatched and the permanent msgin.ErrNilFunc is
+// returned instead of the no-op nil.
 func (p *PubSub) Publish(ctx context.Context, topic string, msg msgin.Message[any]) error {
+	if p.err != nil {
+		return p.err
+	}
 	p.mu.Lock()
 	ch := p.topics[topic]
 	p.mu.Unlock()
@@ -46,7 +83,14 @@ func (p *PubSub) Publish(ctx context.Context, topic string, msg msgin.Message[an
 // Subscribe registers h on topic, lazily creating the topic channel. The returned
 // Subscription's Cancel unsubscribes AND drops the topic if it becomes empty. A
 // nil handler is ErrNilHandler (no topic is created).
+//
+// A nil option element latched by NewPubSub is reported FIRST, above the
+// nil-handler check (ADR 0031 D-V) — the option fault happened earlier, at
+// construction — and no topic is created for it either.
 func (p *PubSub) Subscribe(topic string, h msgin.MessageHandler) (msgin.Subscription, error) {
+	if p.err != nil {
+		return nil, p.err
+	}
 	if h == nil {
 		return nil, msgin.ErrNilHandler
 	}
