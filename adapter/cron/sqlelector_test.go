@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	msgin "github.com/kartaladev/msgin"
 	"github.com/kartaladev/msgin/adapter/cron"
 )
 
@@ -82,6 +83,92 @@ func TestSQLElector_Construction(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := tc.build()
+			tc.assert(t, err)
+		})
+	}
+}
+
+// TestNewSQLElector_NilOptionElement proves a nil ELEMENT of opts is a bare
+// ErrNilFunc naming the computed 0-based index (Spec 015 §3.1, family R1).
+// NewSQLElector is VALIDATE-FIRST: the nil-db and nil-dialect checks precede
+// the apply loop and beat a nil option, but the loop itself precedes the
+// table-name and lease-TTL validation, so a nil option beats both of those.
+func TestNewSQLElector_NilOptionElement(t *testing.T) {
+	tests := []struct {
+		name    string
+		dialect cron.ElectorDialect
+		opts    []cron.ElectorOption
+		assert  func(t *testing.T, err error)
+	}{
+		{
+			name:    "nil element alone",
+			dialect: cron.PostgresElector(),
+			opts:    []cron.ElectorOption{nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.False(t, msgin.IsPermanent(err), "R1 nil-option error must be BARE, not Permanent-wrapped")
+				assert.Contains(t, err.Error(), "cron.NewSQLElector: nil option at index 0")
+			},
+		},
+		{
+			name:    "nil element after a valid option asserts the COMPUTED index and the FULL position",
+			dialect: cron.PostgresElector(),
+			opts:    []cron.ElectorOption{cron.WithElectorTable("custom_leader"), nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "cron.NewSQLElector: nil option at index 1")
+			},
+		},
+		{
+			// AC-3: first-nil-wins.
+			name:    "first of two nils wins",
+			dialect: cron.PostgresElector(),
+			opts:    []cron.ElectorOption{nil, nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "cron.NewSQLElector: nil option at index 0")
+			},
+		},
+		{
+			// Precedence (Spec 015 §3.5): VALIDATE-FIRST — the loop runs AFTER
+			// the db/dialect checks, so a nil option loses to a nil dialect.
+			name:    "nil dialect wins over a nil option (dialect check precedes the loop)",
+			dialect: nil,
+			opts:    []cron.ElectorOption{nil},
+			assert: func(t *testing.T, err error) {
+				assert.ErrorIs(t, err, cron.ErrNilDialect)
+				assert.NotErrorIs(t, err, msgin.ErrNilFunc)
+			},
+		},
+		{
+			// Precedence (Spec 015 §3.5): the loop precedes the table-name
+			// validation, so a nil option wins over an invalid explicit table name.
+			name:    "nil option precedes the table-name validation",
+			dialect: cron.PostgresElector(),
+			opts:    []cron.ElectorOption{cron.WithElectorTable("bad;"), nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.NotErrorIs(t, err, cron.ErrInvalidTableName)
+				assert.Contains(t, err.Error(), "cron.NewSQLElector: nil option at index 1")
+			},
+		},
+		{
+			// Precedence (Spec 015 §3.5): the loop precedes the lease-TTL
+			// validation, so a nil option wins over a non-positive TTL.
+			name:    "nil option precedes the lease-TTL validation",
+			dialect: cron.PostgresElector(),
+			opts:    []cron.ElectorOption{cron.WithLeaseTTL(0), nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.NotErrorIs(t, err, cron.ErrInvalidLeaseTTL)
+				assert.Contains(t, err.Error(), "cron.NewSQLElector: nil option at index 1")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := cron.NewSQLElector(stubDB(t), tc.dialect, tc.opts...)
 			tc.assert(t, err)
 		})
 	}

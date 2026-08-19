@@ -69,6 +69,106 @@ func TestBroker_EmitsLiveValue(t *testing.T) {
 	assert.True(t, memory.New().EmitsLiveValue())
 }
 
+// TestNew_NilOptionElement proves a nil ELEMENT of opts is LATCHED at
+// construction (New has no error return, so it is family R2) and reported by
+// both Broker.Send and Broker.Stream as a PERMANENT ErrNilFunc naming the
+// computed 0-based index (Spec 015 §3.2, ADR 0031 D-P/D-S/D-U/D-V).
+//
+// Both reporting methods are driven with a SHORT context deadline
+// (round-3 audit m-T): Broker is built on an unbuffered channel, so an
+// UNLATCHED Send blocks in `select { case b.ch <- m: … case <-ctx.Done(): }`
+// and an unlatched Stream blocks on `<-ctx.Done()`. A mutant that removes the
+// latch check therefore does not fail — it BLOCKS — and only a bounded
+// deadline turns that into an observable, fast red (context.DeadlineExceeded
+// within the deadline) rather than a 10-minute test-binary timeout.
+func TestNew_NilOptionElement(t *testing.T) {
+	tests := []struct {
+		name   string
+		opts   []memory.Option
+		assert func(t *testing.T, b *memory.Broker)
+	}{
+		{
+			name: "nil element alone, reported by Send",
+			opts: []memory.Option{nil},
+			assert: func(t *testing.T, b *memory.Broker) {
+				ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+				defer cancel()
+				err := b.Send(ctx, msgin.New[any]("x"))
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.True(t, msgin.IsPermanent(err), "R2 nil-option error must be Permanent-wrapped")
+				assert.Contains(t, err.Error(), "memory.New: nil option at index 0")
+			},
+		},
+		{
+			name: "nil element alone, reported by Stream",
+			opts: []memory.Option{nil},
+			assert: func(t *testing.T, b *memory.Broker) {
+				ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+				defer cancel()
+				out := make(chan msgin.Delivery)
+				err := b.Stream(ctx, out)
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.True(t, msgin.IsPermanent(err), "R2 nil-option error must be Permanent-wrapped")
+				assert.Contains(t, err.Error(), "memory.New: nil option at index 0")
+			},
+		},
+		{
+			name: "nil element after a valid option asserts the COMPUTED index and the FULL position (Send)",
+			opts: []memory.Option{memory.WithBuffer(4), nil},
+			assert: func(t *testing.T, b *memory.Broker) {
+				ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+				defer cancel()
+				err := b.Send(ctx, msgin.New[any]("x"))
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "memory.New: nil option at index 1")
+			},
+		},
+		{
+			name: "nil element after a valid option asserts the COMPUTED index and the FULL position (Stream)",
+			opts: []memory.Option{memory.WithBuffer(4), nil},
+			assert: func(t *testing.T, b *memory.Broker) {
+				ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+				defer cancel()
+				out := make(chan msgin.Delivery)
+				err := b.Stream(ctx, out)
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "memory.New: nil option at index 1")
+			},
+		},
+		{
+			// AC-3's R2 half: D-U's "latch only when unlatched" is what keeps
+			// first-nil-wins; an implementation latching the LAST nil passes
+			// every other assertion here.
+			name: "first of two nils wins",
+			opts: []memory.Option{nil, nil},
+			assert: func(t *testing.T, b *memory.Broker) {
+				ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+				defer cancel()
+				err := b.Send(ctx, msgin.New[any]("x"))
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "memory.New: nil option at index 0")
+			},
+		},
+		{
+			// AC-5b: EmitsLiveValue has no error to return and is NOT a
+			// reporting surface — it must keep reporting true regardless of a
+			// latched nil option.
+			name: "EmitsLiveValue is not forced by a latched nil option",
+			opts: []memory.Option{nil},
+			assert: func(t *testing.T, b *memory.Broker) {
+				assert.True(t, b.EmitsLiveValue())
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			b := memory.New(tc.opts...)
+			tc.assert(t, b)
+		})
+	}
+}
+
 // TestBroker_SendCtxDone closes a hot-path coverage gap: Send must return
 // ctx.Err() when the context is already done and no receiver is draining the
 // (unbuffered, default) channel, so the send can never proceed. This is

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-**Active, pre-v1.** The module exists and is substantially implemented: the pattern core at the repo root, the five core subpackages `endpoint`/`routing`/`transform`/`channel`/`resilience`, `adapter/{memory,cron,http,http/stdlib,database/sql}`, and the `expr` provider module — delivered across **27 plans** (`docs/plans/001`–`027`) / **29 ADRs** (`docs/adrs/0001`–`0030` — 30 numbers but 29 files: **there is no ADR 0024**, the `gin` dependency ADR is a forward reference to an unwritten artifact) / **14 specs** (`docs/specs/001`–`014`) / **5 RFCs** (`docs/rfcs/0001`–`0005`). Re-derive rather than trust: `ls docs/adrs/[0-9]*.md | wc -l` → 29, `ls docs/specs/[0-9]*.md | wc -l` → 14 (`docs/plans/` holds more *files* than plans — Plan 027 has satellite audit-round and derivation records). **Nothing is tagged or released** — there are no consumers, so breaking API changes are still free. Read [`docs/HANDOVER.md`](docs/HANDOVER.md) first: it names the active increment and the last safepoint.
+**Active, pre-v1.** The module exists and is substantially implemented: the pattern core at the repo root, the five core subpackages `endpoint`/`routing`/`transform`/`channel`/`resilience`, `adapter/{memory,cron,http,http/stdlib,database/sql}`, and the `expr` provider module — delivered across **28 plans** (`docs/plans/001`–`028`) / **30 ADRs** (`docs/adrs/0001`–`0031` — 31 numbers but 30 files: **there is no ADR 0024**, the `gin` dependency ADR is a forward reference to an unwritten artifact) / **15 specs** (`docs/specs/001`–`015`) / **5 RFCs** (`docs/rfcs/0001`–`0005`). Re-derive rather than trust: `ls docs/adrs/[0-9]*.md | wc -l` → 30, `ls docs/specs/[0-9]*.md | wc -l` → 15, and for plans count **distinct numbers, not files** — `ls docs/plans/[0-9]*.md | sed -E 's|.*/([0-9]{3}).*|\1|' | sort -u | wc -l` → 28, while `ls docs/plans/[0-9]*.md | wc -l` → **39**, because Plans 027 and 028 carry satellite audit-round, derivation and api-baseline records. **Nothing is tagged or released** — there are no consumers, so breaking API changes are still free. Read [`docs/HANDOVER.md`](docs/HANDOVER.md) first: it names the active increment and the last safepoint.
 
 "Architecture blueprint" below is a **mix of shipped and planned** — see the adapter list there for which is which. Treat shipped parts as code to read, not a brief to build.
 
@@ -173,7 +173,7 @@ This keeps the spec→plan→ADR→commit chain greppable (`git log --grep`), su
 
 ## Go conventions & skills
 
-**Go 1.25 — required.** This project targets **Go 1.25**: every `go.mod` in the workspace carries `go 1.25.0`, and builds/tests run on a Go 1.25 toolchain. `GOTOOLCHAIN` needs a full patch version (bare `go1.25` is rejected — "a language version but not a toolchain version"), so when a newer Go is the local default (currently **1.26**), force 1.25 with `GOTOOLCHAIN=go1.25.12` (bump the patch as 1.25.x security releases land — bumped from `go1.25.0` in Plan 006 Task 6 after `govulncheck` flagged a stdlib CVE fixed by `go1.25.3`+). The module must not silently build on 1.26+. Do not use language/stdlib features newer than 1.25. CI pins 1.25.
+**Go 1.25 — required.** This project targets **Go 1.25**: every `go.mod` in the workspace carries `go 1.25.0`, and builds/tests run on a Go 1.25 toolchain. `GOTOOLCHAIN` needs a full patch version (bare `go1.25` is rejected — "a language version but not a toolchain version"), so when a newer Go is the local default (currently **1.26**), force 1.25 with `GOTOOLCHAIN=go1.25.13` (bump the patch as 1.25.x security releases land — bumped from `go1.25.0` in Plan 006 Task 6 after `govulncheck` flagged a stdlib CVE fixed by `go1.25.3`+). The module must not silently build on 1.26+. Do not use language/stdlib features newer than 1.25. CI pins 1.25.
 
 **Tooling — mandatory.** Use **`gopls`** (the Go language server) for all Go code navigation, diagnostics, and refactoring — go-to-definition, find-references, rename, extract/inline, package API, post-edit diagnostics — via the native `LSP` tool (or gopls' MCP/CLI). Prefer semantic gopls operations over text search/`grep` when reasoning about Go symbols. → See `cc-skills-golang:golang-gopls`.
 
@@ -311,7 +311,7 @@ Because the deliverable is a package other code imports, the exported surface *i
 - **Pure Go, no cgo:** `CGO_ENABLED=0 go build ./...` must succeed — keeps the library cross-compilable and debuggable (see debuggability criterion above).
 - **Runnable examples & coverage:** exported behavior is covered by `Example…` tests (they double as godoc) and table tests. The **Test-coverage gate** (Development workflow §5) applies: target ≥ 85% on changed packages and — the hard requirement — every hot-path logic branch and every typed-error branch has a covering test. Watch coverage on the public packages; don't just chase a number.
 - **Vulnerability scan:** `govulncheck ./...` is clean.
-- **Pinned Go version:** builds/tests on **Go 1.25** (the `go 1.25.0` directive), not whatever newer toolchain is installed locally. CI runs 1.25; verify locally with `GOTOOLCHAIN=go1.25.12`.
+- **Pinned Go version:** builds/tests on **Go 1.25** (the `go 1.25.0` directive), not whatever newer toolchain is installed locally. CI runs 1.25; verify locally with `GOTOOLCHAIN=go1.25.13`.
 - **Docs links resolve — repo-wide, as a PRE-MERGE gate.** Traceability (see "Documentation artifacts") is only real if the links work, and the recurring break is mechanical: a `docs/plans/*` or `docs/specs/*` file citing an ADR by **bare filename** (`[0003](0003-multi-module-repository-layout.md)`), which resolves relative to the *citing* file's directory and silently 404s. Fix the **class**, not the instance — run this over every tracked Markdown file before merging, and treat any output as a blocker:
 
   ```bash
@@ -334,12 +334,12 @@ Because the deliverable is a package other code imports, the exported surface *i
   done
   ```
 
-  **Known limitation — read before trusting a hit.** This is `grep`, not a Markdown parser. It strips fenced code blocks and single-line inline code spans **only**, so an inline code span that *wraps across a line* (a Go signature like `Foo[A](x string)` split over two lines) or a code fence nested inside a blockquote (a fence line prefixed with a `>` marker) leaks Go generics into arm 1 as false positives of the shape `-> docs/plans/m`. Two such exist today; both are code, not links. **A hit that names a plausible `.md` path is real; a hit that names a Go identifier or contains a space is the parser limitation.** Arm 2 is exact (34 anchor links today, all resolving) — verify it is not vacuous by planting a bad anchor and re-running.
+  **Known limitation — read before trusting a hit.** This is `grep`, not a Markdown parser. It strips fenced code blocks and single-line inline code spans **only**, so an inline code span that *wraps across a line* (a Go signature like `Foo[A](x string)` split over two lines) or a code fence nested inside a blockquote (a fence line prefixed with a `>` marker) leaks Go generics into arm 1 as false positives of the shape `-> docs/plans/m`. Two such exist today; both are code, not links. **A hit that names a plausible `.md` path is real; a hit that names a Go identifier or contains a space is the parser limitation.** Arm 2 is exact (**53** anchor links today, all resolving) — verify it is not vacuous by planting a bad anchor and re-running. *(Done at Plan 028 Task 8: planting `[probe](../CLAUDE.md#this-anchor-does-not-exist-probe)` in `docs/HANDOVER.md` produced exactly one `ANCHOR` hit, which disappeared on revert.)*
 
 ## Commands
 
 ```bash
-export GOTOOLCHAIN=go1.25.12                # always — local default is newer; CI sets this too
+export GOTOOLCHAIN=go1.25.13                # always — local default is newer; CI sets this too
 go install golang.org/x/tools/gopls@latest  # LSP server: code nav / diagnostics / refactor
 
 go build ./...

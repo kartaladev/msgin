@@ -284,9 +284,14 @@ var _ msgin.RequestReplyExchange = (*ChannelExchange)(nil)
 //     NATS _INBOX reply subject, an exclusive auto-delete AMQP reply queue, i.e.
 //     the Return Address pattern. msgin takes that answer on trust.
 //
-// A nil channel is ErrNilChannel; an explicit non-positive WithReplyTimeout is
-// ErrInvalidReplyTimeout. A reply channel whose Subscribe breaks its contract by
-// returning a nil Subscription alongside a nil error is ErrNilSubscription — the
+// A nil channel is ErrNilChannel, checked before opts is ever applied. A nil
+// ELEMENT of opts is a bare [msgin.ErrNilFunc], naming the element's 0-based
+// index ("endpoint.NewChannelExchange: nil option at index 1"), checked as
+// opts is applied — so it runs AFTER the nil-channel check and BEFORE the
+// explicit non-positive WithReplyTimeout check (ErrInvalidReplyTimeout),
+// which runs after the loop and so loses to the nil-option error. A reply
+// channel whose Subscribe breaks its contract by returning a nil
+// Subscription alongside a nil error is ErrNilSubscription — the
 // exchange owns that subscription until Close, so it must be usable now. An
 // error from reply.Subscribe is returned unwrapped, so subscribing to a channel
 // whose slot is already taken surfaces as msgin.ErrChannelSubscribed. That is
@@ -303,7 +308,10 @@ func NewChannelExchange(request msgin.MessageChannel, reply msgin.SubscribableCh
 		clock:   clockwork.NewRealClock(),
 		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	for _, opt := range opts {
+	for i, opt := range opts {
+		if opt == nil {
+			return nil, nilOptionAt("endpoint.NewChannelExchange", i)
+		}
 		opt(&cfg)
 	}
 	if cfg.timeoutSet && cfg.timeout <= 0 {

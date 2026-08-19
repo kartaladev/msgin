@@ -45,8 +45,12 @@ var _ Locker = (*SQLLocker)(nil)
 
 // NewSQLLocker builds an SQLLocker over db using dialect for the exact SQL (pass
 // PostgresLocker()/MySQLLocker()/SQLiteLocker() or your own). A nil db is
-// msgin.ErrNilAdapter; a nil dialect is ErrNilDialect; an invalid table is
-// ErrInvalidTableName — checked in that order, all at construction.
+// msgin.ErrNilAdapter; a nil dialect is ErrNilDialect; a nil ELEMENT of opts
+// is a bare [msgin.ErrNilFunc] naming the element's 0-based index
+// ("cron.NewSQLLocker: nil option at index 1"), checked as opts is applied,
+// so it runs AFTER the db/dialect checks and BEFORE the table validation; an
+// invalid table is ErrInvalidTableName — checked in that order, all at
+// construction.
 func NewSQLLocker(db *stdsql.DB, dialect LockerDialect, opts ...LockerOption) (*SQLLocker, error) {
 	if db == nil {
 		return nil, msgin.ErrNilAdapter
@@ -55,7 +59,10 @@ func NewSQLLocker(db *stdsql.DB, dialect LockerDialect, opts ...LockerOption) (*
 		return nil, ErrNilDialect
 	}
 	cfg := lockerConfig{table: defaultFiredTable}
-	for _, o := range opts {
+	for i, o := range opts {
+		if o == nil {
+			return nil, nilOptionAt("cron.NewSQLLocker", i)
+		}
 		o(&cfg)
 	}
 	if err := validateIdent(cfg.table); err != nil {

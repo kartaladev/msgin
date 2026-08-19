@@ -52,3 +52,12 @@ func nilFuncStep(position string) msgin.Step {
 func nilFuncAt(position string) error {
 	return fmt.Errorf("%w: %s", msgin.ErrNilFunc, position)
 }
+
+// nilOptionAt reports a nil ELEMENT of a constructor's variadic option slice,
+// naming the constructor the CALLER invoked and the element's 0-based index.
+//
+// Deliberately NOT wrapped in msgin.Permanent — see [msgin.ErrNilFunc]'s
+// constructor arm, and the same warning on nilFuncAt.
+func nilOptionAt(ctor string, i int) error {
+	return fmt.Errorf("%w: %s: nil option at index %d", msgin.ErrNilFunc, ctor, i)
+}

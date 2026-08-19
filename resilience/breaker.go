@@ -73,7 +73,23 @@ func WithBreakerCooldown(d time.Duration) CircuitBreakerOption {
 // It gates both ingress and dispatch when wired via WithCircuitBreaker (NF-10);
 // HalfOpen signals the open→half-open transition with an explicit channel close
 // so a parked ingress goroutine cannot miss the wakeup (spec §7.4.5, ADR 0008 D7).
-func NewCircuitBreaker(opts ...CircuitBreakerOption) msgin.CircuitBreaker {
+//
+// The returned error is a nil ELEMENT of opts: a bare [msgin.ErrNilFunc]
+// naming the element's 0-based index ("resilience.NewCircuitBreaker: nil
+// option at index 1"), rather than the panic an unguarded apply loop would
+// raise on caller input. It is the ONLY error this constructor returns — every
+// option value is itself defaulted rather than rejected (a nil clock, a
+// threshold below 1 and a non-positive cooldown are each ignored) — and it is
+// checked as opts is applied. NewCircuitBreaker has no argument checks of its
+// own, so no other fault can precede it.
+//
+// The error return exists because [msgin.CircuitBreaker] has no
+// error-returning method to carry the fault to first use, unlike the endpoints
+// that latch theirs; its sibling [NewTokenBucket] already returns one, and a
+// breaker is built once at wiring time rather than per message (ADR 0031 D-T).
+// A caller who ignores it gets a nil breaker, which
+// endpoint.WithCircuitBreaker documents as a no-op rather than a nil deref.
+func NewCircuitBreaker(opts ...CircuitBreakerOption) (msgin.CircuitBreaker, error) {
 	b := &breaker{
 		clock:     clockwork.NewRealClock(),
 		threshold: 5,
@@ -81,10 +97,13 @@ func NewCircuitBreaker(opts ...CircuitBreakerOption) msgin.CircuitBreaker {
 		state:     breakerClosed,
 		wake:      make(chan struct{}),
 	}
-	for _, opt := range opts {
+	for i, opt := range opts {
+		if opt == nil {
+			return nil, nilOptionAt("resilience.NewCircuitBreaker", i)
+		}
 		opt(b)
 	}
-	return b
+	return b, nil
 }
 
 // Allow reports whether work may proceed now: true when closed or half-open,

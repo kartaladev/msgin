@@ -212,7 +212,25 @@ type SSEParser struct {
 // A single leading UTF-8 byte order mark (U+FEFF) on r is consumed here, at
 // construction, if present — it is never treated as part of the stream's
 // first line.
+//
+// A nil ELEMENT of opts is a bare [msgin.ErrNilFunc] naming the element's
+// 0-based index ("msghttp.NewSSEParser: nil option at index 1"), not a panic. It
+// is checked HERE, by a standalone pre-check above the delegation, so the
+// position names msghttp.NewSSEParser rather than msghttp.NewConfig — a function
+// the caller never invoked (Spec 015 §3.4). The pre-check is this function's
+// first statement, so the nil-option check runs BEFORE NewConfig's own value
+// checks and wins over them, and — like those checks — it returns before r is
+// touched.
 func NewSSEParser(r io.Reader, opts ...Option) (*SSEParser, error) {
+	// Delegator pre-check (Spec 015 §3.4, ADR 0031 D-R): NewConfig re-scans
+	// opts and finds nothing. The duplicated pass is deliberate — it buys a
+	// truthful position at this entry point.
+	for i, opt := range opts {
+		if opt == nil {
+			return nil, nilOptionAt("msghttp.NewSSEParser", i)
+		}
+	}
+
 	cfg, err := NewConfig(opts...)
 	if err != nil {
 		return nil, err

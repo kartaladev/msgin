@@ -115,7 +115,27 @@ type ringEntry struct {
 // balancer with a 30–60s idle timeout is SILENTLY DROPPED without it; enable
 // WithHeartbeat with an interval comfortably below the shortest idle timeout in
 // the path if your deployment sits behind such a proxy (most do).
+//
+// # Errors
+//
+// A nil ELEMENT of opts is a bare [msgin.ErrNilFunc] naming the element's
+// 0-based index ("msghttp.NewSSEServer: nil option at index 1"), not a panic. It
+// is checked HERE, by a standalone pre-check above the delegation, so the
+// position names msghttp.NewSSEServer rather than msghttp.NewConfig — a function
+// the caller never invoked (Spec 015 §3.4). opts is this constructor's ONLY
+// argument, so no other fault can precede the nil-option check; every remaining
+// error is one of NewConfig's own value checks, which the nil-option check
+// wins over.
 func NewSSEServer(opts ...Option) (*SSEServer, error) {
+	// Delegator pre-check (Spec 015 §3.4, ADR 0031 D-R): NewConfig re-scans
+	// opts and finds nothing. The duplicated pass is deliberate — it buys a
+	// truthful position at this entry point.
+	for i, opt := range opts {
+		if opt == nil {
+			return nil, nilOptionAt("msghttp.NewSSEServer", i)
+		}
+	}
+
 	cfg, err := NewConfig(opts...)
 	if err != nil {
 		return nil, err

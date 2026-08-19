@@ -80,9 +80,18 @@ func WithOverflow(p msgin.OverflowPolicy) QueueStoreOption {
 func WithClock(c clockwork.Clock) QueueStoreOption { return func(cfg *config) { cfg.clock = c } }
 
 // NewQueueStore builds an in-memory ChannelStore with the given options.
+//
+// A nil ELEMENT of opts is a bare [msgin.ErrNilFunc] naming the element's
+// 0-based index ("memory.NewQueueStore: nil option at index 1"), not a panic
+// — checked as opts is applied (the loop is the first statement), so it runs
+// BEFORE the WithCapacity validation below, which runs after the loop and so
+// loses to it.
 func NewQueueStore(opts ...QueueStoreOption) (*QueueStore, error) {
 	cfg := config{clock: clockwork.NewRealClock()}
-	for _, o := range opts {
+	for i, o := range opts {
+		if o == nil {
+			return nil, nilOptionAt("memory.NewQueueStore", i)
+		}
 		o(&cfg)
 	}
 	capacity := defaultCapacity

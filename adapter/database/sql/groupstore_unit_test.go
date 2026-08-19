@@ -10,6 +10,7 @@ package sql_test
 // re-absorption, deadlock ordering) is proven against real engines in Task 3.
 
 import (
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
@@ -532,6 +533,92 @@ func TestGroupStore_ReadyAndEnsureSchema(t *testing.T) {
 			}
 			fd.schemaExistsErr = tc.schemaErr
 			tc.assert(t, fd, store.Ready(t.Context()))
+		})
+	}
+}
+
+// TestNewGroupStore_NilOptionElement proves a nil ELEMENT of opts is a bare
+// ErrNilFunc naming the computed 0-based index (Spec 015 §3.1, family R1) rather
+// than a panic. NewGroupStore is LOOP-FIRST (Spec 015 §3.5): the apply loop is
+// the constructor's first statement, so a nil option beats newGroupBase's
+// db/table/dialect validation AND the WithGroupLeaseTTL range check.
+func TestNewGroupStore_NilOptionElement(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		nilDB   bool
+		dialect msginsql.GroupDialect
+		opts    []msginsql.GroupStoreOption
+		assert  func(t *testing.T, err error)
+	}{
+		{
+			// AC-1 (no panic) + AC-5 (the R1 wrap is BARE).
+			name:    "nil element alone",
+			dialect: newFakeGroupDialect(),
+			opts:    []msginsql.GroupStoreOption{nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.False(t, msgin.IsPermanent(err),
+					"R1 nil-option error must be BARE, not Permanent-wrapped")
+				assert.Contains(t, err.Error(), "sql.NewGroupStore: nil option at index 0")
+			},
+		},
+		{
+			// AC-2: computed index, asserted as the FULL position string.
+			name:    "nil element after a valid option reports the computed index",
+			dialect: newFakeGroupDialect(),
+			opts:    []msginsql.GroupStoreOption{msginsql.WithGroupLockedBy("worker-1"), nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "sql.NewGroupStore: nil option at index 1")
+			},
+		},
+		{
+			// AC-3: first-nil-wins.
+			name:    "first of two nils wins",
+			dialect: newFakeGroupDialect(),
+			opts:    []msginsql.GroupStoreOption{nil, nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "sql.NewGroupStore: nil option at index 0")
+			},
+		},
+		{
+			// Precedence (Spec 015 §3.5): LOOP-FIRST, so the nil option beats
+			// the nil-db check inside newGroupBase.
+			name:    "nil option precedes the nil-db validation",
+			nilDB:   true,
+			dialect: newFakeGroupDialect(),
+			opts:    []msginsql.GroupStoreOption{nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.NotErrorIs(t, err, msgin.ErrNilAdapter)
+				assert.Contains(t, err.Error(), "sql.NewGroupStore: nil option at index 0")
+			},
+		},
+		{
+			// Precedence: also beats the explicit-WithGroupLeaseTTL range
+			// check, which sits after the loop.
+			name:    "nil option precedes the WithGroupLeaseTTL validation",
+			dialect: newFakeGroupDialect(),
+			opts:    []msginsql.GroupStoreOption{msginsql.WithGroupLeaseTTL(0), nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.NotErrorIs(t, err, msginsql.ErrInvalidLeaseTTL)
+				assert.Contains(t, err.Error(), "sql.NewGroupStore: nil option at index 1")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var db *sql.DB
+			if !tc.nilDB {
+				db = openDB(t, fakeDriverName)
+			}
+			_, err := msginsql.NewGroupStore(db, "groups", tc.dialect, tc.opts...)
+			tc.assert(t, err)
 		})
 	}
 }

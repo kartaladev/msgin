@@ -14,6 +14,7 @@ import (
 // rate limit, a handler timeout, a circuit breaker, and an overflow policy.
 func ExampleConsumer_flowControl() {
 	rl, _ := resilience.NewTokenBucket(100, 10)
+	cb, _ := resilience.NewCircuitBreaker()
 	src := memory.New(memory.WithBuffer(1))
 	handler := func(context.Context, msgin.Message[string]) error { return nil }
 
@@ -21,7 +22,7 @@ func ExampleConsumer_flowControl() {
 		endpoint.WithMaxInFlight[string](64),
 		endpoint.WithRateLimit[string](rl),
 		endpoint.WithHandlerTimeout[string](5_000_000_000), // 5s
-		endpoint.WithCircuitBreaker[string](resilience.NewCircuitBreaker()),
+		endpoint.WithCircuitBreaker[string](cb),
 		endpoint.WithOverflow[string](msgin.OverflowDropNewest),
 	)
 	if err != nil {

@@ -206,8 +206,17 @@ var (
 	ErrNilSink = errors.New("msgin: nil outbound sink")
 	// ErrNilFunc is returned, wrapped in [Permanent], by an endpoint
 	// (Transform/Filter/Activate/Consume/Router/Split) constructed with a nil
-	// function — and by [Chain] for a nil Step ELEMENT, which is a nil function
-	// too — instead of panicking at dispatch.
+	// function, and by [Chain] for a nil Step ELEMENT, which is a nil
+	// function too — instead of panicking at dispatch. A nil OPTION ELEMENT
+	// of a constructor's variadic opts is a nil function too, but which of
+	// three things happens to it depends on what the constructor can report
+	// through: most constructors return it BARE, at construction, instead of
+	// panicking there; a few with no error return of their own — e.g.
+	// routing.NewRouter, via Handle — latch it and return it wrapped in
+	// [Permanent] at the product's first use, exactly like the two dispatch
+	// cases above; and msgin.New and sqlite.DSN, which have no
+	// error-returning surface at all, silently skip it and never return
+	// ErrNilFunc for it.
 	//
 	// The governing invariant, which decides whether any msgin sentinel is
 	// wrapped in [Permanent] at the point it is produced:
@@ -225,8 +234,14 @@ var (
 	// "transform.Transform: nil fn", or "msgin.Chain: nil step at index 1" for a
 	// nil element), errors.Is(err, ErrNilFunc) still matches,
 	// and the CONSTRUCTORS — routing.NewAggregator (nil fn or nil strategy) and
-	// endpoint.NewConsumer (nil handler) — return it bare. The sentinel
-	// itself is never wrapped, so [IsPermanent] on the bare value reports false.
+	// endpoint.NewConsumer (nil handler) — return it bare. A nil OPTION element
+	// follows the same rule, read from the other direction: a constructor that
+	// can report through its own return (e.g. endpoint.NewConsumer) returns it
+	// bare, with the position "endpoint.NewConsumer: nil option at index 1";
+	// one whose product first surfaces the fault at a later call (e.g.
+	// routing.NewRouter, via Handle) wraps it in [Permanent] there instead,
+	// naming the same position shape. The sentinel itself is never wrapped, so
+	// [IsPermanent] on the bare value reports false.
 	ErrNilFunc = errors.New("msgin: nil endpoint function")
 	// ErrNoRoute is returned by a Router when pick resolves no destination and no
 	// WithDefaultChannel is configured (Spring resolutionRequired=true).

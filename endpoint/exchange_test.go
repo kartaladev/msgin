@@ -1,6 +1,7 @@
 package endpoint_test
 
 // NOTE on table-test skill compliance: TestNewChannelExchange_validation,
+// TestNewChannelExchange_nilOptionElement,
 // TestChannelExchange_panickingFlow_propagatesAndReclaimsSlot, and
 // TestChannelExchange_abandonedArmsReclaimSlot use the mandatory
 // assert-closure table form — each folds two or more cases that share an
@@ -177,6 +178,51 @@ func TestNewChannelExchange_validation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ex, err := endpoint.NewChannelExchange(tt.request, tt.reply, tt.opts...)
 			tt.assert(t, ex, err)
+		})
+	}
+}
+
+// TestNewChannelExchange_nilOptionElement proves a nil ELEMENT of opts is a
+// bare ErrNilFunc naming the computed index, not a panic (Spec 015 §3.1, ADR
+// 0031 D-P/D-Q/D-R). request and reply are always valid, freshly-built
+// DirectChannels — this is about the THIRD argument, opts, never about the
+// nil-channel/timeout/subscription faults already covered above.
+func TestNewChannelExchange_nilOptionElement(t *testing.T) {
+	tests := []struct {
+		name   string
+		opts   []endpoint.ExchangeOption
+		assert func(t *testing.T, err error)
+	}{
+		{
+			name: "nil element alone",
+			opts: []endpoint.ExchangeOption{nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.False(t, msgin.IsPermanent(err), "R1 nil-option error must stay bare")
+				assert.Contains(t, err.Error(), "endpoint.NewChannelExchange: nil option at index 0")
+			},
+		},
+		{
+			name: "nil element after a valid option asserts the COMPUTED index and the FULL position",
+			opts: []endpoint.ExchangeOption{endpoint.WithReplyTimeout(time.Second), nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "endpoint.NewChannelExchange: nil option at index 1")
+			},
+		},
+		{
+			name: "first of two nils wins",
+			opts: []endpoint.ExchangeOption{nil, nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "endpoint.NewChannelExchange: nil option at index 0")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := endpoint.NewChannelExchange(channel.NewDirectChannel(), channel.NewDirectChannel(), tc.opts...)
+			tc.assert(t, err)
 		})
 	}
 }

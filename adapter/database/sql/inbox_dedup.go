@@ -70,13 +70,25 @@ type InboxDeduper struct {
 // A nil businessDB is msgin.ErrNilAdapter; an invalid table identifier is
 // ErrInvalidTableName; a nil dialect is ErrNilDialect — all at construction, so
 // misuse fails loudly up front rather than on the first MarkProcessed.
+//
+// A nil ELEMENT of opts is a bare [msgin.ErrNilFunc] naming the element's
+// 0-based index ("sql.NewInboxDeduper: nil option at index 1"), not a panic —
+// checked as opts is applied. It falls in the MIDDLE of the order enumerated
+// above, because the apply loop does: the nil-option check runs AFTER the
+// nil-businessDB check and loses to it, and BEFORE the table-identifier and
+// nil-dialect checks, which both lose to the nil option. So
+// NewInboxDeduper(nil, dialect, nil) is ErrNilAdapter, while
+// NewInboxDeduper(db, nil, nil) is the nil-option error.
 func NewInboxDeduper(businessDB *stdsql.DB, dialect InboxDialect, opts ...InboxOption) (*InboxDeduper, error) {
 	if businessDB == nil {
 		return nil, msgin.ErrNilAdapter
 	}
 
 	cfg := inboxConfig{table: defaultInboxTable}
-	for _, o := range opts {
+	for i, o := range opts {
+		if o == nil {
+			return nil, nilOptionAt("sql.NewInboxDeduper", i)
+		}
 		o(&cfg)
 	}
 

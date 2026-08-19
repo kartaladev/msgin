@@ -262,6 +262,102 @@ func TestSource_ConstructionValidation(t *testing.T) {
 	}
 }
 
+// TestNewSource_NilOptionElement proves a nil ELEMENT of opts is a bare
+// ErrNilFunc naming the computed 0-based index (Spec 015 §3.1, family R1).
+// NewSource is LOOP-FIRST — the apply loop is the constructor's first
+// statement — so a nil option wins over every check below it: an
+// unparseable spec, a nil factory, and an unsatisfiable schedule.
+func TestNewSource_NilOptionElement(t *testing.T) {
+	tests := []struct {
+		name   string
+		opts   []cron.Option
+		assert func(t *testing.T, err error)
+	}{
+		{
+			name: "nil element alone",
+			opts: []cron.Option{nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.False(t, msgin.IsPermanent(err), "R1 nil-option error must be BARE, not Permanent-wrapped")
+				assert.Contains(t, err.Error(), "cron.NewSource: nil option at index 0")
+			},
+		},
+		{
+			name: "nil element after a valid option asserts the COMPUTED index and the FULL position",
+			opts: []cron.Option{cron.WithSeconds(), nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "cron.NewSource: nil option at index 1")
+			},
+		},
+		{
+			// AC-3: first-nil-wins — an implementation reporting the LAST nil
+			// passes every other assertion here.
+			name: "first of two nils wins",
+			opts: []cron.Option{nil, nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "cron.NewSource: nil option at index 0")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := cron.NewSource[string]("@every 1h", func(time.Time) string { return "x" }, tc.opts...)
+			tc.assert(t, err)
+		})
+	}
+
+	// Precedence (Spec 015 §3.5): NewSource is LOOP-FIRST, so a nil option
+	// wins over an unparseable spec, a nil factory, and an unsatisfiable
+	// schedule — each validated AFTER the loop.
+	precedence := []struct {
+		name    string
+		spec    string
+		factory func(time.Time) string
+		assert  func(t *testing.T, err error)
+	}{
+		{
+			name:    "nil option precedes the invalid-spec check",
+			spec:    "not a cron",
+			factory: func(time.Time) string { return "x" },
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.NotErrorIs(t, err, cron.ErrInvalidSchedule)
+				assert.Contains(t, err.Error(), "cron.NewSource: nil option at index 0")
+			},
+		},
+		{
+			name:    "nil option precedes the unsatisfiable-schedule check",
+			spec:    "0 0 30 2 *", // Feb 30 — syntactically valid, no future occurrence
+			factory: func(time.Time) string { return "x" },
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.NotErrorIs(t, err, cron.ErrInvalidSchedule)
+				assert.Contains(t, err.Error(), "cron.NewSource: nil option at index 0")
+			},
+		},
+		{
+			name:    "nil option precedes the nil-factory check",
+			spec:    "@every 1h",
+			factory: nil,
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.NotErrorIs(t, err, cron.ErrNilFactory)
+				assert.Contains(t, err.Error(), "cron.NewSource: nil option at index 0")
+			},
+		},
+	}
+	for _, tc := range precedence {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := cron.NewSource[string](tc.spec, tc.factory, nil)
+			tc.assert(t, err)
+		})
+	}
+}
+
 func TestSource_EmitsLiveValue(t *testing.T) {
 	src, err := cron.NewSource("@every 1h", func(time.Time) int { return 0 })
 	require.NoError(t, err)

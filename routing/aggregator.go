@@ -279,6 +279,12 @@ var _ msgin.MessageHandler = (*Aggregator)(nil)
 //   - [WithReleaseStrategy](nil) or
 //     [WithReleaseWhen](nil)              → "…: nil release strategy"
 //
+// A nil ELEMENT of opts is a bare [msgin.ErrNilFunc] too, naming the element's
+// 0-based index ("routing.NewAggregator: nil option at index 1"), checked as
+// opts is applied — so it runs AFTER the store and fn checks above and loses to
+// either of them, but BEFORE the strategy, output-channel and expiry-channel
+// checks below, which run after the loop and so lose to it.
+//
 // Rejecting at construction is what keeps a misconfiguration VISIBLE: Handle
 // calls correlate and release unconditionally, so a nil one would panic on the
 // first message, and inside a Consumer that panic is recovered and classified
@@ -303,7 +309,10 @@ func NewAggregator[A, B any](
 		return nil, nilFuncAt("routing.NewAggregator: nil fn")
 	}
 	cfg := aggregatorConfig{correlate: defaultCorrelate, release: defaultRelease, clock: clockwork.NewRealClock()}
-	for _, opt := range opts {
+	for i, opt := range opts {
+		if opt == nil {
+			return nil, nilOptionAt("routing.NewAggregator", i)
+		}
 		opt(&cfg)
 	}
 	// Handle calls both strategies unconditionally; a nil one must not survive

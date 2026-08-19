@@ -288,6 +288,68 @@ func TestNewConsumer_Validation(t *testing.T) {
 	}
 }
 
+// TestNewConsumer_NilOptionElement proves a nil ELEMENT of opts (as opposed to
+// a nil options SLICE, which is a normal zero-option call) is a bare
+// ErrNilFunc naming the computed index, not a panic (Spec 015 §3.1, ADR 0031
+// D-P/D-Q/D-R). src and h are both valid here — this is about the THIRD
+// argument, opts, never about the two already covered by
+// TestNewConsumer_Validation.
+func TestNewConsumer_NilOptionElement(t *testing.T) {
+	h := func(context.Context, msgin.Message[order]) error { return nil }
+
+	tests := []struct {
+		name   string
+		opts   []endpoint.ConsumerOption[order]
+		assert func(t *testing.T, err error)
+	}{
+		{
+			name: "nil element alone",
+			opts: []endpoint.ConsumerOption[order]{nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.False(t, msgin.IsPermanent(err), "R1 nil-option error must stay bare")
+				assert.Contains(t, err.Error(), "endpoint.NewConsumer: nil option at index 0")
+			},
+		},
+		{
+			name: "nil element after a valid option asserts the COMPUTED index and the FULL position",
+			opts: []endpoint.ConsumerOption[order]{endpoint.WithConcurrency[order](2), nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "endpoint.NewConsumer: nil option at index 1")
+			},
+		},
+		{
+			name: "first of two nils wins",
+			opts: []endpoint.ConsumerOption[order]{nil, nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "endpoint.NewConsumer: nil option at index 0")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := endpoint.NewConsumer[order](memory.New(), h, tc.opts...)
+			tc.assert(t, err)
+		})
+	}
+}
+
+// TestNewConsumer_NilOptionElement_ValidateFirst proves NewConsumer is
+// VALIDATE-FIRST (Spec 015 §3.5): the argument checks on src and h precede the
+// option loop, so an earlier-validated fault wins over a nil option sitting at
+// the SAME index 0 the nil-option guard would otherwise report. This is a
+// standalone test, not folded into the table above, because its setup
+// (src AND h both nil) is a genuinely different shape than "src/h valid, an
+// option is nil" — table-test's documented divergence exception.
+func TestNewConsumer_NilOptionElement_ValidateFirst(t *testing.T) {
+	_, err := endpoint.NewConsumer[order](nil, nil, nil)
+
+	require.ErrorIs(t, err, msgin.ErrNilAdapter)
+	assert.NotErrorIs(t, err, msgin.ErrNilFunc)
+}
+
 // TestConsumer_NilOptionValues_AreNoOpsNotPanics proves that passing nil to a
 // ConsumerOption carrying a pointer/interface leaves the option's default in
 // place rather than arming a nil-deref at the first use — the "no panic on
@@ -1866,7 +1928,8 @@ func TestConsumer_HandlerTimeout_CancelsStuckHandlerAndRetries(t *testing.T) {
 // driving it into the failing downstream, and the flow recovers on half-open.
 func TestConsumer_CircuitBreaker_GatesDispatchAndRecovers(t *testing.T) {
 	clk := clockwork.NewFakeClock()
-	b := resilience.NewCircuitBreaker(resilience.WithBreakerClock(clk), resilience.WithBreakerThreshold(1), resilience.WithBreakerCooldown(5*time.Second))
+	b, breakerErr := resilience.NewCircuitBreaker(resilience.WithBreakerClock(clk), resilience.WithBreakerThreshold(1), resilience.WithBreakerCooldown(5*time.Second))
+	require.NoError(t, breakerErr)
 
 	broker := memory.New(memory.WithBuffer(8))
 	var ok atomic.Int64
@@ -1915,7 +1978,8 @@ func TestConsumer_CircuitBreaker_GatesDispatchAndRecovers(t *testing.T) {
 // messages keep flowing to the invalid sink.
 func TestConsumer_CircuitBreaker_PermanentErrorsDoNotTrip(t *testing.T) {
 	clk := clockwork.NewFakeClock()
-	b := resilience.NewCircuitBreaker(resilience.WithBreakerClock(clk), resilience.WithBreakerThreshold(1), resilience.WithBreakerCooldown(5*time.Second))
+	b, breakerErr := resilience.NewCircuitBreaker(resilience.WithBreakerClock(clk), resilience.WithBreakerThreshold(1), resilience.WithBreakerCooldown(5*time.Second))
+	require.NoError(t, breakerErr)
 
 	broker := memory.New(memory.WithBuffer(8))
 	sink := &recordingSink{}
@@ -1951,7 +2015,8 @@ func TestConsumer_CircuitBreaker_PermanentErrorsDoNotTrip(t *testing.T) {
 // shutdown happens while ingress is parked.
 func TestConsumer_CircuitBreaker_ShutdownWhileOpen(t *testing.T) {
 	clk := clockwork.NewFakeClock()
-	b := resilience.NewCircuitBreaker(resilience.WithBreakerClock(clk), resilience.WithBreakerThreshold(1), resilience.WithBreakerCooldown(time.Hour))
+	b, breakerErr := resilience.NewCircuitBreaker(resilience.WithBreakerClock(clk), resilience.WithBreakerThreshold(1), resilience.WithBreakerCooldown(time.Hour))
+	require.NoError(t, breakerErr)
 
 	broker := memory.New(memory.WithBuffer(8))
 	h := func(context.Context, msgin.Message[order]) error {

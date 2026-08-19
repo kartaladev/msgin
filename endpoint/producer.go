@@ -332,7 +332,13 @@ type producer[T any] struct {
 	logger            *slog.Logger
 }
 
-// NewProducer builds a Producer, validating codec pairing at construction.
+// NewProducer builds a Producer, validating codec pairing at construction. A
+// nil out is [msgin.ErrNilAdapter], checked before opts is ever applied. A
+// nil ELEMENT of opts is a bare [msgin.ErrNilFunc], naming the element's
+// 0-based index ("endpoint.NewProducer: nil option at index 1"), checked as
+// opts is applied — so it runs AFTER the out check and loses to it, but
+// BEFORE the codec-pairing validation mentioned above, which runs after the
+// loop and so loses to the nil-option error.
 func NewProducer[T any](out msgin.OutboundAdapter, opts ...ProducerOption[T]) (Producer[T], error) {
 	if out == nil {
 		return nil, msgin.ErrNilAdapter
@@ -341,7 +347,10 @@ func NewProducer[T any](out msgin.OutboundAdapter, opts ...ProducerOption[T]) (P
 		clock:  clockwork.NewRealClock(),
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	for _, opt := range opts {
+	for i, opt := range opts {
+		if opt == nil {
+			return nil, nilOptionAt("endpoint.NewProducer", i)
+		}
 		opt(&cfg)
 	}
 	codec, live, err := resolveCodec[T](out, cfg.codec, cfg.codecSet)

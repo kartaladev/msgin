@@ -136,6 +136,80 @@ func TestSQLLocker_Construction(t *testing.T) {
 	}
 }
 
+// TestNewSQLLocker_NilOptionElement proves a nil ELEMENT of opts is a bare
+// ErrNilFunc naming the computed 0-based index (Spec 015 §3.1, family R1).
+// NewSQLLocker is VALIDATE-FIRST: the nil-db and nil-dialect checks precede
+// the apply loop and beat a nil option, but the loop itself precedes the
+// table-name validation, so a nil option beats that.
+func TestNewSQLLocker_NilOptionElement(t *testing.T) {
+	tests := []struct {
+		name    string
+		dialect cron.LockerDialect
+		opts    []cron.LockerOption
+		assert  func(t *testing.T, err error)
+	}{
+		{
+			name:    "nil element alone",
+			dialect: cron.PostgresLocker(),
+			opts:    []cron.LockerOption{nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.False(t, msgin.IsPermanent(err), "R1 nil-option error must be BARE, not Permanent-wrapped")
+				assert.Contains(t, err.Error(), "cron.NewSQLLocker: nil option at index 0")
+			},
+		},
+		{
+			name:    "nil element after a valid option asserts the COMPUTED index and the FULL position",
+			dialect: cron.PostgresLocker(),
+			opts:    []cron.LockerOption{cron.WithLockerTable("custom_fired"), nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "cron.NewSQLLocker: nil option at index 1")
+			},
+		},
+		{
+			// AC-3: first-nil-wins.
+			name:    "first of two nils wins",
+			dialect: cron.PostgresLocker(),
+			opts:    []cron.LockerOption{nil, nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "cron.NewSQLLocker: nil option at index 0")
+			},
+		},
+		{
+			// Precedence (Spec 015 §3.5): VALIDATE-FIRST — the loop runs AFTER
+			// the db/dialect checks, so a nil option loses to a nil dialect.
+			name:    "nil dialect wins over a nil option (dialect check precedes the loop)",
+			dialect: nil,
+			opts:    []cron.LockerOption{nil},
+			assert: func(t *testing.T, err error) {
+				assert.ErrorIs(t, err, cron.ErrNilDialect)
+				assert.NotErrorIs(t, err, msgin.ErrNilFunc)
+			},
+		},
+		{
+			// Precedence (Spec 015 §3.5): the loop precedes the table-name
+			// validation, so a nil option wins over an invalid explicit table name.
+			name:    "nil option precedes the table-name validation",
+			dialect: cron.PostgresLocker(),
+			opts:    []cron.LockerOption{cron.WithLockerTable("bad; drop"), nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.NotErrorIs(t, err, cron.ErrInvalidTableName)
+				assert.Contains(t, err.Error(), "cron.NewSQLLocker: nil option at index 1")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := cron.NewSQLLocker(stubDB(t), tc.dialect, tc.opts...)
+			tc.assert(t, err)
+		})
+	}
+}
+
 func TestSQLLocker_ClaimDelegates(t *testing.T) {
 	fd := &fakeLockerDialect{won: true}
 	l, err := cron.NewSQLLocker(stubDB(t), fd)

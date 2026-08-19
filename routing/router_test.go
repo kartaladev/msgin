@@ -82,3 +82,69 @@ func TestRouter_NilPick(t *testing.T) {
 	r := routing.NewRouter(nil)
 	assert.ErrorIs(t, r.Handle(t.Context(), msgin.New[any](1)), msgin.ErrNilFunc)
 }
+
+// TestNewRouter_NilOptionElement proves a nil ELEMENT of opts is LATCHED at
+// construction (NewRouter has no error return, so it is family R2) and
+// reported by Handle as a PERMANENT ErrNilFunc naming the computed 0-based
+// index (Spec 015 §3.2, ADR 0031 D-P/D-S/D-U). The last row pins D-V: the
+// latch is checked at the TOP of Handle, above its own pick == nil check.
+func TestNewRouter_NilOptionElement(t *testing.T) {
+	pick := func(context.Context, msgin.Message[any]) (msgin.MessageChannel, error) {
+		return channel.NewDirectChannel(), nil
+	}
+
+	tests := []struct {
+		name   string
+		router func() *routing.Router
+		assert func(t *testing.T, err error)
+	}{
+		{
+			name:   "nil element alone",
+			router: func() *routing.Router { return routing.NewRouter(pick, nil) },
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.True(t, msgin.IsPermanent(err), "R2 nil-option error must be Permanent-wrapped")
+				assert.Contains(t, err.Error(), "routing.NewRouter: nil option at index 0")
+			},
+		},
+		{
+			name: "nil element after a valid option asserts the COMPUTED index and the FULL position",
+			router: func() *routing.Router {
+				return routing.NewRouter(pick, routing.WithDefaultChannel(channel.NewDirectChannel()), nil)
+			},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.True(t, msgin.IsPermanent(err))
+				assert.Contains(t, err.Error(), "routing.NewRouter: nil option at index 1")
+			},
+		},
+		{
+			// AC-3's R2 half: D-U's "latch only when unlatched" is what keeps
+			// first-nil-wins; an implementation latching the LAST nil passes
+			// every other assertion here.
+			name:   "first of two nils wins",
+			router: func() *routing.Router { return routing.NewRouter(pick, nil, nil) },
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "routing.NewRouter: nil option at index 0")
+			},
+		},
+		{
+			// D-V: the option fault happened at construction, so it is
+			// chronologically earlier than the nil pick and is reported first.
+			name:   "D-V: a nil option is reported BEFORE the nil pick",
+			router: func() *routing.Router { return routing.NewRouter(nil, nil) },
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.True(t, msgin.IsPermanent(err))
+				assert.Contains(t, err.Error(), "routing.NewRouter: nil option at index 0")
+				assert.NotContains(t, err.Error(), "nil pick")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.assert(t, tc.router().Handle(t.Context(), msgin.New[any](1)))
+		})
+	}
+}

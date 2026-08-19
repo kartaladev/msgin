@@ -226,7 +226,11 @@ const defaultShutdownTimeout = 30 * time.Second
 // NewConsumer validates the source, the handler and the options, and builds a
 // Consumer. A nil src is [msgin.ErrNilAdapter]; a nil h is a bare
 // [msgin.ErrNilFunc] naming its position ("endpoint.NewConsumer: nil handler")
-// — checked in that order, both at construction.
+// — checked in that order, both at construction, before opts is ever applied.
+// A nil ELEMENT of opts is also a bare [msgin.ErrNilFunc], naming the
+// element's 0-based index ("endpoint.NewConsumer: nil option at index 1"),
+// checked as opts is applied — so it runs AFTER the src/h checks above and
+// loses to either of them.
 //
 // Rejecting a nil handler HERE is load-bearing, not tidiness. Left unguarded,
 // the nil is not seen until the first message, where calling it nil-derefs on a
@@ -249,7 +253,10 @@ func NewConsumer[T any](src any, h Handler[T], opts ...ConsumerOption[T]) (Consu
 		clock:       clockwork.NewRealClock(),
 		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	for _, opt := range opts {
+	for i, opt := range opts {
+		if opt == nil {
+			return nil, nilOptionAt("endpoint.NewConsumer", i)
+		}
 		opt(&cfg)
 	}
 	if cfg.concurrency < 1 {

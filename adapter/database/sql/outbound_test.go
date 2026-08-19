@@ -128,3 +128,102 @@ func TestOutbound_NotLiveValueSource(t *testing.T) {
 	_, ok := any(out).(msgin.LiveValueSource)
 	assert.False(t, ok, "Outbound must not implement LiveValueSource")
 }
+
+// TestNewOutboundAdapter_NilOptionElement proves a nil ELEMENT of opts is a bare
+// ErrNilFunc naming the computed 0-based index (Spec 015 §3.1, family R1) rather
+// than a panic. NewOutboundAdapter is LOOP-FIRST (Spec 015 §3.5): the apply loop
+// is the constructor's first statement, so a nil option beats the ErrNilResolver
+// check AND newAdapterBase's db/table/dialect validation, all of which run after
+// it.
+func TestNewOutboundAdapter_NilOptionElement(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		db      func(t *testing.T) *sql.DB // nil => pass a nil *sql.DB
+		table   string
+		dialect msginsql.LeaseDialect
+		opts    []msginsql.Option
+		assert  func(t *testing.T, err error)
+	}{
+		{
+			// AC-1 (no panic) + AC-5 (the R1 wrap is BARE).
+			name:    "nil element alone",
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
+			table:   "msgs",
+			dialect: newFakeDialect(),
+			opts:    []msginsql.Option{nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.False(t, msgin.IsPermanent(err),
+					"R1 nil-option error must be BARE, not Permanent-wrapped")
+				assert.Contains(t, err.Error(), "sql.NewOutboundAdapter: nil option at index 0")
+			},
+		},
+		{
+			// AC-2: the index is computed, and the FULL position (constructor
+			// name included) is asserted so a copy-pasted ctor literal dies.
+			name:    "nil element after a valid option reports the computed index",
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
+			table:   "msgs",
+			dialect: newFakeDialect(),
+			opts:    []msginsql.Option{msginsql.WithLeaseTTL(time.Minute), nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "sql.NewOutboundAdapter: nil option at index 1")
+			},
+		},
+		{
+			// AC-3: first-nil-wins — an implementation reporting the LAST nil
+			// passes every other assertion in this table.
+			name:    "first of two nils wins",
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
+			table:   "msgs",
+			dialect: newFakeDialect(),
+			opts:    []msginsql.Option{nil, nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "sql.NewOutboundAdapter: nil option at index 0")
+			},
+		},
+		{
+			// Precedence (Spec 015 §3.5): LOOP-FIRST, so the nil option beats
+			// newAdapterBase's nil-db check, which runs after the loop.
+			name:    "nil option precedes the nil-db validation",
+			db:      nil,
+			table:   "msgs",
+			dialect: newFakeDialect(),
+			opts:    []msginsql.Option{nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.NotErrorIs(t, err, msgin.ErrNilAdapter)
+				assert.Contains(t, err.Error(), "sql.NewOutboundAdapter: nil option at index 0")
+			},
+		},
+		{
+			// Precedence: the nil option also beats the ErrNilResolver check,
+			// the only validation between the loop and newAdapterBase.
+			name:    "nil option precedes the ErrNilResolver validation",
+			db:      func(t *testing.T) *sql.DB { return openDB(t, fakeDriverName) },
+			table:   "msgs",
+			dialect: newFakeDialect(),
+			opts:    []msginsql.Option{msginsql.WithSharedTransaction(nil), nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.NotErrorIs(t, err, msginsql.ErrNilResolver)
+				assert.Contains(t, err.Error(), "sql.NewOutboundAdapter: nil option at index 1")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var db *sql.DB
+			if tc.db != nil {
+				db = tc.db(t)
+			}
+			_, err := msginsql.NewOutboundAdapter(db, tc.table, tc.dialect, tc.opts...)
+			tc.assert(t, err)
+		})
+	}
+}

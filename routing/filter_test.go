@@ -90,3 +90,84 @@ func TestFilter_Guards(t *testing.T) {
 		assert.ErrorIs(t, step(next).Handle(t.Context(), msgin.New[any](1)), msgin.ErrNilFunc)
 	})
 }
+
+// TestFilter_NilOptionElement proves a nil ELEMENT of opts degrades the Step
+// exactly as a nil pred does — a PERMANENT ErrNilFunc naming the computed
+// 0-based index, raised at DISPATCH (Filter has no error return, so it is
+// family R2; Spec 015 §3.2, ADR 0031 D-P/D-S). The last two rows pin D-V
+// (ADR 0031): the option loop sits ABOVE the pred check, so a nil option and a
+// nil pred together report the OPTION, while a nil pred with no options at all
+// still reports "nil pred", unchanged.
+func TestFilter_NilOptionElement(t *testing.T) {
+	pred := func(context.Context, msgin.Message[string]) (bool, error) { return true, nil }
+
+	tests := []struct {
+		name   string
+		step   func() msgin.Step
+		assert func(t *testing.T, err error)
+	}{
+		{
+			name: "nil element alone",
+			step: func() msgin.Step { return routing.Filter[string](pred, nil) },
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.True(t, msgin.IsPermanent(err), "R2 nil-option error must be Permanent-wrapped")
+				assert.Contains(t, err.Error(), "routing.Filter: nil option at index 0")
+			},
+		},
+		{
+			name: "nil element after a valid option asserts the COMPUTED index and the FULL position",
+			step: func() msgin.Step {
+				return routing.Filter[string](pred, routing.WithDiscardChannel(channel.NewDirectChannel()), nil)
+			},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.True(t, msgin.IsPermanent(err))
+				assert.Contains(t, err.Error(), "routing.Filter: nil option at index 1")
+			},
+		},
+		{
+			name: "first of two nils wins",
+			step: func() msgin.Step { return routing.Filter[string](pred, nil, nil) },
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "routing.Filter: nil option at index 0")
+			},
+		},
+		{
+			// D-V: the option fault happened at construction, so it is
+			// chronologically earlier than the nil pred and is reported first.
+			name: "D-V: a nil option is reported BEFORE the nil pred",
+			step: func() msgin.Step { return routing.Filter[string](nil, nil) },
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.True(t, msgin.IsPermanent(err))
+				assert.Contains(t, err.Error(), "routing.Filter: nil option at index 0")
+				assert.NotContains(t, err.Error(), "nil pred")
+			},
+		},
+		{
+			// The other half of D-V: no option means nothing displaces the
+			// pred check, so the pre-existing diagnosis is unchanged.
+			name: "nil pred with NO options still reports nil pred",
+			step: func() msgin.Step { return routing.Filter[string](nil) },
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.True(t, msgin.IsPermanent(err))
+				assert.Contains(t, err.Error(), "routing.Filter: nil pred")
+				assert.NotContains(t, err.Error(), "nil option")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			forwarded := false
+			next := msgin.HandlerFunc(func(context.Context, msgin.Message[any]) error { forwarded = true; return nil })
+
+			err := tc.step()(next).Handle(t.Context(), msgin.New[any]("x"))
+
+			assert.False(t, forwarded, "a degraded Filter must not forward downstream")
+			tc.assert(t, err)
+		})
+	}
+}

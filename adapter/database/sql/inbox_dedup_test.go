@@ -170,3 +170,105 @@ func TestInboxDeduper_PurgeRejectsNonPositiveRetention(t *testing.T) {
 		})
 	}
 }
+
+// TestNewInboxDeduper_NilOptionElement proves a nil ELEMENT of opts is a bare
+// ErrNilFunc naming the computed 0-based index (Spec 015 §3.1, family R1) rather
+// than a panic.
+//
+// NewInboxDeduper is the MIXED constructor of Spec 015 §3.5 and the one that
+// proves precedence is per-CHECK, not per-constructor: its businessDB == nil
+// guard runs BEFORE the apply loop (so ErrNilAdapter wins), while its
+// dialect == nil guard and the ValidateIdent(cfg.table) call run AFTER it (so
+// the nil option wins over both). All three orderings are asserted below.
+func TestNewInboxDeduper_NilOptionElement(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		nilDB   bool
+		dialect msginsql.InboxDialect
+		opts    []msginsql.InboxOption
+		assert  func(t *testing.T, err error)
+	}{
+		{
+			// AC-1 (no panic) + AC-5 (the R1 wrap is BARE).
+			name:    "nil element alone",
+			dialect: newFakeDialect(),
+			opts:    []msginsql.InboxOption{nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.False(t, msgin.IsPermanent(err),
+					"R1 nil-option error must be BARE, not Permanent-wrapped")
+				assert.Contains(t, err.Error(), "sql.NewInboxDeduper: nil option at index 0")
+			},
+		},
+		{
+			// AC-2: computed index, asserted as the FULL position string.
+			name:    "nil element after a valid option reports the computed index",
+			dialect: newFakeDialect(),
+			opts:    []msginsql.InboxOption{msginsql.WithInboxTable("my_inbox"), nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "sql.NewInboxDeduper: nil option at index 1")
+			},
+		},
+		{
+			// AC-3: first-nil-wins.
+			name:    "first of two nils wins",
+			dialect: newFakeDialect(),
+			opts:    []msginsql.InboxOption{nil, nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "sql.NewInboxDeduper: nil option at index 0")
+			},
+		},
+		{
+			// Precedence, arm 1 (VALIDATE-FIRST): the businessDB == nil guard
+			// precedes the loop, so it BEATS the nil option.
+			name:    "the nil-businessDB check precedes the loop and beats the nil option",
+			nilDB:   true,
+			dialect: newFakeDialect(),
+			opts:    []msginsql.InboxOption{nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilAdapter)
+				assert.NotErrorIs(t, err, msgin.ErrNilFunc)
+			},
+		},
+		{
+			// Precedence, arm 2 (the SAME constructor answers the other way):
+			// the dialect == nil guard runs AFTER the loop, so the nil option
+			// beats it. This pair is why the rule is per-check.
+			name:    "the nil-dialect check follows the loop and loses to the nil option",
+			dialect: nil,
+			opts:    []msginsql.InboxOption{nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.NotErrorIs(t, err, msginsql.ErrNilDialect)
+				assert.Contains(t, err.Error(), "sql.NewInboxDeduper: nil option at index 0")
+			},
+		},
+		{
+			// Precedence, arm 3: ValidateIdent(cfg.table) also runs after the
+			// loop, so an invalid WithInboxTable loses to the nil option too.
+			name:    "the table-identifier validation follows the loop and loses to the nil option",
+			dialect: newFakeDialect(),
+			opts:    []msginsql.InboxOption{msginsql.WithInboxTable("bad-ident!"), nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.NotErrorIs(t, err, msginsql.ErrInvalidTableName)
+				assert.Contains(t, err.Error(), "sql.NewInboxDeduper: nil option at index 1")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var db *sql.DB
+			if !tc.nilDB {
+				db = openDB(t, fakeDriverName)
+			}
+			_, err := msginsql.NewInboxDeduper(db, tc.dialect, tc.opts...)
+			tc.assert(t, err)
+		})
+	}
+}

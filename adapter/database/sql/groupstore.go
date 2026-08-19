@@ -200,9 +200,19 @@ var _ msgin.MessageGroupStore = (*GroupStore)(nil)
 // WithGroupLeaseTTL is ErrInvalidLeaseTTL. Call Ready/EnsureSchema once at
 // boot, exactly like the Source (ADR 0010 D2) — msgin never runs DDL
 // implicitly on the production path.
+//
+// A nil ELEMENT of opts is a bare [msgin.ErrNilFunc] naming the element's
+// 0-based index ("sql.NewGroupStore: nil option at index 1"), not a panic —
+// checked as opts is applied. In the order enumerated above the nil-option
+// check comes FIRST: the apply loop is this constructor's first statement, so
+// it runs before the nil-db, table-identifier, nil-dialect and
+// WithGroupLeaseTTL checks, every one of which loses to it.
 func NewGroupStore(db *stdsql.DB, table string, dialect GroupDialect, opts ...GroupStoreOption) (*GroupStore, error) {
 	cfg := groupStoreConfig{logger: discardLogger()}
-	for _, o := range opts {
+	for i, o := range opts {
+		if o == nil {
+			return nil, nilOptionAt("sql.NewGroupStore", i)
+		}
 		o(&cfg)
 	}
 
