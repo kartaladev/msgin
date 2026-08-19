@@ -21,13 +21,20 @@ type gatewayConfig struct{}
 // options (e.g. request-header seeding); none are defined yet.
 type GatewayOption[Req, Rep any] func(*gatewayConfig)
 
-// NewGateway builds an inbound Gateway over x. A nil exchange is ErrNilExchange.
+// NewGateway builds an inbound Gateway over x. A nil exchange is
+// ErrNilExchange, checked before opts is ever applied. A nil ELEMENT of opts
+// is a bare [msgin.ErrNilFunc], naming the element's 0-based index
+// ("endpoint.NewGateway: nil option at index 0"), checked as opts is
+// applied — so it runs AFTER the exchange check and loses to it.
 func NewGateway[Req, Rep any](x msgin.RequestReplyExchange, opts ...GatewayOption[Req, Rep]) (*Gateway[Req, Rep], error) {
 	if x == nil {
 		return nil, msgin.ErrNilExchange
 	}
 	var cfg gatewayConfig
-	for _, opt := range opts {
+	for i, opt := range opts {
+		if opt == nil {
+			return nil, nilOptionAt("endpoint.NewGateway", i)
+		}
 		opt(&cfg)
 	}
 	return &Gateway[Req, Rep]{exchange: x}, nil

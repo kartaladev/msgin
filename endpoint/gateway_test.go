@@ -42,6 +42,52 @@ func TestNewGateway_nilExchange(t *testing.T) {
 	assert.ErrorIs(t, err, msgin.ErrNilExchange)
 }
 
+// TestNewGateway_nilOptionElement proves a nil ELEMENT of opts is a bare
+// ErrNilFunc naming the computed index, not a panic (Spec 015 §3.1, ADR 0031
+// D-P/D-Q/D-R). x is always a valid exchange here — this is about the SECOND
+// argument, opts, never about the nil-exchange case above.
+//
+// AC-2-EXEMPT (Spec 015 §6): GatewayOption[Req, Rep] is func(*gatewayConfig)
+// over an unexported, EMPTY gatewayConfig with zero exported constructors, so
+// a blackbox test cannot obtain a non-nil GatewayOption value — there is no
+// "nil element after a valid option" case to write for this constructor, and
+// no whitebox fallback is used to manufacture one.
+func TestNewGateway_nilOptionElement(t *testing.T) {
+	validExchange := fakeExchange{fn: func(_ context.Context, req msgin.Message[any]) (msgin.Message[any], error) {
+		return req, nil
+	}}
+
+	tests := []struct {
+		name   string
+		opts   []endpoint.GatewayOption[string, string]
+		assert func(t *testing.T, err error)
+	}{
+		{
+			name: "nil element alone",
+			opts: []endpoint.GatewayOption[string, string]{nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.False(t, msgin.IsPermanent(err), "R1 nil-option error must stay bare")
+				assert.Contains(t, err.Error(), "endpoint.NewGateway: nil option at index 0")
+			},
+		},
+		{
+			name: "first of two nils wins",
+			opts: []endpoint.GatewayOption[string, string]{nil, nil},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, msgin.ErrNilFunc)
+				assert.Contains(t, err.Error(), "endpoint.NewGateway: nil option at index 0")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := endpoint.NewGateway[string, string](validExchange, tc.opts...)
+			tc.assert(t, err)
+		})
+	}
+}
+
 func TestGateway_Request(t *testing.T) {
 	tests := []struct {
 		name   string
