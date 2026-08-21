@@ -121,7 +121,7 @@ func NewQueueStore(opts ...QueueStoreOption) (*QueueStore, error) {
 		cfg.clock = clockwork.NewRealClock()
 	}
 	return &QueueStore{
-		sem:      make(chan struct{}, capacity),
+		sem:      make(chan struct{}, capacity), // zero-size element (struct{}) — panic-proof at any n; pinned by Spec 016 §6 AC-4.
 		overflow: cfg.overflow,
 		clock:    cfg.clock,
 		inflight: map[int64]entry{},
