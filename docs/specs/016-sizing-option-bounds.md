@@ -1,6 +1,10 @@
 # Spec 016 — Sizing options must not panic or fatally exhaust memory
 
-- **Status:** **DRAFT (2026-08-21), revision 6** — written before any code, per CLAUDE.md's design-time gate.
+- **Status:** **DELIVERED (2026-08-22)** — revision 6 was written before any code, per CLAUDE.md's design-time
+  gate; realized by [`plans/029-sizing-option-bounds.md`](../plans/029-sizing-option-bounds.md) Tasks 1–8 on
+  `fix/sizing-option-bounds`, whole-branch gate green. Two corrections landed at the delivery gate: §2.1's
+  `WithSuccessStatus` row (classification arms ≠ AC-5 behavioral arms — see §2.1) and §3.1/§3.3's as-delivered
+  `checkRange` notes. Revision-6 text below is otherwise unchanged.
   - **Revision 6** folds round-5 findings ([`029-audit-round-5.md`](../plans/029-audit-round-5.md)): 2 BLOCKERs,
     5 MAJORs, 8 MINORs. Round 5's verdict on the *previous* fold-in was the cleanest of five —
     **11 LANDED · 5 LANDED-BUT-FLAWED · 0 NOT LANDED · 0 REGRESSED**, and the first round in which the ADR
@@ -386,13 +390,31 @@ per row and AC-4 pins the two that rest on a structural property.
 | `WithBreakerThreshold` | `resilience` | `b.fails >= b.threshold` `breaker.go:164` | safe **(a)** — scalar counter, accumulates nothing |
 | **`WithMaxResponseBytes`** | `msghttp` | **`io.ReadAll(io.LimitReader(resp.Body, max))`** `exchange.go:130-131` | **DEFECTIVE — ceiling DEFERRED** (§3.8) · sole bound on a **remote-driven** read whose body is **RETAINED** as the reply payload — *`drainBounded` is only 5 of its 6 reads* |
 | `WithMaxPayloadBytes` | `endpoint` | `len(b) > c.maxPayloadBytes` `consumer.go:1199` | safe **(b)** — `b` is already materialised |
-| `WithSuccessStatus` | `msghttp` | HTTP status code | safe **(a)** — **already range-checked**, `[100,599]` |
+| `WithSuccessStatus` | `msghttp` | HTTP status code | safe **(a)** — **already range-checked**, `[100,599]`. **Its AC-5 row is the `rejects` arm, not the `safe` arm** — it is the one safe knob that does *not* accept `1<<62`; see the note below |
 | **+ `NewTokenBucket`'s `burst`** | `resilience` | `float64(burst)` `ratelimit.go:48-49` | safe **(a)** — **positional, not an option**; carries a conformance row (§2 note) |
 
 **9 fixed here + 3 deferred + 4 safe = 16 options; + 1 positional (`burst`) = 17 conformance keys.** The table has
 17 rows for that reason. §6 AC-5 keys on **17**. **Re-derive this line before citing it** — it has been wrong in
 **every** prior revision (7/9 → 8/2/6 → 9/2/5 → **9/3/4**), which is precisely why §2.1 now leads with a criterion instead of
 a list.
+
+> **CLASSIFICATION arms ≠ AC-5 BEHAVIORAL arms — they are two different partitions of the same rows, and
+> conflating them was a live self-contradiction in revisions 1–6.** The census above partitions by *why* a knob
+> is or is not a class member. §6 AC-5 partitions by *what a row asserts at `1<<62`*. The two agree on 16 of the
+> 17 keys and disagree on exactly one: **`WithSuccessStatus` is `safe (a)` by the criterion** — a pure comparison
+> over a scalar, nothing accumulates — **but it does not `accept 1<<62`**, which is what AC-5's `safe` arm
+> asserts. Its behavioral row therefore sits in a `rejects` arm of its own. **Derive AC-5's arms from this
+> line, not from the verdict column:**
+>
+> | AC-5 arm | Rows | Which keys |
+> |---|---|---|
+> | `fixed` | **9** | the 9 class members this increment bounds |
+> | `rejects` | **1** | `WithSuccessStatus` — safe by the criterion, but pre-existing `[100,599]` makes it reject |
+> | `deferred` | **3** | `WithMaxBodyBytes`, `WithMaxEventBytes`, `WithMaxResponseBytes` |
+> | `safe` | **6** | `WithPollMaxBatch`, `WithBreakerThreshold`, `WithMaxPayloadBytes`, `burst`, + the **2 manual** rows |
+>
+> **9 + 1 + 3 + 6 = 19 rows = 17 AST keys + 2 manual rows.** Both totals are re-derivable from the census line
+> above; neither is incremented from a prior revision.
 
 **Note how narrowly the safe rows escape.** `WithBreakerThreshold` shares row-shape with `WithCompletionSize` and
 is safe only because `b.fails` is a scalar; `WithMaxPayloadBytes` shares a verdict string with `WithMaxBodyBytes`
@@ -465,6 +487,24 @@ fmt.Errorf("%w: %s: %d not in [%d, %d]", sentinel, site, n, lo, hi)
 // endpoint.WithMaxInFlight(1<<20+1)  → "msgin: max in-flight out of range: endpoint.WithMaxInFlight: 1048577 not in [1, 1048576]"
 ```
 
+> **AS DELIVERED, this shape is rendered by a helper, not by nine inline `fmt.Errorf` calls.** The Plan 029
+> Task 8 `/simplify` pass replaced them with a per-package unexported
+> `checkRange(sentinel error, site string, n, lo, hi int) error` — one copy each in `endpoint/helpers.go`,
+> `routing/helpers.go`, `adapter/memory/helpers.go`, `adapter/http/helpers.go`, alongside the `nilOptionAt`
+> those files already carry under ADR 0031 **D-R**. It returns `nil` when `n` is in `[lo, hi]` and this exact
+> `fmt.Errorf` otherwise, so a call site reads
+> `if err := checkRange(sentinel, site, n, lo, hi); err != nil { return nil, err }`.
+>
+> **The reason is not DRY.** Inline, each site spelled each bound **twice** — once in the `if`, once in the
+> format arguments — and the two spellings had already diverged (`<= 0` guards printing a lower bound of `1` in
+> `memory` and `msghttp`, against `< 1` elsewhere). Nothing rendered wrongly, but only a hand-written
+> `EqualError` string stood between the next edit and a message describing a range the code does not enforce.
+> With the helper the **enforced** range and the **printed** range are the same two values, by construction.
+> The **sentinel stays a parameter** so each knob keeps its own `errors.Is` target (D-X) and so R2's
+> `msgin.Permanent`-wrapped sentinel stays visible at its call site rather than becoming a flag inside the
+> helper. The snippets in this section and in §3.3 show the *rendering*, which is unchanged and is what AC-2b
+> asserts verbatim; they are no longer literal transcriptions of the call sites.
+
 **Why not revision 2's `"%d exceeds %d"`.** Folding both bounds into one condition and rendering *"exceeds"* makes
 the message **lie on the lower arm**: `WithMaxInFlight(0)` would read `"…must be >= 1: 0 exceeds 1048576"`, which
 is false — 0 exceeds nothing. That arm ships correct today, so revision 2's fix would have *introduced* a
@@ -520,6 +560,14 @@ func WithBuffer(n int) Option {
 
 The `return` is what satisfies the contract; the latch only decides *which* error the caller reads. §6 AC-3 tests
 exactly this combination, because every other test passes against the wrong shape.
+
+> **As delivered, the condition and the `fmt.Errorf` are one `checkRange` call** (§3.1's note), so the shipped
+> body reads `if err := checkRange(msgin.Permanent(msgin.ErrInvalidCapacity), "memory.WithBuffer", n, 0,
+> maxBufferCeiling); err != nil { if b.err == nil { b.err = err }; return }`. **The structure this section is
+> about is unchanged and is the whole point: the `return` still sits OUTSIDE the `if b.err == nil` block.**
+> Note that the sentinel is `Permanent`-wrapped *before* it reaches `checkRange`, so the wrap lands inside the
+> `%w` and the rendered string keeps its `msgin: permanent: ` prefix — wrapping the *returned* error instead
+> would print identically while building a different error tree.
 
 **Verified safe** (round-1): `New` initialises `b := &Broker{ch: make(chan msgin.Message[any])}` (`memory.go:59`)
 *before* the apply loop, so an early `return` leaves `b.ch` non-nil — no nil-channel deadlock — and D-V reports the
@@ -765,9 +813,10 @@ and the typed error a violation produces**. For `WithBuffer`, the godoc addition
 at `Send`/`Stream` rather than at `New`, and why (no error return) — the same disclosure Spec 015 §4 requires of
 every R2 member.
 
-The safe rows of §2.1 whose safety rests on a structural property — the two zero-size-element sites and
-the two zero-size-element sites — get a one-line comment at the allocation site naming that property, so a
-future edit breaking it is visible in review rather than only in AC-4.
+The safe rows of §2.1 whose safety rests on a structural property — the two zero-size-element sites,
+`endpoint/credit.go:21`'s credit gate and `adapter/memory/queuestore.go`'s `sem`, both `make(chan struct{}, n)` —
+get a one-line comment at the allocation site naming that property, so a future edit breaking it is visible in
+review rather than only in AC-4.
 
 **One existing godoc sentence becomes FALSE and must be retired in the same commit** (round-2 **m2-7**).
 `adapter/memory/memory.go:35-37` currently reads:
@@ -919,13 +968,18 @@ plain and under `-race`, with a no-op noise floor of exactly `0` bytes.
 
 2. **Conformance (behavioral) — every key is executable, none is a declaration.** **17 AST-discovered rows + 2
    manual rows** for the class members the `Recv == nil` boundary excludes but that a root test *can* construct
-   (`memory.QueueStore.Claim`, `channel.QueueChannel.Poll` — §2.0). **Three arms, matching §2.1's three verdicts:**
+   (`memory.QueueStore.Claim`, `channel.QueueChannel.Poll` — §2.0). **FOUR arms — behavioral, and NOT a
+   relabelling of §2.1's three verdicts** (see §2.1's "classification arms ≠ AC-5 behavioral arms" note, which is
+   normative for this table):
 
    | Arm | Rows | Assertion |
    |---|---|---|
    | **class member, fixed here** (9) | the 7 + `WithCompletionSize` + `WithReplayBuffer` | **reports the fault through the surface §3 names for it** — the constructor's return, **or the first use of the object it produced** |
-   | **class member, ceiling deferred** (3) | `WithMaxBodyBytes`, `WithMaxEventBytes`, `WithMaxResponseBytes` | **accepts** `1<<62`, and the row is annotated *"class member, remedy deferred — §3.8"* so it never reads as a safety certificate |
-   | **safe** (4 + `burst`) | §2.1's safe rows | **accepts** `1<<62` and its product is usable |
+   | **rejects, but not a class member** (1) | `WithSuccessStatus` | **rejects** `1<<62` through its **pre-existing** `[100,599]` check. It is `safe (a)` by §2.1's criterion and **nothing here fixes it** — the arm exists because it cannot honestly sit in either the `fixed` arm (it is not a class member) or the `safe` arm (which asserts *accepts*) |
+   | **class member, ceiling deferred** (3) | `WithMaxBodyBytes`, `WithMaxEventBytes`, `WithMaxResponseBytes` | **accepts** `1<<62`, and the row is annotated *"class member, remedy deferred — §3.8"* so it never reads as a safety certificate. **When §3.8's ceiling lands, MOVE the row to the `fixed` arm — do not weaken the production check to keep the gate green** |
+   | **safe** (3 + `burst` + the 2 manual rows = 6) | §2.1's safe rows **minus `WithSuccessStatus`** | **accepts** `1<<62` and its product is usable |
+
+   **9 + 1 + 3 + 6 = 19 rows.** Re-derive from §2.1's arm table; do not increment.
 
    > **The defective arm is phrased over the SURFACE, not over "rejects"** (round-3 **m3-5**). Revision 3 said
    > *"a defective knob asserts it **rejects** `1<<62` with a typed error"* — which **cannot be written for

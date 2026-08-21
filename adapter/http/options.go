@@ -1,7 +1,6 @@
 package msghttp
 
 import (
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -1209,16 +1208,16 @@ func NewConfig(opts ...Option) (*Config, error) {
 
 	if !cfg.maxConnectionsSet {
 		cfg.maxConnections = defaultMaxConnections
-	} else if cfg.maxConnections < 1 || cfg.maxConnections > maxConnectionsCeiling {
-		return nil, fmt.Errorf("%w: %s: %d not in [%d, %d]",
-			ErrInvalidMaxConnections, "msghttp.WithMaxConnections", cfg.maxConnections, 1, maxConnectionsCeiling)
+	} else if err := checkRange(ErrInvalidMaxConnections, "msghttp.WithMaxConnections",
+		cfg.maxConnections, 1, maxConnectionsCeiling); err != nil {
+		return nil, err
 	}
 
 	if !cfg.connectionBufferSet {
 		cfg.connectionBuffer = defaultConnectionBuffer
-	} else if cfg.connectionBuffer < 1 || cfg.connectionBuffer > maxConnBufferCeiling {
-		return nil, fmt.Errorf("%w: %s: %d not in [%d, %d]",
-			ErrInvalidConnectionBuffer, "msghttp.WithConnectionBuffer", cfg.connectionBuffer, 1, maxConnBufferCeiling)
+	} else if err := checkRange(ErrInvalidConnectionBuffer, "msghttp.WithConnectionBuffer",
+		cfg.connectionBuffer, 1, maxConnBufferCeiling); err != nil {
+		return nil, err
 	}
 
 	if !cfg.slowClientPolicySet {
@@ -1227,9 +1226,11 @@ func NewConfig(opts ...Option) (*Config, error) {
 		return nil, ErrInvalidSlowClientPolicy
 	}
 
-	if cfg.replayBufferSet && (cfg.replayBuffer < 1 || cfg.replayBuffer > replayBufferCeiling) {
-		return nil, fmt.Errorf("%w: %s: %d not in [%d, %d]",
-			ErrInvalidReplayBuffer, "msghttp.WithReplayBuffer", cfg.replayBuffer, 1, replayBufferCeiling)
+	if cfg.replayBufferSet {
+		if err := checkRange(ErrInvalidReplayBuffer, "msghttp.WithReplayBuffer",
+			cfg.replayBuffer, 1, replayBufferCeiling); err != nil {
+			return nil, err
+		}
 	}
 
 	if cfg.heartbeatSet && cfg.heartbeat <= 0 {

@@ -350,9 +350,11 @@ func NewAggregator[A, B any](
 	if cfg.release == nil {
 		return nil, nilFuncAt("routing.NewAggregator: nil release strategy")
 	}
-	if cfg.completionSizeSet && (cfg.completionSize < 1 || cfg.completionSize > completionSizeCeiling) {
-		return nil, fmt.Errorf("%w: %s: %d not in [%d, %d]",
-			msgin.ErrInvalidCapacity, "routing.WithCompletionSize", cfg.completionSize, 1, completionSizeCeiling)
+	if cfg.completionSizeSet {
+		if err := checkRange(msgin.ErrInvalidCapacity, "routing.WithCompletionSize",
+			cfg.completionSize, 1, completionSizeCeiling); err != nil {
+			return nil, err
+		}
 	}
 	if cfg.output == nil {
 		return nil, msgin.ErrNilOutput

@@ -19,11 +19,23 @@ package msgin_test
 //  2. CONFORMANCE (behavioral). Every one of the 17 AST-discovered keys, plus
 //     2 MANUAL rows for the class members the Recv == nil boundary excludes
 //     but a root test can still construct, gets an executable row — never a
-//     declaration string — in one of three arms matching Spec 016 §2.1's
-//     three verdicts: "fixed" (the fault is reported through the surface
-//     Spec 016 §3 names for it), "deferred" (accepts 1<<62, annotated so it
-//     never reads as a safety certificate), or "safe" (accepts 1<<62 AND its
-//     product is usable).
+//     declaration string — in one of FOUR arms. The arms are BEHAVIORAL and are
+//     NOT a relabelling of Spec 016 §2.1's three classification verdicts; §2.1's
+//     "classification arms ≠ AC-5 behavioral arms" note is normative for the
+//     split, and §6 AC-5 tabulates it:
+//       - "fixed"    (9) — the fault is reported through the surface Spec 016
+//                          §3 names for it: the constructor's return, or the
+//                          first use of the object it produced.
+//       - "rejects"  (1) — msghttp.WithSuccessStatus. It is safe (a) by §2.1's
+//                          criterion and NOTHING HERE FIXES IT; it rejects
+//                          1<<62 only through its own pre-existing [100,599]
+//                          check. It gets an arm of its own because it belongs
+//                          in neither "fixed" (not a class member) nor "safe"
+//                          (which asserts ACCEPTS).
+//       - "deferred" (3) — accepts 1<<62, annotated so it never reads as a
+//                          safety certificate.
+//       - "safe"     (6) — accepts 1<<62 AND its product is usable.
+//     9 + 1 + 3 + 6 = 19 rows = 17 AST keys + 2 manual rows.
 //
 // # The Recv == nil boundary — a decision, not an omission (Spec 016 §2.0)
 //
@@ -61,6 +73,14 @@ package msgin_test
 //     not a silent pass.
 //   - The Recv == nil boundary above: two excluded class members, both
 //     covered by the manual rows — no uncovered residue.
+//   - A NAMED integer type is INVISIBLE. hasIntOrInt64Param looks through
+//     `...int`, `[]int` and `*int`, but it matches the predeclared int/int64
+//     by NAME on the AST, so a knob spelled `WithCap(n Bytes)` over
+//     `type Bytes int64` does not register. Resolving that needs go/types
+//     (the AST alone cannot tell `Bytes` from any other identifier), which
+//     would make this gate depend on a loadable build of all 8 modules — the
+//     exact coupling the filesystem walk exists to avoid. No such declaration
+//     exists today. State it; do not assume it away.
 //   - time.Duration PARAMETERS ARE OUTSIDE THE GATE BY CONSTRUCTION — the AST
 //     sees time.Duration, not int64. This is deliberate, NOT a claim that
 //     duration knobs are "checked" or "currently safe": the shipped
@@ -140,14 +160,44 @@ var sizingConformanceKeys = []string{
 // parameter in ANY position. time.Duration is a distinct *ast.SelectorExpr
 // ("time.Duration"), never an *ast.Ident named "int"/"int64", so duration
 // knobs are excluded by construction, not by an explicit filter.
+//
+// It unwraps the three composite forms an int parameter can hide behind —
+// `...int` (*ast.Ellipsis), `[]int`/`[N]int` (*ast.ArrayType) and `*int`
+// (*ast.StarExpr) — because a bare-*ast.Ident match would let a knob spelled
+// `WithSizes(ns ...int)` be silently invisible to half 1 while the file
+// header, Spec 016 §6 AC-5 and ADR 0032 D-AA all promise the scan fails in
+// EITHER direction for an int parameter in ANY position. No such declaration
+// exists in the tree today (the key set is unchanged at 17 with the unwrap in
+// place, which is itself the evidence), so this closes a latent hole rather
+// than reclassifying anything. A NAMED type — `type Bytes int64` — remains
+// invisible, and is stated as an accepted limitation in the header rather
+// than silently assumed away: resolving it needs go/types, not go/ast.
 func hasIntOrInt64Param(ft *ast.FuncType) bool {
 	if ft.Params == nil {
 		return false
 	}
 	for _, field := range ft.Params.List {
-		if id, ok := field.Type.(*ast.Ident); ok && (id.Name == "int" || id.Name == "int64") {
+		if isIntOrInt64(field.Type) {
 			return true
 		}
+	}
+	return false
+}
+
+// isIntOrInt64 reports whether expr is the predeclared int/int64, looking
+// through ..., slice/array and pointer wrappers. It deliberately does NOT
+// follow *ast.SelectorExpr (time.Duration and every other qualified type stay
+// out) or resolve named types.
+func isIntOrInt64(expr ast.Expr) bool {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		return t.Name == "int" || t.Name == "int64"
+	case *ast.Ellipsis:
+		return isIntOrInt64(t.Elt)
+	case *ast.ArrayType:
+		return isIntOrInt64(t.Elt)
+	case *ast.StarExpr:
+		return isIntOrInt64(t.X)
 	}
 	return false
 }
@@ -295,7 +345,7 @@ func runAndStop(t *testing.T, run func(ctx context.Context) error) (stop func())
 // different constructor shapes) to share one SUT call.
 type sizingConformanceCase struct {
 	key    string // matches a sizingConformanceKeys entry, or "(manual) ..." for the two excluded methods
-	arm    string // "fixed" | "deferred" | "safe" — Spec 016 §2.1's three verdicts
+	arm    string // "fixed" | "rejects" | "deferred" | "safe" — Spec 016 §6 AC-5's four BEHAVIORAL arms, not §2.1's three classification verdicts
 	assert func(t *testing.T)
 }
 
@@ -303,11 +353,7 @@ type sizingConformanceCase struct {
 // half 1 discovers is EXECUTABLE, never a declaration string (round-1 M-4).
 func TestSizingOptionClass_Conformance(t *testing.T) {
 	tests := []sizingConformanceCase{
-		// ---- arm: fixed — 9 class members fixed by this increment + WithSuccessStatus ----
-		// (WithSuccessStatus is "safe (a)" by Spec 016 §2.1's criterion — a pure
-		// comparison, nothing accumulates — but it already rejects 1<<62 with its
-		// own pre-existing [100,599] check, so §2.1 places its AC-5 row here,
-		// alongside the fixed knobs, rather than in the "safe, accepts" arm.)
+		// ---- arm: fixed — the 9 class members this increment bounds ----
 		{
 			key: "endpoint.WithMaxInFlight",
 			arm: "fixed",
@@ -418,9 +464,18 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 					"msghttp: replay buffer out of range: msghttp.WithReplayBuffer: 4611686018427387904 not in [1, 65536]")
 			},
 		},
+		// ---- arm: rejects — 1 row that is NOT a class member and is NOT fixed here ----
+		// M2 (Task 7 review): this row previously sat in the arm labelled "fixed",
+		// where a reader re-deriving Spec 016 §2.1 counted 10 class members against
+		// the spec's 9 — the exact count drift that spec fought through six
+		// revisions. It is "safe (a)" by §2.1's criterion (a pure comparison over a
+		// scalar; nothing accumulates), and it rejects 1<<62 only through its OWN
+		// pre-existing [100,599] check, which this increment did not add and does
+		// not touch. It cannot sit in "safe" either, because that arm asserts the
+		// knob ACCEPTS 1<<62. Hence an arm of its own — Spec 016 §6 AC-5.
 		{
 			key: "msghttp.WithSuccessStatus",
-			arm: "fixed",
+			arm: "rejects",
 			assert: func(t *testing.T) {
 				_, err := msghttp.NewConfig(msghttp.WithSuccessStatus(1 << 62))
 				require.ErrorIs(t, err, msghttp.ErrInvalidStatusCode)
@@ -435,6 +490,16 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 		// "accepts" — asserting "and its product is usable" here would certify an
 		// unbounded remote-driven read as conformant, which is the exact inversion
 		// ADR 0032's round-5 BLOCKER-1 was about.
+		//
+		// 🔴 WHEN §3.8's CEILING LANDS, THIS GATE WILL GO RED, AND THAT IS CORRECT.
+		// M1 (Task 7 review): a contributor who bounds WithMaxBodyBytes meets a red
+		// row here and the tempting repair is to weaken the production check back
+		// to "accepts 1<<62" so the gate passes. Do NOT. The repair is to MOVE the
+		// row into the "fixed" arm above and rewrite its assertion to the fixed
+		// shape (require.ErrorIs on the knob's sentinel + the §3.1 rendered
+		// string), exactly as WithReplayBuffer's row was moved when revision 5
+		// reclassified it. Do not delete the assertion, and do not relax the
+		// bound — a red row here means the remedy landed, not that it broke.
 		{
 			key: "msghttp.WithMaxBodyBytes",
 			arm: "deferred", // class member, remedy deferred — Spec 016 §3.8
@@ -617,6 +682,24 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 			"for every key half 1 discovers, never a declaration string (Spec 016 §6 AC-5)")
 	require.Len(t, tests, 19,
 		"17 AST rows + 2 manual rows (memory.QueueStore.Claim, channel.QueueChannel.Poll — Spec 016 §2.0)")
+
+	// The ARM PARTITION is normative, so assert it rather than merely naming it
+	// in a subtest prefix. Spec 016 §2.1's arm table and §6 AC-5 both fix the
+	// split at 9/1/3/6; without this, a contributor could move a row between
+	// arms — precisely the reclassification that round-4 BLOCKER-1
+	// (WithReplayBuffer, safe -> class member) and round-5 BLOCKER-1
+	// (WithMaxResponseBytes, safe -> deferred) each were — and the suite would
+	// stay green, because `arm` would otherwise be read exactly once, to build
+	// the subtest name. A verdict nothing asserts is a comment.
+	byArm := map[string]int{}
+	for _, tc := range tests {
+		byArm[tc.arm]++
+	}
+	require.Equal(t, map[string]int{"fixed": 9, "rejects": 1, "deferred": 3, "safe": 6}, byArm,
+		"Spec 016 §2.1's arm table and §6 AC-5 fix this partition: 9 class members fixed here, "+
+			"1 that rejects without being a class member (msghttp.WithSuccessStatus), 3 with a deferred "+
+			"ceiling (§3.8), 6 safe (4 AST + 2 manual). Moving a row between arms is a SPEC change — "+
+			"update §2.1 and §6 AC-5, do not just edit this number")
 
 	for _, tc := range tests {
 		t.Run(tc.arm+"/"+tc.key, func(t *testing.T) {

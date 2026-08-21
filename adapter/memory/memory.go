@@ -55,6 +55,15 @@ const maxBufferCeiling = 1 << 20
 // msgin.Permanent and naming the site, the value and the range. See
 // maxBufferCeiling's godoc for why the upper bound exists.
 //
+// The fault is PERMANENT for the Broker's lifetime, and a later valid option
+// does NOT clear it: New(WithBuffer(-1), WithBuffer(8)) returns a Broker that
+// reports the -1 fault from Send and Stream even though the effective buffer
+// would have been 8. That is the first-fault-wins latch (ADR 0031 D-U/D-V)
+// applied consistently — the same is true of a nil option element followed by
+// valid ones — and it is deliberate: a constructor that silently forgives a
+// rejected argument because a later argument happened to be fine would hide
+// the caller's mistake. Fix the offending call rather than appending another.
+//
 // The fault surfaces at [Broker.Send] and [Broker.Stream], NOT at [New],
 // because New returns *Broker with no error: the fault is latched on the Broker
 // and reported by both error-returning methods before their own logic, exactly
@@ -63,10 +72,17 @@ const maxBufferCeiling = 1 << 20
 // can never succeed.
 func WithBuffer(n int) Option {
 	return func(b *Broker) {
-		if n < 0 || n > maxBufferCeiling {
+		// The sentinel is Permanent-wrapped BEFORE it reaches checkRange, so the
+		// wrap lands inside the %w exactly as Spec 016 §3.1's shape requires and
+		// the rendered string keeps its "msgin: permanent: " prefix. Wrapping the
+		// returned error instead would print identically but build a different
+		// error tree, and §3.2/D-Y's shape is what Task 5's review verified.
+		// Building it eagerly costs one allocation per WithBuffer application at
+		// construction; New is not a hot path.
+		if err := checkRange(msgin.Permanent(msgin.ErrInvalidCapacity), "memory.WithBuffer",
+			n, 0, maxBufferCeiling); err != nil {
 			if b.err == nil { // first-fault-wins, same latch as the nil-element arm in New
-				b.err = fmt.Errorf("%w: %s: %d not in [%d, %d]",
-					msgin.Permanent(msgin.ErrInvalidCapacity), "memory.WithBuffer", n, 0, maxBufferCeiling)
+				b.err = err
 			}
 			// LOAD-BEARING, and it must stay OUTSIDE the latch's if (ADR 0032
 			// D-Y): New's apply loop continues past a nil option (ADR 0031

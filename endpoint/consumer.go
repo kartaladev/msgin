@@ -272,9 +272,9 @@ func NewConsumer[T any](src any, h Handler[T], opts ...ConsumerOption[T]) (Consu
 		}
 		opt(&cfg)
 	}
-	if cfg.concurrency < 1 || cfg.concurrency > concurrencyCeiling {
-		return nil, fmt.Errorf("%w: %s: %d not in [%d, %d]",
-			msgin.ErrInvalidConcurrency, "endpoint.WithConcurrency", cfg.concurrency, 1, concurrencyCeiling)
+	if err := checkRange(msgin.ErrInvalidConcurrency, "endpoint.WithConcurrency",
+		cfg.concurrency, 1, concurrencyCeiling); err != nil {
+		return nil, err
 	}
 	if err := cfg.policy.Validate(); err != nil {
 		return nil, err
@@ -284,9 +284,9 @@ func NewConsumer[T any](src any, h Handler[T], opts ...ConsumerOption[T]) (Consu
 	// defaulted, and WithMaxInFlight(huge) cannot overflow workerCh's alloc).
 	if !cfg.maxInFlightSet {
 		cfg.maxInFlight = defaultMaxInFlight
-	} else if cfg.maxInFlight < 1 || cfg.maxInFlight > maxInFlightCeiling {
-		return nil, fmt.Errorf("%w: %s: %d not in [%d, %d]",
-			msgin.ErrInvalidMaxInFlight, "endpoint.WithMaxInFlight", cfg.maxInFlight, 1, maxInFlightCeiling)
+	} else if err := checkRange(msgin.ErrInvalidMaxInFlight, "endpoint.WithMaxInFlight",
+		cfg.maxInFlight, 1, maxInFlightCeiling); err != nil {
+		return nil, err
 	}
 	// ADR 0009 D3: unset → default; explicitly set → must be > 0 (so
 	// WithAttemptTTL(0) is a rejected caller error, not silently defaulted).

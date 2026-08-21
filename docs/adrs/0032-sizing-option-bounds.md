@@ -1,6 +1,10 @@
 # ADR 0032 — A sizing option carries a stated ceiling, enforced before the allocation
 
-- **Status:** **PROPOSED (2026-08-21), revision 6** — written before any code, per CLAUDE.md's design-time gate.
+- **Status:** **ACCEPTED (2026-08-22)** — revision 6 was written before any code, per CLAUDE.md's design-time
+  gate, and every decision below is now **implemented and gate-cleared** on `fix/sizing-option-bounds`
+  (Plan 029 Tasks 1–8: nine knobs bounded, class gate shipped, exported-surface delta zero, 8×8 CI matrix green).
+  **D-X carries an as-delivered addendum** (see D-X): the render is unchanged, but it is produced by a
+  per-package `checkRange` helper rather than nine inline `fmt.Errorf` calls.
   - Decisions **D-W** through **D-AB** were settled with the user. **D-AB has now been amended twice**: safety
     cause **(c)** was deleted in revision 5 and cause **(d)** is emptied in revision 6 — both as circular or
     under-derived, both by the criterion they were written alongside.
@@ -114,6 +118,28 @@ value, the site, and the whole range — **one shape, used by R1 and R2 alike**:
 return nil, fmt.Errorf("%w: %s: %d not in [%d, %d]",
 	msgin.ErrInvalidMaxInFlight, "endpoint.WithMaxInFlight", n, 1, maxInFlightCeiling)
 ```
+
+> **ADDENDUM (as delivered, Plan 029 Task 8).** The rendering above is exact and unchanged, but it is no longer
+> written inline at nine sites. The Task 8 `/simplify` pass extracted it into a per-package unexported
+> `checkRange(sentinel error, site string, n, lo, hi int) error` — one copy each in `endpoint`, `routing`,
+> `adapter/memory` and `adapter/http`, filed in the `helpers.go` that already carries each package's
+> `nilOptionAt` under **ADR 0031 D-R**, on the same Spec 014 §3.3 precedent (four independent copies, not an
+> exported root helper).
+>
+> **This does not weaken D-X; it is what makes D-X structural.** D-X's contract is "one shape, used by R1 and R2
+> alike", and inline that was guaranteed only by nine independent string literals — with the *enforced* bound
+> and the *printed* bound spelled separately at each site, and already diverging (`<= 0` guards printing `1`).
+> The helper makes them the same two values. Crucially **the sentinel remains a parameter**, so D-X's other half
+> — each knob keeps its own `errors.Is` target, and R2 passes an already-`msgin.Permanent`-wrapped sentinel
+> while every R1 caller passes a bare one (ADR 0029 D-M) — stays visible at the call site instead of becoming a
+> boolean inside a shared helper.
+>
+> **A third option was NOT taken and is recorded as backlog rather than silently dismissed:** all four packages
+> are in the **root module**, so an unexported `internal/sizing` would serve all of them with zero exported
+> surface, and CLAUDE.md's own quality gate endorses `internal/`. D-R framed this choice as "export from root vs
+> duplicate per package" and never costed `internal/`. Changing that at a delivery gate would overturn a
+> ratified decision without an ADR, so the duplication follows the standing precedent and the question is filed
+> for its own ADR (`docs/HANDOVER.md` §8 item 8).
 
 **Why not revision 2's `"%d exceeds %d"`** (round-2 **M2-1**): merging both bounds into one condition and
 rendering *"exceeds"* makes the message **false on the lower arm** — `WithMaxInFlight(0)` would read

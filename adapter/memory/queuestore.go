@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -111,9 +110,9 @@ func NewQueueStore(opts ...QueueStoreOption) (*QueueStore, error) {
 	}
 	capacity := defaultCapacity
 	if cfg.capacitySet {
-		if cfg.capacity <= 0 || cfg.capacity > maxCapacityCeiling {
-			return nil, fmt.Errorf("%w: %s: %d not in [%d, %d]",
-				msgin.ErrInvalidCapacity, "memory.WithCapacity", cfg.capacity, 1, maxCapacityCeiling)
+		if err := checkRange(msgin.ErrInvalidCapacity, "memory.WithCapacity",
+			cfg.capacity, 1, maxCapacityCeiling); err != nil {
+			return nil, err
 		}
 		capacity = cfg.capacity
 	}

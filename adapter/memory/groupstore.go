@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"sync"
 	"time"
@@ -102,9 +101,9 @@ func NewGroupStore(opts ...GroupStoreOption) (*GroupStore, error) {
 		}
 		opt(&cfg)
 	}
-	if cfg.maxGroups <= 0 || cfg.maxGroups > maxGroupsCeiling {
-		return nil, fmt.Errorf("%w: %s: %d not in [%d, %d]",
-			msgin.ErrInvalidCapacity, "memory.WithMaxGroups", cfg.maxGroups, 1, maxGroupsCeiling)
+	if err := checkRange(msgin.ErrInvalidCapacity, "memory.WithMaxGroups",
+		cfg.maxGroups, 1, maxGroupsCeiling); err != nil {
+		return nil, err
 	}
 	return &GroupStore{groups: make(map[string]*groupState), clock: cfg.clock, maxGroups: cfg.maxGroups}, nil
 }

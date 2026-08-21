@@ -1,6 +1,10 @@
 # ADR 0031 — A nil option element is a reported fault, not a panic
 
-- **Status:** **PROPOSED (2026-08-17), revision 5 — AUDIT-CLEARED** — written before any code, per CLAUDE.md's design-time gate.
+- **Status:** **ACCEPTED (2026-08-19)** — revision 5 was written before any code and audit-cleared, per
+  CLAUDE.md's design-time gate; **delivered by Plan 028**, merged to `main` at `48bbe83`. (Corrected at the
+  Plan 029 delivery gate: it had been left reading `PROPOSED` after merging. ADR 0032 was the second instance of
+  the same slip — an ADR whose decisions have shipped is `ACCEPTED`, per the Nygard convention CLAUDE.md
+  mandates. Check the status line when an increment lands.)
   Decisions **D-P**, **D-Q**, **D-R** were settled with the user during the Spec 015 brainstorm; **D-P was then
   materially rewritten** and **D-S/D-T added** after the round-1 adversarial audit
   ([`028-audit-round-1.md`](../plans/028-audit-round-1.md)) proved revision 1's mechanism contradicts
