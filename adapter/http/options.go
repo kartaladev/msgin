@@ -1,6 +1,7 @@
 package msghttp
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -53,6 +54,16 @@ const defaultMaxEventBytes int64 = 1 << 20 // 1 MiB
 // through this option. Override it explicitly via WithMaxConnections.
 const defaultMaxConnections = 1024
 
+// maxConnectionsCeiling is the upper bound WithMaxConnections accepts (Spec
+// 016 §3.4). It is 64x defaultMaxConnections, and at the practical
+// file-descriptor ceiling of a single process — far beyond any plausible
+// deployment, so it is the boundary between a deliberate large cap and a
+// caller error (ADR 0032). It is also the SECOND factor of
+// maxConnBufferCeiling's per-connection cost: with both bounded, the
+// process-total buffer memory (WithConnectionBuffer x WithMaxConnections) is
+// bounded too.
+const maxConnectionsCeiling = 1 << 16
+
 // defaultConnectionBuffer sizes the per-connection buffered event channel
 // each registered SSE connection's writer goroutine drains, applied when
 // WithConnectionBuffer is unset. 16 is the slow-client isolation bound: a
@@ -60,6 +71,30 @@ const defaultMaxConnections = 1024
 // never blocking Send for any other connection or for the flow that calls
 // it. Override it explicitly via WithConnectionBuffer.
 const defaultConnectionBuffer = 16
+
+// maxConnBufferCeiling is the upper bound WithConnectionBuffer accepts (Spec
+// 016 §3.4). n directly sizes ONE connection's make(chan []byte, n): at the
+// ceiling that costs 1<<16 * 24 = 1,572,864 B (1.5 MiB) PER CONNECTION
+// (sizeof([]byte) slice header = 24 B on a 64-bit platform) — affordable for
+// one connection, but the process total is that figure times however many
+// connections are registered, which is why maxConnectionsCeiling bounds the
+// other factor of the same product (ADR 0032).
+const maxConnBufferCeiling = 1 << 16
+
+// replayBufferCeiling is the upper bound WithReplayBuffer accepts (Spec 016
+// §3.4). There is no defaultReplayBuffer constant beside it: WithReplayBuffer
+// has no numeric default, only an off state (replaySize() == 0, ring not
+// used at all) when the option is left unset — this ceiling only ever binds
+// an explicit opt-in. It matches maxConnectionsCeiling and
+// maxConnBufferCeiling so all three of this package's ceilings read as one
+// number. Unlike those two, its cost is retained EVENTS, not a fixed
+// element: n x the caller's frame size, so it is not a figure the library can
+// fix. Measured this revision, TotalAlloc (GC'd, KeepAlive'd — AC-4's
+// protocol), a realistic ~145 B SSE frame retains ~37.4 MiB cumulative at
+// 20,000 events and ~150.5 MiB at 80,000 (linear; ~1.9-2.0 KiB/event
+// cumulative at this fixture — scales with the caller's own frame size, not
+// fixed here).
+const replayBufferCeiling = 1 << 16
 
 // defaultWriteTimeout is the per-write OS deadline NewSSEServer's writer
 // goroutine applies (via http.ResponseController.SetWriteDeadline) before
@@ -857,11 +892,17 @@ const (
 // caller's own reverse-proxy/load-balancer concern, not something this
 // option attempts.
 //
-// n MUST be > 0: NewConfig returns ErrInvalidMaxConnections for an explicit
-// n <= 0, so a caller mistake (e.g. an uninitialized zero value passed
-// through) is a construction error rather than a silently-disabled cap.
-// Leaving this option unset (rather than calling it with 0) is how a
-// caller asks for the default.
+// n MUST be in [1, maxConnectionsCeiling] (65,536): NewConfig returns
+// ErrInvalidMaxConnections for an explicit n outside that range, so a caller
+// mistake (e.g. an uninitialized zero value, or a huge value passed through
+// unchecked) is a construction error rather than a silently-disabled cap or
+// an unbounded admission gate (Spec 016 §1.3 — below the ceiling this was
+// the growth lever the "connection-exhaustion guard" prose above claims to
+// prevent). The ceiling is 64x the default, and at the practical
+// file-descriptor ceiling of a single process; it is also the second factor
+// of WithConnectionBuffer's per-connection cost — both are now bounded, so
+// the process-total buffer memory is bounded too. Leaving this option unset
+// (rather than calling it with 0) is how a caller asks for the default.
 func WithMaxConnections(n int) Option {
 	return func(c *Config) {
 		c.maxConnections = n
@@ -877,9 +918,14 @@ func WithMaxConnections(n int) Option {
 // calling it; once that buffer is full, WithSlowClientPolicy decides what
 // happens next for that one connection.
 //
-// n MUST be > 0: NewConfig returns ErrInvalidConnectionBuffer for an
-// explicit n <= 0. Leaving this option unset is how a caller asks for the
-// default.
+// n MUST be in [1, maxConnBufferCeiling] (65,536): NewConfig returns
+// ErrInvalidConnectionBuffer for an explicit n outside that range. The cost
+// n bounds is PER CONNECTION — each registered connection allocates its own
+// make(chan []byte, n) — so the ceiling's cost is 1<<16 * 24 = 1,572,864 B
+// (1.5 MiB) for ONE connection; the PROCESS TOTAL is that figure times
+// however many connections are registered, i.e. this ceiling times
+// WithMaxConnections's, and both factors are now bounded (Spec 016 §3.4).
+// Leaving this option unset is how a caller asks for the default.
 func WithConnectionBuffer(n int) Option {
 	return func(c *Config) {
 		c.connectionBuffer = n
@@ -920,9 +966,17 @@ func WithSlowClientPolicy(p SlowClientPolicy) Option {
 // needs a durable/shared backbone feeding every instance; this option does
 // not attempt that.
 //
-// n MUST be > 0 when set explicitly: NewConfig returns
-// ErrInvalidReplayBuffer for an explicit n <= 0 — there is no explicit
-// value that means "off" through this option; only leaving it unset does.
+// n MUST be in [1, replayBufferCeiling] (65,536) when set explicitly:
+// NewConfig returns ErrInvalidReplayBuffer for an explicit n outside that
+// range — there is no explicit value that means "off" through this option;
+// only leaving it unset does. n bounds the ring's RETAINED EVENT COUNT, and
+// the ring evicts the oldest entry only once it holds n — below the ceiling
+// this was the sole bound and, left unbounded, grows the ring for the life
+// of the server, even with no client connected (Spec 016 §1.5). The cost is
+// n x the caller's frame size, not a figure this library can fix: measured
+// (TotalAlloc, GC'd, KeepAlive'd), a realistic ~145 B SSE frame retains
+// ~37.4 MiB cumulative at 20,000 events and ~150.5 MiB at 80,000 — size this
+// option to the caller's own frame size, not by copying that figure.
 func WithReplayBuffer(n int) Option {
 	return func(c *Config) {
 		c.replayBuffer = n
@@ -1155,14 +1209,16 @@ func NewConfig(opts ...Option) (*Config, error) {
 
 	if !cfg.maxConnectionsSet {
 		cfg.maxConnections = defaultMaxConnections
-	} else if cfg.maxConnections <= 0 {
-		return nil, ErrInvalidMaxConnections
+	} else if cfg.maxConnections < 1 || cfg.maxConnections > maxConnectionsCeiling {
+		return nil, fmt.Errorf("%w: %s: %d not in [%d, %d]",
+			ErrInvalidMaxConnections, "msghttp.WithMaxConnections", cfg.maxConnections, 1, maxConnectionsCeiling)
 	}
 
 	if !cfg.connectionBufferSet {
 		cfg.connectionBuffer = defaultConnectionBuffer
-	} else if cfg.connectionBuffer <= 0 {
-		return nil, ErrInvalidConnectionBuffer
+	} else if cfg.connectionBuffer < 1 || cfg.connectionBuffer > maxConnBufferCeiling {
+		return nil, fmt.Errorf("%w: %s: %d not in [%d, %d]",
+			ErrInvalidConnectionBuffer, "msghttp.WithConnectionBuffer", cfg.connectionBuffer, 1, maxConnBufferCeiling)
 	}
 
 	if !cfg.slowClientPolicySet {
@@ -1171,8 +1227,9 @@ func NewConfig(opts ...Option) (*Config, error) {
 		return nil, ErrInvalidSlowClientPolicy
 	}
 
-	if cfg.replayBufferSet && cfg.replayBuffer <= 0 {
-		return nil, ErrInvalidReplayBuffer
+	if cfg.replayBufferSet && (cfg.replayBuffer < 1 || cfg.replayBuffer > replayBufferCeiling) {
+		return nil, fmt.Errorf("%w: %s: %d not in [%d, %d]",
+			ErrInvalidReplayBuffer, "msghttp.WithReplayBuffer", cfg.replayBuffer, 1, replayBufferCeiling)
 	}
 
 	if cfg.heartbeatSet && cfg.heartbeat <= 0 {
