@@ -88,11 +88,14 @@ const maxConnBufferCeiling = 1 << 16
 // maxConnBufferCeiling so all three of this package's ceilings read as one
 // number. Unlike those two, its cost is retained EVENTS, not a fixed
 // element: n x the caller's frame size, so it is not a figure the library can
-// fix. Measured this revision, TotalAlloc (GC'd, KeepAlive'd — AC-4's
-// protocol), a realistic ~145 B SSE frame retains ~37.4 MiB cumulative at
-// 20,000 events and ~150.5 MiB at 80,000 (linear; ~1.9-2.0 KiB/event
-// cumulative at this fixture — scales with the caller's own frame size, not
-// fixed here).
+// fix. Measured this revision with a realistic ~145 B SSE frame (32-hex-char
+// auto id + a 100-byte payload), a ring sized to n so nothing is evicted:
+// sending n events ALLOCATES ~28.3 MiB CUMULATIVELY (TotalAlloc delta) at
+// n=20,000 and ~93.3 MiB at n=65,536 (the ceiling); what the ring itself
+// RETAINS afterward (HeapAlloc delta after runtime.GC(), KeepAlive'd) is far
+// smaller — ~4.5 MiB at 20,000 events and ~14.8 MiB at the ceiling, ~237
+// B/event (~40 B ringEntry header plus the id/frame bytes and allocator
+// slop) — scales with the caller's own frame size, not fixed here.
 const replayBufferCeiling = 1 << 16
 
 // defaultWriteTimeout is the per-write OS deadline NewSSEServer's writer
@@ -973,9 +976,13 @@ func WithSlowClientPolicy(p SlowClientPolicy) Option {
 // this was the sole bound and, left unbounded, grows the ring for the life
 // of the server, even with no client connected (Spec 016 §1.5). The cost is
 // n x the caller's frame size, not a figure this library can fix: measured
-// (TotalAlloc, GC'd, KeepAlive'd), a realistic ~145 B SSE frame retains
-// ~37.4 MiB cumulative at 20,000 events and ~150.5 MiB at 80,000 — size this
-// option to the caller's own frame size, not by copying that figure.
+// with a realistic ~145 B SSE frame and a ring sized to n (no eviction), a
+// run of n Sends ALLOCATES ~28.3 MiB CUMULATIVELY (TotalAlloc delta) at
+// n=20,000 and ~93.3 MiB at the n=65,536 ceiling; what the ring actually
+// RETAINS afterward (HeapAlloc delta after runtime.GC(), KeepAlive'd) is much
+// smaller — ~4.5 MiB at 20,000 events and ~14.8 MiB at the ceiling, ~237
+// B/event — size this option to the caller's own frame size, not by copying
+// that figure.
 func WithReplayBuffer(n int) Option {
 	return func(c *Config) {
 		c.replayBuffer = n

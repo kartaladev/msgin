@@ -282,6 +282,19 @@ func TestSizingOptionClass_Completeness(t *testing.T) {
 		"Spec 016 §2's 17-key conformance set in BOTH directions (ADR 0032 D-AA). A new sizing option must be "+
 		"folded into sizingConformanceKeys AND given a row in TestSizingOptionClass_Conformance — this diff "+
 		"alone is not the gate, it is half of it.")
+
+	// The Recv == nil boundary (Spec 016 §2.0) is a ratified, DO-NOT-RELITIGATE
+	// decision — this assertion does not move it. It exists so a change to the
+	// excluded METHOD population is noisy rather than silent (Task 8 review
+	// M-2): a future method like `func (s *Foo) Resize(n int)` that sizes a
+	// make() would otherwise pass this gate without anyone re-deriving Spec
+	// 016 §2.0's "exactly two excluded class members, both covered by a manual
+	// row" claim. 27 is re-derived, not copied, from this same scan on this
+	// tree — a change here means re-deriving §2.0's boundary, not just editing
+	// the number.
+	require.Equal(t, 27, methodCount, "the excluded-method count moved — re-derive Spec 016 §2.0's "+
+		"Recv == nil boundary (which class members, if any, the exclusion now hides) before updating this "+
+		"number; do not just bump it to make the gate pass")
 }
 
 // ---------------------------------------------------------------------------
@@ -691,15 +704,48 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 	// (WithMaxResponseBytes, safe -> deferred) each were — and the suite would
 	// stay green, because `arm` would otherwise be read exactly once, to build
 	// the subtest name. A verdict nothing asserts is a comment.
+	//
+	// Asserted as a key->arm MAPPING, not a per-arm COUNT (Task 8 review M-1):
+	// a count map (map[string]int{"fixed": 9, ...}) is blind to a PAIRWISE
+	// swap — relabel two keys' arms in opposite directions and every count
+	// stays put, so the gate would stay green through exactly the
+	// reclassification this comment describes. Binding each key to its own
+	// arm makes that swap a diff against wantArms, which fails immediately.
+	wantArms := map[string]string{
+		"endpoint.WithMaxInFlight":           "fixed",
+		"endpoint.WithConcurrency":           "fixed",
+		"msghttp.WithConnectionBuffer":       "fixed",
+		"memory.WithBuffer":                  "fixed",
+		"memory.WithCapacity":                "fixed",
+		"memory.WithMaxGroups":               "fixed",
+		"msghttp.WithMaxConnections":         "fixed",
+		"routing.WithCompletionSize":         "fixed",
+		"msghttp.WithReplayBuffer":           "fixed",
+		"msghttp.WithSuccessStatus":          "rejects",
+		"msghttp.WithMaxBodyBytes":           "deferred",
+		"msghttp.WithMaxEventBytes":          "deferred",
+		"msghttp.WithMaxResponseBytes":       "deferred",
+		"endpoint.WithPollMaxBatch":          "safe",
+		"resilience.WithBreakerThreshold":    "safe",
+		"endpoint.WithMaxPayloadBytes":       "safe",
+		"resilience.NewTokenBucket":          "safe",
+		"(manual) memory.QueueStore.Claim":   "safe",
+		"(manual) channel.QueueChannel.Poll": "safe",
+	}
+	gotArms := map[string]string{}
 	byArm := map[string]int{}
 	for _, tc := range tests {
+		gotArms[tc.key] = tc.arm
 		byArm[tc.arm]++
 	}
+	require.Equal(t, wantArms, gotArms,
+		"Spec 016 §2.1's arm table and §6 AC-5 fix EVERY key's arm, not just the per-arm counts: 9 class "+
+			"members fixed here, 1 that rejects without being a class member (msghttp.WithSuccessStatus), "+
+			"3 with a deferred ceiling (§3.8), 6 safe (4 AST + 2 manual). Moving a row between arms is a "+
+			"SPEC change — update §2.1 and §6 AC-5, do not just edit this map")
 	require.Equal(t, map[string]int{"fixed": 9, "rejects": 1, "deferred": 3, "safe": 6}, byArm,
-		"Spec 016 §2.1's arm table and §6 AC-5 fix this partition: 9 class members fixed here, "+
-			"1 that rejects without being a class member (msghttp.WithSuccessStatus), 3 with a deferred "+
-			"ceiling (§3.8), 6 safe (4 AST + 2 manual). Moving a row between arms is a SPEC change — "+
-			"update §2.1 and §6 AC-5, do not just edit this number")
+		"the per-arm counts follow from wantArms above; a mismatch here means wantArms itself drifted "+
+			"from Spec 016 §2.1's 9/1/3/6 split")
 
 	for _, tc := range tests {
 		t.Run(tc.arm+"/"+tc.key, func(t *testing.T) {
