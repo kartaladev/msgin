@@ -261,14 +261,14 @@ var (
 	// its documented [lo, hi] range (Spec 016 §3.1/§3.5). It is shared by
 	// every option whose value is the sole bound on a structure that grows
 	// by insertion (Spec 016 §1.3), since one sentinel cannot state four
-	// different stated ranges. As of Plan 029 Task 4 it has THREE landed
-	// producers — memory.NewQueueStore (WithCapacity), memory.NewGroupStore
-	// (WithMaxGroups), and routing.NewAggregator (WithCompletionSize) — and is
-	// planned to gain a fourth: memory.WithBuffer (Plan 029 Task 5, reported
-	// through Send/Stream rather than a constructor return). Spec 016 §3.5
-	// counts routing.NewAggregator as "the fourth" in its own fixed
-	// enumeration order (NewQueueStore, NewGroupStore, WithBuffer,
-	// NewAggregator) even though it lands before WithBuffer.
+	// different stated ranges. As of Plan 029 Task 5 all FOUR producers have
+	// landed — memory.NewQueueStore (WithCapacity), memory.NewGroupStore
+	// (WithMaxGroups), routing.NewAggregator (WithCompletionSize), and
+	// memory.WithBuffer, which alone reports through Send/Stream rather than a
+	// constructor return (family R2) and alone has a range starting at 0.
+	// Spec 016 §3.5 enumerates them in a different fixed order
+	// (NewQueueStore, NewGroupStore, WithBuffer, NewAggregator), so its
+	// "fourth" is routing.NewAggregator; the set is the same.
 	// The sentinel's own message stays generic ("capacity out of range") —
 	// the offending site, value and range live in the wrapping error each
 	// producer returns; see each option's own godoc for its bounds.

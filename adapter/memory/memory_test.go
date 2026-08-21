@@ -36,33 +36,13 @@ func TestBroker_SendThenStreamDelivers(t *testing.T) {
 	<-done // ensure the Stream goroutine has exited before the test returns (goleak safety).
 }
 
-// TestBroker_WithBufferNegativeClamped closes the no-panic-on-caller-input
-// gap: WithBuffer(n) with n < 0 must not panic (make would panic on a
-// negative capacity) and must behave as an unbuffered (synchronous) broker
-// instead.
-func TestBroker_WithBufferNegativeClamped(t *testing.T) {
-	t.Parallel()
-
-	assert.NotPanics(t, func() {
-		b := memory.New(memory.WithBuffer(-1))
-
-		ctx, cancel := context.WithCancel(t.Context())
-		defer cancel()
-
-		out := make(chan msgin.Delivery, 1)
-		done := make(chan error, 1)
-		go func() { done <- b.Stream(ctx, out) }()
-
-		require.NoError(t, b.Send(t.Context(), msgin.New[any]("hello", msgin.WithID("m1"))))
-
-		d := <-out
-		assert.Equal(t, "hello", d.Msg.Payload())
-		require.NoError(t, d.Ack(t.Context()))
-
-		cancel()
-		<-done // ensure the Stream goroutine has exited before the test returns (goleak safety).
-	})
-}
+// TestBroker_WithBufferNegativeClamped is RETIRED, with its subject: Spec 016
+// §3.6 folds the negative end of WithBuffer into msgin.ErrInvalidCapacity, so
+// a negative n is no longer clamped to an unbuffered broker — it is a latched,
+// Permanent fault reported by Send and Stream. The no-panic-on-caller-input
+// property it protected is now proven by sizing_bounds_test.go's
+// TestWithBuffer_OutOfRangeIsLatchedAndReported negative rows (a panic there is
+// a test failure — mutation-proven: deleting the guard makes those rows panic).
 
 func TestBroker_EmitsLiveValue(t *testing.T) {
 	var _ msgin.LiveValueSource = memory.New()
