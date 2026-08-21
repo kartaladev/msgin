@@ -201,6 +201,13 @@ only the loop's continuation is.
 **Consequence for the spec:** §3.2's applied-prefix property collapses to the simpler *"every non-nil option
 applies"*, and non-error methods no longer depend on where the nil sat.
 
+> **Known open edge, resolved later by [ADR 0032 D-Y](0032-sizing-option-bounds.md).** Because every non-nil option
+> after the nil still applies, an option that can itself fault — `memory.WithBuffer(1<<62)`, which panics on its
+> `make` — is *reached* even when the latch is already taken. Plan 028 recorded this out of scope
+> ([Spec 015 §3.7](../specs/015-nil-option-elements.md)); [Spec 016](../specs/016-sizing-option-bounds.md) closes it
+> by requiring that option's range check to `return` unconditionally, independently of the latch. **D-U itself is
+> unchanged** — the `continue` stays.
+
 ### D-V (NEW) — a latched fault is reported before the method's own argument checks, uniformly
 
 Three of the five R2 products already validate at method entry — `PublishSubscribeChannel.Subscribe` and

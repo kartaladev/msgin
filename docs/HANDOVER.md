@@ -2,175 +2,215 @@
 
 > **READ FIRST.** Read `CLAUDE.md`, then this file, then the artifacts in §3. **Trust `git log` and the tree over
 > this document.** Every count below was measured when written; **re-derive before relying on one** — that has
-> failed in eleven consecutive handovers.
+> failed in thirteen consecutive handovers, including the last one (see §7, "my own corrections were wrong again").
 >
-> ### ✅ PLAN 028 IS IMPLEMENTED, REVIEWED AND GATE-GREEN. NOT MERGED, NOT PUSHED.
-> ### Next action: ask the user to approve **push → merge → branch deletion**. None is pre-authorized.
+> ### ✅ PLAN 028 IS MERGED AND PUSHED. `origin/main` = `48bbe83`. Nothing is in flight.
+> ### 🔴 PLAN 029 IS A DESIGN BUNDLE ONLY — **FIVE** AUDIT ROUNDS DONE, ALL "NOT SAFE TO IMPLEMENT". **NO CODE EXISTS.**
+> ### ✅ REVISION 6 IS WRITTEN and its targeted verification pass is GREEN (§5). Next action: **ask the user for the implementation go-ahead, proposing SDD** — or run one confirming audit if they prefer.
 >
 > | | State |
 > |---|---|
-> | Branch | **`feat/nil-option-elements`**, 14 commits, off `main` at `2da63d9` — **re-derive with `git log --oneline main..HEAD \| wc -l`; two SHAs were rewritten late (see §6)** |
-> | `main` | **`2da63d9`** — the design bundle. **Still not pushed** (`origin/main` is `d86ef3d`) |
-> | Working tree | see `git status --short` — expected clean at handover time |
-> | Suite | **8/8 modules green**, `-race -shuffle=on`, incl. Docker-backed `dbtest`/`crontest` |
-> | Coverage | **93.9%** (`-coverpkg=./...`); Plan 027's figure was 93.7% |
+> | Branch | **`main`**, clean of code changes. No feature branch has been created yet |
+> | `main` | **`48bbe83`** — merged + pushed |
+> | Working tree | **10 uncommitted doc files** — see §2. No `.go` file is modified anywhere |
+> | Suite | untouched; round 3 re-verified 11/11 `ok` at `48bbe83` |
 > | Tags | **zero, as always.** Do NOT propose tagging |
 >
-> **SAME-MACHINE handover.** Anything git-ignored is still on disk — the `.superpowers/sdd/028-nil-option-elements/`
-> ledger and per-task reports, `$(go env GOPATH)/bin` tools, the Docker images. A fresh *clone* would not have them.
+> **SAME-MACHINE handover.** Nothing git-ignored matters. No SDD ledger exists — implementation has not started.
 
 ## 1. What this session did
 
-Executed **Plan 028** end to end via **subagent-driven development** (user-approved execution mode): a fresh
-implementer subagent per task, controller verification, an adversarial reviewer per task, fix loops where needed,
-then the whole-branch delivery gate.
+1. **Folded audit round 2 into revision 3**, then **round 3 into revision 4**, of all three bundle artifacts.
+2. **Ran adversarial audit rounds 3 and 4** (fresh Opus subagents, whole bundle each time).
+3. **Took round 3's BLOCKER-1 design fork to the user and got a decision** — "split by kind", recorded in §6.
+4. Verified each round's BLOCKER and headline MAJORs **independently against source** before accepting them —
+   which caught real auditor errors in both directions, **and caught three errors of my own** (§7).
 
-**All 32 exported functional-option constructors now handle a nil option element instead of panicking**, across 10
-packages, plus an AST class gate that stops the class from returning.
+| Round | Verdict | Findings | Fix-verification of the PRIOR round |
+|---|---|---|---|
+| 1 | NOT SAFE | 2 B / 7 MAJ / 10 MIN | — |
+| 2 | NOT SAFE | 3 B / 6 MAJ / 8 MIN | 10 of 19 unclean, **2 REGRESSED** |
+| 3 | NOT SAFE | 1 B / 4 MAJ / 7 MIN | 5 of 17 unclean, 0 regressed |
+| 4 | NOT SAFE | 1 B / 5 MAJ / 10 MIN | 6 of 12 unclean, 0 regressed |
+| **5** | **NOT SAFE** | **2 B / 5 MAJ / 8 MIN** | **5 of 16 unclean, 0 NOT LANDED, 0 REGRESSED — cleanest yet** |
 
-## 2. The delivered design, in one paragraph
+**Regressions are at zero and holding, and all four of round 3's substantive fold-ins (M3-1…M3-4) landed
+cleanly.** But the unclean *fraction* rose, and round 4 diagnosed one shape behind almost all of it:
+**a finding was folded into two of the three files, and the ADR absorbed four of the six misses.** The ADR is the
+normative artifact — fold into all three, every time, and diff the three against each other before declaring done.
 
-A nil option **element** never panics. The constructor reports it through its own return if it has one; otherwise
-through the first use of the object it produced; only where neither surface exists does it skip and say so in godoc.
+**No implementation code was written, and none is authorized.**
 
-| Family | Count | Mechanism |
-|---|---|---|
-| **R1 — reject at construction** | 25 | bare `ErrNilFunc`, position `"<pkg>.<Ctor>: nil option at index <i>"`, 0-based, first-nil-wins |
-| **R2 — degrade at first use** | 5 | latched `Permanent(ErrNilFunc)`, reported by every error-returning method **before** that method's own argument checks |
-| **R3 — skip, documented** | 2 | `msgin.New`, `sqlite.DSN` — the only two products with **no** error surface |
+## 2. Exact state — the uncommitted tree
 
-**Confirmed by counting shipped code, not by trusting the plan:** 8 `nilOptionAt` copies (one per R1 package,
-none in `msgin`/`channel`/`sqlite`), **32** nil-element guards in non-test files, **30** distinct position strings
-(32 − the 2 R3 that emit none). `32 = 25+5+2`; `30 = 25+5`.
+```
+ M docs/HANDOVER.md                        ← this file
+ M docs/adrs/0031-nil-option-elements.md   ← one added block: D-U's forward pointer to ADR 0032 D-Y
+?? docs/adrs/0032-sizing-option-bounds.md  ← revision 6
+?? docs/plans/029-audit-round-1.md         ← audit record (IMMUTABLE)
+?? docs/plans/029-audit-round-2.md         ← audit record (IMMUTABLE)
+?? docs/plans/029-audit-round-3.md         ← audit record (IMMUTABLE)
+?? docs/plans/029-audit-round-4.md         ← audit record (IMMUTABLE)
+?? docs/plans/029-audit-round-5.md         ← audit record (IMMUTABLE) — NEWEST
+?? docs/plans/029-sizing-option-bounds.md  ← revision 6
+?? docs/specs/016-sizing-option-bounds.md  ← revision 6
+```
+
+**Nothing is committed.** Revision 6 folds every round-5 finding and its verification pass is green, but **no audit has yet returned SAFE**, so it does not qualify for
+CLAUDE.md's standalone-`docs:` handoff exception. **Ask before committing.**
 
 ## 3. Read these before acting
 
-1. **`CLAUDE.md`** — hard rules. The ones that bite: **ask before writing implementation code**, **SDD is the
-   default execution mode**, **never commit/push without approval**, and the 8-module command loops.
-2. **`docs/specs/015-nil-option-elements.md`** — §2.1 inventory, §3 contract, §6 the eleven ACs.
-3. **`docs/adrs/0031-nil-option-elements.md`** — decisions D-P…D-V.
-4. **`docs/plans/028-nil-option-elements.md`** — Tasks 0–8.
-5. **`.superpowers/sdd/028-nil-option-elements/progress.md`** — the execution ledger: every task's evidence,
-   every reviewer's independent verification, every deferred minor, and the reasoning behind each deferral.
-   Git-ignored, so it exists only on this machine.
+1. **`CLAUDE.md`** — hard rules: ask before writing implementation code, SDD is the default execution mode, never
+   commit/push without approval, the adversarial-audit gate, the 8-module command loops.
+2. **`docs/plans/029-audit-round-5.md`** — the work-list revision 6 folded. **All 15 findings are folded; see §5.**
+3. **`docs/specs/016-sizing-option-bounds.md`** (rev 6) — §1 the gap, §2/§2.0/§2.1 the inventory, §3 the contract,
+   §6 the ACs.
+4. **`docs/adrs/0032-sizing-option-bounds.md`** (rev 6) — decisions **D-W**…**D-AB**.
+5. **`docs/plans/029-sizing-option-bounds.md`** (rev 6) — Tasks 0–8 (renumbered in rev 4; Task 4 is new).
+6. `029-audit-round-{1,2,3,4}.md` — for context on what earlier revisions were trying to do.
 
-## 4. Next actions, in order
+## 4. The design, in one paragraph
 
-1. **Ask the user to approve, as separate actions:** `git push -u origin feat/nil-option-elements`, the merge to
-   `main`, and `git branch -d` + `git push origin --delete`. **None is pre-authorized.** `main` itself is also
-   still unpushed (`origin/main` = `d86ef3d`), so pushing `main` is a further ask.
-2. **SSH to GitHub is intermittent on this machine** — roughly 1 attempt in 5 succeeds. Retry 8–12 times ~4s
-   apart rather than debugging, and **never** trust `git rev-parse origin/<branch>` as evidence a push landed;
-   use `git ls-remote origin <branch>`.
-3. After merge, delete the branch — CLAUDE.md requires it.
+Exported sizing options either panic, corrupt runtime state, or silently remove the bound they exist to enforce,
+when given a huge `n`. Each gains a **stated per-knob ceiling** (D-W) enforced *before* the hazard, reported
+through the **existing** typed sentinel (D-X — zero net exported surface) in **one** message shape
+`"%w: %s: %d not in [%d, %d]"`. Most reject at construction (R1); `memory.WithBuffer` has no error return so it
+**latches** and reports at `Send`/`Stream` (R2), with its range check returning **unconditionally, independent of
+the latch** (D-Y — the subtle line the whole increment turns on). A two-half class gate (D-AA) stops the class
+returning.
 
-## 5. Delivery-gate evidence (all re-derived this session)
+**Why a runtime-derived bound was rejected, since it is counter-intuitive and will be re-proposed otherwise:**
+`makechan` panics only above `maxAlloc`; *below* that it attempts the allocation and dies with an
+**unrecoverable** `fatal error: out of memory` no `recover` can intercept. A guard matching the runtime's own
+check therefore admits the *worse* value. `GOMEMLIMIT` does not help (measured).
 
-| Gate | Result |
+## 5. State — revision 6 is written; its verification pass is GREEN
+
+Revision 6 folded **all** of round 5's 2 BLOCKERs, 5 MAJORs and 8 MINORs.
+
+**BLOCKER-1** — `msghttp.WithMaxResponseBytes` moved to the **deferred** arm (it is a **byte** cap, per the §6
+"split by kind" rule). `drainBounded` is five of six reads of the field; the sixth, `exchange.go:130-131`, is
+`io.ReadAll(io.LimitReader(resp.Body, max))` whose body is **retained**. Census: **9 fixed + 3 deferred + 4 safe
+= 16 options + `burst` = 17 keys.** **Safety cause (d) is now empty**, as (c) was in revision 5.
+
+**BLOCKER-2** — all seven `WithReplayBuffer` twins swept, including Plan Task 7.
+
+### 5.1 The verification pass — run, with evidence
+
+1. **§2.1 re-derived ROW BY ROW from D-AB**, not read off the verdict column. Census confirms 9/3/4 + `burst`.
+2. **🔴 The check that would have caught BOTH BLOCKERs, run explicitly:** for every remaining *safe* row, grep
+   **every** read of the underlying field — because both BLOCKERs were *"one site says safe, another site
+   accumulates"*. Result: `pollMaxBatch` (3 reads), `threshold` (2), `maxPayloadBytes` (2), `successStatus` (4),
+   `burst` (4) — **no `make`, no `ReadAll`, no `append`, no buffer among any of them.** Clean.
+3. **The cross-file grep guard, run against the classification revision 6 just changed** (not just against
+   retracted phrases — that omission WAS round-5 BLOCKER-2). **It caught two real survivors**: ADR `:21`
+   *"+2 deferred"* and Plan `:286` *"Confirm the 5 safe rows"*. Both fixed; re-run clean.
+4. **Docs-link gate**, both arms, all tracked `.md`: only the two documented parser false-positives
+   (`docs/plans/m`, `docs/specs/factory(fireTime` — Go identifiers, not links).
+5. **§-reference sanity:** §3.1–§3.9 all exist and all citations resolve (one dangling `§3.10` found and fixed).
+6. **Census agreement** verified across all three files.
+
+### 5.2 Next actions
+
+1. **Ask the user for the implementation go-ahead, proposing SDD** (a fresh implementer subagent per task,
+   coordinator verifies green and commits, adversarial reviewer before delivery).
+2. **Optionally** run one confirming audit round first. The round-5 auditor argued **against** a sixth full round
+   — every finding it raised was mechanical — and revision 6 additionally ran the verification pass it prescribed.
+   The finding trend is **19 → 17 → 12 → 16 → 15**, with **regressions at zero for three straight rounds**.
+3. If the user approves, **also ask whether to commit the design standalone as `docs:`** before code (CLAUDE.md's
+   cross-machine/fresh-session exception) — it is now gate-cleared enough to qualify.
+
+## 6. Decisions taken with the user — DO NOT RELITIGATE
+
+| Decision | Choice |
 |---|---|
-| 8 modules × 8 CI steps | **all green** — build, vet, gofmt, CGO_ENABLED=0, `go mod tidy` + no diff, govulncheck, golangci-lint, `go test -race -shuffle=on` |
-| Docker-backed modules | `dbtest` and `crontest` **really ran** — the Task 5 m-13 deferral is discharged |
-| Workspace coherence | 8/8 directories build with `GOWORK` unset |
-| Coverage | **93.9%**, up from 93.7% |
-| `apidiff` vs `docs/plans/028-root-api-baseline.txt` | **0/0** — *root package only; see §6* |
-| Exported surface, **all** packages, `main` vs `HEAD` | **649 decls each side, differing by exactly one line** — `NewCircuitBreaker` gaining its error return (D-T, the one sanctioned break) |
-| `govulncheck` | clean on all 8 modules after the `go1.25.13` bump |
-| Docs-link gate | both arms clean; arm 2 vacuity-proved by planting a bad anchor |
+| Scope | The **whole sizing-knob class**, not just the named instance |
+| Semantics | **Typed error at construction** where a constructor can report; latch otherwise |
+| Ceiling mechanism | **Stated per-knob ceiling** (D-W), after the runtime-derived bound was disproved by measurement |
+| `WithConcurrency` | **In scope**, same treatment |
+| B-2 (round 1) | **Widen to all 7 knobs** |
+| `WithBuffer(-1)` | **Fold in** — the audit ruled fold-in |
+| **BLOCKER-1 (round 4) — RULE APPLICATION, not a new decision** | **`msghttp.WithReplayBuffer` gets a ceiling here** (9th defective knob). Its unit is **events**, and the "split by kind" rule below already says a countable unit gets a ceiling while a **byte** cap is deferred. Flag it to the user; do **not** reopen the fork. |
+| **BLOCKER-1 (round 3) — 2026-08-21** | **"Split by kind."** `WithCompletionSize` joins the census as an 8th defective knob **with a ceiling**. The two **byte** knobs (`WithMaxBodyBytes`, `WithMaxEventBytes`) get **corrected verdict strings + a documented hazard**, and their ceiling is **deferred** — because CLAUDE.md's Sensible-defaults gate says a byte cap depending on the caller's payload size must not be guessed. **The user chose this over (a) extending to all three with uniform ceilings and (b) narrowing the contract.** |
 
-## 6. Gotchas discovered this session — these will bite the next one
+## 7. Gotchas — these will bite the next session
 
-- **`apidiff` is structurally BLIND to non-root packages.** The baseline is root-package export data
-  (`apidiff -w <file> .` captures one package, not the module), so a green `apidiff` certifies **nothing** for
-  `adapter/*`, `channel`, `routing`, `resilience`. Proven by planting an exported symbol in
-  `adapter/database/sql` — no output; the same symbol in root **is** reported. **A vacuity probe that plants its
-  symbol in root proves the gate FIRES, not that it COVERS** — that is how this survived Task 0.
-  **Use an exported-surface AST diff instead** (§5 row 6) for any non-root claim.
-- **Traceability trailers are not machine-parseable.** `Spec:/Plan:/ADR:` are present as text and
-  `git log --grep` finds them, but `git interpret-trailers`/`%(trailers)` sees only the final paragraph, which is
-  the co-authorship block. **Pre-existing** — `d86ef3d` and `21ad5dc` on `main` have the identical shape — and
-  **no CI check enforces it**. User decision: **accept and record, do not rewrite.**
-- **Do not run whole-suite verification while a reviewer is planting mutants.** A controller run reported `FAIL`
-  that was purely a reviewer's in-flight probe files. Check `git status --short` first.
-- **A subagent's `git commit --amend` can hit the WRONG commit if the controller commits concurrently.** That
-  happened here: the Task 7 implementer amended while I was committing the toolchain bump, so its `--amend`
-  landed on **my** commit. It detected and repaired the damage itself — history is intact and both commits were
-  verified afterwards to hold exactly their own files, with the chore message byte-identical — but **two SHAs
-  changed** (`f9d5a82`→`52334fe`, `c053165`→`cf3063d`). **Never let a subagent amend while the controller may be
-  committing**, and tell every implementer to run `git log -1` immediately before any `--amend`.
-- **`gofmt -l .` at the repo root flags git-ignored scratch** under `.superpowers/`. CI only ever sees tracked
-  files — check with `git ls-files '*.go' | xargs gofmt -l`.
-- **`harness` has no test files**, so `go test` there is a false pass. Use `go vet`.
-- **`GOTOOLCHAIN=go1.25.13`** now (bumped from `.12` this session, user-approved, commit `f9d5a82`, clearing four
-  reachable stdlib CVEs). `docs/plans/*` and `docs/specs/*` still say `go1.25.12` **on purpose** — they are
-  immutable execution records.
-- `gopls` has **no Move refactoring**. Never commit `.claude/settings.json`.
+- **🔴 MY OWN "CORRECTION" WAS WRONG AGAIN, AND IT SHIPPED INTO THREE DOCUMENT HEADERS.** I measured
+  `WithMaxGroups` growth with a **zero-value `msgin.Message[any]{}`** — no payload, no headers, no id — got
+  283 MiB, and declared round 2's ~1 GB figure "did not survive re-derivation". **With a realistic `msgin.New`
+  message round 2's figure reproduces exactly** (1,042.7 MiB cumulative / 853.4 MiB live under `-race`). The two
+  probes measured different things. **A measurement is only as good as its fixture — state the fixture beside
+  every figure.** This is the third consecutive session where a "correction" was itself wrong.
+  **Round 4 extended this:** §1.4's live column was read **without a GC** and disagreed with its own prose four
+  lines above (67.8 vs 28.7 MiB). So the rule is **"name the fixture AND the measurement protocol"** — GC before
+  read, `TotalAlloc` vs `HeapAlloc`, `KeepAlive`.
+- **I also copied two round-2 numbers forward while holding the correct data.** I wrote *"six `msghttp` keys"*
+  when **my own AST scan output on screen listed seven**, and wrote Task 3's small-`n` bullet without the
+  `OverflowReject` fixture **that my own probe had used**. Re-deriving a number is not enough — you must re-derive
+  it **against the revision you are writing**, and check the prose against the probe that produced it.
+- **🔴 A GUARD YOU WRITE BUT DO NOT RUN IS WORTH NOTHING.** Revision 5 *added* the cross-file grep guard round 4
+  recommended, ran it against a list of **retracted phrases** — where it worked, catching a real survivor — and
+  **never ran it against the classification it had just changed**. Round-5 BLOCKER-2 is seven surviving twins that
+  one invocation of that command would have listed. **Run every guard against the thing you just edited, not only
+  against the thing the last audit named.**
+- **🔴 A ROW'S VERDICT CAN BE STALE WITHOUT ANY COUNT BEING WRONG.** Round-4 BLOCKER-1 (`WithReplayBuffer`) and
+  round-5 BLOCKER-1 (`WithMaxResponseBytes`) were both rows whose "safe" verdict survived a criterion written to
+  catch them — and **neither changed the 16/17 totals**, so no count-check could find either. **Re-derive §2.1
+  row by row FROM the criterion; never read the verdict column.**
+- **🔴 EVIDENCE ON SCREEN IS NOT EVIDENCE NOTICED.** `exchange.go:131`'s
+  `io.ReadAll(io.LimitReader(resp.Body, max))` appeared in my own grep output in an earlier session and I
+  explicitly thought *"that's a fourth candidate — whatever, the point stands"* and moved on. It became
+  round-5 BLOCKER-1 two revisions later. **When a probe surfaces something outside the question you asked, file
+  it before moving on.**
+- **🔴 ROUND 4's DIAGNOSIS: a finding folded into TWO of the three files reads as done and is not.** Four of
+  round 4's six unclean rows were **the ADR missing a fold-in the spec and plan received** — and the ADR is the
+  **normative** artifact. **Fold into all three, every time, then diff the three against each other** before
+  declaring a revision written.
+- **🔴 STATING A CRITERION DOES NOT HELP UNLESS YOU RE-DERIVE EVERY ROW FROM IT.** Revision 4 introduced D-AB
+  precisely to stop the census moving — then kept `WithReplayBuffer`'s pre-existing *"safe"* verdict and invented
+  a **safety cause to justify it** (cause (c), whose text is self-refuting). The criterion caught it one round
+  later. **When you add a rule, re-run it against every row, including the ones you are not changing.**
+- **Reading the ACCESSOR is not reading the VALIDATOR.** I asserted `WithMaxBodyBytes(-1)` means "use 1 MiB"
+  because `maxBody()` back-fills `<= 0`. `NewConfig` **rejects** it 900 lines earlier. Check the constructor path,
+  not just the getter.
+- **Fold-ins are where this design keeps failing, not the design itself.** Every round: a fix repairs the instance
+  the finding named and leaves the class reachable through another door. **Fix the class; re-derive every number
+  you touch.**
+- **`docs/plans/029-audit-round-{1,2,3}.md` are immutable execution records.** Do not edit them to match a later
+  revision — that destroys the audit trail.
+- **A subagent can die from a session limit *after* writing its output.** Check for the output file before
+  retrying — a needless retry costs a full audit's tokens.
+- **Do not write scratch `.go` files into the repo.** Use the scratchpad dir and run `git status --short` after
+  any probe. Build probes as a throwaway module with
+  `replace github.com/kartaladev/msgin => /Users/zakyalvan/Documents/RND/msgin`.
+- **Docs-link gate:** arm 1 reports Go generics inside code fences as false positives — a hit only matters if it
+  names a plausible `.md` path. Two such pre-existing hits are expected (`docs/plans/m`,
+  `docs/specs/factory(fireTime`) and are code, not links. Both arms were run this session and **both were
+  vacuity-proved against the new spec file** (planted a bad link and a bad anchor; each fired; reverted clean).
+- **`GOTOOLCHAIN=go1.25.13`.** `harness` has no test files — `go test` there is a false pass; use `go vet`.
+- Never commit `.claude/settings.json`.
 
-## 7. Review outcomes
+## 8. Backlog — unchanged except item 1
 
-- **Security review over `main..HEAD`: SAFE TO MERGE.** No Critical/High/Medium. It verified in shipped code
-  that D-S's claim holds — the latched fault is `Permanent`-wrapped, `IsPermanent` uses `errors.As` so it
-  traverses the wrap, and `producer.go:462` returns **before any backoff**, so there is no hot-retry loop. Zero
-  new `panic(` in the diff; all 25 `nilOptionAt` sites pass a compile-time literal, so no DSN, URL, header or
-  payload can reach an error string.
-  - **Low, documented, no action:** `cb, _ := resilience.NewCircuitBreaker(nil)` yields a nil breaker, and
-    `endpoint/flowcontrol.go:62` treats nil as "no breaker" — a caller who *actively discards* the error runs
-    with the protective control absent. ADR 0031 D-T documents this; `errcheck` catches the discard.
-- **Code review over `main..HEAD`: NO CRITICAL, NO IMPORTANT. SAFE TO MERGE.** It attacked the code rather than
-  the documents: confirmed both R3 assignments are structurally correct (`Message[T]`'s six methods and
-  `NewMessage` return no error; `sqlite`'s `DDL`/`InboxDDL`/`GroupDDL` take no `DSNOption`); read **all 25 R1
-  precedence directions body-by-body** and found **zero** contradictions, so the Task 1/4 class did not recur;
-  proved **no R1 delegator forwards into an R2 product**, so no bare/wrapped crossover exists; and
-  **mutation-tested the class gate across a module boundary** — deleting the R3 `continue` from
-  `sqlite/dsn.go` (a *separate* `go.mod`) and the R1 guard from `endpoint/gateway.go`, both caught with
-  `file:line:col`. That last check closes the one place `apidiff`'s blindness could have hidden a regression.
-  - **Its one Minor is FIXED** (`4ce4d84`, comment-only): `adapter/memory`'s latch comment claimed
-    "set once, read-only, needs no lock" unconditionally. `type Option func(*Broker)` is **exported and hands
-    the option the live product**, so the guarantee holds only while no caller-supplied `Option` lets the
-    `*Broker` escape `New`. It is the only one of the five R2 types where the option's parameter *is* the
-    product — visible only by comparing all five, which is why per-task review could not see it.
-
-## 8. Deferred / backlog — carried forward deliberately
-
-1. **`memory.WithBuffer` overflow panic.** `WithBuffer(n)` does `make(chan …, n)` unbounded, so
-   `WithBuffer(1<<62)` panics on the `make`. Round-4 audit **m-Z6** records that D-U's `continue` *widens* the
-   window: under a `break` loop `memory.New(nil, WithBuffer(1<<62))` stopped at the nil; under `continue` it now
-   proceeds into the `make`. **Owned by Spec §3.7 as out of scope for Plan 028.** The headline contract says *no
-   constructor panics on a nil option element*, and this combination still does — **strongest candidate for the
-   next increment.**
-2. **Seven copies of the delegator pre-check loop** in `adapter/http` (×5) and `adapter/http/stdlib` (×2). A
-   package-local `nilOptionPreCheck(ctor, opts)` helper collapses each to one line (~35 lines saved),
-   within-package so D-R is untouched. Deferred at the gate rather than edit seven individually mutation-proven
-   constructors for line count.
-3. **The AST gate is syntactic, not a dominance proof.** Two contrived shapes defeat it — a vacuous pre-check
-   loop followed by a second unguarded apply loop, and a guard inside a never-called closure. Both are named in
-   the file header. Promoting the recognizer to a `go/analysis` analyzer driven by `go vet -vettool` was
-   considered and rejected as out of scope pre-v1 (it costs a ninth module and a CI step across 8 modules).
-4. **The `gin` increment** still needs a plan number after 028, and its ADR is still a forward reference to an
-   unwritten artifact (CLAUDE.md §"Project status" says so).
-5. Minor godoc wording, deferred across tasks: four sites say the apply loop is "this constructor's first
-   statement" when a `cfg := …` initializer precedes it (direction and subject are correct — this is *not* the
-   reversed-precedence defect Tasks 1 and 4 hit); and `adapter/http/options.go:1111` has a line break leaving a
-   dangling `(` before `ErrInvalidMaxBodyBytes`. **Fix the class in one pass**, not instance by instance.
-
-## 9. What the execution cost, and what caught what
-
-Nine implementation tasks, **three fix rounds** (Tasks 1, 4, 7). **Every fix round was a defect a per-task review
-caught that the implementer had not** — and two of the three were **documentation stating the opposite of the code
-it described**, in a library whose stated quality criterion is debuggability:
-
-- **Task 1** — the `ErrNilFunc` godoc claimed the nil-option error was `Permanent`-wrapped and came from "any
-  exported functional-option constructor". Both false: R1 is bare (25 of 32), and the 2 R3 never return it.
-- **Task 4** — two godocs said the nil-option check "runs BEFORE X **and loses to it**". Running before means it
-  *wins*; the task's own test asserted the opposite of its own documentation.
-- **Task 7** — the class gate accepted a guard that did not prevent the panic, and (found by `/simplify` at the
-  gate) accepted `continue` from a constructor that could have reported the fault — the exact BLOCKER-2 class the
-  plan's first audit round killed.
-
-**Reviewers independently re-ran mutants in every task** and twice found what implementers missed — including that
-`apidiff` was blind to most of what it was believed to cover. **The decision the whole plan rested on (D-U,
-`continue` not `break`) is observable on exactly ONE surface in the entire library**, and Task 3's AC-5c nil-first
-test is that one guard; two reviewers reproduced it failing with the predicted wrong sentinel.
-
-**Two agents stalled** on infrastructure faults (stream watchdog, no progress for 600s). Neither lost work — the
-second had already written and verified its code, and was resumed with a **commit-first ordering** (commit the
-green unit, *then* mutation-prove) so a third stall could not lose it. Worth reusing.
+1. **The sizing-option class** → **this bundle** (Spec 016 / ADR 0032 / Plan 029). In design, not implemented.
+   Revision 3 written; round 3 audited; **revision 4 pending**.
+2. **Seven copies of the delegator pre-check loop** in `adapter/http` (×5) and `adapter/http/stdlib` (×2).
+   A package-local helper collapses each to one line (~35 lines).
+3. **The Plan 028 AST gate is syntactic, not a dominance proof.** Two contrived shapes defeat it; both named in
+   the file header. Promoting it to a `go/analysis` analyzer was rejected as out of scope pre-v1.
+4. **The `gin` increment** still needs a plan number, and its ADR is still a forward reference.
+5. **Minor godoc wording class** — four sites say the apply loop is "this constructor's first statement" when a
+   `cfg := …` initializer precedes it, and `adapter/http/options.go:1110` has a line break leaving a dangling `(`
+   before `ErrInvalidMaxBodyBytes`. **Fix the class in one pass.** Deliberately NOT folded into Plan 029.
+6. **NEW — the byte-ceiling class**, deferred out of Plan 029 by the §6 "split by kind" rule. **THREE members,
+   not two** (round-5 BLOCKER-1 added the third): `msghttp.WithMaxBodyBytes` (`encode.go:102`
+   `io.ReadAll(http.MaxBytesReader(…))`), `msghttp.WithMaxEventBytes` (`sse.go:384-389`, a `bytes.Buffer`), and
+   **`msghttp.WithMaxResponseBytes`** (`exchange.go:130-131` `io.ReadAll(io.LimitReader(resp.Body, max))` — the
+   body is **retained** as the reply payload; `drainBounded` is only five of its six reads).
+   Measured: a 64 MiB body is rejected at the 1 MiB default and **fully read (375 MiB TotalAlloc) at `1<<62`**.
+   Needs its own increment deciding between a ceiling and a documented opt-in unbounded state.
+   **🔴 CORRECTION (round-4 M4-2):** an earlier revision claimed `WithMaxBodyBytes(-1)` "means use 1 MiB today".
+   **False** — `NewConfig` **rejects** it (`options.go:1128-1130` → `ErrInvalidMaxBodyBytes`). The `maxBody()`
+   back-fill (`:236`) applies only to a hand-built `*Config`. So an opt-in unbounded state would need a **new
+   sentinel value**, not merely a reinterpretation of a negative `n`.
