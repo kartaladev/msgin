@@ -47,8 +47,10 @@ var (
 	ErrPayloadTooLarge = errors.New("msgin: payload exceeds the configured maximum size")
 	// ErrUnexpectedCodec is returned when a live-value source (memory) is given a codec.
 	ErrUnexpectedCodec = errors.New("msgin: live-value source must not have a payload codec")
-	// ErrInvalidConcurrency is returned when WithConcurrency is < 1.
-	ErrInvalidConcurrency = errors.New("msgin: concurrency must be >= 1")
+	// ErrInvalidConcurrency is returned when WithConcurrency's value is outside
+	// its documented [lo, hi] range (below 1, or above endpoint's concurrency
+	// ceiling) — see the option's own godoc for the bounds and their rationale.
+	ErrInvalidConcurrency = errors.New("msgin: concurrency out of range")
 	// ErrUnsupportedSource is returned when a Source is neither Polling nor Streaming.
 	ErrUnsupportedSource = errors.New("msgin: source implements neither PollingSource nor EventDrivenSource")
 	// ErrHandlerPanic wraps a value recovered from a panicking handler. It is a
@@ -140,8 +142,10 @@ var (
 	// chain", not "is this message in the sink I configured". Where the
 	// distinction matters, give each level its own sink and inspect that sink.
 	ErrDeadLettered = errors.New("msgin: message diverted to the dead-letter sink")
-	// ErrInvalidMaxInFlight is returned when WithMaxInFlight is given n < 1.
-	ErrInvalidMaxInFlight = errors.New("msgin: max in-flight must be >= 1")
+	// ErrInvalidMaxInFlight is returned when WithMaxInFlight's value is outside
+	// its documented [lo, hi] range (below 1, or above endpoint's max-in-flight
+	// ceiling) — see the option's own godoc for the bounds and their rationale.
+	ErrInvalidMaxInFlight = errors.New("msgin: max in-flight out of range")
 	// ErrInvalidRateLimit is returned when a rate-limit configuration is invalid
 	// (non-positive rps or burst on the default token bucket).
 	ErrInvalidRateLimit = errors.New("msgin: rate limit must have positive rps and burst")

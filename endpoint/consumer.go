@@ -49,7 +49,20 @@ type consumerConfig[T any] struct {
 	pollMaxBatchSet bool // distinguishes explicit WithPollMaxBatch(0) (rejected) from unset (C2)
 }
 
-// WithConcurrency sets the worker-pool size (default 1).
+// concurrencyCeiling is the upper bound WithConcurrency accepts (Spec 016
+// §3.4). n spawns exactly that many worker goroutines in Run, each holding a
+// stack: Go's minimum goroutine stack is ~2 KiB (measured 2,052 B/goroutine;
+// ~4 KiB under -race, 4,114 B), so 65,536 workers cost ~128 MiB of stack —
+// ~257 MiB under -race — before any handler state. That is affordable but
+// far beyond any plausible worker-pool size, so it is the boundary between a
+// deliberate large pool and a caller error (ADR 0032).
+const concurrencyCeiling = 1 << 16
+
+// WithConcurrency sets the worker-pool size to n, which must be in
+// [1, concurrencyCeiling] (65,536); default 1. n outside that range is a
+// construction-time error (msgin.ErrInvalidConcurrency), not a silent clamp.
+// n directly sizes the number of goroutines Run spawns — see
+// concurrencyCeiling's godoc for the stack-memory cost at the ceiling.
 func WithConcurrency[T any](n int) ConsumerOption[T] {
 	return func(o *consumerConfig[T]) { o.concurrency = n }
 }
@@ -259,18 +272,21 @@ func NewConsumer[T any](src any, h Handler[T], opts ...ConsumerOption[T]) (Consu
 		}
 		opt(&cfg)
 	}
-	if cfg.concurrency < 1 {
-		return nil, msgin.ErrInvalidConcurrency
+	if cfg.concurrency < 1 || cfg.concurrency > concurrencyCeiling {
+		return nil, fmt.Errorf("%w: %s: %d not in [%d, %d]",
+			msgin.ErrInvalidConcurrency, "endpoint.WithConcurrency", cfg.concurrency, 1, concurrencyCeiling)
 	}
 	if err := cfg.policy.Validate(); err != nil {
 		return nil, err
 	}
-	// C2: unset → default; explicitly set → must be >= 1 (so WithMaxInFlight(0)
-	// is a rejected caller error, not silently defaulted).
+	// C2: unset → default; explicitly set → must be in [1, maxInFlightCeiling]
+	// (so WithMaxInFlight(0) is a rejected caller error, not silently
+	// defaulted, and WithMaxInFlight(huge) cannot overflow workerCh's alloc).
 	if !cfg.maxInFlightSet {
 		cfg.maxInFlight = defaultMaxInFlight
-	} else if cfg.maxInFlight < 1 {
-		return nil, msgin.ErrInvalidMaxInFlight
+	} else if cfg.maxInFlight < 1 || cfg.maxInFlight > maxInFlightCeiling {
+		return nil, fmt.Errorf("%w: %s: %d not in [%d, %d]",
+			msgin.ErrInvalidMaxInFlight, "endpoint.WithMaxInFlight", cfg.maxInFlight, 1, maxInFlightCeiling)
 	}
 	// ADR 0009 D3: unset → default; explicitly set → must be > 0 (so
 	// WithAttemptTTL(0) is a rejected caller error, not silently defaulted).
