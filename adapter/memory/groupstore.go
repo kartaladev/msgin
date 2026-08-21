@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"sync"
 	"time"
@@ -52,10 +53,23 @@ type groupStoreConfig struct {
 // GroupStoreOption configures a GroupStore.
 type GroupStoreOption func(*groupStoreConfig)
 
-// WithMaxGroups bounds the number of concurrently held (incomplete) groups;
-// default 1024. A new correlation key beyond the cap makes Add return
-// msgin.ErrOverflowDropped rather than evicting a partial group (which would be
-// silent data loss). n<=0 is invalid → msgin.ErrInvalidCapacity.
+// maxGroupsCeiling is the upper bound WithMaxGroups accepts (Spec 016 §3.4).
+// maxGroups is the ONLY thing evicting: Add's admission check
+// (groupstore.go's len(s.groups) >= s.maxGroups) is what caps s.groups, so
+// with no ceiling a huge maxGroups admits an unbounded number of new
+// correlation keys and s.groups grows without bound (Spec 016 §1.3). The
+// ceiling is in-flight aggregation groups, matched to the queue depth
+// (maxCapacityCeiling) that can feed them, and 1024x the default (ADR 0032).
+const maxGroupsCeiling = 1 << 20
+
+// WithMaxGroups bounds the number of concurrently held (incomplete) groups to
+// n, which must be in [1, maxGroupsCeiling] (1,048,576); default 1024. A new
+// correlation key beyond the cap makes Add return msgin.ErrOverflowDropped
+// rather than evicting a partial group (which would be silent data loss). n
+// outside [1, maxGroupsCeiling] is a construction-time error
+// (msgin.ErrInvalidCapacity), not a silent clamp — see maxGroupsCeiling's
+// godoc for why the upper bound matters even though the check itself is a
+// scalar comparison.
 func WithMaxGroups(n int) GroupStoreOption {
 	return func(c *groupStoreConfig) { c.maxGroups = n }
 }
@@ -88,8 +102,9 @@ func NewGroupStore(opts ...GroupStoreOption) (*GroupStore, error) {
 		}
 		opt(&cfg)
 	}
-	if cfg.maxGroups <= 0 {
-		return nil, msgin.ErrInvalidCapacity
+	if cfg.maxGroups <= 0 || cfg.maxGroups > maxGroupsCeiling {
+		return nil, fmt.Errorf("%w: %s: %d not in [%d, %d]",
+			msgin.ErrInvalidCapacity, "memory.WithMaxGroups", cfg.maxGroups, 1, maxGroupsCeiling)
 	}
 	return &GroupStore{groups: make(map[string]*groupState), clock: cfg.clock, maxGroups: cfg.maxGroups}, nil
 }

@@ -257,9 +257,19 @@ var (
 	ErrScheduledSendUnsupported = errors.New("msgin: outbound adapter does not support scheduled send")
 	// ErrNilStore is returned by NewQueueChannel when the ChannelStore is nil.
 	ErrNilStore = errors.New("msgin: channel store is nil")
-	// ErrInvalidCapacity is returned by a bounded store constructor (e.g.
-	// memory.NewQueueStore) when an explicit capacity is <= 0.
-	ErrInvalidCapacity = errors.New("msgin: capacity must be > 0")
+	// ErrInvalidCapacity is returned when a sizing option's value is outside
+	// its documented [lo, hi] range (Spec 016 §3.1/§3.5). It is shared by
+	// every option whose value is the sole bound on a structure that grows
+	// by insertion (Spec 016 §1.3), since one sentinel cannot state four
+	// different stated ranges. As of Plan 029 Task 3 it has TWO producers —
+	// memory.NewQueueStore (WithCapacity) and memory.NewGroupStore
+	// (WithMaxGroups) — and is planned to gain two more: routing.NewAggregator
+	// (WithCompletionSize, Plan 029 Task 4) and memory.WithBuffer (Plan 029
+	// Task 5, reported through Send/Stream rather than a constructor return).
+	// The sentinel's own message stays generic ("capacity out of range") —
+	// the offending site, value and range live in the wrapping error each
+	// producer returns; see each option's own godoc for its bounds.
+	ErrInvalidCapacity = errors.New("msgin: capacity out of range")
 	// ErrNoCorrelation is returned when an Aggregator's correlation strategy
 	// yields no key for a message. It is always wrapped with Permanent (a
 	// missing correlation id will not appear on redelivery), so the runtime
