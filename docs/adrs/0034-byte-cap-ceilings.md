@@ -1,11 +1,13 @@
 # ADR 0034 — A byte cap is bounded by what a `[]byte` can represent, not by what a payload might be
 
-- **Status:** **PROPOSED — revision 2, post-audit-round-1, NOT accepted.** Written before any code, per
-  [CLAUDE.md](../../CLAUDE.md)'s design-time gate. **Round 1 of the adversarial design audit has run** over the
-  assembled bundle ([Spec 018](../specs/018-byte-cap-ceilings.md) + this ADR +
-  [Plan 032](../plans/032-byte-cap-ceilings.md)) and returned **NOT SAFE TO IMPLEMENT** — 3 BLOCKERs, 7 MAJORs,
-  4 MINORs. The record is [`docs/plans/032-audit-round-1.md`](../plans/032-audit-round-1.md) (immutable); this
-  revision folds every finding back. **Round 2 has not run.**
+- **Status:** **PROPOSED — revision 3, post-audit-round-2, NOT accepted.** Written before any code, per
+  [CLAUDE.md](../../CLAUDE.md)'s design-time gate. **Two rounds of the adversarial design audit have run** over
+  the assembled bundle ([Spec 018](../specs/018-byte-cap-ceilings.md) + this ADR +
+  [Plan 032](../plans/032-byte-cap-ceilings.md)). Round 1 returned **NOT SAFE TO IMPLEMENT** — 3 BLOCKERs,
+  7 MAJORs, 4 MINORs ([`docs/plans/032-audit-round-1.md`](../plans/032-audit-round-1.md), immutable). Round 2
+  returned **NOT SAFE TO IMPLEMENT** — 1 BLOCKER, 5 MAJORs, 6 MINORs
+  ([`docs/plans/032-audit-round-2.md`](../plans/032-audit-round-2.md), immutable). This revision folds every
+  round-2 finding back. **Round 3 has not run.**
   - 🔴 **Decisions D-AM through D-AT were taken WITHOUT USER RATIFICATION.** The user was not asked. Every
     decision below is **open to reversal**; [Spec 018 §8](../specs/018-byte-cap-ceilings.md) lists the four that
     most deserve a second look, and each decision here carries a **REVERSIBILITY** line stating what undoing it
@@ -17,6 +19,17 @@
     **D-AR(b)**'s 386 command corrected (M-4); **D-AS** re-derived mechanically as 12 sites and re-expressed as
     deltas with an explicit Plan 031 ordering (B-3, M-9); **D-AT** now lands in one commit with the code
     (B-1, m-14).
+  - **What round 2 changed here:** **D-AS trap 3**'s restated invariant was **FALSE** for the six `int`-typed
+    `safe`-arm rows and is now stated **two-dimensionally** (N-1, the BLOCKER); **D-AS**'s derivation grep is
+    widened to the *property* and the inventory is **14 sites, 18 lines**, not 12/17 (N-2); **D-AS** drops the
+    unilateral *"whichever lands second"* protocol — **Plan 032 owns Spec 016 §2.1 unconditionally and
+    re-derives it from the tree** (N-4); **D-AT(b)**'s parents move into **Task 1's** commit, closing the window
+    m-14's fix relocated (N-6); **D-AN(a)/D-AO** no longer claim the argument *"licenses exactly one ceiling"*,
+    and **D-AP(a)** now names `byteCapCeiling = math.MaxInt32 - 1` — tested, it works, and it dissolves the
+    `(n int)` rejection — resting the decision on the trade instead (N-7); **D-AR(b)** gains a vacuity probe
+    (N-12); **Context** records the `WithMaxEventBytes` parse-side scope (N-11) and **corrects the
+    `WithReplayBuffer` citation round 1 raised as m-11 and revision 2 fixed in the spec and the plan but NOT
+    here** — the project's named *fold-into-all-three* failure.
   - The decision-letter series continues from [ADR 0033](0033-group-member-bounds.md), which ends at **D-AL**.
 - **Prompted by:** [Spec 018](../specs/018-byte-cap-ceilings.md); the backlog item in
   [`docs/HANDOVER.md`](../HANDOVER.md) §7 item **6**.
@@ -50,7 +63,7 @@ case: *"If **no** value can be safe for an unknown caller (e.g. **a byte cap tha
 legitimate payload size**), make it explicit/opt-in … rather than guessing a default."* That reasoning was
 correct **for a ceiling justified by payload size**. It is silent on a ceiling justified by something else.
 
-**Four facts, each re-derived against the code this revision, shape every decision below:**
+**Five facts, each re-derived against the code, shape every decision below** (fact 5 added at revision 3):
 
 1. **All three already reject an explicit `n <= 0`** with their own typed sentinel — `options.go:1189-1193`,
    `:1201-1205`, `:1211-1215`. **Leaving the option unset already *is* the documented default state** (1 MiB, all
@@ -69,10 +82,41 @@ correct **for a ceiling justified by payload size**. It is silent on a ceiling j
    (`endpoint`, `routing`, `adapter/memory`, `adapter/http`) under ADR 0031 D-R, each with godoc asserting it
    mirrors the other three.
 
+5. **`WithMaxEventBytes` is PARSE-SIDE ONLY** (round-2 N-11). The cap is read by `NewSSEParser` (`sse.go:239`)
+   and by the SSE **client** (`sseclient.go:401`); **`adapter/http/sse_server.go` never reads it** — verified,
+   `grep -rn 'maxEventBytes' adapter/http/*.go | grep -v _test` returns no `sse_server.go` hit. The server frames
+   outbound events through `EncodeSSEEvent` into a `bytes.Buffer` with no size check. That is **outside D-AB's
+   class rather than a gap this ADR leaves open**: the criterion is *"`n` is the sole bound on an accumulation"*,
+   and on the server path there is **no `n`** — the event's size is whatever the caller handed `Send`. No knob
+   means no class member means nothing for a ceiling to bound. Recorded because every artifact before revision 3
+   presented the three caps as one symmetric family, which invites the opposite reading. See
+   [Spec 018 §1.3 item 3](../specs/018-byte-cap-ceilings.md) and §8 open item 4.
+
 **And one delivered claim is FALSE.** [Spec 016 §3.8](../specs/016-sizing-option-bounds.md) item 2 promised that
 *"their godoc gains the hazard disclosure."* It does not — read this revision, none of the three godocs carries
-it, and Plan 029 has no task for it. The bounded siblings did get theirs (`WithMaxConnections` `options.go:901`,
-`WithReplayBuffer` `:976`). **D-AT** delivers it, in the superseding post-ceiling form.
+it, and Plan 029 has no task for it. The bounded siblings did get theirs, **each citing a DIFFERENT Spec 016
+section** — `WithMaxConnections` (declared `options.go:908`) cites Spec 016 **§1.3**, and `WithReplayBuffer`
+(declared `options.go:986`) cites Spec 016 **§1.5**. **D-AT** delivers it, in the superseding post-ceiling form.
+
+> 🔴 **Corrected at revision 3 — this is the project's named failure mode (round-1 m-11, re-raised as NOT LANDED
+> by round 2).** Revision 1 wrote *"`WithMaxConnections` `options.go:901`, `WithReplayBuffer` `:976`"*, implying a
+> shared §1.3 cite and pointing at godoc lines. Revision 2 fixed it in **Spec §2.1's table** and in **Plan Task 1
+> Step 1** — and left this paragraph untouched. Re-derived:
+>
+> ```
+> $ grep -n 'Spec 016 §1.3\|Spec 016 §1.5' adapter/http/options.go
+> 901:// an unbounded admission gate (Spec 016 §1.3 — below the ceiling this was
+> 977:// of the server, even with no client connected (Spec 016 §1.5). The cost is
+> $ grep -n 'func WithMaxConnections\|func WithReplayBuffer' adapter/http/options.go
+> 908:func WithMaxConnections(n int) Option {
+> 986:func WithReplayBuffer(n int) Option {
+> ```
+>
+> The citations above now name the **`func` declaration line** (`:908`, `:986`), per the convention
+> [Spec 018](../specs/018-byte-cap-ceilings.md)'s status header declares **binding on this bundle**: a
+> `file.go:NNN` cite names the declaration, never a line inside its godoc, except where a specific godoc
+> *sentence* is the subject — in which case the sentence's line is cited **and quoted**, as `:901` and `:977` are
+> above. *Diff all three artifacts against each other for every finding.*
 
 ---
 
@@ -149,9 +193,15 @@ mentions the caller:
 | `1 << 32` (4 GiB) | *"a round number above anything real"* | the same guess, **and** its meaning differs by word size — fails harder |
 | **`math.MaxInt32`** | *"the largest cap exactly representable as an `int` on every `GOARCH` in scope"* | a property of the language on the platforms in scope — **passes** |
 
-**The argument licenses exactly one value, not a family.** `math.MaxInt32` is not "a large round number" — it is
-the *only* value at which the same-everywhere property holds. One lower forfeits it for nothing; one higher breaks
-it. That is why D-AO's *value* is load-bearing rather than a tuning detail.
+**The argument licenses exactly one MAXIMUM — narrower than revision 2's claim, and the narrowing matters
+(round-2 N-7).** `math.MaxInt32` is not "a large round number": it is the **largest** value at which the
+same-everywhere property holds. One higher breaks the property. One *lower* still **has** the property — every
+value at or below `math.MaxInt32` is representable on every `GOARCH` — so what a lower number forfeits is the
+**justification**, not the property: it re-opens "why this number and not that one," which is the payload-guess
+question the deferral existed for. Revision 2 wrote *"the only value at which the property holds"*, which is
+false as stated, and **D-AP(a) leans on it to reject `(n int)`** — so the overstatement made two decisions prop
+each other up. That is why D-AO's *value* is load-bearing rather than a tuning detail, and why D-AP(a) now rests
+on a trade rather than on this sentence.
 
 **(b) No off-state.** `msghttp` gains no way to say "unbounded". A named exported constant
 (`msghttp.Unbounded`) is new exported surface on a pre-v1 API being kept deliberately small, whose **only**
@@ -237,8 +287,10 @@ independence that does not exist and would invite three divergent edits.
 > applies to `routing.WithCompletionSize`.
 
 **REVERSIBILITY:** the constant is one line. But the *value* is the whole argument: any lower number forfeits the
-justification and re-opens the deferral; any higher number is unrepresentable on 32-bit. Splitting into three
-per-knob constants is three lines and forfeits the single justification. See Spec 018 §8 item 2.
+justification and re-opens the deferral; any higher number is unrepresentable on 32-bit. **And lowering it by even
+one re-opens D-AP** — at `math.MaxInt32 - 1` the `(n int)` signature becomes fully expressible on 386 (round-2
+N-7, tested), so the two decisions must be re-taken together, never separately. Splitting into three per-knob
+constants is three lines and forfeits the single justification. See Spec 018 §8 item 2.
 
 ### D-AP — keep `(n int64)`; add a sibling `checkRangeInt64` — not a generic, and never an `int(n)` conversion
 
@@ -274,9 +326,39 @@ and above the ceiling, so the class gate's three moved rows would become archite
 single-file normative gate; and the only escape is deliberate signed **runtime overflow**
 (`n := math.MaxInt32; n++` → `-2147483648` on 386), which exercises the **lower** arm under a different render.
 
-**Decision: `(n int64)`.** The `int` shape trades a hypothetical mutant — one that exists only in a
-mis-implementation nobody has written — for the loss of a real, uniform, cross-architecture assertion. D-AR(b)'s
-gap is *recorded*; an inexpressible upper arm could not be.
+**The escape the rejection does not survive, named at revision 3: `byteCapCeiling = math.MaxInt32 - 1`**
+(round-2 N-7). Consequence 2 above — *"no `fixed`-arm literal exists that is both compilable on 386 and above the
+ceiling"* — holds **because the ceiling is exactly `math.MaxInt32`**, which on 32-bit **is** `math.MaxInt`. Lower
+it by one and the set stops being empty:
+
+```
+$ cat p.go                                    # const byteCapCeiling int = math.MaxInt32 - 1
+var _ = WithMaxBodyBytes(2147483647)          # func WithMaxBodyBytes(n int) int
+$ GOARCH=386 GOOS=linux go build ./... ; GOARCH=386 GOOS=linux go vet ./... ; GOARCH=amd64 GOOS=linux go build ./...
+exit=0                                         exit=0                            exit=0
+```
+
+`2147483647` fits an `int` on 386; `2147483648` does not. **All three consequences fall**, `(n int)` becomes
+fully expressible everywhere, and `2,147,483,646` is still exactly representable on every `GOARCH`, so D-AN(a)'s
+width-safety property is untouched. Neither round considered this before round 2, and it means **D-AO's value and
+D-AP's signature are mutually load-bearing**: the value justifies the signature, but the signature is no argument
+for the value.
+
+**Decision: `(n int64)`, on the TRADE — not on "the argument licenses exactly one ceiling".** The `MaxInt32 - 1`
+shape is a real, working alternative and loses on three stated costs:
+
+1. **It forfeits the "largest value representable everywhere" story**, which is D-AN(a)'s whole strength. *"One
+   below the largest"* re-opens "why one and not two?" — the ceiling stops being a property of the language and
+   becomes a property of the test suite, which is a policy number in a new costume.
+2. **It shrinks the moved gate rows' magnitude** from `1<<62` (~2⁶²) to `2147483647` (~2³¹), weakening the
+   "maximally absurd value" property for the `fixed` arm.
+3. Against those, the `int` shape's gains are real but bounded: ~7 fewer lines (`checkRangeInt64` deleted),
+   D-AR(b)'s **hypothetical** mutation gap dissolved, and consistency with
+   `endpoint.WithMaxPayloadBytes(n int)`. A *recorded* gap is a cost this project already tolerates.
+
+The trade is ~7 duplicated lines and one recorded mutation gap, in exchange for a ceiling justified by a fact
+about Go's `int` rather than by a fact about this suite. D-AR(b)'s gap is *recorded*; an inexpressible upper arm
+could not be — but that argument is now the **second** reason, not the only one.
 
 **Two corollaries, because a future reader will re-open this.** (1) `1 << 30` cannot serve the three moved gate
 rows under **either** signature: `1,073,741,824 < 2,147,483,647`, so it would be **accepted**. (2) A future retype
@@ -339,6 +421,13 @@ full in [Spec 018 §3.1a](../specs/018-byte-cap-ceilings.md):
 grep -rn 'WithMaxBodyBytes(\|WithMaxResponseBytes(\|WithMaxEventBytes(' --include='*_test.go' .
 ```
 
+**Re-derive the totals; do not compare against a pasted figure.** Revision 2's pasted classification read
+*48 hits / 34 calls / 18 accepted*; the tree says **49 / 40 / 24** (round-2 N-5, corrected in Spec 018 §3.1a).
+The classification itself was right — exactly **four** out-of-range call sites, exactly one of them unscheduled —
+but Plan Task 1 Step 2 treats a mismatch as a **stop-and-reassess**, so a wrong total manufactures a false alarm
+on a step whose designed response to an alarm is to halt. Only the **rule** is normative: any out-of-range hit
+outside Task 1's Files list stops the task.
+
 **Not `Permanent`-wrapped** (ADR 0029 **D-M**): these are constructor returns and never travel through a
 `MessageHandler`, so a retry classification on them is meaningless. 🔴 **Revision 1 stated this and no acceptance
 criterion tested it** (round-1 M-8) — an untested typed-error claim, which CLAUDE.md's hot-path rule forbids.
@@ -394,21 +483,47 @@ than papered over.** Closing it needs a 386 runner in CI or `qemu`, which is a C
 increment's scope. Recording it here means the next author knows the guard's strength precisely instead of
 assuming a mutant was killed.
 
+> 🔴 **The guard is VACUITY-PROBED at revision 3 (round-2 N-12).** Both commands exit 0 on an untouched tree,
+> which is what makes them usable and also what leaves them unproven: the claim is not *"vet exits 0"* but
+> *"vet **type-checks `_test.go` files**, so a 32-bit-only overflow in a test literal goes red."* Nothing in
+> revisions 1 or 2 demonstrated that, and this command **replaced** one round 1 proved could not work at all.
+> The project's stored lesson is explicit — *a gate that has never failed proves nothing; plant the probe where
+> coverage is doubtful, because proving it FIRES is not proving it COVERS.* [Spec 018 §6 AC-3b](../specs/018-byte-cap-ceilings.md)
+> makes the probe a criterion: plant a 32-bit-only overflow in one root `_test.go`, confirm **exactly one** 386
+> vet failure naming that file, confirm `GOARCH=amd64 go vet ./...` stays clean (which is what makes it a
+> *32-bit* probe rather than a syntax probe), revert, confirm both return to 0. The rest of the bundle probes
+> conscientiously — the link gate on the new files, `apidiff` in `adapter/http`, the class gate via M3-3/M3-6 —
+> and this was the omission in an otherwise disciplined set.
+
 **REVERSIBILITY:** (a) free — reversing means designing a streaming payload type, a different increment. (b) free
 — adding a 386 CI runner later strengthens the guard without changing any code here.
 
 ### D-AS — the class gate's `deferred` arm is **emptied**, and its name is kept as a tombstone
 
-`sizing_option_class_gate_test.go` files all three knobs in `deferred`. Moving them is **at least twelve**
-coordinated edits, **derived mechanically** and enumerated in
-[Spec 018 §6 AC-4.1](../specs/018-byte-cap-ceilings.md).
+`sizing_option_class_gate_test.go` files all three knobs in `deferred`. Moving them is **fourteen** coordinated
+edits, **derived mechanically** and enumerated in [Spec 018 §6 AC-4.1](../specs/018-byte-cap-ceilings.md).
 
 > 🔴 **Revision 1 said SEVEN, and every offset but one was stale (round-1 B-3).** The cited offsets predated Plan
 > 030's already-landed conversion (`d2c69fe`), which moved the rows from `:519/:528/:537` to `:570/:579/:588`,
 > `wantArms` from `:726-728` to `:782-784`, `byArm` from `:747` to `:803` and the `arm` doc from `:362` to `:401`;
-> the "🔴 block" is **two** blocks, not one. **Do not transcribe a site list — derive it**
-> (`grep -n 'deferred\|DEFERRED\|9/1/3/6\|9 + 1 + 3 + 6' sizing_option_class_gate_test.go`), which is this
-> project's stored lesson. Three traps, not two:
+> the "🔴 block" is **two** blocks, not one. **Do not transcribe a site list — derive it**, which is this
+> project's stored lesson.
+>
+> 🔴 **Revision 2 adopted the method and got the PREDICATE wrong (round-2 N-2), which is a harder failure to see
+> than a stale offset, because the output looks derived.** Its command selected on the word `deferred` and the
+> string `9/1/3/6`; the property this increment changes is **the `fixed` partition** (9 → 12 rows, one literal →
+> two). **Two sites record that partition and contain none of the four tokens** — `:26` (the header's `fixed`
+> bullet) and `:47` (Plan 030's `fixed`/`rejects` literal bullet, which goes false **twice**: the count *and* the
+> literal). `:47` is site 7's defect one bullet higher, and revision 2 found `:55` only because that bullet
+> happens to contain the word `deferred`. Revision 2 also pasted *"17 lines"*; the narrow command returns **18**.
+> **Select on the PROPERTY, not on a token enumeration** — *fix the class, not the instance*:
+>
+> ```bash
+> grep -nE 'deferred|DEFERRED|"fixed"|9/1/3/6|9 \+ 1 \+ 3 \+ 6|\(9\)|\(3\)' sizing_option_class_gate_test.go
+> ```
+>
+> Over-inclusion is safe (the `arm:` rows and `wantArms` entries classify as "no change" in one pass);
+> under-inclusion ships. **Four traps, not three:**
 
 1. **`byArm` is built by counting, so an emptied arm has no key.**
    `{"fixed": 12, "rejects": 1, "deferred": 0, "safe": 6}` **fails** — Go's counting map never produces a zero
@@ -421,10 +536,25 @@ coordinated edits, **derived mechanically** and enumerated in
 3. 🔴 **Plan 030's header block (`:40-59`) goes false in TWO independent ways, and revision 1 missed it
    entirely.** It declares the oversized literal to be a function of the **arm**. **(a)** After the move, `fixed`
    holds 12 rows carrying **two** literals — 9 at `1<<30`, 3 at `1<<62` — so the arm→literal mapping is no longer
-   true of any arm. **(b)** Its *"deferred (3) → still 1<<62"* bullet loses its referent. **Restate the surviving
-   invariant, which is the true one: the literal is chosen by the option's PARAMETER TYPE** — `int` → `1<<30`,
-   `int64` → `1<<62`. And note that **`1 << 30` cannot be used for the three moved rows**:
-   `1,073,741,824 < byteCapCeiling`, so it would be **accepted**.
+   true of any arm. **(b)** Its *"deferred (3) → still 1<<62"* bullet loses its referent.
+4. 🔴 **THE REPLACEMENT INVARIANT IS TWO-DIMENSIONAL, and revision 2's one-dimensional form was FALSE
+   (round-2 N-1, the BLOCKER).** Revision 2 wrote *"the literal is chosen by the option's PARAMETER TYPE, not by
+   its arm — `int` → `1<<30`, `int64` → `1<<62`, both then select the out-of-range branch."* **That is false of
+   six of the file's nineteen rows.** The whole `safe` arm is `int`-typed — `resilience/breaker.go:51`,
+   `endpoint/flowcontrol.go:144`, `:166`, `resilience/ratelimit.go:42`, `adapter/memory/queuestore.go:182`,
+   `channel/queuechannel.go:50` — and **every one passes `math.MaxInt` and asserts ACCEPTANCE**. There is no
+   out-of-range branch for them to select, and applying the rule literally demotes all six to `1<<30`, **an int32
+   value**, which the block at `:61-77` explicitly forbids: *"demoting these rows to it would leave every
+   assertion green while the int32-truncation probe silently stopped running."* A silently-green,
+   silently-non-probing gate is worse than the stale offsets B-3 found, because nothing fails.
+
+   **The correct statement:** **(i)** the **ARM** fixes the required property — `safe` → the value must be
+   **accepted** and stay maximally absurd (`math.MaxInt`, and nothing else); the reject arms → the value must be
+   **out of range** and render an architecture-independent decimal. **(ii)** **Only within the reject arms** does
+   the **parameter type** choose the literal — `int` → `1<<30`, `int64` → `1<<62`. Carry `:61-77`'s "do not demote
+   these rows" warning forward verbatim rather than replacing it. And note that **`1 << 30` cannot be used for the
+   three moved rows**: `1,073,741,824 < byteCapCeiling`, so it would be **accepted** — dimension (ii) doing its
+   work, since those three are the `int64`-typed members of a reject arm.
 
 **Keep `"deferred"` in the `arm` field's documented vocabulary with a tombstone** — *(no members as of Plan 032 —
 see Spec 018)* — mirroring how ADR 0032 D-AB retained safety causes **(c)** and **(d)** as tombstones so the
@@ -449,9 +579,22 @@ and inadequate when the second lander's acceptance criteria **are** the literals
 | half 1 (the AST completeness walk) | **unchanged** — the three functions still exist, still `int64`; `:234` accepts either width regardless |
 
 Both landing orders and their consequences are tabulated in
-[Spec 018 §6 AC-4.2](../specs/018-byte-cap-ceilings.md). **Spec 016 §2.1's arm table is written by whichever
-increment lands SECOND**, in one edit covering both; the first lander updates only its own rows and records that
-the other is pending. Recording this is what stops both increments claiming the table or both skipping it.
+[Spec 018 §6 AC-4.2](../specs/018-byte-cap-ceilings.md).
+
+**Spec 016 §2.1's arm table is owned by PLAN 032 UNCONDITIONALLY, and re-derived from the tree** (round-2 N-4).
+
+> 🔴 **Revision 2's *"whichever lands second writes it"* is a two-party protocol with one signatory.** Plan 031
+> has **ten** tasks and none is a Spec 016 fold-back — `grep -n 'Spec 016 §2.1' docs/plans/031-group-member-bounds.md`
+> returns **no hits**, and `grep -c '016-sizing' docs/adrs/0033-group-member-bounds.md` returns **0**. Under one
+> order §2.1 is left permanently recording a partition matching neither increment; under the other, Plan 032 must
+> write Plan 031's rows by **transcribing numbers out of a plan** — the hand-typed-total failure two rounds have
+> already caught on this very file.
+
+Plan 032's fold-back updates §2.1's census line and arm table **itself, in every landing order**, by reading the
+gate file's `wantArms` and `byArm` values **as they stand after this increment's own edits** — never from a
+pre-computed count in Spec 018 or Plan 031. Correct under either order by construction. The delta table above is
+what makes that safe: it states what *this* increment changes without asserting the absolutes. Any instruction to
+*"amend only the rows this increment owns"* is deleted as contradictory.
 
 **REVERSIBILITY:** free — the arm partition is test data. But note it is **normative**: Spec 016 §2.1 and §6 AC-5
 fix every key's arm, so moving a row is a **spec change**, which is why D-AT amends the parents in the same
@@ -475,11 +618,23 @@ module the production change edits; the coupling is real and cannot be scheduled
 window in which six godoc sentences (`options.go:458`, `:764`, `:851`; `errors.go:14`, `:72`, `:132`) describe a
 constructor that no longer behaves that way.
 
-**(b) Every artifact recording the `deferred` arm of 3 is amended in the same commit.** Spec 016 §2.1 (census
-table + arm table), §3.8, §6 AC-5's arm table; ADR 0032 **D-AB**; `docs/HANDOVER.md` §7 item 6.
-**A bundle that changes a knob's class without moving every row that records it is exactly the "stopped ONE FILE
-SHORT" failure Spec 016 revision 6 opened with** — seven twins survived a reclassification because the cross-file
-grep guard *"was written and not run."* Plan 032 **Task 2** carries that guard and **runs it**, pasting the output.
+**(b) Every artifact recording the `deferred` arm of 3 is amended in TASK 1's COMMIT — with the code, the godoc
+and the gate move.** Spec 016 §2.1 (census line + arm table), §3.8, §6 AC-5's arm table; ADR 0032 **D-AB**;
+`docs/HANDOVER.md` §7 item 6. **A bundle that changes a knob's class without moving every row that records it is
+exactly the "stopped ONE FILE SHORT" failure Spec 016 revision 6 opened with** — seven twins survived a
+reclassification because the cross-file grep guard *"was written and not run."* Plan 032 **Task 1** carries that
+guard and **runs it**, pasting the output.
+
+> 🔴 **Revision 2 said "the same commit" and scheduled them one commit later — m-14's defect RELOCATED, not
+> removed (round-2 N-6).** Merging Tasks 1-3 closed the window in which six *godoc* sentences were false, and then
+> put Spec 016 / ADR 0032 / HANDOVER in Task 2 — leaving **six artifact statements** false across the same gap:
+> §2.1's census line, §2.1's three byte-cap rows, §3.8's deferral, §6 AC-5's arm table, D-AB's *"refuses to
+> certify them safe"*, and HANDOVER §7 item 6's open state. These are **normative** — D-AS's own REVERSIBILITY
+> line says moving a row is a **spec change** — so the relocated window is worse than the godoc one, and it
+> breaches CLAUDE.md's *"couple plans and ADRs with the code that realizes them — one coherent commit"* directly.
+> **Task 1 carries the parents; the second task is gates and the status flip only.** This composes with the §2.1
+> ownership rule above: Task 1 is where the gate reaches its final state, so it is the only place a fold-back can
+> re-derive the arm table from the tree instead of from a prediction.
 
 **REVERSIBILITY:** free — both halves are prose. Omitting (a) would leave a two-increment-old promise
 outstanding; omitting (b) would ship a bundle that contradicts itself.
@@ -527,6 +682,13 @@ outstanding; omitting (b) would ship a bundle that contradicts itself.
 - **The ceiling does not make 2 GiB safe.** A caller who raises a cap to 100 MiB still gets no warning; the
   *default* is what protects them. Spec 018 §8 flags default-observability as a later question.
 - **One more file shared with the sibling increment.** `sizing_option_class_gate_test.go` is touched by both
-  Plan 031 (ADR 0033 D-AL) and Plan 032 (D-AS). Whichever lands second rebases — **and because Plan 031 changes
-  the very counts Plan 032 asserts, this increment's gate effect is specified as DELTAS with both landing orders
-  written out** (D-AS), not as literals.
+  Plan 031 (ADR 0033 D-AL) and Plan 032 (D-AS). Whichever lands second **rebases the file** — **and because Plan
+  031 changes the very counts Plan 032 asserts, this increment's gate effect is specified as DELTAS with both
+  landing orders written out** (D-AS), not as literals. **The shared parent document is NOT shared work:**
+  Spec 016 §2.1's arm table is Plan 032's unconditionally, re-derived from the tree, because Plan 031 has no task
+  for it (round-2 N-4) — a textual rebase and an ownership assignment are different things, and revision 2
+  conflated them.
+- **Two byte caps that look symmetric are not.** `WithMaxEventBytes` bounds the SSE **parser** (client side) and
+  nothing on the SSE **server** (Context fact 5). The ceiling therefore makes the parse path finite and leaves
+  the server's outbound frame size where it already was — bounded by the caller's own `Send` input. Recorded so
+  the asymmetry is a stated scope, not a discovered omission (Spec 018 §8 open item 4).
