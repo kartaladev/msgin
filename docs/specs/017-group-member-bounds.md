@@ -1,11 +1,25 @@
 # Spec 017 — A message group's member count is bounded at the store, not at the release decision
 
-- **Status:** **DRAFT — revision 2, post-audit-round-1, NOT approved for implementation.** Written before any code,
+- **Status:** **DRAFT — revision 3, post-audit-round-2, NOT approved for implementation.** Written before any code,
   per [CLAUDE.md](../../CLAUDE.md)'s design-time gate.
   - **Round 1 verdict: NOT SAFE TO IMPLEMENT** — 3 BLOCKERs, 8 MAJORs, 10 MINORs, recorded immutably in
-    [`docs/plans/031-audit-round-1.md`](../plans/031-audit-round-1.md). This revision folds every finding back in.
-    **A round 2 audit is required before implementation**: two rounds are this project's established norm, and this
-    revision changed the runtime contract (§3.3, §3.3a), not just the prose.
+    [`docs/plans/031-audit-round-1.md`](../plans/031-audit-round-1.md). Revision 2 folded every finding back in.
+  - **Round 2 verdict: NOT SAFE TO IMPLEMENT** — 1 BLOCKER, 6 MAJORs, 7 MINORs, recorded immutably in
+    [`docs/plans/031-audit-round-2.md`](../plans/031-audit-round-2.md), against a fix-verification score of
+    **12 clean LANDED, 8 LANDED-BUT-FLAWED, 1 (M-8) landed with a defensible ADR omission, 0 NOT LANDED,
+    0 REGRESSED** — *"the revision is genuinely responsive; every flaw is new ground, not a re-run of round 1."*
+    *(That summary and the record's own 21-row table differ by one row in the middle bucket; the record reconciles
+    it by name and leaves it open, and nothing downstream depends on it.)* This revision folds those 14 back in.
+    **The lesson round 2 returned is not a count — it is that revision 2 failed to GENERALIZE its own two
+    structural fixes:** B-2's *"a cross-module edit is a red commit"* was applied to the class gate but not to the
+    `GroupDialect.AddMember` signature (**N-1**, the BLOCKER), and M-3's *"one mechanism asserted for three
+    engines"* was fixed for the transaction wrappers and then recurred for the **reaper** (**N-3**), the shared
+    **`SelectMembers`** helper (**N-5**) and the very **shipped SPI godoc M-3 was about** (**N-9**). Read that
+    before reading any individual fix below.
+  - **A round 3 audit is a judgement call, not an automatic gate.** Two rounds is this project's established norm
+    and both have run; revision 3 changes no runtime contract that revision 2 did not already establish — the edits
+    are premise corrections, coverage additions and one new declaration-form constraint (**D-AR**) plus one new
+    private helper parameter (**D-AS**). Re-audit if the user wants the norm exceeded, as Plan 029 did five times.
   - 🔴 **The decisions recorded here were taken WITHOUT USER RATIFICATION.** The user was away when this bundle was
     drafted and away again when round 1's findings were dispositioned. Every decision in
     [ADR 0033](../adrs/0033-group-member-bounds.md) (**D-AC** … **D-AQ**) is **open to reversal**, and §8 lists the
@@ -17,7 +31,8 @@
     line in `adapter/memory/groupstore.go` from `:93` down and `adapter/database/sql/groupstore.go` from `:207`
     down by one, and rewrote 135 lines of `sizing_option_class_gate_test.go` (audit **B-3**, **M-1**).
   - Two claims inherited from the increment's framing were found **imprecise** in revision 1 and are corrected in
-    place (§1.4, §2.1); round 1 found a further **21**, and the substantive ones are marked 🔴 in situ.
+    place (§1.4, §2.1); round 1 found a further **21** and round 2 a further **14**, and the substantive ones are
+    marked 🔴 in situ.
 - **Realized by:** [Plan 031](../plans/031-group-member-bounds.md).
 - **Decided by:** [ADR 0033](../adrs/0033-group-member-bounds.md).
 - **Builds on:** [Spec 016](016-sizing-option-bounds.md) — this spec is the **direct successor to that defect
@@ -121,16 +136,62 @@ increment from growing a group to the ceiling for exactly that reason.
 
 **Growth is monotonic for a group that never releases.** `SettleGroup` (`groupstore.go:160-183`) trims `g.msgs` to
 the residual and `delete(s.groups, claim.Key())` when the residual is empty (`:173-178`) — but it runs only after a
-successful release. The only other exit is the reaper, and the reaper is **opt-in**: `Aggregator.reapInterval`
-returns `cfg.timeout`, `memory.GroupStore.RecoverInterval()` returns `0` (`groupstore.go:220`), so with no
-`WithGroupTimeout` the interval is `0` and `Aggregator.Run` blocks on `ctx.Done()` without ever sweeping
-(Spec 016 §1.4, re-verified). **A group whose release predicate never fires never settles, never expires, and
-never shrinks.**
+successful release.
 
-**`AbandonGroup` is the third exit, and §3.3a turns on it.** `AbandonGroup` (`groupstore.go:185-198`) clears the
-lease and `claimedLen` **without shrinking `g.msgs`**, and its godoc states the recovery contract the member cap
-must not break: *"the claimed members return to live (along with anything appended during the lease) **so a retry /
-next member / next reaper tick re-releases**"* (`:185-187`, `:196-197`).
+#### 1.2.1 🔴 The reaper, re-derived PER STORE — the two stores behave differently by default
+
+> **Revision 2 wrote *"the reaper is opt-in"* as a fact about both stores. It is a fact about `memory` only, and
+> §3.3.1's entire classification argument was resting on it** (audit **N-3**). This is audit **M-3**'s defect —
+> *one mechanism asserted where there are two* — recurring in the reaper, and it is corrected here the same way
+> §3.6.1 corrects it for the transaction wrappers: **per store, with the mechanism named.**
+
+`Aggregator.reapInterval` (`routing/aggregator.go:558-565`) takes the **minimum positive** of `WithGroupTimeout` and
+the store's `RecoverInterval()` — not `cfg.timeout` alone:
+
+```go
+routing/aggregator.go:558-565
+func (a *Aggregator) reapInterval() time.Duration {
+	interval := a.cfg.timeout
+	if storeInterval := a.store.RecoverInterval(); storeInterval > 0 && (interval <= 0 || storeInterval < interval) {
+		interval = storeInterval
+	}
+	return interval
+}
+```
+
+| Store | `RecoverInterval()` | With **no** `WithGroupTimeout` | What the default sweep can surface |
+|---|---|---|---|
+| `memory.GroupStore` | **`0`** (`adapter/memory/groupstore.go:220`) | interval is `0` ⇒ `Run` blocks on `ctx.Done()` and **never sweeps** | nothing |
+| `sql.GroupStore` | **the lease TTL** (`adapter/database/sql/groupstore.go:348`), default **5m** | interval is **5m** ⇒ `Run` starts a ticker (`aggregator.go:544`) and **sweeps every 5m** | **crashed-lease groups only** — see below |
+
+`Aggregator.Run`'s own godoc says so, and calls `Run` **required** for a durable store: *"A durable store
+(RecoverInterval() = its lease TTL) gets crash-recovery sweeps even with no expiry timeout set — so go agg.Run(ctx)
+is REQUIRED for multi-process/crash safety whenever the store is durable, not only when WithGroupTimeout is set"*
+(`aggregator.go:530-532`).
+
+**Why the conclusion survives anyway, by a mechanism revision 2 never stated.** With `cfg.timeout == 0`, `reap`
+passes a **zero cutoff**, and every dialect's `ExpiredGroups` gates the age path on it:
+
+```go
+adapter/database/sql/postgres/groupdialect.go:275-282
+	beforeSet := !before.IsZero()
+	…`WHERE (locked_by IS NOT NULL AND locked_at <= now - $2)
+	     OR ($1 AND locked_by IS NULL AND created_at < $3)`…
+		beforeSet, leaseTTL.Microseconds(), before.UnixMicro(), limit)
+```
+
+`$1` is false, so the second arm never matches: the default `sql` sweep returns **crashed-lease groups only**. **An
+UNLEASED group at cap is never surfaced without an expiry cutoff, in either store** — which is the true, per-store
+form of the premise §3.3.1 needs, and the form D-AM now states.
+
+**The live counter-example this obliges the design to own** is in §3.3.1: a `sql` group at cap that **also** holds a
+**stranded lease** *is* surfaced by the default sweep, *is* claimed, and *is* drained if its predicate fires.
+
+**`AbandonGroup` is the third exit, and §3.3a turns on it.** `AbandonGroup` — godoc `groupstore.go:185-188`, func
+`:189-199`, not `:185-198` as revision 2 cited (audit **N-13**) — clears the lease and `claimedLen` **without
+shrinking `g.msgs`**, and its godoc states the recovery contract the member cap must not break: *"the claimed
+members return to live (along with anything appended during the lease) **so a retry / next member / next reaper tick
+re-releases**"* (`:185-187`, and the two assignments at `:196-197`).
 
 ### 1.3 The SQL group store has the same gap — and no group-count cap at all
 
@@ -309,9 +370,27 @@ whether a *ceiling*'s reference value may legitimately become a *default*.
 the same struct, so a reader comparing `WithMaxGroups` and `WithMaxGroupMembers` sees one number for "the largest
 in-flight aggregation quantity this library will accept."
 
+> 🔴 **BOTH VALUES ARE NAMED CONSTANTS IN BOTH PACKAGES — a deliberate deviation from the shipped precedent**
+> (audit **N-4**; ADR 0033 **D-AR**). `adapter/memory` today declares its ceiling as a `const`
+> (`maxGroupsCeiling`, `groupstore.go:62`) but its **default as a bare literal inside a composite literal** —
+> `cfg := groupStoreConfig{clock: …, maxGroups: 1024}` (`groupstore.go:98`). An implementer following that local
+> precedent writes `maxGroupMembers: 1 << 16` inline, and **§6 AC-3.3's not-found guard fires**, because the AST
+> invariant has no declaration to locate. So this spec requires, in **both** packages:
+>
+> ```go
+> const defaultMaxGroupMembers = 1 << 16 // 65,536 — §3.2; AC-3.3 parses this declaration BY NAME
+> const maxGroupMembersCeiling = 1 << 20 // 1,048,576 — §3.2
+> ```
+>
+> **The deviation is deliberate and is recorded as a decision** (D-AR) rather than left as a style choice, because
+> a shipped precedent departed from silently is a future audit finding. It is not a change to `maxGroups: 1024`,
+> which no invariant test reads.
+
 **Validation is the shipped helper, unchanged:**
 
 ```go
+cfg := groupStoreConfig{…, maxGroupMembers: defaultMaxGroupMembers}
+…
 if err := checkRange(msgin.ErrInvalidCapacity, "memory.WithMaxGroupMembers",
     cfg.maxGroupMembers, 1, maxGroupMembersCeiling); err != nil {
     return nil, err
@@ -374,7 +453,7 @@ runtime's ordinary `RetryPolicy`: retry with backoff, then dead-letter on exhaus
 **What actually happens on `RetryPolicy{}`.** Re-derived at `d2c69fe`:
 
 ```go
-endpoint/consumer.go:861-869
+endpoint/consumer.go:860-869   (revision 2 cited :861-869; the block starts at :860 — audit N-13)
 	n := c.attempts(d)
 	switch {
 	case c.policy.MaxAttempts > 0 && n >= c.policy.MaxAttempts && !c.native.NativeDeadLetter():
@@ -402,11 +481,24 @@ forever. Today the same message simply appends and succeeds. A remedy that conve
 unlogged infinite loop against the database is not a remedy.
 
 **Why the "a retry can work" argument does not rescue it.** Revision 1 justified transient from *"an over-cap `Add`
-can succeed later — when the group releases … or when the reaper expires it."* Both escapes are conditional on
-configuration this spec **elsewhere insists is opt-in**: §3.11 states the remedy *"remains **opt-in**"*, and §1.2
-re-verifies that with no `WithGroupTimeout` the reaper never sweeps. In the default configuration neither escape
-exists, so "can succeed later" is false — **the classification was derived from a configuration the decision does
-not require.**
+can succeed later — when the group releases … or when the reaper expires it."* The release escape requires the
+predicate to fire, which for the class of groups at issue it does not. The reaper escape requires an **expiry
+cutoff**:
+
+> 🔴 **THE PREMISE, RESTATED IN REVISION 3 — the revision-2 form was `memory`-only** (audit **N-3**). Revision 2
+> wrote *"with no `WithGroupTimeout` the reaper never sweeps."* That is true for `memory` (`RecoverInterval() == 0`)
+> and **false for `sql`**, whose `RecoverInterval()` returns the lease TTL, so the reaper ticks every 5m by default
+> (§1.2.1). The premise this classification actually needs, and the one that is true for **both** stores, is:
+>
+> **Nothing drains an UNLEASED group without an expiry cutoff.**
+>
+> `memory` never sweeps at all; `sql` sweeps, but with `cfg.timeout == 0` the cutoff is zero and `ExpiredGroups`'
+> `beforeSet` guard restricts the result to **crashed-lease** groups (§1.2.1). Either way, a group that is at cap
+> and **unleased** is not surfaced, not claimed and not drained. "Can succeed later" is false for that group in
+> the default configuration of either store — **and that group is exactly the one D-AM classifies permanent.**
+
+So the classification is not derived from a configuration the decision does not require — but **only under the
+restated premise**. Under revision 2's premise it was, for `sql`.
 
 **The permanent arm behaves correctly on the zero value**, which is what makes this fixable:
 
@@ -422,15 +514,25 @@ endpoint/consumer.go:843-857
 	}
 ```
 
-It **never consults `MaxAttempts`**, falls back to the **dead-letter sink** when no invalid-message sink is
-configured, and emits a **WARN** on that fallback. Terminal by construction, so it cannot spin.
+It **never consults `MaxAttempts`** and is terminal by construction, so it cannot spin.
 
-> **The fully-bare case, stated so the claim is not oversold.** With **neither** sink configured, `divertTerminal`
-> does not dead-letter — it emits a WARN naming *both* missing options and **discards** (ADR 0007 D7's terminal
-> behavior). So on a completely default configuration the outcome is a **logged, terminal, one-line-per-message
-> discard**, not a durable capture. That is still strictly better than revision 1's unlogged infinite spin, and it
-> is the honest ceiling on what this classification can promise: **a sink is what turns the loss into a capture,
-> and the library cannot supply one.** Both options' godoc says so (§4 item 1).
+> 🔴 **WHICH SIGNAL IS ACTUALLY LOUD DEPENDS ON THE SINKS, and revision 2 named the wrong one for the case its
+> whole argument is about** (audit **N-11**). Revision 2 cited `warnInvalidFallback` as the WARN. But
+> `invalidTarget` returns `fellBack = (c.policy.DeadLetter != nil)` (`endpoint/consumer.go:942`), so on the
+> **zero-value `RetryPolicy`** — the configuration B-1 is about — `fellBack` is **false** and
+> `warnInvalidFallback` **never fires**. Two corrections follow:
+
+| Configuration | What actually happens | Site |
+|---|---|---|
+| `WithInvalidMessageSink` set | the message is sent there; no fallback WARN | `consumer.go:914`+ |
+| no invalid sink, **`RetryPolicy.DeadLetter` set** | falls back to the dead-letter sink, and `warnInvalidFallback` fires — **once per consumer**, `sync.Once`-deduped (`consumer.go:968-973`), **not once per message** | `:942`, `:968` |
+| **neither sink** (the shipped default) | `divertTerminal`'s nil-sink arm WARNs naming *both* missing options (`:1049`) and then **`safeAck`s** (`:1073`) — so the outcome is **WARN + Ack: the source drops the message** | `:1049`, `:1073` |
+
+> **The bare-configuration outcome, stated so the claim is not oversold.** It is a **logged, terminal, one-WARN-
+> per-message discard that the source Acks** — not a durable capture, and not a redelivery. An at-least-once source
+> will not hand the message back. That is still strictly better than revision 1's unlogged infinite spin, and it is
+> the honest ceiling on what this classification can promise: **a sink is what turns the loss into a capture, and
+> the library cannot supply one.** Both options' godoc says so, including the Ack (§4 item 1).
 
 **THE CONTRACT.** The store classifies by **why** the group is full:
 
@@ -442,6 +544,21 @@ configured, and emits a **WARN** on that fallback. Terminal by construction, so 
 `memory` reads `g.leased` (`adapter/memory/groupstore.go:43`) directly. For `sql` the cap counts **live** members
 (§3.4), and a live set is by definition unclaimed, so **every `sql` over-cap rejection is the not-leased case** and
 is classified permanent. One rule, two stores.
+
+> 🔴 **THE COUNTER-EXAMPLE THIS TRADE MUST OWN — wider than revision 2 stated** (audit **N-3**). Revision 2's
+> honest trade was *"a caller who has set `WithGroupTimeout` sees messages dead-lettered that their reaper would
+> eventually have admitted."* For `sql` the exposure reaches the **default** configuration too. Consider a `sql`
+> group that is **at cap** *and* holds a **stranded lease** (a releaser crashed mid-release):
+>
+> 1. `ExpiredGroups`' **first** `WHERE` arm — `locked_by IS NOT NULL AND locked_at <= now - leaseTTL` — matches it
+>    **regardless of cutoff**, so the 5m default sweep **surfaces** it (§1.2.1).
+> 2. `reapGroup` **claims** it, and the recovery path **drains** it if its predicate fires.
+> 3. But the cap counts **live** members, and a stranded lease leaves a live residual — so an arriving member for
+>    that key meanwhile hits the cap and, under this contract, is classified **permanent** and terminated.
+>
+> **So D-AM permanently dead-letters members that the default `sql` sweep would have admitted one tick later.** The
+> trade still stands — a 5m wait for an unlogged spin is not a trade anyone should take, and the alternative is
+> B-1 — but it is **not** limited to callers who configured a timeout, and Spec §8 item 5 records that.
 
 `msgin.Permanent` wraps transparently (`permanentError.Unwrap`, `reliability.go:14`), so
 `errors.Is(err, msgin.ErrOverflowDropped)` still holds. **`IsPermanent` is `reliability.go:86-97`** — not `:35-46`
@@ -517,6 +634,26 @@ fmt.Errorf("%w: routing.Aggregator.Handle: group %q drained by this release; ret
     msgin.ErrOverflowDropped, key)
 ```
 
+#### 3.3a.1 🔴 The branch has SIX exits, and each one is a hot-path branch
+
+> **Revision 2's coverage tables named four** — Plan 031's B1-11…B1-14 and §6 AC-9 rows 12-13 (audit **N-7**).
+> [CLAUDE.md](../../CLAUDE.md)'s test-coverage gate makes *every* early-return on the hot path a delivery blocker,
+> and two of the missing ones are not innocuous.
+
+| # | Exit | Covered by | Why it needs its own case |
+|---|---|---|---|
+| 1 | `group == nil` ⇒ `return err` | AC-1's four cases via a `(nil, err)` stub store | the compatibility arm every pre-existing store takes |
+| 2a | `!ok` (the strategy declined) ⇒ `return err` | AC-1 | the store's D-AM classification stands |
+| **2b** | **`rerr != nil` (the strategy ERRORED) ⇒ `return err`** | **NEW** | a mutant dropping this half of the `||` **claim-and-releases a group the strategy rejected** — the strategy's error is not a "no" |
+| **3** | **`cerr != nil` (`ClaimGroup` failed) ⇒ `return cerr`** | **NEW** | returning `cerr` **discards the overflow classification**: the caller loses `ErrOverflowDropped` and sees a store error instead. Deliberate; assert it |
+| **4** | **`claim == nil` (another holder) ⇒ `return overflowRetryable(…)`** | **NEW** | **a deliberate divergence from the normal path**, which returns **`nil`** for the identical condition (`routing/aggregator.go:438-439`, *"another Handle/process is releasing this group; held"*). Here the member was never stored, so `nil` would Ack an unstored message — hence retryable. **Say so in the godoc**, or the next reader "fixes" it |
+| **5** | **`relErr != nil` (the release failed) ⇒ `return relErr`** | **NEW** | the Nack then names the **output channel**, not the cap. An operator debugging a full group is pointed at the wrong subsystem unless the error is asserted |
+| 6 | drained ⇒ `return overflowRetryable(…)` | AC-1b steps 3-4 | the self-healing path |
+
+**Killing mutants** are in §6 AC-9 rows 12a-12d. **The direction rule that governs all six**: the Aggregator may
+only ever **DOWNGRADE** the store's classification (permanent → transient), never upgrade it. That rule is now in
+§3.7's MAY clause, where a third-party store author reads it, rather than only in this section's prose.
+
 **Why an error is still returned when the drain succeeds.** The member was never stored. Returning `nil` would make
 the source **Ack a message that was never aggregated** — the delivery-guarantee violation §5 rejects under *"Drop
 the over-cap member silently."* Transient is right here and does not re-litigate §3.3.1: the group provably just
@@ -591,6 +728,21 @@ g.msgs = append(g.msgs, msg)
 (mutant: move the check above the `seen` lookup); a rejected member leaves **no trace** in `g.ids` (mutant: move it
 below the insert); and the check runs on the **id-less** path (mutant: fold it back inside `if id != ""`).
 
+> 🔴 **THE RENDERED COUNT IS "MEMBERS RETAINED AT THE MOMENT OF THE CHECK", AND THE TWO STORES DIFFER BY ONE**
+> (audit **N-8**). Plan 031's Global constraint 4 calls the error shape *"identical in both stores and all three
+> dialects."* The **shape** is identical; the **number** is not, and it cannot be, because the checks sit on
+> opposite sides of the write:
+>
+> | Store | Check position | `%d` renders | At the default cap |
+> |---|---|---|---|
+> | `memory` | **before** the append (§3.4a) | the **pre-add** live+claimed count | `holds 65536 members, limit 65536` |
+> | `sql` dialects | **after** the member upsert (§3.6.1 — required, so an idempotent re-add at cap stays a no-op) | the **post-upsert** live count, which includes the offending member | `holds 65537 members, limit 65536` |
+>
+> **Both are correct readings of "members retained at the moment of the check", and that phrase is the contract** —
+> not a single arithmetic value. The alternative, normalising `sql` to `len(members)-1`, was rejected: it would
+> render a count that no statement in that transaction ever observed, purely to make a sentence in a plan true.
+> **§6 AC-2c pins BOTH renders** so the difference is asserted rather than discovered.
+
 ### 3.5 The boundary interaction with `WithCompletionSize` — the exact arithmetic
 
 **Question:** with the default cap at 65,536 and `WithCompletionSize(1<<16)` also 65,536, does release fire before
@@ -620,18 +772,33 @@ snapshot is `g.msgs[0:]`, i.e. all `C`. So with `N = C = 65,536`:
 
 **The invariant this rests on, stated so it can be checked:** the default `maxGroupMembers` must be **≥
 `completionSizeCeiling`**, or a caller could configure a legal `WithCompletionSize` that the default cap makes
-permanently unreachable — a silent deadlock instead of a bound. Both are `1 << 16` today
-(`routing/aggregator.go:33` and `adapter/memory/groupstore.go`).
+permanently unreachable — a silent deadlock instead of a bound. **It binds BOTH stores**, because both take the
+same default under the same Aggregator with the same `WithCompletionSize`. Three declarations, all `1 << 16`:
+
+```
+routing/aggregator.go:33                  const completionSizeCeiling  = 1 << 16
+adapter/memory/groupstore.go              const defaultMaxGroupMembers = 1 << 16   (§3.2, D-AR — a NAMED constant)
+adapter/database/sql/groupstore.go        const defaultMaxGroupMembers = 1 << 16   (§3.2, D-AR — a NAMED constant)
+```
 
 > 🔴 **REVISION 2 CLOSES THIS. Revision 1's claim that "a blackbox test cannot compare them directly" is FALSE**
 > (audit **M-5**; ADR 0033 **D-AQ**). The two constants are unexported and in different packages — **and neither
 > fact matters to a parser.** `sizing_option_class_gate_test.go` is already a root blackbox test
 > (`package msgin_test`) that parses every non-test `.go` file in all eight modules with `go/parser` (`:280`). An
-> **AST invariant test** — read both `const` declarations off the tree, evaluate the shift expressions, assert the
+> **AST invariant test** — read the `const` declarations off the tree, evaluate the shift expressions, assert the
 > relation — is **less work than the cross-reference comments revision 1 proposed instead**, and unlike them it
 > fails when someone edits one number. §6 AC-3 now specifies it, with a killing mutant. The cross-reference comments
 > stay as human-facing explanation; they are no longer the defence, and §8's "unenforceable invariant" item is
 > **deleted**.
+>
+> 🔴 **REVISION 3 GIVES IT SOMETHING TO PARSE, AND BOTH STORES TO PARSE IT IN** (audit **N-4**). Revision 2
+> specified a test that locates *"the `maxGroupMembers` default by name"* while specifying the default itself as a
+> bare literal in a composite literal (the shipped `maxGroups: 1024` precedent) — so the not-found guard would have
+> fired on a faithful implementation of Task 1. **§3.2 / D-AR now require a named `defaultMaxGroupMembers` constant
+> in both packages**, and **AC-3.3 parses three files, not two**: `routing/aggregator.go`,
+> `adapter/memory/groupstore.go` **and `adapter/database/sql/groupstore.go`**. Covering one store while the other
+> carries the identical risk is this increment's own *"fix the class, not the instance"* lesson violated inside the
+> fix for M-5.
 
 **The claim-window interaction, which the naive analysis misses.** `memory` counts live + claimed (§3.4), and
 `ClaimGroup` sets `g.claimedLen = len(g.msgs)` (`groupstore.go:151`) without shrinking `g.msgs` — the trim happens
@@ -679,8 +846,8 @@ picture, re-derived at `d2c69fe` (ADR 0033 **D-AP**):
 | Dialect | Transaction wrapper | What serializes same-key adds | Where the check goes |
 |---|---|---|---|
 | **postgres** | `pgRunInTx` (`postgres/groupdialect.go:52`) | `INSERT … ON CONFLICT (group_key) DO UPDATE SET group_key = EXCLUDED.group_key RETURNING created_at` — the `DO UPDATE` **locks the conflicting row**; the comment records it *"serializes same-key adds (H1)"* (`:107-110`) | after that upsert **and** after the member upsert |
-| **mysql** | `mysqlRunInTx` (`mysql/groupdialect.go:48`) | `INSERT … ON DUPLICATE KEY UPDATE group_key = group_key` — takes an **X lock** on the group row directly; the comment records why `INSERT IGNORE` + `SELECT … FOR UPDATE` self-deadlocks (`:93-96`) | after that upsert **and** after `INSERT IGNORE` on the member table |
-| **sqlite** | **`withImmediateConn`** (`sqlite/groupdialect.go:52-77`) — a **dedicated `*sql.Conn`** with raw `BEGIN IMMEDIATE` / `COMMIT` / `ROLLBACK`. **There is no `sqliteRunInTx`.** | `BEGIN IMMEDIATE` itself: a **database-wide write lock**. sqlite's group upsert is `ON CONFLICT (group_key) DO NOTHING` + a **separate** `SELECT created_at` (`:112-124`) — **no row lock, no `RETURNING`** | anywhere inside `withImmediateConn` after the member upsert; the whole-database lock makes placement relative to the group upsert irrelevant |
+| **mysql** | `mysqlRunInTx` (`mysql/groupdialect.go:48`) | `INSERT … ON DUPLICATE KEY UPDATE group_key = group_key` (the statement, `:93-96`) — takes an **X lock** on the group row directly; the **comment** recording why `INSERT IGNORE` + `SELECT … FOR UPDATE` self-deadlocks is `:85-92`, not `:93-96` as revision 2 cited (audit **N-13**) | after that upsert **and** after `INSERT IGNORE` on the member table |
+| **sqlite** | **`withImmediateConn`** (`sqlite/groupdialect.go:52-77`) — a **dedicated `*sql.Conn`** with raw `BEGIN IMMEDIATE` (`:62`) / `COMMIT` / `ROLLBACK`. **There is no `sqliteRunInTx`.** | `BEGIN IMMEDIATE` itself: a **database-wide write lock**. sqlite's group upsert is `ON CONFLICT (group_key) DO NOTHING` + a **separate** `SELECT created_at` (`:112-124`) — **no row lock, no `RETURNING`** | anywhere inside `withImmediateConn` after the member upsert; the whole-database lock makes placement relative to the group upsert irrelevant |
 
 The atomicity claim of §7.1 is **true for all three, for three different reasons.** sqlite's is in fact the
 strongest; it simply cannot be stated once.
@@ -701,15 +868,42 @@ adapter/database/sql/postgres/groupdialect.go:52-68   (mysql/groupdialect.go:48-
 	}
 ```
 
-**Under a caller-supplied `*sql.Tx`** — an explicitly supported Querier, reachable through `WithSharedTransaction` —
-the over-cap member row is **already inserted into the caller's open transaction** when the error is returned, and
-**the caller owns the rollback**. If they commit without matching `msgin.ErrOverflowDropped`, the cap is exceeded
-durably.
+**Under a caller-supplied `*sql.Tx`** the over-cap member row is **already inserted into the caller's open
+transaction** when the error is returned, and **the caller owns the rollback**. If they commit without matching
+`msgin.ErrOverflowDropped`, the cap is exceeded durably.
+
+> 🔴 **WHO CAN REACH THAT BRANCH — revision 2 named a route that does not exist** (audit **N-2**). Revision 2 called
+> the `*sql.Tx` Querier *"reachable through `WithSharedTransaction`"*. It is not reachable from `sql.GroupStore`
+> **at all**:
+>
+> ```
+> adapter/database/sql/groupstore.go:211   func NewGroupStore(db *stdsql.DB, table string, dialect GroupDialect, opts ...GroupStoreOption)
+> adapter/database/sql/groupstore.go:40-42 type groupBase struct { db *stdsql.DB; table string; dialect GroupDialect … }
+> adapter/database/sql/groupstore.go:271   rows, err := s.dialect.AddMember(ctx, s.db, s.table, …)
+> adapter/database/sql/options.go:201      func WithSharedTransaction(r TransactionResolver) Option      ← Option, NOT GroupStoreOption
+> ```
+>
+> The constructor takes a **concrete `*stdsql.DB`**, the base field is a **concrete `*stdsql.DB`**, every dialect
+> call passes `s.db`, and `WithSharedTransaction` belongs to the `NewPollingSource`/`Outbound` **`Option`** family —
+> `NewGroupStore`'s entire option surface is `WithGroupLeaseTTL` (`:140`), `WithGroupLockedBy` (`:155`) and a
+> logger. **The compiler forbids the route revision 2 described.**
+>
+> **The real reachability:** the `*sql.Tx` branch is a **`GroupDialect`-level** contract, exercised only by a
+> **direct dialect caller** — which is exactly what the `harness` test kit is
+> (`harness/groupstore.go:345`, `kit.Group.AddMember(ctx, db, …)` with a `TestKit`-supplied Querier), and what any
+> future first- or third-party caller of the SPI would be.
 
 **This is stated, not engineered away.** A library must not `ROLLBACK` a transaction it does not own — that
-destroys work it cannot see. The precondition is recorded in three normative places: `GroupDialect.AddMember`'s
-interface godoc, `sql.WithMaxGroupMembers`'s option godoc, and **§6 AC-4b**, which drives the branch (revision 1
-had no coverage for it — the harness drives every dialect with a `*sql.DB`).
+destroys work it cannot see. The precondition is recorded in two normative places, **corrected in revision 3**:
+
+1. **`GroupDialect.AddMember`'s interface godoc** — the SPI a direct dialect caller actually reads. *(Revision 2
+   put the second copy on `sql.WithMaxGroupMembers`'s godoc, where it is unreachable: a caller of that option always
+   gets a store that owns its transaction, so the caveat cannot apply to them. That is worse than no caveat.)*
+2. **§6 AC-4b**, which drives the branch through the dialect (revision 1 had no coverage for it at all).
+
+**`sql.WithMaxGroupMembers`'s godoc says the opposite, and it is the true statement for that reader:** *"For a
+store built by `NewGroupStore`, this bound is unconditionally durable — the store always owns the transaction the
+dialect runs in."*
 
 #### 3.6.3 The signature change, and the seven sites it reaches
 
@@ -734,11 +928,42 @@ already depend on the `msgin` root module transitively through `msginsql`, so im
 dependency — `postgres/groupdialect.go` imports only `msginsql` today, and the plan verifies `go mod tidy` leaves
 each dialect's `go.mod` unchanged.
 
-**The live snapshot rides out with the error, at no extra query** (§3.3a). Each dialect's live-member `SELECT`
-(`pgSelectMembers` / `mysqlSelectMembers` / `sqliteSelectMembers`, `claimed_epoch IS NULL`) gains a
-**`LIMIT maxMembers+1`** — which is what makes enforcement (C)'s *"bounds the raw fetch"* claim exact rather than
-approximate. On overflow the just-upserted member is filtered out of the materialized `[]MemberRow` in Go, and the
-remaining rows are returned **with** the error; that is precisely the post-rollback live set.
+**The live snapshot rides out with the error, at no extra query** (§3.3a), and the fetch is bounded — but **not by
+editing the shared helper's SQL**:
+
+> 🔴 **`LIMIT maxMembers+1` CANNOT BE PUT ON `*SelectMembers`; THE HELPER HAS THREE CALLERS AND ONLY ONE HAS A CAP**
+> (audit **N-5**). Revision 2 said *"each dialect's live-member `SELECT` … gains a `LIMIT maxMembers+1`."*
+> Re-derived:
+>
+> ```
+> $ grep -rn "SelectMembers(ctx" adapter/database/sql/{postgres,mysql,sqlite}/groupdialect.go
+> postgres/groupdialect.go:121   pgSelectMembers(…, "claimed_epoch IS NULL")            ← AddMember
+> postgres/groupdialect.go:163   pgSelectMembers(…, "claimed_epoch = <newEpoch>")       ← ClaimGroup
+> postgres/groupdialect.go:307   pgSelectMembers(…, "claimed_epoch IS NULL")            ← ExpiredGroups
+> mysql/groupdialect.go:113 / :161 / :298      — identical three-site shape
+> sqlite/groupdialect.go:131 / :177 / :314     — identical three-site shape
+> ```
+>
+> **`AddMember` is the only one of the three with a `maxMembers` in scope.** As written the instruction is
+> unimplementable at two sites in three; read literally — the `LIMIT` baked into the helper's SQL — it **silently
+> truncates `ClaimGroup`'s claimed set** (a legitimately at-cap group releases an **incomplete aggregate**, the
+> silent data corruption §5 rejects) **and `ExpiredGroups`' recovery set** (the reaper drops members). Neither loss
+> is visible to any acceptance criterion in this spec.
+
+**THE CONTRACT.** Each of `pgSelectMembers` / `mysqlSelectMembers` / `sqliteSelectMembers` gains a **private
+`limit int` parameter, where `0` means unlimited** and is what the helper emits no `LIMIT` clause for.
+**`AddMember` is the only caller that passes a non-zero value** (`maxMembers+1`); `ClaimGroup` and `ExpiredGroups`
+pass **`0`** and keep their current, unbounded behavior exactly. The parameter is unexported, so it adds no
+class-gate key (§6 AC-8.7's reasoning, applied to a helper rather than a method).
+
+**This is a constraint, not a convention, and §6 AC-9 row 15 mutation-proves it:** pass `maxMembers+1` from
+`ClaimGroup` ⇒ an over-cap claimed group is truncated ⇒ a `harness` case fails.
+
+On overflow the just-upserted member is filtered out of the materialized `[]MemberRow` in Go, and the remaining rows
+are returned **with** the error. **That equals the post-rollback live set whenever the live count was ≤ cap before
+the add** — the normal path's precondition. It does **not** hold on the AC-4b path, where a caller-owned `*sql.Tx`
+deliberately keeps `cap+1` rows committed in the caller's transaction; there the returned rows are the *would-be*
+post-rollback set, and the caller owns what is actually durable (§3.6.2).
 
 **The error path costs one extra round-trip, and it is a stated cost** (audit **m-6**). `sql.GroupStore.Add` routes
 every dialect error through `classifyQueryErr` (`groupstore.go:273` → `:91-96`), which runs a `SchemaExists` query
@@ -772,6 +997,11 @@ defect (ADR 0033 **D-AH**):
 > Aggregator re-evaluates the release strategy against that snapshot and releases the group if it is ready, so a
 > full-but-releasable group is not deadlocked by its own bound (§3.3a). Returning `(nil, err)` remains valid and is
 > what every pre-existing implementation does.
+>
+> When the Aggregator acts on that snapshot it may only ever **DOWNGRADE** the implementation's classification —
+> permanent to transient, on positive evidence that the group drained. It never upgrades a transient rejection to
+> permanent. An implementation may therefore treat its own classification as the **conservative floor**: a bug in
+> the Aggregator's drain path costs a retry, never a message the implementation marked recoverable.
 
 **The MAY is deliberate.** A store that cannot cheaply produce the live set on the rejection path must not be
 forced to; `Handle`'s `group == nil` arm keeps it working, it simply forgoes the self-healing.
@@ -875,7 +1105,7 @@ released, never settled, never garbage.
 | | Before | After (revision 2) |
 |---|---|---|
 | Process memory | unbounded — grows until OOM or 48.3 GiB of churn | bounded at `maxGroupMembers` members |
-| Observability | silent, until the process dies | one typed, named `ErrOverflowDropped` per rejected member at the operator's sink, **plus a WARN when the dead-letter fallback fires** — and it works on the shipped zero-value `RetryPolicy` |
+| Observability | silent, until the process dies | one typed, named `ErrOverflowDropped` per rejected member at the operator's sink — and it works on the shipped zero-value `RetryPolicy`. **With no sink at all: one WARN per message, then an Ack** (`consumer.go:1049`, `:1073`). **With a dead-letter sink but no invalid sink: the fallback WARN fires once per CONSUMER, not per message** (`consumer.go:968-973`) — §3.3.1's table (audit **N-11**) |
 | Liveness of a group whose predicate is unsatisfiable | never releases | **still never releases** |
 | Liveness of a group that IS releasable but whose release failed | re-fires on the next member or retry | **re-fires, restored by §3.3a** |
 
@@ -890,8 +1120,18 @@ released, never settled, never garbage.
 **The cap does not, and is not intended to, provide liveness — but after §3.3a it no longer REMOVES any.** The
 remedy for a genuinely stuck group is the one that already ships: `routing.WithGroupTimeout` +
 `routing.WithExpiredGroupChannel`, which expires the group and routes its partial members to a channel the caller
-owns. That remains **opt-in** — and §3.3.1 records the cost of that choice: a caller who *has* set a timeout sees
-messages dead-lettered that their reaper would eventually have admitted.
+owns.
+
+> 🔴 **"That remains opt-in" was false for a durable store, and is corrected here** (audit **N-3**). The **expiry**
+> route is opt-in in both stores — it needs a non-zero cutoff, which only `WithGroupTimeout` supplies. The
+> **reaper itself** is not: `sql.GroupStore.RecoverInterval()` returns the lease TTL, so `Aggregator.Run` sweeps
+> every 5m by default and the Aggregator's godoc calls `Run` **required** for a durable store (§1.2.1). What that
+> default sweep can drain is **crashed-lease groups only** — which is why the classification's premise is *"nothing
+> drains an **unleased** group without an expiry cutoff"* (§3.3.1) and not *"the reaper never sweeps."*
+
+§3.3.1 records the cost of the opt-in expiry route: a caller who *has* set a timeout sees messages dead-lettered
+that their reaper would eventually have admitted — **and, for `sql`, so does a caller who has set nothing**, in the
+stranded-lease case §3.3.1's counter-example box states.
 
 **Rejected: making `WithGroupTimeout` mandatory.** It would be a second, larger behavioral break; it requires a
 paired `WithExpiredGroupChannel` (`NewAggregator` returns `ErrExpiryChannelRequired` otherwise,
@@ -926,26 +1166,44 @@ Specifically required, each cross-referenced from the plan task that writes it s
 
 1. **`memory.WithMaxGroupMembers` / `sql.WithMaxGroupMembers`** — the range `[1, 1<<20]`, the default 65,536 and
    the Spec 016 §3.4 reasoning it inherits, the `ErrOverflowDropped` behavior at the boundary, **what the cap
-   counts** (§3.4 — the two stores differ, and each godoc says which), **the permanent-vs-transient classification
-   and why** (§3.3.1 — including that a permanent rejection terminates at the invalid-message or dead-letter sink
-   rather than retrying), and — for `memory` — the claim-window rejection of §3.5, named as a zero-delay busy-wait
-   under `RetryPolicy{}`.
-2. **`maxGroupMembersCeiling`** (both packages) — a constant godoc in the shape of `maxGroupsCeiling`
-   (`groupstore.go:55-62`) and `completionSizeCeiling` (`aggregator.go:25-33`): what the ceiling means, why this
-   number, the cost basis (time, not bytes — §1.2), **and a cross-reference to the other constant naming the
-   `default ≥ completionSizeCeiling` invariant** that §6 AC-3's AST test now enforces.
+   counts** (§3.4 — the two stores differ, and each godoc says which, **including that the rendered count is
+   "members retained at the moment of the check" and therefore differs by one between the stores** — §3.4a's box),
+   **the permanent-vs-transient classification and why** (§3.3.1 — including that a permanent rejection terminates
+   at the invalid-message or dead-letter sink rather than retrying, **and that with neither sink configured the
+   message is WARNed and ACKed, so the source drops it**), and — for `memory` — the claim-window rejection of §3.5,
+   named as a zero-delay busy-wait under `RetryPolicy{}`. **For `sql` only:** the bound is **unconditionally
+   durable** for a store built by `NewGroupStore`, which always owns its transaction (§3.6.2) — the caller-owned-
+   transaction caveat belongs on the SPI (item 6), not here.
+2. **`defaultMaxGroupMembers` and `maxGroupMembersCeiling`** (both packages, **both named constants — D-AR**) — a
+   constant godoc in the shape of `maxGroupsCeiling` (`groupstore.go:55-62`) and `completionSizeCeiling`
+   (`aggregator.go:25-33`): what each value means, why this number, the cost basis (time, not bytes — §1.2).
+   **The cross-reference naming the `default ≥ completionSizeCeiling` invariant goes on the DEFAULT constant, not
+   on the ceiling** — the ceiling is not part of the invariant. It names `routing.completionSizeCeiling`, the other
+   store's twin, and §6 AC-3.3's test. *(Revision 2's §4, Plan Task 1 Step 7 and Plan Task 3 Step 5 named three
+   different homes — audit **N-4**.)*
 3. **`msgin.MessageGroupStore.Add`** (`groupstore.go:38-45`) — §3.7's contract paragraph, MUST/SHOULD/MAY intact.
 4. **The three release-path godocs** — §3.8, plus `msgin.HeaderSequenceSize` at `message.go:24` and
    `routing.NewAggregator` at `aggregator.go:327`.
 5. **`memory.GroupStore.Add`'s existing bare `ErrOverflowDropped`** (`groupstore.go:124`) — upgraded to §3.3's
    wrapped shape **in the same commit**, and its godoc (`groupstore.go:112-117`) updated to name both overflow
    arms rather than only the group-count one.
-6. **`GroupDialect.AddMember`** (`groupdialect.go:126`) — the in-transaction enforcement contract, **and §3.6.2's
-   precondition**: the bound is enforced by rollback only when the dialect owns the transaction; under a
-   caller-supplied `*sql.Tx` the caller owns the rollback and MUST treat `msgin.ErrOverflowDropped` as a rollback
-   trigger.
+6. **`GroupDialect.AddMember`** (`groupdialect.go:126`) — three edits, and **the first is a CORRECTION, not an
+   addition**:
+   - 🔴 **Correct the shipped sentence at `groupdialect.go:109-113`**, which still reads *"takes the **GROUP ROW
+     LOCK** (SELECT ... FOR UPDATE or equivalent) BEFORE reading or writing any member row"* — **the exact claim
+     §3.6.1 falsified for sqlite** (audit **N-9**). Replace it with: *"serializes concurrent same-key adds — by a
+     group-row lock on postgres/mysql, by `BEGIN IMMEDIATE`'s database-wide write lock on sqlite (D-AP)."*
+     Revision 2 corrected this bundle's prose and left the shipped godoc — the one a third-party dialect author
+     reads — asserting the falsified mechanism.
+   - The **in-transaction enforcement contract** (the count, the cap, the rollback).
+   - **§3.6.2's precondition**, whose normative home this is (§3.6.2, audit **N-2**): the bound is enforced by
+     rollback only when the dialect owns the transaction; a **direct dialect caller** supplying a `*sql.Tx` owns the
+     rollback and MUST treat `msgin.ErrOverflowDropped` as a rollback trigger.
 7. **`routing.Aggregator.Handle`** — §3.3a's snapshot-with-error branch: what a non-nil group beside a non-nil
-   error means and why the release is re-evaluated rather than the member re-admitted.
+   error means, why the release is re-evaluated rather than the member re-admitted, the **downgrade-only** direction
+   rule (§3.3a.1), and — explicitly — **why `claim == nil` returns a retryable error here where the success path
+   returns `nil` at `aggregator.go:438-439`** (the member was never stored, so `nil` would Ack an unstored message).
+   Without that sentence the divergence reads as a bug and gets "fixed."
 
 > **The recurring failure mode this list exists to prevent** — the project's stored lesson *"docs can contradict
 > the code they describe"*: all three fix rounds in Plan 028 were godoc, not logic, and **round 1 of this audit
@@ -1008,8 +1266,22 @@ four fail. Without this assertion the four cases pass against revision 1's hot-s
 would have caught audit M-6, and no other case does.** Over a `memory.GroupStore` with `WithMaxGroupMembers(4)` and
 a release strategy that fires at 4:
 
-1. Add four **id-less** messages (`msgin.Message` with an empty id) via `Handle`; arrange the release to **fail**
-   on its first attempt (an output channel whose `Send` returns an error once, then succeeds).
+> 🔴 **THE FIXTURE IS PINNED BY NAME, AND ASSERTED, BECAUSE THE OBVIOUS CONSTRUCTOR CANNOT PRODUCE IT** (audit
+> **N-6**). `msgin.New` **always** stamps an id — `if cfg.id == "" { cfg.id = NewID() }` (`message.go:178-180`) —
+> so even `msgin.New(p, msgin.WithID(""))` yields an id-**ful** message. The **only** id-less route in the public
+> API is **`msgin.NewMessage(payload, headers)`** (`message.go:198`), documented *"WITHOUT stamping
+> msgin.message-id/msgin.timestamp"*, called with headers carrying **no `HeaderMessageID`**.
+>
+> An implementer reaching for `msgin.New` writes an id-ful test that **passes while proving nothing** — the dedup
+> branch (`adapter/memory/groupstore.go:130-131`) returns the snapshot with a nil error and `Handle` reaches the
+> predicate anyway, so M-6's deadlock is never entered — and **AC-9 row 3c's mutant survives**, because folding the
+> cap check back inside `if id != ""` changes nothing for an id-ful message. This is the one case in the spec whose
+> entire discriminating power is a property of its **input**.
+
+1. Add four **id-less** messages via `Handle`, built with **`msgin.NewMessage(payload, headers)`** and headers
+   carrying no `HeaderMessageID`. **`require.Empty(t, m.ID())` is the case's FIRST assertion**, before any
+   `Handle` call — the fixture is asserted, never assumed. Arrange the release to **fail** on its first attempt (an
+   output channel whose `Send` returns an error once, then succeeds).
 2. The 4th `Handle` returns the release error; the group holds 4 members, unleased, complete.
 3. **Re-`Handle` the same id-less message.** Assert: the release **fires again and succeeds** (observed on the
    subscriber), and the returned error is `msgin.ErrOverflowDropped` with `msgin.IsPermanent(err) == false` —
@@ -1033,17 +1305,26 @@ id-**ful** members present: `Add` a fifth with id `"e"` ⇒ `ErrOverflowDropped`
 merely `errors.Is`: the site name, the offending value and the `[1, 1048576]` range — one at `ceiling+1`, one at
 `0`. This is Spec 016 AC-2b's rule, and it is the case that would have caught revision 2's `"0 exceeds 1048576"`.
 
-**AC-2c — the OVERFLOW render is true, prefix included.** Separate from AC-2b, which covers construction-time
-`checkRange`. Per store, assert the full runtime render of a permanent over-cap rejection:
+**AC-2c — the OVERFLOW render is true, prefix included, AND the two stores' counts are pinned separately.**
+Separate from AC-2b, which covers construction-time `checkRange`. Per store, assert the **full** runtime render of a
+permanent over-cap rejection, with `WithMaxGroupMembers(4)`:
 
 ```
-msgin: permanent: msgin: message dropped by overflow policy: memory.GroupStore.Add: group "k" holds 4 members, limit 4
+memory: msgin: permanent: msgin: message dropped by overflow policy: memory.GroupStore.Add: group "k" holds 4 members, limit 4
+sql:    msgin: permanent: msgin: message dropped by overflow policy: sql.GroupStore.Add: group "k" holds 5 members, limit 4
 ```
+
+> 🔴 **THE `sql` COUNT IS `cap+1`, DELIBERATELY, AND MUST BE PINNED** (audit **N-8**). `memory` checks **before**
+> the append; the dialects check **after** the member upsert (§3.6.1 — required, so an idempotent re-add at cap
+> stays a no-op). Both render *"members retained at the moment of the check"* (§3.4a's box). Revision 2 pinned only
+> `memory`'s render, so `sql` could render anything and stay green. **Killing mutant for this half:** normalise
+> `sql` to `len(members)-1` ⇒ the `sql` case fails.
 
 The doubled `msgin:` is the shipped `permanentError.Error()` prefix (`reliability.go:13`) over the sentinel's own
-text; it is asserted as written rather than assumed away. The **leased** twin asserts the same string *without*
-the `msgin: permanent: ` prefix. **Killing mutants:** drop the wrap ⇒ the permanent case fails; add the wrap to the
-leased arm ⇒ the leased case fails.
+text; it is asserted as written rather than assumed away. The **leased** twin (`memory` only — every `sql` over-cap
+rejection is the not-leased case, §3.3.1) asserts the same string *without* the `msgin: permanent: ` prefix.
+**Killing mutants:** drop the wrap ⇒ the permanent case fails; add the wrap to the leased arm ⇒ the leased case
+fails.
 
 **AC-3 — the `WithCompletionSize(1<<16)` boundary still releases, proven at small `n` and defended at the
 ceiling.** §3.5's arithmetic, made executable:
@@ -1056,19 +1337,29 @@ ceiling.** §3.5's arithmetic, made executable:
 2. **Ceiling-level defence, constructor-only:** `routing.NewAggregator(..., WithCompletionSize(1<<16))` and
    `memory.NewGroupStore()` (default cap) both construct without error, and
    `memory.NewGroupStore(WithMaxGroupMembers(1<<16))` does too.
-3. **🔴 THE INVARIANT ITSELF, MECHANICALLY ENFORCED — an AST test. NEW in revision 2 (audit M-5; ADR 0033 D-AQ).**
-   A root blackbox test (`package msgin_test`) that:
-   - parses `routing/aggregator.go` and `adapter/memory/groupstore.go` with `go/parser` — the identical technique
-     `sizing_option_class_gate_test.go:280` already uses, and one to which **unexportedness and package boundaries
-     are irrelevant**;
-   - locates `const completionSizeCeiling` and the `maxGroupMembers` default by name on the `*ast.GenDecl` tree,
-     **failing loudly if either declaration is not found** (so it cannot pass vacuously on a zero value);
-   - evaluates both `1 << N` `*ast.BinaryExpr` values;
-   - asserts `defaultMaxGroupMembers >= completionSizeCeiling`, with a failure message naming both constants, both
-     files and both values.
+3. **🔴 THE INVARIANT ITSELF, MECHANICALLY ENFORCED — an AST test. NEW in revision 2 (audit M-5; ADR 0033 D-AQ);
+   REPAIRED in revision 3 (audit N-4).** A root blackbox test (`package msgin_test`) that:
+   - parses **three** files with `go/parser` — `routing/aggregator.go`, `adapter/memory/groupstore.go` **and
+     `adapter/database/sql/groupstore.go`** — the identical technique `sizing_option_class_gate_test.go:280`
+     already uses, and one to which **unexportedness and package boundaries are irrelevant**;
+   - locates `const completionSizeCeiling` and **`const defaultMaxGroupMembers` in EACH store package**, by name,
+     on the `*ast.GenDecl` tree, **failing loudly if any of the three declarations is not found** (so it cannot
+     pass vacuously on a zero value);
+   - evaluates the `1 << N` `*ast.BinaryExpr` values;
+   - asserts `defaultMaxGroupMembers >= completionSizeCeiling` **for both stores**, with a failure message naming
+     the constants, their files and their values.
 
-   **Killing mutants:** (a) change either literal so the relation is violated ⇒ fails; (b) rename one constant
-   without updating the test ⇒ the not-found guard fires rather than the test silently passing.
+   > 🔴 **Two repairs, both from audit N-4.** (a) **There must be a constant to parse.** `adapter/memory`'s shipped
+   > precedent declares its *ceiling* as a `const` (`:62`) and its *default* as a bare literal
+   > (`maxGroups: 1024`, `:98`); a faithful implementation of that precedent gives this test nothing to find and
+   > **fires the not-found guard**. §3.2 / **D-AR** therefore require a named `defaultMaxGroupMembers` in both
+   > packages. (b) **`sql` carries the identical risk** — same default, same Aggregator, same `WithCompletionSize`
+   > — so covering only `memory` is the *"fix the class, not the instance"* lesson violated inside the fix for M-5.
+
+   **Killing mutants:** (a) change any of the three literals so a relation is violated ⇒ fails; (b) rename one
+   constant without updating the test ⇒ the not-found guard fires rather than the test silently passing;
+   (c) **delete the `sql` file from the parse set ⇒ the test must fail, not shrink to two assertions** (the
+   file list is asserted, not iterated over whatever happens to exist).
 
 > **What AC-3 does NOT do, stated rather than left as a gap.** It does **not** execute a 65,536-member group.
 > Spec 016 §1.4 measured that at **8.6 s and 48.3 GiB of allocation churn**, and `completionSizeCeiling`'s shipped
@@ -1095,15 +1386,25 @@ existing `dbtest`/`harness` Docker-backed conformance runner (`use-testcontainer
 5. **The rejection is `Permanent`:** `msgin.IsPermanent(err) == true` (§3.3.1 — a `sql` live set is by definition
    unclaimed, so every `sql` over-cap rejection is the not-leased case). **Killing mutant:** drop the wrap ⇒ fails.
 
-**AC-4b — the caller-owned-transaction precondition is exercised. NEW in revision 2 (audit M-2).** Revision 1 had
-**no** coverage for the `*sql.Tx` branch of `pgRunInTx`/`mysqlRunInTx` (`return fn(tx)` — no rollback), and the
-harness drives every dialect with a `*sql.DB`. Against a real database:
+**AC-4b — the caller-owned-transaction precondition is exercised, AT THE DIALECT. NEW in revision 2 (audit M-2);
+entry point corrected in revision 3 (audit N-2).** Revision 1 had **no** coverage for the `*sql.Tx` branch of
+`pgRunInTx`/`mysqlRunInTx` (`return fn(tx)` — no rollback). Against a real database:
 
-1. `BeginTx` on the caller's side; pass the `*sql.Tx` as the Querier; `Add` the `cap+1`-th member.
+1. `BeginTx` on the caller's side, then call **`kit.Group.AddMember(ctx, tx, …)` — the DIALECT, directly**, for the
+   `cap+1`-th member.
+
+   > 🔴 **Not `GroupStore.Add`.** `sql.GroupStore` cannot reach this branch: `NewGroupStore` takes a concrete
+   > `*stdsql.DB`, `groupBase.db` is a concrete `*stdsql.DB`, and `:271` always passes `s.db` (§3.6.2). Revision 2's
+   > *"pass the `*sql.Tx` as the Querier; `Add` …"* has no executable reading. The `*sql.Tx` branch is a
+   > **`GroupDialect`-level** contract and the harness is exactly the direct dialect caller that exercises it.
+
 2. Assert `errors.Is(err, msgin.ErrOverflowDropped)` — the rejection still fires.
 3. Assert that **the member row IS present inside the open transaction** (a `SELECT` on that same `*sql.Tx` sees
    `cap+1`), and that after the caller's own `Rollback` it is gone. **This documents the precondition as tested
    behavior rather than as a hope**, and is the executable form of §3.6.2.
+4. Assert the **contrapositive for the shipped store**: a `sql.GroupStore` built by `NewGroupStore` and driven to
+   the same overflow leaves exactly `cap` rows committed — i.e. the bound **is** unconditionally durable there
+   (§3.6.2's godoc sentence, made executable). This is AC-4.2's row count, re-used as the pair to this case.
 
 **AC-4c — the overflow error survives `classifyQueryErr` intact (audit m-6).** Against a real database with the
 table present: assert `errors.Is(err, msgin.ErrOverflowDropped)` **and** `msgin.IsPermanent(err)` after the error
@@ -1126,10 +1427,28 @@ different points (§3.6.1)**, so the harness case asserts *behavior*, never stat
 future contributor will violate: every group-growth test uses a cap of ≤ 16 members. The ceiling values are
 exercised by **constructors only**.
 
-**AC-7 — the SPI contract has a conformance case on both first-party stores.** `memory.GroupStore` and
-`sql.GroupStore` each get a case asserting §3.7's requirement through the `msgin.MessageGroupStore` interface —
-i.e. driven through the interface type, not the concrete type, so the case is copyable by a third-party
-implementer.
+**AC-7 — the SPI's MUST-report clause, asserted through the interface type.**
+
+> 🔴 **REVISION 2'S AC-7 WAS NOT EXECUTABLE** (audit **N-12**). It said *"a case asserting **§3.7's requirement**"*
+> — but §3.7 is a **four-clause** paragraph (MUST-bound, MUST-report, SHOULD-`Permanent`, MAY-snapshot), and three
+> of the four are already covered: the MUSTs by AC-1/AC-4, the SHOULD by AC-1/AC-4.5, the MAY by AC-1b/AC-4.4.
+> Naming a section instead of a clause is the unexecutable-AC defect Plan 029's audit found in **five consecutive
+> rounds**, and §6's own opening sets executability as the standing bar. Named, it is:
+
+`memory.GroupStore` and `sql.GroupStore` each get **one** case for §3.7's **MUST-report** clause, with the store
+**held in a `msgin.MessageGroupStore` variable** rather than its concrete type:
+
+```go
+var store msgin.MessageGroupStore = /* memory.NewGroupStore(...) | sql.NewGroupStore(...) */
+_, err := store.Add(t.Context(), "k", overCapMessage)
+require.ErrorIs(t, err, msgin.ErrOverflowDropped)
+```
+
+**What this uniquely buys** is the interface-typed drive: the case is copyable verbatim by a third-party
+implementer, and it proves the contract is satisfiable through the SPI rather than only through a concrete type.
+**Killing mutant:** change either store to return a bare, non-wrapping error ⇒ the `ErrorIs` fails. *(If a future
+reviewer judges the interface-typed drive to be a style requirement rather than an assertion, the correct move is
+to delete AC-7 and fold the requirement into AC-1 and AC-4 — not to restore a section-level AC.)*
 
 **AC-8 — the class gate is updated, and its blind spot is STATED, not silently widened.**
 
@@ -1204,8 +1523,13 @@ gate, each of these is a hot-path or typed-error branch needing a named covering
 | **10** | **`g.leased` ⇒ transient** | same | wrap unconditionally ⇒ AC-2c's leased twin fails |
 | **11** | **`Add` returns the live snapshot with the error** | `memory.GroupStore.Add` / each dialect | return `nil`/empty rows ⇒ **AC-1b** step 3 and **AC-4.4** fail |
 | **12** | **`Handle`'s snapshot-with-error branch re-fires the release** | `routing/aggregator.go`, §3.3a | delete the branch (`return err` unconditionally) ⇒ **AC-1b** fails |
+| **12a** | **`rerr != nil` — the release STRATEGY errored ⇒ the store's classification stands** | same, §3.3a.1 exit 2b | drop `rerr != nil` from the `||` ⇒ a strategy returning `(true, err)` gets its group **claimed and released** |
+| **12b** | **`cerr != nil` — `ClaimGroup` failed ⇒ return `cerr`** | same, exit 3 | return `err` instead ⇒ the case's assertion on the `ClaimGroup` error fails (the overflow classification would mask a store fault) |
+| **12c** | **`claim == nil` — another holder ⇒ TRANSIENT, diverging from the success path's `nil`** | same, exit 4 (cf. `aggregator.go:438-439`) | return `nil` ⇒ the member is silently lost and no other case notices |
+| **12d** | **`relErr != nil` — the release failed ⇒ return the RELEASE error** | same, exit 5 | return the overflow error ⇒ the case's message assertion fails (an operator would be pointed at the cap, not the output channel) |
 | **13** | **`Handle` returns a TRANSIENT error after a successful drain** | same | return the store's permanent error ⇒ AC-1b step 4 never runs; return `nil` ⇒ AC-1b's silent-loss assertion fails |
-| **14** | **the `default ≥ completionSizeCeiling` AST invariant** | root blackbox test, AC-3.3 | change either literal ⇒ fails; rename a constant ⇒ the not-found guard fires |
+| **14** | **the `default ≥ completionSizeCeiling` AST invariant, BOTH stores** | root blackbox test, AC-3.3 | change any of the three literals ⇒ fails; rename a constant ⇒ the not-found guard fires; drop the `sql` file from the parse set ⇒ fails |
+| **15** | **`ClaimGroup` / `ExpiredGroups` pass `limit = 0` to `*SelectMembers`** | `harness` conformance (AC-5), on all three dialects | pass `maxMembers+1` from `ClaimGroup` ⇒ an over-cap claimed group is **truncated** and the harness case fails (§3.6.3, audit **N-5**) |
 
 > **Branch 2 is the one a plausible implementation gets wrong and no other case catches.** A cap check written as
 > `if len(g.msgs) > s.maxGroupMembers` (after the append) admits `cap+1` members — the group is bounded, every
@@ -1214,6 +1538,12 @@ gate, each of these is a hot-path or typed-error branch needing a named covering
 > **Branches 9 and 12 are the two that round 1 had to find by reading the runtime**, not by reading this spec.
 > Neither is visible to any acceptance criterion revision 1 wrote: branch 9's absence is a green suite with an
 > infinite production hot spin, and branch 12's absence is a green suite with a permanently deadlocked group.
+>
+> **Branches 12a-12d and 15 are round 2's equivalents** (audit **N-7**, **N-5**). 12a-12d are the four exits of
+> §3.3a's branch that revision 2's tables did not name — CLAUDE.md's coverage gate makes every one of them a
+> delivery blocker, and 12c is a **deliberate divergence** from the success path that nothing tested. **15 is the
+> sharpest of the five**: without it, a `LIMIT` that leaks into `ClaimGroup` silently releases incomplete
+> aggregates — the data corruption §5 rejects, arrived at through a shared helper rather than a design choice.
 
 **AC-10 — vacuity probes, per the project's standing rule** (*"a gate that has never failed proves nothing"*).
 Each gate half is proven to fire: plant a `WithMaxGroupMembers`-shaped option (half 1 must report exactly one extra
@@ -1240,8 +1570,10 @@ re-run.**
 **In:** the per-group member bound at both first-party stores; the two new options with their ceilings, defaults,
 godoc and typed errors; **the permanent/transient classification of the overflow error (§3.3.1)**; **the
 snapshot-with-error contract and `Aggregator.Handle`'s release re-evaluation (§3.3a)**; the `GroupDialect.AddMember`
-signature change and its three dialect implementations, each at its own enforcement point (§3.6.1) and each gaining
-a `LIMIT maxMembers+1` on the live-member `SELECT`; the `harness` conformance case; the `MessageGroupStore` SPI
+signature change and its three dialect implementations, each at its own enforcement point (§3.6.1); the private
+`limit int` parameter on the three `*SelectMembers` helpers, with `AddMember` the only non-zero caller (§3.6.3);
+the named `defaultMaxGroupMembers` / `maxGroupMembersCeiling` constants in both store packages (§3.2); the
+`harness` conformance case; the `MessageGroupStore` SPI
 contract addition; the three release-path godoc cross-references; the existing bare `ErrOverflowDropped` upgraded
 to the wrapped shape; the class-gate update and its new stated limitation; **the `default ≥ completionSizeCeiling`
 AST invariant test (§6 AC-3.3)**.
@@ -1277,19 +1609,22 @@ real reasoning, and it has three parts:
    | Engine | Serializer | Strength |
    |---|---|---|
    | postgres | the `ON CONFLICT … DO UPDATE … RETURNING` group-row **row lock** (`postgres/groupdialect.go:107-110`, comment: *"serializes same-key adds (H1)"*) | per-key |
-   | mysql | the `ON DUPLICATE KEY UPDATE` group-row **X lock** (`mysql/groupdialect.go:93-96`) | per-key |
-   | sqlite | **`BEGIN IMMEDIATE`**'s database-wide **write lock** (`sqlite/groupdialect.go:63`). There is no group row lock and no `RETURNING` — sqlite uses `DO NOTHING` + a separate `SELECT` | whole-database — *stronger* |
+   | mysql | the `ON DUPLICATE KEY UPDATE` group-row **X lock** (statement `mysql/groupdialect.go:93-96`; the explanatory comment is `:85-92`) | per-key |
+   | sqlite | **`BEGIN IMMEDIATE`**'s database-wide **write lock** (`sqlite/groupdialect.go:62`, not `:63` — audit **N-13**). There is no group row lock and no `RETURNING` — sqlite uses `DO NOTHING` + a separate `SELECT` | whole-database — *stronger* |
 
    Two instances adding concurrently to a group at `cap-1` therefore serialize on all three: one commits, the other
    counts `cap`, exceeds, and rolls back. **Enforcement (A) would NOT have this property** — its check runs after
    the transaction, so N instances could each commit past the cap. This is a second, independent reason for
    choosing (C).
 
-2b. **🔴 The rollback is the dialect's only when the dialect owns the transaction** (§3.6.2, audit **M-2**). Under a
-   caller-supplied `*sql.Tx`, `pgRunInTx`/`mysqlRunInTx` take the `return fn(tx)` branch — no rollback — so the
-   over-cap row sits in the **caller's** open transaction and the caller owns the outcome. Cross-instance atomicity
-   is unaffected (the lock is still held for the caller's transaction's duration, which is *longer*), but
-   *durability of the bound* is the caller's responsibility on that path. Stated in godoc and covered by AC-4b.
+2b. **🔴 The rollback is the dialect's only when the dialect owns the transaction** (§3.6.2, audit **M-2**, entry
+   point corrected per audit **N-2**). Under a `*sql.Tx` Querier — reachable **only by a direct dialect caller**,
+   never through `sql.GroupStore`, whose `db` field is a concrete `*stdsql.DB` — `pgRunInTx`/`mysqlRunInTx` take
+   the `return fn(tx)` branch, so the over-cap row sits in the **caller's** open transaction and the caller owns
+   the outcome. Cross-instance atomicity is unaffected (the lock is still held for the caller's transaction's
+   duration, which is *longer*), but *durability of the bound* is the caller's responsibility on that path.
+   **For the shipped `sql.GroupStore` the bound is unconditionally durable.** Stated on `GroupDialect.AddMember`'s
+   godoc and covered by AC-4b.
 3. **🔴 Instances MUST agree on the cap.** A per-instance configuration over a shared store means instance A with
    `WithMaxGroupMembers(1000)` and instance B with the 65,536 default will disagree: B grows the group past 1000,
    and A then dead-letters **every** subsequent member for that key while B continues normally — a partition of the
@@ -1327,11 +1662,20 @@ starts. **Item 5 is new in revision 2 and is now the most consequential of them.
    ADR 0033 **D-AQ**). It *is* enforceable, by the `go/parser` technique the class gate already ships, and §6 AC-3.3
    now specifies the test. No public surface is exported; nothing is accepted as drift. **Do not re-open this as an
    accepted limitation.**
-5. **🔴 NEW — the permanent classification of a not-leased over-cap rejection** (§3.3.1, ADR 0033 **D-AM**). A
-   `Permanent` rejection **terminates** the message at the invalid-message or dead-letter sink; a caller who has
-   configured `WithGroupTimeout` would, under the old transient classification, have had that message admitted once
-   the reaper expired the group. So this trades *"a message that might have succeeded later"* for *"no unlogged
-   infinite hot spin under the shipped defaults."*
+5. **🔴 NEW in revision 2, WIDENED in revision 3 — the permanent classification of a not-leased over-cap
+   rejection** (§3.3.1, ADR 0033 **D-AM**). A `Permanent` rejection **terminates** the message at the
+   invalid-message or dead-letter sink — **and with neither sink configured it is WARNed and ACKed, so the source
+   drops it** (§3.3.1, audit **N-11**). A caller who has configured `WithGroupTimeout` would, under the old
+   transient classification, have had that message admitted once the reaper expired the group. So this trades
+   *"a message that might have succeeded later"* for *"no unlogged infinite hot spin under the shipped defaults."*
+
+   > 🔴 **The exposure is wider than revision 2 stated** (audit **N-3**). For `sql` it reaches the **default**
+   > configuration: a group at cap that also holds a **stranded lease** is surfaced by the 5m default sweep
+   > (`RecoverInterval() == leaseTTL`), claimed, and drained — so D-AM dead-letters members that the *default*
+   > `sql` configuration would have admitted one tick later, not only members a `WithGroupTimeout` caller would
+   > have. §1.2.1 and §3.3.1's counter-example box carry the derivation. **This does not change the
+   > recommendation** — a 5m wait is not a reason to prefer an unlogged infinite spin — but the user is entitled to
+   > see the true width of the trade before ratifying it.
    *Recommendation: permanent. A hot spin is production-down and silent; a dead-letter is recoverable and named,
    and [CLAUDE.md](../../CLAUDE.md)'s Sensible-defaults gate says to fail safe. But this is a genuine trade and the
    user should see it.* **Alternatives, if the recommendation is rejected:** (a) keep transient but make the
@@ -1340,11 +1684,22 @@ starts. **Item 5 is new in revision 2 and is now the most consequential of them.
    know the Aggregator's configuration, so it needs a new SPI signal; (c) drop the default cap entirely and ship
    the option opt-in (§3.9's rejected alternative), which at least does not convert an unbounded group into a
    spinning one. *Reversal cost: one branch per store.*
-6. **🔴 NEW — `Aggregator.Handle` gains a second release-firing site** (§3.3a, ADR 0033 **D-AN**). Releasing from
-   the error branch is more surface to keep correct than releasing only from the success branch. It is mitigated by
-   routing both through the same `a.release` helper and by AC-1b. *Recommendation: accept — the alternative is the
-   M-6 deadlock, and no cheaper fix was found. If round 2 disagrees, it must supply one; do not silently fall back
-   to "accepted and documented".*
+6. **🔴 NEW in revision 2 — `Aggregator.Handle` gains a second release-firing site** (§3.3a, ADR 0033 **D-AN**).
+   Releasing from the error branch is more surface to keep correct than releasing only from the success branch. It
+   is mitigated by routing both through the same `a.release` helper and by AC-1b. *Recommendation: accept — the
+   alternative is the M-6 deadlock, and no cheaper fix was found.* **Round 2 did not disagree and supplied no
+   cheaper fix — but it measured the surface at SIX exits where the artifacts covered four** (§3.3a.1, audit
+   **N-7**), one of which (`claim == nil`) is a deliberate, previously undocumented divergence from
+   `aggregator.go:438-439`. Revision 3 covers all six.
+7. **🔴 NEW in revision 3 — named `defaultMaxGroupMembers` constants deviate from a shipped precedent**
+   (§3.2, ADR 0033 **D-AR**). `adapter/memory` declares its default as a bare `maxGroups: 1024` literal; this
+   increment declares both new defaults as `const`s so §6 AC-3.3 has something to parse. *Recommendation: accept —
+   a mechanically-enforced invariant is worth one constant per package, and the alternative is an AST test that
+   fires its own not-found guard on a faithful implementation. Reversal cost: two declarations, and AC-3.3 is lost.*
+8. **🔴 NEW in revision 3 — a private `limit int` parameter on the three `*SelectMembers` helpers**
+   (§3.6.3, ADR 0033 **D-AS**). *Recommendation: accept — the alternative readings of revision 2's instruction are
+   "unimplementable" or "silently truncate `ClaimGroup` and `ExpiredGroups`". Reversal cost: one parameter per
+   dialect; enforcement (C)'s "bounds the raw fetch" claim degrades to approximate.*
 
 **Also recorded, out of scope, for `docs/HANDOVER.md` §6:**
 
