@@ -1,128 +1,176 @@
 # Session handover — msgin
 
-> **READ FIRST.** Read `CLAUDE.md`, then this file. **Trust `git log` and the tree over this document.** Every
-> count below was measured when written; **re-derive before relying on one** — that has failed in fourteen
-> consecutive handovers, including several inside the session that wrote this one.
+> **READ FIRST.** Read `CLAUDE.md`, then this file, then the governing spec/plan/ADR named in §3 — and **trust
+> those files and `git log` over this document.** Every count below was measured when written; **re-derive before
+> relying on one.** That instruction has now failed in fifteen consecutive handovers, including twice inside the
+> session that wrote this one — where an adversarial audit corrected *this session's own* freshly-derived counts.
 >
-> ### ✅ PLAN 029 IS DELIVERED, MERGED AND PUSHED. `origin/main` = `5dbbf1d`. Nothing is in flight.
-> ### Next: pick a backlog item from §6. Item 7 is new and the most substantive.
+> ### ⚠️ THIS SESSION WROTE **NO GO CODE**. Two `docs:` commits sit on a feature branch. Nothing is merged or pushed.
+> ### Next: the **Plan 031 adversarial audit** (§5). It is a hard CLAUDE.md gate and it has not run.
 >
 > | | State |
 > |---|---|
-> | Branch | **`main`**, clean. `fix/sizing-option-bounds` is merged and still exists locally — see §5 |
-> | `main` | **`5dbbf1d`** — merged `--no-ff` and pushed; `git ls-remote origin main` confirms |
+> | Branch | **`chore/backlog-sweep-post-029`**, clean, **2 commits ahead of `main`** |
+> | `main` | **`2b2dec1`** — unchanged this session; `origin/main` identical |
 > | Working tree | **clean** |
-> | Suite | **11/11 root packages green** under `-race -shuffle=on` at `5dbbf1d` |
-> | Exported surface | **delta ZERO** vs the branch point — 442 decls, AST-diffed non-vacuously |
+> | Go files changed on branch | **ZERO** (`git diff --name-only main..HEAD -- '*.go' | wc -l` → 0) |
+> | Suite | **11/11 root packages green** under `-race -shuffle=on`, measured at `2b2dec1`; no Go file has changed since, so it still holds |
 > | Tags | **zero, as always.** Do NOT propose tagging |
 
-## 1. What Plan 029 delivered
+## 1. What this session did
 
-**Nine exported sizing options gained a stated per-knob ceiling**, enforced *before* the hazard and reported
-through the **existing** typed sentinel. Before this, each panicked, corrupted runtime state, or silently stopped
-bounding what it exists to bound at a large `n`.
+It worked the **backlog in the previous handover's §6** — the user asked for all of it, continuously, while away.
+It produced **design and adjudication, not implementation**, and stopped at CLAUDE.md's ~60% context rule.
 
-| Package | Knobs | Ceiling |
+| Commit | What |
+|---|---|
+| `2c4aa98` | **Spec 017 + ADR 0033 + Plan 031** — the group-member bound (backlog item 7). **UNAUDITED.** |
+| `b54fbbe` | **Plan 030 rev 2 + its immutable audit record** — backlog items 5, 8, 4; and **item 2 closed WONTFIX** |
+
+### The one result worth reading even if you read nothing else
+
+**Backlog item 2 is CLOSED-WONTFIX — it was never a defect.** Collapsing the seven duplicated delegator
+nil-option pre-check loops turns the **Spec 015 AC-7 guard gate red at all seven sites**: `hasNilElementGuard`
+(`option_guard_gate_test.go:219-238`) clears a parameter only on an `*ast.RangeStmt` over that parameter **inside
+the constructor's own body**, and a helper call is invisible to it (the helper is non-variadic, so it is never
+scanned). The gate already ships a committed probe — `TestOptionGuardRecognizer/PROBE qualified type —
+msghttp.Option, unguarded delegator` — asserting exactly the post-refactor shape is unguarded.
+
+The duplication is the deliberate consequence of **two ratified decisions acting together**: ADR 0031 D-R chose
+per-package duplication over exporting an internal from root, and the gate then enforces the inline loop shape.
+Repairing it means amending a shipped spec **and** ADR, and weakening a gate whose syntactic strictness is the
+point — to net **~14 lines** (the backlog's "~35" is gross, not net). **The gate is working as designed. Do not
+re-propose this without first deciding to amend Spec 015 AC-7.** Full evidence chain: Plan 030 rev 2, decision
+**D1**.
+
+## 2. The backlog was wrong about almost everything — re-derive, don't trust
+
+Two verification passes plus one adversarial audit corrected **three of the four** mechanical items, and the audit
+then corrected *this session's* corrections. Both layers are recorded so the drift is auditable:
+
+| Item | Backlog said | Session derived | Audit corrected to |
+|---|---|---|---|
+| 2 — dedup loops | 7 sites, ~35 lines | 7 sites, ~14 net | **CLOSED-WONTFIX** |
+| 5 — false godoc | 4 sites | 11 sites | **16** (8 production + 8 test) |
+| 8 — 32-bit overflow | "fails in 4 packages" | 24 compile errors | 24, but **split by arm**, not one value |
+| 4 — gin ADR | ADR missing | + plan number wrong in 6 places | + `docs/rfcs/` never swept; more sites |
+
+**Why item 5 kept growing:** `grep -rn "first statement"` returns 19 hits, but the phrase **wraps across comment
+lines**; a wrap-tolerant scan returns 24. One missed site (`adapter/http/helpers.go:16-17`) is the **production
+twin** of the very inversion this session's own plan called "the more serious error" while fixing only the test
+copy. Plan 030 rev 2 Task 1 now states the invariant instead of enumerating: *no comment may assert a statement is
+a function's first statement when `fd.Body.List[0]` is a different statement.*
+
+**Why item 8 can't take one value:** the class gate's **six `safe`-arm rows** (`sizing_option_class_gate_test.go`
+`:568, :587, :612, :634, :647, :666`) assert a knob *accepts* an absurd value and its product stays usable "past
+the point where a buggy comparison (e.g. an int32 truncation) would misbehave" (`:544-547`). `1<<30` **is** an
+int32 value, so converting them leaves the assertions passing while probing nothing. They take `math.MaxInt` —
+legal there precisely because those rows assert `require.NoError` and carry **no** decimal string, which is the
+objection the old handover recorded against a `math.MaxInt` constant. Reject-arm sites take `1<<30`.
+
+## 3. Traceability — read these before acting
+
+- `CLAUDE.md` (binding; workflow, gates, dependency policy, reporting format)
+- **Item 7 (next up):** [`docs/specs/017-group-member-bounds.md`](specs/017-group-member-bounds.md) ·
+  [`docs/adrs/0033-group-member-bounds.md`](adrs/0033-group-member-bounds.md) ·
+  [`docs/plans/031-group-member-bounds.md`](plans/031-group-member-bounds.md)
+- **Items 5/8/4:** [`docs/plans/030-post-029-maintenance.md`](plans/030-post-029-maintenance.md) rev 2 ·
+  [`docs/plans/030-audit-round-1.md`](plans/030-audit-round-1.md) (**immutable**)
+- **Predecessors:** [`docs/specs/016-sizing-option-bounds.md`](specs/016-sizing-option-bounds.md) ·
+  [`docs/adrs/0032-sizing-option-bounds.md`](adrs/0032-sizing-option-bounds.md) ·
+  [`docs/specs/015-nil-option-elements.md`](specs/015-nil-option-elements.md) ·
+  [`docs/adrs/0031-nil-option-elements.md`](adrs/0031-nil-option-elements.md)
+
+## 4. Item 7 — what the design says, and the four things it left open
+
+**The defect.** `routing.WithCompletionSize`'s `1<<16` ceiling is the **only** bound on per-group member count,
+and it is gated on `cfg.completionSizeSet`, a field only that option writes. The other three release paths bypass
+it: `WithReleaseStrategy` and `WithReleaseWhen` are caller-supplied closures, and `defaultRelease` reads its
+threshold from `msgin.HeaderSequenceSize` — **data, not code**. `memory.GroupStore.Add` appends with no member cap
+and `slices.Clone`s per call, so an unreleased group grows monotonically at **quadratic** cost. `WithMaxGroups`
+bounds the *number* of groups, never members. Only the opt-in `WithGroupTimeout` reaper mitigates it.
+
+**The decision (D-AC…D-AL):** the bound goes at the **accumulation site** — the store — not the release decision,
+because only the store observes every append. New `memory.WithMaxGroupMembers`, default `1<<16`, ceiling `1<<20`,
+`msgin.ErrOverflowDropped` on overflow, mirroring `WithMaxGroups` exactly.
+
+**Two facts the design work sharpened:**
+1. `WithReleaseStrategy` is invisible to the class gate via the **named-type** path (`*ast.Ident{"ReleaseStrategy"}`),
+   not the `*ast.FuncType` path — and **`defaultRelease` has no parameter at all**, so *no* widening of the AST
+   scan can ever reach it. That is what makes store-side enforcement **necessary**, not merely convenient.
+2. The **SQL group store is worse than memory**: it has no member cap *and* no group-count cap, and its `Add`
+   re-fetches and re-decodes **every live member** on every arrival.
+
+**🔴 The four open questions live in Spec 017 §8. One needs the user before Task 4:**
+
+1. **SQL enforcement point.** Counting after `AddMember` returns bounds nothing — the row is committed and the
+   bytes already materialised. In-transaction enforcement is the only atomic-across-instances option, but it adds
+   a **`maxMembers int` parameter to `GroupDialect.AddMember` across 5 call sites in 4 modules**, roughly doubling
+   the increment. **Confirm before Task 4 starts, not at Task 6.**
+2. **memory/sql counting asymmetry** — `len(g.msgs)` (live+claimed) is right for memory, wrong for SQL. Flagged as
+   the finding most likely to be reversed.
+3. **Transient rejection at the boundary** — a group at exactly the cap rejects arrivals during the claim window.
+   Bounded and retryable (`ErrOverflowDropped` is *not* in `IsPermanent`), accepted and documented.
+4. **An unenforceable invariant** — `default maxGroupMembers >= completionSizeCeiling` cannot be tested (both
+   constants unexported in different packages; proving it behaviourally costs 8.6 s and 48.3 GiB). Defended by
+   cross-reference comments plus a grep. Stated open, not closed.
+
+## 5. Next actions, in order
+
+1. **🔴 Run the Plan 031 adversarial audit — HARD GATE, NOT OPTIONAL.** A fresh **Opus** subagent, handed
+   **spec 017 + ADR 0033 + plan 031 together**, attacking the design before any code. It has **not** run. Plan 030's
+   audit returned 3 BLOCKERs on a *far* simpler bundle, so expect findings. Two rounds is this project's norm.
+2. **Get the user's answer on §4 question 1** (the `AddMember` SPI change). It roughly doubles the increment.
+3. **Execute Plan 030** — three tasks, all prose/test-only, no production Go. Order: Task 1 (godoc, 16 sites) →
+   Task 2 (32-bit, split by arm) → Task 3 (citations). Dispatch **SDD implementer subagents**; the main session
+   must not self-implement without per-task user approval.
+4. **Then Plan 031**, after its audit is clean and question 1 is answered.
+5. **Whole-branch gate before any merge:** `/code-review` + `/security-review` over `main..HEAD`, findings resolved
+   or triaged in writing, coverage gate, then the 8-module CI-parity loops.
+
+## 6. Pending approvals — nothing here was decided for the user
+
+1. **Adopting `github.com/gin-gonic/gin`.** Plan 030 Task 3 deliberately **does not write ADR 0024** — that would
+   decide the dependency by side effect, and CLAUDE.md's Dependency policy makes it an architectural decision.
+   Task 3 removes the *false citations* only, and states the gin increment as **unnumbered until written** (the
+   auditor explicitly cleared that against the traceability rule). **The adopt-gin decision is still yours.**
+2. **Merge, push, tag, branch deletion.** All still require per-action approval; none were taken. Nothing left
+   this machine.
+3. **Every design decision in ADR 0033 (D-AC…D-AL) was taken without user ratification** while the user was away.
+   Each carries a **REVERSIBILITY** line for exactly this reason.
+
+## 7. Carry-forward — what is still open
+
+| # | Item | State |
 |---|---|---|
-| `endpoint` | `WithMaxInFlight`, `WithConcurrency` | `1<<20`, `1<<16` |
-| `msghttp` | `WithConnectionBuffer`, `WithMaxConnections`, `WithReplayBuffer` | `1<<16` each |
-| `memory` | `WithCapacity`, `WithMaxGroups`, `WithBuffer` | `1<<20` each |
-| `routing` | `WithCompletionSize` | `1<<16` |
+| 2 | Dedup the delegator loops | **CLOSED-WONTFIX** (§1). Not a defect. |
+| 3 | Guard gate is syntactic, not a dominance proof | **🔴 Now load-bearing** — D1 rests on it. `go/analysis` promotion stays rejected pre-v1; Plan 031 should widen the gate's *stated limitations* to name func-typed and named-type options. |
+| 4 | gin plan number + ADR 0024 | Planned as Plan 030 Task 3. Adopt-gin decision still open. |
+| 5 | False "first statement" godoc | Planned as Plan 030 Task 1, **16 sites**. |
+| 6 | Byte-ceiling class | **Untouched.** Needs its own spec/ADR/plan. The open question is *"should an explicit off-state exist at all, and which sentinel value carries it"* — a negative `n` is already taken by the rejection, so it needs a **new** sentinel value, not a reinterpretation. |
+| 7 | Aggregator group growth | **Designed (`2c4aa98`), unaudited, unimplemented.** |
+| 8 | 32-bit test overflow | Planned as Plan 030 Task 2, split by arm. |
 
-- **Net exported-surface delta ZERO** — 442 declarations, identical to the branch point. Verified by AST diff
-  **non-vacuously**: a first attempt compared 0 against 0 and was rejected rather than recorded as a pass.
-- **Three *byte* knobs are class members with a DEFERRED remedy, NOT certified safe** — `WithMaxBodyBytes`,
-  `WithMaxEventBytes`, `WithMaxResponseBytes`. CLAUDE.md's Sensible-defaults gate forbids guessing a byte cap.
-  See §6 item 6.
-- **A class gate** (`sizing_option_class_gate_test.go`, 19 executable rows in three arms) stops the class
-  returning. It asserts a **key→arm mapping**, not counts — a pairwise swap defeats counts.
+## 8. Gotchas — these will bite
 
-**Cost:** five adversarial design-audit rounds *before* any code (19 → 17 → 12 → 16 → 15 findings), then SDD
-delivery in 9 tasks with per-task reviews, a whole-branch review and one fix wave. Audit records live at
-`docs/plans/029-audit-round-{1..5}.md` — **immutable execution records, do not edit them.**
-
-## 2. Governing artifacts
-
-`docs/specs/016-sizing-option-bounds.md` (rev 6) · `docs/adrs/0032-sizing-option-bounds.md` (rev 6, decisions
-**D-W**…**D-AB**) · `docs/plans/029-sizing-option-bounds.md` (rev 6, Tasks 0–8).
-
-**The two load-bearing subtleties, if you touch this code:**
-
-1. **D-Y — `memory.WithBuffer`'s `return` must stay OUTSIDE the `if b.err == nil` latch**
-   (`adapter/memory/memory.go`). `New`'s apply loop `continue`s past a nil option (ADR 0031 D-U), so a later
-   `WithBuffer(1<<62)` still runs when the latch is already taken. **Nesting the `return` compiles, reads
-   naturally, passes every test except AC-3, and panics in production.** Three separate reviewers mutated it and
-   confirmed AC-3 kills it with the real `makechan` panic.
-2. **D-AB — class membership is a stated CRITERION, not a list:** *a knob is a class member iff `n` is the sole
-   bound on an accumulation.* **Re-derive §2.1 row by row FROM the criterion; never read the verdict column.**
-   Two of D-AB's four safety causes were emptied in consecutive revisions by rows whose stale "safe" verdict
-   survived the criterion written to catch them — and **neither emptying changed the 16/17 totals**, so no
-   count-check could have found either.
-
-## 3. Accepted, with written rationale — do not "discover" these
-
-- **`adapter/memory` coverage ~74%**, below CLAUDE.md's 85% target. **Pre-existing** (73.3% before Plan 029);
-  every function Plan 029 touched is at 100%. Blackbox attribution — much of the package is exercised from
-  sibling packages.
-- **Peak RSS 2.27 GB under `-race`**, 2.06 GB in a single test — 8× the plan's estimate. Deliberately not
-  "fixed": both remedies would stop the ceilings being exercised in CI at all, since CI runs only the `-race`
-  pass. Fits `ubuntu-latest`. Recorded so a future OOM is diagnosed in one step rather than rediscovered.
-- **`govulncheck` lives in `$(go env GOPATH)/bin`**, not on `PATH` — `which govulncheck` reports it missing while
-  the binary exists. It was installed and is **clean on all 8 modules**.
-
-## 4. Gotchas — these will bite
-
-- **Verify the REMOTE, not the local ref:** `git ls-remote origin main`, never `git rev-parse origin/main`.
-- **A gate that has never been proven to fire proves nothing** — and a gate whose rows all pass can still be
-  decorative if the *classification* those rows carry is asserted nowhere. Both happened here, one revision apart.
-- **A measurement is only as good as its fixture AND its protocol.** State both beside every figure: realistic
-  `msgin.New` messages (never a zero value), `runtime.GC()` before the read, `TotalAlloc` (cumulative) vs
-  `HeapAlloc` (retained) named explicitly, `KeepAlive` on the product. Conflating those two shipped a public
-  godoc overstating live memory ~6×, caught only by the final whole-branch review.
-- **Docs contradicting the code they describe recurred FOUR times in this plan.** Read prose against the
-  constructor, not for plausibility.
-- **An implementer subagent can invent scope and stall.** One dispatched its own out-of-scope security review,
-  reported "completed", and had made no commit and written no report. Check the tree, the commit **and** the
-  report independently rather than trusting a status.
-- **The docs-link gate has two known false positives** — `docs/plans/m` and `docs/specs/factory(fireTime` are Go
-  identifiers inside code spans, not links. Anything else is a blocker.
 - **`GOTOOLCHAIN=go1.25.13`.** `harness` has no test files — `go test` there is a false pass; use `go vet`.
-- **`.superpowers/` is git-ignored** (rule added by this increment) — SDD ledgers and briefs, not deliverables.
-- Never commit `.claude/settings.json`.
-
-## 5. Two housekeeping actions NOT taken — they need explicit approval
-
-1. **`fix/sizing-option-bounds` still exists locally.** CLAUDE.md says delete a merged feature branch
-   (`git branch -d fix/sizing-option-bounds`). It was **never pushed**, so there is no remote branch to delete.
-   Branch deletion needs per-action approval, which is why it is still here.
-2. **The SDD workspace `.superpowers/sdd/029-sizing-option-bounds/` still exists** — ledger, task briefs, reports
-   and review packages. The git history is the durable record now, so `rm -rf` is safe whenever you want it gone.
-
-## 6. Backlog
-
-1. ~~The sizing-option class~~ — **DONE**, Plan 029, merged at `5dbbf1d`.
-2. **Seven copies of the delegator pre-check loop** in `adapter/http` (×5) and `adapter/http/stdlib` (×2).
-   A package-local helper collapses each to one line (~35 lines).
-3. **The Plan 028 AST gate is syntactic, not a dominance proof.** Two contrived shapes defeat it; both named in
-   the file header. Promoting it to a `go/analysis` analyzer was rejected as out of scope pre-v1.
-4. **The `gin` increment** still needs a plan number, and its ADR is still a forward reference.
-5. **Minor godoc wording class** — four sites say the apply loop is "this constructor's first statement" when a
-   `cfg := …` initializer precedes it. Fix the class in one pass.
-6. **The byte-ceiling class** — `msghttp.WithMaxBodyBytes`, `WithMaxEventBytes`, `WithMaxResponseBytes` are each
-   the sole bound on a **remote-peer-driven** read into memory that is **retained** (`encode.go`
-   `io.ReadAll(http.MaxBytesReader(…))`; `sse.go` a `bytes.Buffer`; `exchange.go`
-   `io.ReadAll(io.LimitReader(resp.Body, max))` — note `drainBounded` is only 5 of that field's 6 reads).
-   Measured: a 64 MiB body is rejected at the 1 MiB default and **fully read at `1<<62`**.
-   **The open question is NOT "invent an off-state"** — `NewConfig` already **rejects** an explicit `n <= 0`
-   (`ErrInvalidMaxBodyBytes`), and leaving the option unset already **is** the documented default state. It is
-   *"should an explicit off-state exist at all, and which sentinel value carries it"* — a negative `n` is already
-   taken by the rejection, so it would need a new sentinel value, not a reinterpretation.
-7. **🆕 `routing.WithReleaseWhen` reaches the same unbounded per-group growth** that `WithCompletionSize`'s
-   ceiling was added to stop — `WithReleaseWhen(func(g) bool { return len(g.Messages()) >= 1<<62 })` reproduces
-   it exactly. Being **func-typed, it is structurally invisible to the class gate**. Verified as outside Spec
-   016's stated class, so the shipped prose does **not** over-claim — but it needs its own spec/ADR. A
-   one-sentence cross-reference on `WithCompletionSize`'s godoc would close the inference gap meanwhile.
-8. **Minor, recorded not fixed:** `GOARCH=386 GOOS=linux go vet ./...` is clean on the pre-029 tree and now fails
-   in 4 packages — `1 << 62` overflows on 32-bit, in **test files only**. No gate covers 386 and no 32-bit
-   support is claimed. A `math.MaxInt`-style constant would fix it but would make the `EqualError` assertions
-   architecture-dependent.
+- **`govulncheck` lives in `$(go env GOPATH)/bin`**, not on `PATH` — `which` reports it missing while it exists.
+- **The docs-link gate has exactly two known false positives** — `docs/plans/m` and
+  `docs/specs/factory(fireTime`, both Go identifiers in wrapped code spans. **Verified clean at `b54fbbe`, both
+  arms, and vacuity-probed on the NEW files rather than root** (planting a bad link and a bad anchor produced
+  exactly one hit each; both vanished on revert). Anything else is a blocker.
+- **`apidiff` is blind outside the root package** (Plan 028 proved it). Plan 030 rev 2's Global constraint 1 now
+  prescribes an exported-symbol **AST set diff by name** across all packages, with the vacuity probe planted in
+  `adapter/http` — *not* root. **Two baselines exist**; `028-root-api-baseline.txt` is the newer one.
+- **`go vet` aborts after the first error per package.** For the full 386 list use
+  `GOARCH=386 GOOS=linux go test -gcflags=all=-e -run=NONE ./...` — 24 errors, not 4.
+- **Counts in a plan are not the definition of done.** Plan 030's "17 reject-arm sites" is 15 edits — two entries
+  consume a shared `const n`. The 386 compile list is the authority.
+- **`*-audit-round-*.md` and `*-derivation-findings.md` are IMMUTABLE** execution records — they correctly record
+  what was true when written. Delivered plans (e.g. `020`, `027`) are *not* immutable and may be corrected in
+  place; Plan 020 already carries such a correction.
+- **A measurement is only as good as its fixture AND its protocol** — state both beside every figure.
+- **An implementer subagent can invent scope and stall.** Check the tree, the commit **and** the report
+  independently rather than trusting a status.
+- **`.superpowers/` is git-ignored.** Never commit `.claude/settings.json`.
+- The old handover's §5 housekeeping is **done**: `fix/sizing-option-bounds` no longer exists locally.
