@@ -4,7 +4,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-**Active, pre-v1.** The module exists and is substantially implemented: the pattern core at the repo root, the five core subpackages `endpoint`/`routing`/`transform`/`channel`/`resilience`, `adapter/{memory,cron,http,http/stdlib,database/sql}`, and the `expr` provider module — delivered across **29 plans** (`docs/plans/001`–`029`) / **31 ADRs** (`docs/adrs/0001`–`0032` — 32 numbers but 31 files: **there is no ADR 0024**, the `gin` dependency ADR — its number is **reserved but unwritten**, and the plan that would carry the gin increment is **unnumbered**, because admitting `github.com/gin-gonic/gin` is an **open dependency decision** for the user, not a scheduled increment) / **16 specs** (`docs/specs/001`–`016`) / **5 RFCs** (`docs/rfcs/0001`–`0005`). Re-derive rather than trust: `ls docs/adrs/[0-9]*.md | wc -l` → 31, `ls docs/specs/[0-9]*.md | wc -l` → 16, and for plans count **distinct numbers, not files** — `ls docs/plans/[0-9]*.md | sed -E 's|.*/([0-9]{3}).*|\1|' | sort -u | wc -l` → 29, while `ls docs/plans/[0-9]*.md | wc -l` → **45**, because Plans 027, 028 **and 029** carry satellite audit-round, derivation and api-baseline records — Plan 029 alone adds **five** audit-round files. (The `*-root-api-baseline.txt` satellites are `.txt`, so they are outside both plan globs.) **Nothing is tagged or released** — there are no consumers, so breaking API changes are still free. Read [`docs/HANDOVER.md`](docs/HANDOVER.md) first: it names the active increment and the last safepoint.
+**Active, pre-v1.** The module exists and is substantially implemented: the pattern core at the repo root, the five core subpackages `endpoint`/`routing`/`transform`/`channel`/`resilience`, `adapter/{memory,cron,http,http/stdlib,database/sql}`, and the `expr` provider module — delivered across `docs/plans/001`–`029`, with `030`–`032` the post-029 maintenance sweep landing now.
+
+**Every count below is a snapshot; the COMMAND is the authority, not the number beside it. Re-run it before citing — these figures have gone stale on this file more than once.** As re-derived at the time of writing:
+
+| Artifact | Command | Then |
+|---|---|---|
+| ADRs | `ls docs/adrs/[0-9]*.md \| wc -l` | **33** |
+| Specs | `ls docs/specs/[0-9]*.md \| wc -l` | **18** (`001`–`018`) |
+| RFCs | `ls docs/rfcs/[0-9]*.md \| wc -l` | **5** (`0001`–`0005`) |
+| Plans — **distinct numbers** | `ls docs/plans/[0-9]*.md \| sed -E 's\|.*/([0-9]{3}).*\|\1\|' \| sort -u \| wc -l` | **32** (`001`–`032`) |
+| Plans — **files** | `ls docs/plans/[0-9]*.md \| wc -l` | **56** |
+
+Three things the raw numbers do not tell you:
+
+1. **ADRs are `0001`–`0034` — 34 numbers but 33 files, because there is no ADR 0024.** That number is the `gin` dependency ADR: **reserved but unwritten**, and the plan that would carry the gin increment is **unnumbered**, because admitting `github.com/gin-gonic/gin` is an **open dependency decision** for the user, not a scheduled increment.
+2. **For plans, count distinct numbers, not files.** Files exceed numbers because six plans carry satellite audit-round and derivation records — 027 (8 files), 028 (5), 029 (6), 030 (2), 031 (4), 032 (5). Derive the breakdown with `ls docs/plans/[0-9]*.md | sed -E 's|.*/([0-9]{3}).*|\1|' | sort | uniq -c | awk '$1>1'`. **The file count moves fastest of the five** — every audit round adds a file without adding a number, so assume 56 is already stale.
+3. **Two satellites sit outside both plan globs:** `docs/plans/027-root-api-baseline.txt` and `docs/plans/028-root-api-baseline.txt` are `.txt`, and `docs/plans/027-tools/` is a directory.
+
+**Nothing is tagged or released** — there are no consumers, so breaking API changes are still free. Read [`docs/HANDOVER.md`](docs/HANDOVER.md) first: it names the active increment and the last safepoint.
 
 "Architecture blueprint" below is a **mix of shipped and planned** — see the adapter list there for which is which. Treat shipped parts as code to read, not a brief to build.
 

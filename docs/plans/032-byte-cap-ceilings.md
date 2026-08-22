@@ -649,7 +649,7 @@ needed.** No new dependency, in any module.
 
       | # | Claim to falsify | How |
       |---|---|---|
-      | D-1 | *"no other godoc sentence became false"* | 🔴 **`grep -rin 'must be > 0' adapter/http/` — CASE-INSENSITIVE (round-2 N-8).** Every hit read **against the constructor**, not for plausibility; each updated or justified in Evidence |
+      | D-1 | *"no other godoc sentence became false"* | 🔴 **CLASS-SHAPED, wrap-tolerant sweep — see the corrected selector below (post-delivery review finding 3).** Supersedes the earlier `grep -rin 'must be > 0' adapter/http/`, which was *instance*-shaped and missed six comments spelling the same superseded bound as `n<=0` / `non-positive`. Every hit read **against the constructor**, not for plausibility; each updated or justified in Evidence |
       | D-2 | *"the runnable examples still compile and their `// Output:` still holds"* | `go test -run '^Example' ./adapter/http/...` |
       | D-3 | *"the disclosure is actually present"* | 🔴 **WRAP-TOLERANT count (round-3, smaller note 1)** — see below → **3 occurrences**, **vacuity-probed**: delete one occurrence, confirm the count reads 2, restore |
 
@@ -667,6 +667,37 @@ needed.** No new dependency, in any module.
       > sentences and three unrelated sentinels remain, each to be read against the constructor).
       > **Vacuity-probe it:** plant one *lower-case* `must be > 0` in a godoc, confirm the `-i` form finds it and
       > the case-sensitive form does not, revert.
+      >
+      > 🔴 **AND THAT WAS STILL INSTANCE-SHAPED — the corrected, CLASS-SHAPED selector (post-delivery review
+      > finding 3).** Case-insensitivity fixed the *casing* of one literal string; it did not fix the fact that
+      > D-1 searched for **a string** when the property to falsify is **a claim**: *"a comment states the
+      > superseded bound of a byte cap."* The superseded bound has more than one spelling, and six comments
+      > survived the delivered sweep in the other spellings — `options.go:207`, `:232`, `:244` (`n<=0` in the
+      > `…Set` field comments), `options.go:309` (`non-positive`), `sse.go:209` (`n<=0`), `outbound_test.go:29`
+      > (`<=0`). None was *false* — `n <= 0` is still rejected — but each was **narrower than the contract**,
+      > which is exactly the drift D-1 exists to catch. The selector must therefore match **the option name
+      > co-occurring with ANY spelling of the old bound**, and be wrap-tolerant, because these comments wrap:
+      >
+      > ```bash
+      > # Class-shaped: option name within ~120 chars of any old-bound spelling, either order,
+      > # across line breaks. Run over Go AND Markdown; read every hit against the constructor.
+      > for f in $(git ls-files '*.go' '*.md'); do
+      >   perl -0777 -ne 'while (/With(?:MaxBodyBytes|MaxResponseBytes|MaxEventBytes)[^\n]{0,120}?(n\s*<=\s*0|<=\s*0|non-positive|negative or zero|zero or negative|must be\s*>\s*0|positive)/gis) {
+      >       my $p=pos(); my $s=substr($_,0,$p); print "$ARGV:".(($s=~tr\/\n\/\/)+1)."  [$1]\n"; }' "$f"
+      >   perl -0777 -ne 'while (/(n\s*<=\s*0|non-positive|must be\s*>\s*0)[^\n]{0,120}?With(?:MaxBodyBytes|MaxResponseBytes|MaxEventBytes)/gis) {
+      >       my $p=pos(); my $s=substr($_,0,$p); print "$ARGV:".(($s=~tr\/\n\/\/)+1)."  [$1]\n"; }' "$f"
+      > done
+      > ```
+      >
+      > **Expected after the finding-3 fix: zero hits under `adapter/`.** Markdown hits under `docs/` are
+      > *"Today"* / *"Existing arm"* columns in change tables and audit records — the before-state, correct as
+      > history; each must be confirmed to be one of those, not a live claim. **Vacuity-probe it:** revert one
+      > of the six comments to `n<=0`, confirm exactly one `adapter/` hit appears, restore.
+      >
+      > **The reusable lesson, stated as an invariant rather than an enumeration:** a falsification sweep's
+      > selector must match the **property** the claim asserts, not the **string** the last instance happened to
+      > use. If the claim is *"no comment states bound X"*, enumerate X's spellings (or anchor on the symbol the
+      > bound belongs to) and be wrap-tolerant; a sweep keyed to one literal proves only that one literal is gone.
       >
       > 🔴 **D-3's command has the SAME class of defect one row down, and revision 3 did not fix it (round-3,
       > smaller note 1).** `grep -c 'not a safety guarantee'` fails **twice**: (i) `grep -c` counts matching

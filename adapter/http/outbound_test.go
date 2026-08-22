@@ -26,9 +26,12 @@ import (
 // TestNewConfig_outbound exercises the outbound option surface added in Plan
 // 024 Task 1. Config's outbound fields are unexported with no getters, so a
 // blackbox (package msghttp_test) test can observe only NewConfig's returned
-// error, never a resolved value. Only WithMaxResponseBytes(<=0) is therefore a
-// genuine BEHAVIORAL assertion here (round-2 audit F3): it asserts through the
-// ErrInvalidMaxResponseBytes error contract and can fail red-first. The
+// error, never a resolved value. Only WithMaxResponseBytes outside
+// [1, byteCapCeiling] is therefore a genuine BEHAVIORAL assertion here (round-2
+// audit F3): it asserts through the ErrInvalidMaxResponseBytes error contract
+// and can fail red-first. The rows below cover only that range's LOW arm (0,
+// -1); the ceiling arm lives in config_sizing_bounds_test.go, which asserts the
+// full out-of-range message for every one of the three byte caps. The
 // remaining rows are line-covered only — they assert construction
 // succeeds/fails as the error contract dictates, and are NOT dressed up as
 // value checks. Their behavioral correctness (the 1 MiB default, the kept

@@ -541,7 +541,7 @@ func TestGroupStore_ReadyAndEnsureSchema(t *testing.T) {
 // ErrNilFunc naming the computed 0-based index (Spec 015 §3.1, family R1) rather
 // than a panic. NewGroupStore is LOOP-FIRST (Spec 015 §3.5): the apply loop is
 // the constructor's first statement that can fail, preceded only by the
-// zero-value config initializer, so a nil option beats newGroupBase's
+// config-defaults initializer, which cannot fail, so a nil option beats newGroupBase's
 // db/table/dialect validation AND the WithGroupLeaseTTL range check.
 func TestNewGroupStore_NilOptionElement(t *testing.T) {
 	t.Parallel()

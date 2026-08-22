@@ -204,7 +204,7 @@ const errorBodyExcerptMax = 256
 // header allow-lists.
 type Config struct {
 	maxBodyBytes       int64
-	maxBodyBytesSet    bool // distinguishes explicit WithMaxBodyBytes(n<=0) (rejected) from unset (default)
+	maxBodyBytesSet    bool // distinguishes explicit WithMaxBodyBytes(n outside [1, byteCapCeiling]) (rejected) from unset (default)
 	successStatus      int
 	successStatusSet   bool // distinguishes explicit WithSuccessStatus(out-of-range) (rejected) from unset (default)
 	correlationID      func(*http.Request) string
@@ -229,7 +229,7 @@ type Config struct {
 	outboundHeaders     []string
 	replyHeaders        []string
 	maxResponseBytes    int64
-	maxResponseBytesSet bool // distinguishes explicit WithMaxResponseBytes(n<=0) (rejected) from unset (default)
+	maxResponseBytesSet bool // distinguishes explicit WithMaxResponseBytes(n outside [1, byteCapCeiling]) (rejected) from unset (default)
 	clock               clockwork.Clock
 	errorBodyExcerpt    bool
 
@@ -241,8 +241,8 @@ type Config struct {
 	eventNameSet bool
 
 	// maxEventBytes is the SSEParser per-event byte cap (WithMaxEventBytes).
-	// maxEventBytesSet distinguishes an explicit WithMaxEventBytes(n<=0)
-	// (rejected) from unset (default defaultMaxEventBytes), mirroring
+	// maxEventBytesSet distinguishes an explicit WithMaxEventBytes(n outside
+	// [1, byteCapCeiling]) (rejected) from unset (default defaultMaxEventBytes), mirroring
 	// maxBodyBytesSet/maxResponseBytesSet.
 	maxEventBytes    int64
 	maxEventBytesSet bool
@@ -306,8 +306,9 @@ type Config struct {
 
 // maxBody is the request-body cap to apply, back-filling defaultMaxBodyBytes
 // for a nil or hand-built Config whose cap is unset (0) or nonsensical (<0).
-// NewConfig rejects an explicit non-positive WithMaxBodyBytes outright, so
-// this fallback only ever fires for a Config that skipped NewConfig.
+// NewConfig rejects an explicit WithMaxBodyBytes outside [1, byteCapCeiling]
+// outright, so this fallback only ever fires for a Config that skipped
+// NewConfig.
 func (c *Config) maxBody() int64 {
 	if c == nil || c.maxBodyBytes <= 0 {
 		return defaultMaxBodyBytes
