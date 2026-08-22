@@ -14,6 +14,28 @@
 > (assert-closure form, never `want`/`wantErr`; `t.Context()`). **`use-mockgen` / `use-testcontainers` do not
 > apply** — no task here introduces a test double or an external resource.
 
+> ## ✅ DELIVERED — all three tasks, 2026-08-22
+>
+> | Task | Commit | Verified by |
+> |---|---|---|
+> | **Task 1** — false "first statement" godoc, 16 sites | **`1a1c135`** | wrap-tolerant scan → **12 hedged / 9 bare / 21 total**; AST checker reports zero violations |
+> | **Task 2** — 32-bit test overflow | **`d2c69fe`** | `GOARCH=386 GOOS=linux go vet ./...` → **clean** (was 24 compile errors) |
+> | **Task 3** — stale gin plan number | **`7ab91cd`** | docs-link gate both arms at baseline; no live `gin = Plan 028` assertion remains |
+>
+> Whole-tree at delivery: `go test ./... -race -shuffle=on` **11/11 root packages green**.
+>
+> **🔴 THE UNTICKED CHECKBOXES BELOW ARE A BOOKKEEPING ARTEFACT, NOT OUTSTANDING WORK.** They were never ticked
+> during execution. Plan 032's audit round 3 read `grep -c '\[x\]' → 0` against `grep -c '\[ \]' → 32` and
+> concluded only Task 2 had landed, then wrote a rebase instruction against that false state. **Two of the three
+> commits do not carry "030" in their subject line, so `git log --oneline | grep -i 030` finds only `d2c69fe`.**
+>
+> **Derive delivery from the trailer, never from the subject or the checkboxes:**
+> ```
+> git log --format='%h %s' --grep='Plan: 030'
+> ```
+> The five `gin`/`Plan 028` hits that survive a naive grep are this file's own **defect-description table**
+> (`:528-531`) plus one historical note in Spec 011 — descriptions of the defect, not live assertions of it.
+
 **Revision 2 — 2026-08-22.** Supersedes revision 1 (same date). Revision 1 was audited and returned **NOT SAFE TO
 IMPLEMENT** — 3 BLOCKERs, 4 MAJORs, 5 MINORs. The record is
 [`030-audit-round-1.md`](030-audit-round-1.md), which is **immutable**: read it for the evidence, read this file
