@@ -90,7 +90,8 @@ func WithGroupClock(c clockwork.Clock) GroupStoreOption {
 //
 // A nil ELEMENT of opts is a bare [msgin.ErrNilFunc] naming the element's
 // 0-based index ("memory.NewGroupStore: nil option at index 1"), not a panic
-// — checked as opts is applied (the loop is the first statement), so it runs
+// — checked as opts is applied (the loop is the first statement that can fail,
+// preceded only by the zero-value config initializer), so it runs
 // BEFORE the WithMaxGroups validation below, which runs after the loop and so
 // loses to it.
 func NewGroupStore(opts ...GroupStoreOption) (*GroupStore, error) {

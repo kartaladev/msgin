@@ -204,8 +204,9 @@ var _ msgin.MessageGroupStore = (*GroupStore)(nil)
 // A nil ELEMENT of opts is a bare [msgin.ErrNilFunc] naming the element's
 // 0-based index ("sql.NewGroupStore: nil option at index 1"), not a panic —
 // checked as opts is applied. In the order enumerated above the nil-option
-// check comes FIRST: the apply loop is this constructor's first statement, so
-// it runs before the nil-db, table-identifier, nil-dialect and
+// check comes FIRST: the apply loop is this constructor's first
+// statement that can fail, preceded only by the zero-value config
+// initializer, so it runs before the nil-db, table-identifier, nil-dialect and
 // WithGroupLeaseTTL checks, every one of which loses to it.
 func NewGroupStore(db *stdsql.DB, table string, dialect GroupDialect, opts ...GroupStoreOption) (*GroupStore, error) {
 	cfg := groupStoreConfig{logger: discardLogger()}

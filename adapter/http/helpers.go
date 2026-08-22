@@ -13,10 +13,11 @@ import (
 // package than anywhere else in Plan 028: msghttp has ONE Option type
 // (options.go) and SIX entry points over it — NewConfig, which actually applies
 // the options, plus five delegators (NewExchange, NewOutbound, NewSSEServer,
-// NewSSEClient, NewSSEParser) that each call NewConfig(opts...) as their first
-// statement. Each delegator therefore runs its own pre-check and passes its own
-// name; without it every one of them would report "msghttp.NewConfig: nil option
-// at index 0" for a function the caller never invoked (Spec 015 §3.4).
+// NewSSEClient, NewSSEParser) that each run their OWN nil pre-check first, then
+// forward to NewConfig(opts...). That standalone pre-check — not the delegation
+// — is what lets each delegator pass its own name; without it every one of them
+// would report "msghttp.NewConfig: nil option at index 0" for a function the
+// caller never invoked (Spec 015 §3.4).
 //
 // Deliberately NOT wrapped in msgin.Permanent — see [msgin.ErrNilFunc]'s
 // constructor arm: the error is handed back to the caller at construction and

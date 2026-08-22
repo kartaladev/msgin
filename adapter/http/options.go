@@ -1167,6 +1167,7 @@ func WithReadTimeout(d time.Duration) Option {
 // A nil ELEMENT of opts is a bare [msgin.ErrNilFunc] naming the element's
 // 0-based index ("msghttp.NewConfig: nil option at index 1"), not a panic. It is
 // checked as opts is applied — the apply loop is this function's first statement
+// that can fail, preceded only by the zero-value `cfg := &Config{}` initializer
 // — so the nil-option check runs BEFORE every value check below (
 // ErrInvalidMaxBodyBytes, ErrInvalidStatusCode, ErrInvalidMaxResponseBytes and
 // the rest) and wins over all of them.

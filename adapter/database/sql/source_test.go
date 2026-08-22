@@ -135,7 +135,8 @@ func TestSource_NativeReliabilityContract(t *testing.T) {
 // TestNewPollingSource_NilOptionElement proves a nil ELEMENT of opts is a bare
 // ErrNilFunc naming the computed 0-based index (Spec 015 §3.1, family R1) rather
 // than a panic. NewPollingSource is LOOP-FIRST (Spec 015 §3.5): the apply loop is
-// the constructor's first statement, so a nil option beats newAdapterBase's
+// the constructor's first statement that can fail, preceded only by the
+// zero-value config initializer, so a nil option beats newAdapterBase's
 // db/table/dialect validation AND the WithLeaseTTL range check, both after it.
 func TestNewPollingSource_NilOptionElement(t *testing.T) {
 	t.Parallel()
