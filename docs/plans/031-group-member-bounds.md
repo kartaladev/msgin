@@ -25,7 +25,7 @@
 > exceptions are the `memory` cap-check ordering (Spec 017 §3.4a) and `Handle`'s snapshot branch (§3.3a), which
 > carry pseudocode in the spec because *both* are places where a plausible implementation is a defect.
 
-**Revision 3 — post-audit-round-2. NOT approved for implementation.**
+**Revision 4 — post-audit-round-3. NOT approved for implementation.**
 
 **Round 1 verdict: NOT SAFE TO IMPLEMENT** — 3 BLOCKERs, 8 MAJORs, 10 MINORs, recorded immutably in
 [`031-audit-round-1.md`](031-audit-round-1.md). Revision 2 folded every finding back in. The three that reshaped
@@ -51,9 +51,30 @@ its own two structural fixes**, and both failures land in *this* document:
 | **N-6** / **N-7** | Test fixtures and branch coverage: AC-1b's id-less message is pinned to `msgin.NewMessage` and asserted (`msgin.New` **always** stamps an id), and `Handle`'s branch gains four covering cases for its six exits. `routing/aggregator_test.go` joins Task 1's Files. |
 | **N-9** / **N-14** | Two *"fix the class"* misses: Task 5 Step 5 now **corrects** the shipped `AddMember` godoc rather than only adding to it, and B-2's ordering rule — which never reached ADR 0033 — is recorded in **D-AL**. |
 
-🔴 **The design this plan executes was decided WITHOUT USER RATIFICATION**, and rounds 1 and 2's dispositions were
-taken the same way. Every decision in [ADR 0033](../adrs/0033-group-member-bounds.md) (**D-AC** … **D-AS**) is open
-to reversal, and **three** now change this plan's size materially:
+**Round 3 verdict: NOT SAFE TO IMPLEMENT** — 1 BLOCKER, 6 MAJORs, 3 MINORs, recorded immutably in
+[`031-audit-round-3.md`](031-audit-round-3.md), against a fix-verification score whose **table tallies 9 LANDED /
+5 LANDED-BUT-FLAWED, 0 NOT LANDED, 0 REGRESSED** *(the auditor's summary line reads 8/6; both total 14, the record
+leaves the one-row gap unreconciled, and **the table governs** because each row carries its own evidence while the
+score line is a derived tally. This is the **second consecutive round** with that gap — a pattern the record names
+as a method defect in the audit apparatus, not in the artifacts)*. **Its lesson, verbatim: *revision 3 generalized round 2's two
+structural fixes correctly, but stopped the fix at the boundary of each finding's own wording.*** Both
+generalizations — Global constraint 8's *compiles-against* rule and **D-AS** — are right and survive. What did not
+survive is everything one step outside the words each finding quoted:
+
+| Finding | What it did to this plan |
+|---|---|
+| **NEW-1** (BLOCKER) | **Task 3's *"or split it"* alternative is DELETED and the task is REORDERED to run after Tasks 5+6.** The split was justified from N-1's rule, and that reads N-1's *shape* rather than its *mechanism*: N-1 is about a **pre-existing** gate (`sizing_option_class_gate_test.go` ships on `main` and asserts exact set equality, so the option's existence alone makes root red). Task 3's AST test **does not exist yet**, so the dependency runs the other way — the test ships no earlier than the last declaration. See **D-AT**. |
+| **NEW-2** | The six-module gate's **`dbtest` arm is now `go vet ./...`, not `go build ./...`**: every Go file in `dbtest` is a `_test.go` file, so `go build` compiles nothing and exits 0 whatever breaks — N-1's own defect reproduced inside N-1's fix, one row below the `harness` row that reasons about the mirror case correctly. |
+| **NEW-3** | Task 5 Step 6b's *"threading the cap from the existing `TestKit`"* had **no referent** — `TestKit` has no cap field and `testkit.go` is in no Files list. Replaced with a **`harness`-package unexported constant** serving both the call site and Task 7's case. |
+| **NEW-4** | AC-3.3's parse set is **asserted**, so the constants' **file** is as load-bearing as their form. Tasks 1 and 5 now name `<store>/groupstore.go` explicitly. |
+| **NEW-5** | The `sql` overflow render's site is decided as **`msgin/sql/<engine>: AddMember`** — the error is minted *inside the dialect*, which cannot know it was reached through `GroupStore.Add`. The render assertion moves to **Task 7**, where a real engine mints it. |
+| **NEW-6** | The downgrade-only rule is **restated truthfully**: exits 3 and 5 replace the overflow error with a *different fault carrying its own classification*, so a persistently failing claim/release path **retries** rather than terminating. |
+| **NEW-7** (design flaw) | **`sql` now counts LIVE + CLAIMED, like `memory`** (**D-AF**, reversed). With live-only counting plus D-AS's `limit = 0` on `ClaimGroup`, the durable member table was **unbounded**. Tasks 6 and 7 grow: a `COUNT(*)` via the shipped `*CountMembers` helper, a `locked_by` read for D-AM's leased arm, and their coverage. |
+| **NEW-9** / **NEW-10** | Three off-by-one citations and four normative cells still naming the WARN N-11 proved never fires. |
+
+🔴 **The design this plan executes was decided WITHOUT USER RATIFICATION**, and rounds 1, 2 and 3's dispositions
+were taken the same way. Every decision in [ADR 0033](../adrs/0033-group-member-bounds.md) (**D-AC** … **D-AT**) is
+open to reversal, and **four** now change this plan's size materially:
 
 - **D-AG** (SQL enforcement inside the dialect's transaction) is what makes Tasks 5–7 exist at all. The cheap
   alternative — count in `sql.GroupStore.Add` after `AddMember` returns — collapses them into a single task but
@@ -65,13 +86,24 @@ to reversal, and **three** now change this plan's size materially:
   a genuine trade-off, it is recommended rather than obvious, and [Spec 017 §8 item 5](../specs/017-group-member-bounds.md)
   lists three alternatives if the user rejects it. Reversal is one branch per store — **but reversing it without
   a replacement restores an unlogged infinite hot spin under the shipped defaults.**
+- **D-AF, REVERSED in revision 4** (both stores count **live + claimed**) is what makes Tasks 6–7 grow again.
+  Revision 3 had `sql` count live only; audit **NEW-7** showed that composed with **D-AS**'s `limit = 0` on
+  `ClaimGroup`, the durable member table is **unbounded**. The reversal costs a `COUNT(*)` per `AddMember` and
+  gives `sql` D-AM's leased arm, which it did not previously have. **Reversal cost: one predicate per dialect —
+  but reversing it back re-opens the unbounded table.**
 
-**TWO AUDIT ROUNDS HAVE RUN** ([round 1](031-audit-round-1.md), [round 2](031-audit-round-2.md)) — this project's
-established norm. Revision 3 changes no runtime contract that revision 2 did not already establish: its edits are
-premise corrections, coverage additions, and the two new declaration-form decisions **D-AR** / **D-AS**. **A round
-3 is a judgement call, not an automatic gate** — Plan 029 needed five, and the user may reasonably want one given
-that round 2's BLOCKER was a *generalization* failure rather than a new design flaw. **Implementation is still
-blocked on user ratification** of the unratified decisions either way.
+**THREE AUDIT ROUNDS HAVE RUN** ([round 1](031-audit-round-1.md), [round 2](031-audit-round-2.md),
+[round 3](031-audit-round-3.md)) — one more than this project's established norm, and round 3 earned it: it
+returned a BLOCKER and the increment's **first genuine design flaw since round 1** (**NEW-7**). Revision 4 is
+therefore **not** a prose-only revision like revision 3 — it reverses **D-AF** and adds **D-AT**.
+
+> 🔴 **A ROUND 4 IS WARRANTED, and this plan says so plainly rather than leaving it to judgement.** Rounds 2 and 3
+> could each be waved through on the ground that the revision under audit changed only premises, coverage and
+> wording. **Revision 4 cannot**: it is the first revision since round 1 to change a **decision** rather than a
+> premise, and **D-AF's reversal changes runtime behavior in three dialect modules** — a new `COUNT(*)` per
+> `AddMember`, a new `locked_by` read, and a new transient classification arm that `sql` did not previously have.
+> **That is not the revision round 3 audited.** Plan 029 needed five rounds; this one has earned a fourth.
+> **Implementation is blocked on that round AND on user ratification** of the unratified decisions.
 
 > **🔴 CONCURRENT-WORK DEPENDENCIES — revision 1's claim here was FALSE (audit B-3).** Revision 1 said Plan 030 and
 > Plan 031 *"share no file."* They share **four**, and Plan 030 has since **landed**
@@ -105,14 +137,16 @@ site), **D-AD** (two `WithMaxGroupMembers` options, one name in both packages; d
 `checkRange` + `msgin.ErrInvalidCapacity`; mint no sentinel), **D-AE** (`msgin.ErrOverflowDropped`, wrapped),
 **D-AM** (**classified by cause** — not-leased ⇒ `Permanent`, leased ⇒ transient), **D-AN** (**the live snapshot
 rides out with the error; `Handle` re-evaluates the release**), **D-AO** (the cap check sits between the dedup
-lookup and the dedup insert), **D-AF** (`memory` counts live+claimed, `sql` counts live), **D-AG** (SQL enforcement
+lookup and the dedup insert), **D-AF** (**REVERSED in revision 4 — BOTH stores count live + claimed**; audit
+**NEW-7**), **D-AG** (SQL enforcement
 in-transaction, `AddMember` takes `maxMembers`), **D-AP** (**per-dialect placement; the `*sql.Tx` caller-owned
 precondition**), **D-AH** (the SPI states the bound), **D-AI** (godoc cross-references on the three unbounded
 release paths), **D-AJ** (a default is legitimate here), **D-AK** (bounded-but-stuck is accepted), **D-AL** (the
 class gate is extended by hand; its blind spot is stated, not widened — **and half 1's exact set equality means a
 gate key ships in its option's own commit**), **D-AQ** (the `default ≥ completionSizeCeiling` invariant IS
 mechanically enforceable, by AST), **D-AR** (**both new sizing values are NAMED constants in both packages**),
-**D-AS** (**a private `limit int` on the three `*SelectMembers` helpers; only `AddMember` passes non-zero**).
+**D-AS** (**a private `limit int` on the three `*SelectMembers` helpers; only `AddMember` passes non-zero**),
+**D-AT** (**Task 3 is REORDERED after Tasks 5+6, never split** — audit **NEW-1**).
 
 **Predecessors this builds on, not re-argues.** [Spec 016](../specs/016-sizing-option-bounds.md) /
 [ADR 0032](../adrs/0032-sizing-option-bounds.md) / [Plan 029](029-sizing-option-bounds.md): **D-X** (sentinel
@@ -125,8 +159,9 @@ and `adapter/database/sql/dbtest` — and the delivery gate is all **eight**. *(
 and implied six in another — audit m-8. It is **six**.)* Tasks 6–7 need a **running Docker daemon**.
 
 **Traceability.** Implements Spec 017; decided by ADR 0033; audited in
-[`031-audit-round-1.md`](031-audit-round-1.md) and [`031-audit-round-2.md`](031-audit-round-2.md) (both
-**immutable**). Every commit carries `Spec: 017`, `Plan: 031`, `ADR: 0033` trailers. Branch:
+[`031-audit-round-1.md`](031-audit-round-1.md), [`031-audit-round-2.md`](031-audit-round-2.md) and
+[`031-audit-round-3.md`](031-audit-round-3.md) (all three **immutable**). Every commit carries `Spec: 017`,
+`Plan: 031`, `ADR: 0033` trailers. Branch:
 `feat/group-member-bounds`, off `main`.
 
 ---
@@ -148,12 +183,36 @@ and implied six in another — audit m-8. It is **six**.)* Tasks 6–7 need a **
    **Wrapped in `msgin.Permanent` when the group is NOT leased, bare when it is** (D-AM — this REPLACES revision
    1's blanket "no `Permanent` wrap"). The construction-time shape is the shipped `checkRange` render, unchanged.
 
+   > 🔴 **`site` IS FOUR DIFFERENT STRINGS, AND REVISION 3 SPECIFIED ONE OF THEM WRONG** (audit **NEW-5**). The
+   > shape fixes the format; it never fixed the substitution, and AC-2c pinned `sql`'s as `sql.GroupStore.Add` —
+   > **a site the error is not minted at.** Task 6 Step 4 mints it **inside the dialect**, which cannot know it was
+   > reached through `GroupStore.Add`; and AC-4b deliberately drives `kit.Group.AddMember` **directly**, where that
+   > render names a store never involved. The decided values:
+   >
+   > | Minted in | `site` |
+   > |---|---|
+   > | `adapter/memory/groupstore.go` (both arms) | `memory.GroupStore.Add` |
+   > | `postgres/groupdialect.go` | **`msgin/sql/postgres: AddMember`** |
+   > | `mysql/groupdialect.go` | **`msgin/sql/mysql: AddMember`** |
+   > | `sqlite/groupdialect.go` | **`msgin/sql/sqlite: AddMember`** |
+   >
+   > This is the **shipped convention** — every error a dialect mints today is prefixed `msgin/sql/<engine>:`
+   > (`postgres/groupdialect.go:67`, `mysql/groupdialect.go:63`, `sqlite/groupdialect.go:55`) — and it is the only
+   > form that **discriminates the engine**, which is D-AE's own debuggability argument (*"a bare sentinel cannot
+   > tell an operator which cap fired"*) applied to three dialects rendering one identical site.
+
    > 🔴 **The shape is identical; the COUNT is not, and must not be forced to be** (audit **N-8**). `n` is
    > **"members retained at the moment of the check"**, and the two checks sit on opposite sides of the write:
    > `memory` checks **before** the append, so at a cap of 4 it renders `holds 4 members, limit 4`; the dialects
    > check **after** the member upsert (Task 6 Step 2 — required, so an idempotent re-add at cap stays a no-op), so
-   > they render `holds 5 members, limit 4`. **Spec 017 §6 AC-2c pins BOTH renders.** Do not "normalise" `sql` to
-   > `len(members)-1` — that renders a count no statement in the transaction ever observed.
+   > they render `holds 5 members, limit 4`. **Spec 017 §6 AC-2c pins BOTH renders**, and **Task 7 executes the
+   > `sql` half against a real engine** (audit **NEW-5**: a render assertion through Task 5's fake dialect would be
+   > vacuous, since the fake mints whatever the test hands it). Do not "normalise" `sql` to `len(members)-1` — that
+   > renders a count no statement in the transaction ever observed.
+   >
+   > **Both counts are now over the SAME SET — live + claimed** (D-AF, reversed in revision 4; audit **NEW-7**).
+   > Revision 3 had `sql` count live only, so the two `%d`s were over different sets *and* on different sides of
+   > the write. Only the side-of-the-write difference survives.
 5. **No new exported sentinel, in any module** (D-AD / ADR 0032 D-X). A task that appears to need one has hit a
    design fault: **stop and escalate.**
 6. **No test grows a group past 16 members** (Spec 017 AC-6). Ceiling values are exercised by **constructors
@@ -216,13 +275,35 @@ and implied six in another — audit m-8. It is **six**.)* Tasks 6–7 need a **
 
 ## The counted set — read D-AF and D-AO before writing either check
 
-> **The two stores count different sets, deliberately, and pattern-matching one onto the other is the mistake this
-> box exists to prevent.**
+> 🔴 **REVERSED IN REVISION 4 — the two stores now count the SAME SET** (audit **NEW-7**; D-AF). Revision 3 had
+> `sql` count **live only**, justified as *"claimed members are retained by the database, not the process."* Both
+> halves of that were wrong: `sql.GroupStore.ClaimGroup` decodes the **entire** claimed set into the process heap
+> at `limit = 0` (`groupstore.go:284-297`), and — decisively — `ClaimGroup` stamps **every** live member, so live
+> drops to 0 and up to `cap` more rows are admitted; a failed release `AbandonGroup`s them all back to live, and
+> the cycle repeats. **`SettleGroup` is the only statement that ever deletes a member row, and it runs on success
+> only. The durable table was unbounded.** `memory` never had that hole *because* it counts live + claimed.
 
-| Store | Counts | Site | Why |
+| Store | Counts | Site | How the count is obtained |
 |---|---|---|---|
-| `memory.GroupStore` | `len(g.msgs)` — **live + claimed** | `Add`, between the dedup lookup (`groupstore.go:130`) and the dedup insert (`:133`) | that slice is what the **process** retains |
-| `sql.GroupStore` | **live only** (`claimed_epoch IS NULL`) | inside the dialect's transaction, after that engine's serializing statement (Spec 017 §3.6.1) | claimed members are retained by the **database**, not the process |
+| `memory.GroupStore` | `len(g.msgs)` — **live + claimed** | `Add`, between the dedup lookup (`groupstore.go:130`) and the dedup insert (`:133`) | the slice length — the process retains exactly that slice |
+| `sql.GroupStore` | **live + claimed** — every member row for the key | inside the dialect's transaction, after that engine's serializing statement **and** after the member upsert (Spec 017 §3.6.1) | **the shipped `*CountMembers` helper** — `SELECT count(*) … WHERE group_key = ?`, **no `claimed_epoch` predicate** (`postgres/groupdialect.go:373`, `mysql:358`, `sqlite:375`) |
+
+> 🔴 **THE COUNT SOURCE IS FORCED, NOT A CHOICE — do not compute it from the member `SELECT`.** `len()` of
+> `*SelectMembers(…, "claimed_epoch IS NULL", limit)` cannot see claimed members **at all**, so it cannot produce a
+> live+claimed count under any `LIMIT`. The three dialects already ship an identical `*CountMembers(ctx, q, mt,
+> groupKey) (int64, error)` — called today from `SettleGroup` (`postgres:196`, `mysql:192`, `sqlite:208`) — which
+> counts **every** row for the key. **Zero new SQL; one extra `COUNT(*)` per `AddMember`,** inside the transaction
+> the dialect already opens. That cost is real, is paid on every add rather than only on overflow, and is stated
+> in D-AG rather than discovered.
+
+> 🔴 **AND `sql` THEREFORE GAINS D-AM's LEASED ARM, WHICH IT DID NOT HAVE.** Revision 3 could write *"a `sql` live
+> set is by definition unclaimed, so every `sql` over-cap rejection is the not-leased case."* **That sentence is
+> false once claimed members count**: a `sql` group can be over cap *because* a claim is in flight, which is
+> exactly D-AM's **transient** arm. Classifying it permanent would dead-letter healthy traffic in a routine claim
+> window. The discriminator is the group row's **`locked_by`**, read at **zero extra round-trips** because all
+> three dialects already read that row inside `AddMember` (Task 6 Step 2). `locked_by IS NULL` is also *exactly*
+> §3.3.1's restated premise — *nothing drains an UNLEASED group without an expiry cutoff* — so one predicate
+> serves both stores and D-AM loses its `sql` special case.
 
 **🔴 The `memory` check does NOT go "after the dedup branch" — revision 1's instruction lost messages** (audit M-6,
 second defect; D-AO). The dedup branch **ends** with `g.ids[id] = struct{}{}` at `groupstore.go:133`; a check
@@ -273,7 +354,8 @@ shape — read it, do not reconstruct it.**
 
 - [ ] **Step 3 (RED — the behavior).** Write the failing cases of the branch table below in
       `adapter/memory/groupstore_test.go`. All must fail before any production edit.
-- [ ] **Step 4 (GREEN — the store).** Add **two NAMED package constants** —
+- [ ] **Step 4 (GREEN — the store).** Add **two NAMED package constants, DECLARED IN
+      `adapter/memory/groupstore.go` — the file AC-3.3 parses** (audit **NEW-4**; D-AR) —
       `const defaultMaxGroupMembers = 1 << 16` and `const maxGroupMembersCeiling = 1 << 20` — the `maxGroupMembers`
       config field initialised **from the named default** (`cfg := groupStoreConfig{…, maxGroupMembers:
       defaultMaxGroupMembers}`), `WithMaxGroupMembers(n int)`, the `checkRange` call in `NewGroupStore` (mirroring
@@ -288,6 +370,11 @@ shape — read it, do not reconstruct it.**
       > NAME and fires its not-found guard on a bare literal** — so following local precedent here green-lights
       > Task 1 and blocks Task 3 on a defect Task 1 was never told to avoid. **`maxGroups: 1024` is NOT changed**
       > (nothing reads it mechanically; D-AR scopes the deviation deliberately).
+      >
+      > 🔴 **AND THE FILE IS AS LOAD-BEARING AS THE FORM** (audit **NEW-4**). AC-3.3's parse set is **asserted**
+      > (B3-3 forbids shrinking it), so a constant declared anywhere other than `adapter/memory/groupstore.go`
+      > fires the same not-found guard a bare literal would. Revision 3 fixed the *form* and left the *location*
+      > unstated — N-4 one attribute over.
 - [ ] **Step 5 (GREEN — `Handle`).** Replace `routing/aggregator.go:412-415`'s bare `return err` with Spec 017
       §3.3a's branch: on a non-nil error **with** a non-nil group, re-evaluate `a.cfg.release`, claim and release
       if it fires, and return a **fresh transient** `ErrOverflowDropped` (`overflowRetryable`) when the group
@@ -329,7 +416,7 @@ test is a delivery blocker):
 | B1-4 | `checkRange` upper arm in `NewGroupStore` | `NewGroupStore_rejects_ceiling_plus_one` | delete the arm ⇒ case fails |
 | B1-5 | `checkRange` lower arm | `NewGroupStore_rejects_zero` | change `lo` to `0` ⇒ case fails |
 | B1-6 | `checkRange` in-range → default/explicit accepted | `NewGroupStore_accepts_the_ceiling` **and** `NewGroupStore_default_is_usable` | make `checkRange` always error ⇒ both fail |
-| B1-7 | the **existing** group-count arm, now wrapped | `Add_rejects_a_new_key_beyond_MaxGroups` (extend the shipped case at `groupstore_test.go:30-39` to assert the render) | drop the wrap ⇒ the render assertion fails |
+| B1-7 | the **existing** group-count arm, now wrapped | `Add_rejects_a_new_key_beyond_MaxGroups` (extend the shipped case at `groupstore_test.go:28-41`, whose `name:` is **`:29`** — not `:30-39` as revision 3 cited, audit **NEW-9** — to assert the render) | drop the wrap ⇒ the render assertion fails |
 | **B1-8** | **`!g.leased` ⇒ `msgin.Permanent`** | `Add_over_cap_unleased_is_permanent` (asserts `msgin.IsPermanent(err)` **and** the `msgin: permanent: ` render — Spec 017 AC-2c) | drop the wrap ⇒ fails |
 | **B1-9** | **`g.leased` ⇒ transient** | `Add_over_cap_while_leased_is_transient` (claim the group first, then `Add`) | wrap unconditionally ⇒ fails |
 | **B1-10** | **`Add` returns the live snapshot WITH the error** | `Add_over_cap_returns_the_live_snapshot` | return `nil` ⇒ fails |
@@ -433,15 +520,40 @@ commit and *"the wrapped group-count class fix"* (Step 6) as a follow-up; **do n
 
 ## Task 3 — the `default ≥ completionSizeCeiling` invariant, mechanically enforced (D-AQ)
 
+> 🔴 **EXECUTION ORDER: THIS TASK RUNS AFTER TASKS 5+6, NOT THIRD.** It keeps the number 3 (renumbering would
+> churn every cross-reference in three artifacts for no gain); it does **not** keep the position. The plan's
+> execution order is **1 → 2 → 4 → 5+6 → 3 → 7 → 8 → 9 → 10** — see the Sizing table, which is ordered that way.
+> **Step 0 below is a hard gate that fails loudly if you arrive here early.**
+
 **Files:** a new root blackbox test (`group_member_bound_invariant_test.go`), plus the cross-reference comments on
 `routing/aggregator.go:33` and **each store's new `defaultMaxGroupMembers` constant** (`adapter/memory/groupstore.go`
 **and `adapter/database/sql/groupstore.go`**).
 **Module:** root.
 
-> 🔴 **THIS TASK NOW SITS AFTER TASK 5, OR PARSES TWO OF THREE FILES AND FAILS.** `sql`'s `defaultMaxGroupMembers`
-> is written in Task 5 Step 4. Run Task 3 **after** Tasks 5+6 land, or split it: the `memory` + `routing`
-> assertions with Task 1 and the `sql` assertion with Task 5. **Do not** weaken the parse set to whatever exists —
-> mutant (c) below exists to forbid exactly that.
+> 🔴 **THE TASK IS REORDERED, NOT SPLIT — this is the BLOCKER of audit round 3 (NEW-1), and it REVERSES revision
+> 3's instruction** (**D-AT**). Revision 3 offered *"or split it: the `memory` + `routing` assertions with Task 1
+> and the `sql` assertion with Task 5"*, justified from N-1's rule — *a gate reading a declaration must ship in
+> that declaration's commit*. **That reads N-1's shape and not its mechanism.**
+>
+> - **N-1/B-2's rule governs a PRE-EXISTING gate.** `sizing_option_class_gate_test.go` ships on `main` and asserts
+>   **exact set equality in both directions** (`:321-324`), so **the option's existence alone makes root red**
+>   before one line of new test code exists. The gate is the fixed point; the key must ride in the option's commit
+>   because there is no order that avoids a red commit otherwise.
+> - **Task 3's AST test DOES NOT EXIST YET.** Adding `const defaultMaxGroupMembers` makes **nothing** red. The
+>   *test* depends on the *declarations*, so it must ship **no earlier than the last declaration**. That is a
+>   **reorder** constraint, not a co-commit constraint.
+>
+> **And the split is strictly worse in four independent ways**, which is why the alternative is deleted rather
+> than deprecated:
+>
+> | # | What the split breaks |
+> |---|---|
+> | 1 | **B3-3's mutant is unprovable in the first half.** `sql`'s constant legitimately does not exist yet, so the asserted file list must be written as **two** files and then rewritten to **three** — a file list edited to match what happens to exist, which is exactly what B3-3 forbids |
+> | 2 | **Step 4's mandatory non-vacuity probe runs twice**, giving the second half a standing excuse to skip it |
+> | 3 | **Step 2's RED becomes impossible.** Pre-Task-1 there is no constant, so what fires is the **not-found guard** — a different RED, proving the guard rather than the value read. The two probes collapse and the weaker one wins |
+> | 4 | **Three references dangle** — Task 10 Step 5, the Sizing table row, and Step 6's single commit message |
+>
+> **Do not** weaken the parse set to whatever exists — mutant (c) below exists to forbid exactly that.
 
 > **NEW in revision 2 (audit M-5).** Revision 1 recorded this invariant as *"not mechanically enforced — both
 > constants are unexported and in different packages, so no blackbox test can compare them"* and defended it with
@@ -449,10 +561,23 @@ commit and *"the wrapped group-count class fix"* (Step 6) as a follow-up; **do n
 > blackbox test that already parses every non-test `.go` file in all eight modules with `go/parser` (`:280`), and
 > **unexportedness and package boundaries are irrelevant to a parser.**
 
+- [ ] **Step 0 (THE ORDER GATE — audit NEW-1, D-AT).** Confirm all **three** declarations are already on the
+      branch before writing a line:
+      `grep -n "defaultMaxGroupMembers" adapter/memory/groupstore.go adapter/database/sql/groupstore.go` must
+      return **two** hits and `grep -n "completionSizeCeiling" routing/aggregator.go` at least one. **If any is
+      missing, Tasks 1 and/or 5+6 have not landed — STOP and run them first.** Do not shorten the parse set to
+      match; that is the defect B3-3 exists to catch.
 - [ ] **Step 1.** Skills + `table-test`. Read `sizing_option_class_gate_test.go:254-300` (`scanSizingParamRepo`)
       with `gopls` — it is the model; **do not** import from it, write a focused parse.
-- [ ] **Step 2 (RED).** Write the test against the *pre-Task-1* tree with a deliberately wrong expectation, to
-      prove it reads real values off the AST rather than passing vacuously.
+- [ ] **Step 2 (RED — a VALUE failure, not a not-found failure).** With all three constants present (Step 0),
+      write the test with a **deliberately wrong expectation** — assert `defaultMaxGroupMembers < completionSizeCeiling`
+      — and confirm the failure message **names all three constants, their files and their real values**. That is
+      what proves it reads the AST rather than passing vacuously. Then invert the assertion to the real one.
+
+      > 🔴 **Revision 3 said *"write the test against the PRE-TASK-1 tree"*, which is now impossible and was
+      > always the wrong probe** (audit **NEW-1**, consequence 3). Pre-Task-1 there is no constant at all, so what
+      > fires is Step 4's **not-found guard** — a different failure that proves the guard, not the value read.
+      > **Step 2 and Step 4 are two distinct probes and both are mandatory.**
 - [ ] **Step 3 (GREEN).** The test parses **three** files — `routing/aggregator.go`,
       `adapter/memory/groupstore.go` **and `adapter/database/sql/groupstore.go`** — locates
       `const completionSizeCeiling` and **`const defaultMaxGroupMembers` in EACH store package** by name, evaluates
@@ -473,8 +598,8 @@ commit and *"the wrapped group-count class fix"* (Step 6) as a follow-up; **do n
       (naming both defaults and this test). 🔴 **Not on the CEILING constants** — `maxGroupMembersCeiling` is not a
       term of the invariant, and revision 2's three artifacts named three different homes (audit **N-4**). They are
       now human-facing explanation, **not** the defence.
-- [ ] **Step 6.** Mutation-prove; green; commit:
-      `test(core): enforce the group-member default against the completion-size ceiling`.
+- [ ] **Step 6.** Mutation-prove; green; commit **after the Tasks 5+6 commit** (Step 0's order gate; **D-AT**) —
+      **one** commit, not two: `test(core): enforce the group-member default against the completion-size ceiling`.
 
 | # | Branch | Covering case | Killing mutant |
 |---|---|---|---|
@@ -573,6 +698,14 @@ groupstore_unit_test.go}`, `sizing_option_class_gate_test.go`, **`adapter/databa
       `const maxGroupMembersCeiling = 1 << 20` (**D-AR**, audit **N-4**; Task 3's AST invariant parses **this
       package too** and locates the default **by name** — see Task 1 Step 4's box) — the config field initialised
       from the named default, and `WithMaxGroupMembers(n int)` with the `checkRange` call in `NewGroupStore`.
+
+      > 🔴 **THE CONSTANTS GO IN `adapter/database/sql/groupstore.go`, NOT IN `helpers.go`** (audit **NEW-4**).
+      > This step's own subject is `helpers.go`, and `checkRange`'s range arms are the constants' natural
+      > neighbours — so the obvious reading puts them there and **fires AC-3.3's not-found guard**, because the
+      > parse set is **asserted** (B3-3) at `routing/aggregator.go` + `adapter/memory/groupstore.go` +
+      > **`adapter/database/sql/groupstore.go`**. That file already declares this package's other two defaults as
+      > named constants — `defaultGroupLeaseTTL` (`:22`) and `defaultExpiredGroupsLimit` (`:30`) — so it is also
+      > the local-precedent home. `checkRange` still goes in `helpers.go`; only the constants move.
 - [ ] **Step 5 (GREEN — the SPI godoc: one CORRECTION, two additions).** Add `maxMembers int` to
       `GroupDialect.AddMember`, then edit its interface godoc.
 
@@ -601,12 +734,37 @@ groupstore_unit_test.go}`, `sizing_option_class_gate_test.go`, **`adapter/databa
 - [ ] **Step 6.** Extend `fakeGroupDialect` to record the `maxMembers` it received, to return the overflow error on
       demand, **and to return rows alongside that error**, so the store's pass-through of both is provable without
       Docker.
-- [ ] **Step 6b (THE HARNESS CALL SITE — audit N-1, the BLOCKER).** Update `harness/groupstore.go:345` to the new
-      signature, threading the cap from the existing `TestKit`. **Mechanical only — the behavioral conformance
-      cases stay in Task 7.** 🔴 **Do NOT add an exported function with an `int`/`int64` parameter to `harness`**
-      (Task 7 Step 5's box): the cap travels in the existing `TestKit`, never as a new exported parameter. Verify
-      **`GOWORK=off go vet ./...` in `harness`** — it has **no `_test.go` files**, so `go test` there is a false
-      pass — and `GOWORK=off go build ./...` in `dbtest`.
+- [ ] **Step 6b (THE HARNESS CALL SITE — audit N-1, the BLOCKER of round 2).** Update `harness/groupstore.go:345`
+      to the new signature, passing a **new unexported package constant declared in
+      `adapter/database/sql/harness/groupstore.go`**:
+
+      ```go
+      // groupMemberCap is the member cap every harness group case runs under: small
+      // enough for Spec 017 AC-6 (no test grows a group past 16), large enough for
+      // the largest member count any harness case adds. It is UNEXPORTED on purpose
+      // — see the box in Task 7 Step 5.
+      const groupMemberCap = 4
+      ```
+
+      **Mechanical only — the behavioral conformance cases stay in Task 7**, and Task 7's new cases use the same
+      constant.
+
+      > 🔴 **REVISION 3 SAID *"threading the cap from the existing `TestKit`"*, WHICH HAS NO REFERENT** (audit
+      > **NEW-3**). `harness.TestKit` has **no cap, limit or integer field of any kind** —
+      > `grep -nE "^\s+[A-Z][A-Za-z]*\s+(int|int64)\b" adapter/database/sql/harness/testkit.go` returns nothing —
+      > and **`testkit.go` is in no task's Files list**, so no task is authorized to add one. The implementer was
+      > left with three options, one of which (an exported `int` parameter) the very next box **forbids**.
+      >
+      > 🔴 **Do NOT add an exported function with an `int`/`int64` parameter to `harness`**, and do **not** add a
+      > `TestKit` field either (Task 7 Step 5's box): an exported key from a leaf module is an unsatisfiable class-
+      > gate failure by design, and an exported struct field is a public-surface change to a leaf module — an
+      > architectural decision, not an implementation detail. An **unexported package constant is neither.**
+      > *(If a `TestKit` field is nevertheless preferred, `testkit.go` must join this task's Files list and ADR
+      > 0033 must record that `harness` gains an exported field.)*
+
+      Verify **`GOWORK=off go vet ./...` in `harness`** — it has **no `_test.go` files**, so `go test` there is a
+      false pass — and **`GOWORK=off go vet ./...` in `dbtest`** — where every Go file **is** a `_test.go` file, so
+      `go build` is the false pass (audit **NEW-2**; Task 6 Step 5's table).
 - [ ] **Step 7.** Mutation-prove; commit **with Task 6** (below).
 
 | # | Branch | Covering case | Killing mutant |
@@ -633,8 +791,8 @@ groupstore_unit_test.go}`, `sizing_option_class_gate_test.go`, **`adapter/databa
 - [ ] **Step 1.** Skills + `golang-database` + **`use-testcontainers`** (no mocks, no in-memory fakes, no shared
       dev DB for this work). Read each dialect's `AddMember` with `gopls`.
 - [ ] **Step 2 (GREEN, per dialect).** Inside the existing transaction, **after that engine's serializing statement
-      and after the member upsert**, count the live members and — if the count exceeds `maxMembers` — return the
-      D-AE/D-AM error so the transaction rolls back:
+      and after the member upsert**, count **every member row for the key** — live **and** claimed — and, if the
+      count exceeds `maxMembers`, return the D-AE/D-AM error so the transaction rolls back:
 
       | Dialect | Wrapper | Serializing statement | Where the check goes |
       |---|---|---|---|
@@ -644,12 +802,35 @@ groupstore_unit_test.go}`, `sizing_option_class_gate_test.go`, **`adapter/databa
 
       **After the member upsert in all three**, so an idempotent re-add of an existing id at exactly the cap is a
       no-op rather than an overflow.
+
+      🔴 **Two changes here are NEW in revision 4 and both come from audit NEW-7 (D-AF, reversed).**
+
+      **(a) The count is `*CountMembers`, not a live-member count.** Use the **shipped** helper —
+      `pgCountMembers` (`postgres/groupdialect.go:373`), `mysqlCountMembers` (`mysql:358`), `sqliteCountMembers`
+      (`sqlite:375`), all `SELECT count(*) … WHERE group_key = ?` with **no `claimed_epoch` predicate** — passing
+      the same `tx`/`conn` the rest of `AddMember` uses. Each is already called from that dialect's `SettleGroup`,
+      so this is **zero new SQL and no new helper**. **Do NOT derive the count from Step 3's member `SELECT`:**
+      that `SELECT` is live-only, so `len()` cannot see claimed members under any `LIMIT`. Cost, stated: **one
+      extra `COUNT(*)` per `AddMember`**, on every add rather than only on overflow (D-AG).
+
+      **(b) Read the group row's `locked_by` in the statement that already reads `created_at`**, so the dialect can
+      classify (Step 4). Zero extra round-trips:
+
+      | Dialect | Today | Becomes |
+      |---|---|---|
+      | postgres | `… RETURNING created_at` | `… RETURNING created_at, locked_by` |
+      | mysql | `SELECT created_at FROM <group> WHERE group_key = ?` | `SELECT created_at, locked_by …` |
+      | sqlite | `SELECT created_at FROM <group> WHERE group_key = ?` | `SELECT created_at, locked_by …` |
+
+      `locked_by` is nullable — scan into a `*string` / `sql.NullString` and treat NULL as *not leased*. It is
+      **not** added to `msginsql.GroupRows`; it is local to `AddMember`'s classification.
 - [ ] **Step 3 (GREEN — the bounded fetch and the snapshot).** Give each of `pgSelectMembers` /
       `mysqlSelectMembers` / `sqliteSelectMembers` a **private `limit int` parameter, where `0` means unlimited**
       (emit no `LIMIT` clause). **`AddMember` is the ONLY caller that passes non-zero** — `maxMembers+1`;
       `ClaimGroup` and `ExpiredGroups` pass **`0`** and keep their current behavior byte-for-byte. On overflow,
       **filter the just-upserted `msgID` out of the materialized `[]MemberRow` and return the remaining rows WITH
-      the error** (D-AN) — the post-rollback live set, at **no extra query**.
+      the error** (D-AN) — the post-rollback live set, at **no extra query**. *(Step 2(a)'s `COUNT(*)` is the only
+      new round-trip `AddMember` gains; this snapshot adds none.)*
 
       > 🔴 **DO NOT PUT THE `LIMIT` IN THE HELPER'S SQL — it has THREE callers and only one has a cap** (audit
       > **N-5**; **D-AS**). Revision 2 said *"each dialect's live-member `SELECT` gains a `LIMIT maxMembers+1`"*,
@@ -668,23 +849,64 @@ groupstore_unit_test.go}`, `sizing_option_class_gate_test.go`, **`adapter/databa
       > group then releases an **incomplete aggregate**, the silent data corruption Spec 017 §5 rejects — **and
       > `ExpiredGroups`' recovery set**, so the reaper drops members. Neither loss is visible to any AC without
       > Task 7's mutant below. The parameter is **unexported**, so it adds no class-gate key.
-- [ ] **Step 4 (GREEN — the error).** Return `msgin.Permanent(fmt.Errorf(…ErrOverflowDropped…))` — a `sql` live set
-      is by definition unclaimed, so **every `sql` over-cap rejection is D-AM's not-leased case**. Import `msgin`
-      in each dialect (zero net dependency — already required transitively via `msginsql`). Verify with
-      `GOWORK=off go mod tidy && git diff --exit-code -- go.mod go.sum` in each of the three modules.
-- [ ] **Step 5 (THE GATE — SIX modules, not four; audit N-1).** Global constraint 8's *compiles-against* rule:
+      >
+      > 🔴 **`limit = 0` on `ClaimGroup` IS CORRECT AND IS ALSO HALF OF NEW-7.** Truncating the claimed set is
+      > worse than fetching it — but with revision 3's live-only counting it left the durable table unbounded.
+      > **Step 2(a)'s live+claimed count is what closes that**, not a `LIMIT` on `ClaimGroup`. Do not "fix" NEW-7
+      > by bounding `ClaimGroup`; that re-introduces exactly the truncation D-AS forbids.
+- [ ] **Step 4 (GREEN — the error, its SITE STRING and its CLASSIFICATION).** Return the D-AE shape wrapped per
+      D-AM. Import `msgin` in each dialect (zero net dependency — already required transitively via `msginsql`).
+      Verify with `GOWORK=off go mod tidy && git diff --exit-code -- go.mod go.sum` in each of the three modules.
+
+      🔴 **THE SITE STRING IS `msgin/sql/<engine>: AddMember`, NOT `sql.GroupStore.Add`** (audit **NEW-5**; Global
+      constraint 4's box). The error is minted **here**, inside the dialect, which cannot know whether it was
+      reached through `sql.GroupStore.Add` or — as **AC-4b deliberately does** — through
+      `kit.Group.AddMember(ctx, tx, …)` directly. It matches the shipped convention (`postgres/groupdialect.go:67`
+      and siblings all prefix `msgin/sql/<engine>:`) and it is the only form that tells an operator **which
+      engine** rejected, which is D-AE's own argument.
+
+      🔴 **THE CLASSIFICATION IS `locked_by`-DISCRIMINATED, NOT UNCONDITIONALLY PERMANENT** (audit **NEW-7**;
+      D-AF reversed, D-AM). Revision 3 said *"a `sql` live set is by definition unclaimed, so every `sql` over-cap
+      rejection is D-AM's not-leased case."* **That is false once claimed members count** — a `sql` group can be
+      over cap precisely *because* a claim is in flight, which is D-AM's **transient** arm; classifying it
+      permanent dead-letters healthy traffic in a routine claim window. Using Step 2(b)'s `locked_by`:
+
+      | Group row | Classification | Rendered |
+      |---|---|---|
+      | `locked_by IS NULL` — **not leased** | `msgin.Permanent(fmt.Errorf(…))` | `msgin: permanent: msgin: message dropped by overflow policy: msgin/sql/postgres: AddMember: group "k" holds 5 members, limit 4` |
+      | `locked_by IS NOT NULL` — **leased** | the bare `fmt.Errorf(…)`, transient | the same string **without** the `msgin: permanent: ` prefix |
+
+      **One rule, two stores:** `locked_by IS NULL` is exactly `memory`'s `!g.leased`, and exactly §3.3.1's
+      restated premise *"nothing drains an UNLEASED group without an expiry cutoff."*
+- [ ] **Step 5 (THE GATE — SIX modules, not four; audit N-1, arm corrected per audit NEW-2).** Global constraint
+      8's *compiles-against* rule:
 
       | Module | Command | Why |
       |---|---|---|
       | root | `GOWORK=off go test ./... -race -shuffle=on` | the option, the store, the SPI declaration |
       | `postgres`, `mysql`, `sqlite` | `GOWORK=off go test ./... -race -shuffle=on` | the three implementations |
       | **`harness`** | **`GOWORK=off go vet ./...`** | holds a `msginsql.GroupDialect` (`testkit.go:87`) and calls `AddMember` (`groupstore.go:345`). 🔴 **It has NO `_test.go` files, so `go test` is a FALSE PASS** (CLAUDE.md) |
-      | **`dbtest`** | **`GOWORK=off go build ./...`** (full run in Task 7) | requires `harness` with a local `replace` (`dbtest/go.mod`) |
+      | **`dbtest`** | **`GOWORK=off go vet ./...`** (full Docker run in Task 7) | requires `harness` with a local `replace` (`dbtest/go.mod`). 🔴 **Every Go file here IS a `_test.go` file, so `go build` compiles NOTHING and exits 0 whatever breaks** — `go list -f '{{.GoFiles}}'` → `[]`, all four files are `XTestGoFiles`. `go vet` type-checks them; `go build` cannot |
 
       **Revision 2's gate listed only "root + all three dialect modules"**, so it could not see the two modules
       Step 6b exists to keep green.
+
+      > 🔴 **BOTH FALSE-PASS DIRECTIONS, RECORDED ONCE** (audit **NEW-2**). Revision 3 fixed one and introduced
+      > the other, one row apart, in this same table:
+      >
+      > | Module shape | `go test` | `go build` | `go vet` |
+      > |---|---|---|---|
+      > | non-test files, **no** `_test.go` (`harness`) | **FALSE PASS** | sees the break | sees the break |
+      > | **only** `_test.go` files (`dbtest`) | sees the break (needs Docker) | **FALSE PASS** | sees the break |
+      >
+      > `go vet` is the only command correct for **both**. Before adding any module to a gate, ask which of the
+      > two shapes it has.
 - [ ] **Step 6.** Commit **Tasks 5 + 6 together** (including Task 5 Step 6b's harness call site):
       `feat(sql): bound a group's member count inside the dialect transaction`.
+
+      > **NEXT UP IS TASK 3, not Task 7** (Sizing table's order column; **D-AT**). `sql`'s
+      > `defaultMaxGroupMembers` now exists, so Task 3's AST invariant has its full three-file parse set for the
+      > first time. Task 7 follows it.
 
 | # | Branch | Covering case (lands in Task 7's harness) | Killing mutant |
 |---|---|---|---|
@@ -692,7 +914,10 @@ groupstore_unit_test.go}`, `sizing_option_class_gate_test.go`, **`adapter/databa
 | B6-2 | live count ≤ `maxMembers` → commit normally | `member_cap_admits_up_to_the_cap` | off-by-one to `>=` ⇒ fails |
 | B6-3 | re-add of an existing id at exactly the cap → no-op | `member_cap_readd_at_cap_is_a_noop` | move the check **before** the upsert ⇒ fails |
 | **B6-4** | **the live snapshot is returned with the error, rejected member filtered** | `member_cap_returns_the_live_snapshot` | return empty `GroupRows` ⇒ fails |
-| **B6-5** | **the rejection is `Permanent`** | `member_cap_rejection_is_permanent` | drop the wrap ⇒ fails |
+| **B6-5** | **an UNLEASED rejection is `Permanent`** | `member_cap_rejection_is_permanent` | drop the wrap ⇒ fails |
+| **B6-8** | **the count includes CLAIMED members** (D-AF, reversed — audit **NEW-7**) | `member_cap_counts_claimed_members` — fill to exactly `cap`, `ClaimGroup` (which stamps every live member ⇒ live = 0), then `AddMember` once more ⇒ **rejected** | count `claimed_epoch IS NULL` instead of `count(*)` ⇒ the member is **admitted** and the case fails. **This is the mutant that proves the durable table is bounded**; without it, `cap` more rows are admitted per claim cycle, forever |
+| **B6-9** | **a LEASED rejection is TRANSIENT** (`locked_by IS NOT NULL`) | same fixture as B6-8, asserting `!msgin.IsPermanent(err)` | wrap unconditionally ⇒ fails, and a routine claim window dead-letters healthy traffic |
+| **B6-10** | **the rendered site names the ENGINE** (audit **NEW-5**) | `member_cap_render_names_the_dialect` — the full AC-2c string, per engine, through **both** entry points (`GroupStore.Add` and `kit.Group.AddMember`) | render `sql.GroupStore.Add` ⇒ both halves fail, and the second one names a store never involved |
 | **B6-6** | **`*sql.Tx` Querier: no rollback, caller owns it** | `member_cap_under_caller_owned_tx` (Spec 017 AC-4b) — driven at **`kit.Group.AddMember(ctx, tx, …)`**, the dialect, **never** `GroupStore.Add`, which cannot take a Querier (audit **N-2**) | assume `pgRunInTx` rolled back ⇒ the in-transaction row-count assertion fails |
 | **B6-7** | **`ClaimGroup` / `ExpiredGroups` pass `limit = 0`** (D-AS) | `member_cap_claim_at_cap_returns_every_member` — fill a group to exactly `cap`, `ClaimGroup`, assert **`cap`** members claimed | pass `maxMembers+1` from `ClaimGroup` ⇒ the claimed set is **truncated** and the case fails. **Without this mutant, "0 means unlimited" is a comment** (audit **N-5**) |
 
@@ -713,8 +938,10 @@ groupstore_unit_test.go}`, `sizing_option_class_gate_test.go`, **`adapter/databa
 > that commit rather than repairing it here.
 
 - [ ] **Step 1.** Skills + **`use-testcontainers`**. Read the group conformance kit around
-      `harness/groupstore.go:345` (the `AddMember` call site, already threaded with `maxMembers`) with `gopls`.
-- [ ] **Step 2 (AC-4).** Add one conformance case, run by **all three** dialects, asserting five things:
+      `harness/groupstore.go:345` (the `AddMember` call site, already threaded with `groupMemberCap`) with `gopls`.
+      **Every case below uses that same unexported constant** (Task 5 Step 6b) — not a `TestKit` field, not an
+      exported parameter (audit **NEW-3**; the box at Step 5).
+- [ ] **Step 2 (AC-4).** Add one conformance case, run by **all three** dialects, asserting **seven** things:
       1. the `cap+1`-th live member ⇒ `errors.Is(err, msgin.ErrOverflowDropped)`;
       2. **the rollback, asserted not assumed** — a subsequent `ClaimGroup` returns exactly `cap` members **and** a
          direct member-row count over the table equals `cap`. *Without this half, D-AG's enforcement (C) is
@@ -723,7 +950,20 @@ groupstore_unit_test.go}`, `sizing_option_class_gate_test.go`, **`adapter/databa
          unchanged snapshot**, not an overflow;
       4. **the returned `GroupRows` is non-empty and holds exactly `cap` members** — the post-rollback live set,
          rejected member filtered (D-AN);
-      5. **`msgin.IsPermanent(err)`** (D-AM).
+      5. **`msgin.IsPermanent(err)`** for this (unleased) case (D-AM);
+      6. 🔴 **NEW in revision 4 (audit NEW-5) — THE FULL RENDER, per engine.** Assert Spec 017 AC-2c's `sql`
+         string exactly, including the `msgin: permanent: ` prefix and the **engine-naming site**
+         (`msgin/sql/postgres: AddMember` / `…mysql…` / `…sqlite…`). **This assertion lives here and nowhere
+         else:** Task 5's fake-dialect cases assert only `IsPermanent` and `errors.Is`, and a render assertion
+         through the fake would be **vacuous** — the fake mints whatever the test hands it. Revision 3 pinned the
+         string in an AC that **no task executed**;
+      7. 🔴 **NEW in revision 4 (audit NEW-7) — CLAIMED MEMBERS COUNT.** Fill the group to exactly `cap`,
+         `ClaimGroup` it (which stamps **every** live member, so the live count is **0**), then `AddMember` once
+         more and assert it is **rejected** with `!msgin.IsPermanent(err)` — over cap because of the claimed set,
+         and **transient** because a claim is in flight (`locked_by IS NOT NULL`). **This is the case that proves
+         the durable table is bounded** (B6-8 / B6-9). **Killing mutants:** count `claimed_epoch IS NULL` ⇒ the
+         member is admitted and `cap` more rows land per claim cycle, forever; wrap unconditionally ⇒ a routine
+         claim window dead-letters healthy traffic.
 - [ ] **Step 3 (AC-4b — the caller-owned transaction). NEW in revision 2 (audit M-2); entry point corrected in
       revision 3 (audit N-2).** `BeginTx` on the caller's side, then call **`kit.Group.AddMember(ctx, tx, …)` — the
       DIALECT, directly** — for the `cap+1`-th member. Assert the rejection still fires; assert the member row
@@ -746,13 +986,17 @@ groupstore_unit_test.go}`, `sizing_option_class_gate_test.go`, **`adapter/databa
       > gate walks the filesystem into leaf modules, and half 2 (a root test) **cannot import a leaf module** — so
       > such a key is an unsatisfiable gate failure by design. Verified clean today:
       > `grep -rnE "^func [A-Z][A-Za-z]*\(.*\b(int|int64)\b" adapter/database/sql/harness/*.go` returns nothing.
-      > The cap value travels in the existing `TestKit`, not as a new exported parameter. **Re-run that grep before
-      > committing.**
+      > **The cap value is the unexported package constant `groupMemberCap`** (Task 5 Step 6b) — **not** a
+      > `TestKit` field and **not** a new exported parameter. Revision 3 said *"the cap travels in the existing
+      > `TestKit`"*, which has no referent: `TestKit` has no integer field, and `testkit.go` is in no Files list
+      > (audit **NEW-3**). **Re-run that grep before committing.**
 - [ ] **Step 5b (D-AS's guard — audit N-5).** Add the `limit = 0` conformance case: fill a group to exactly `cap`,
       `ClaimGroup`, and assert **all `cap`** members come back. Mutation-prove it by passing `maxMembers+1` from
       `ClaimGroup` ⇒ truncation ⇒ the case fails. Without this, nothing in the increment notices a `LIMIT` leaking
-      into `ClaimGroup` or `ExpiredGroups`.
-- [ ] **Step 6.** Mutation-prove B6-1…B6-7 from Task 6 against this harness (that is what makes them real).
+      into `ClaimGroup` or `ExpiredGroups`. *(Step 2 item 7 shares this fixture — fill to cap, then claim — and
+      asserts the complementary half: the claimed members still count against the bound.)*
+- [ ] **Step 6.** Mutation-prove **B6-1 … B6-10** from Task 6 against this harness (that is what makes them
+      real) — **ten rows, counted off Task 6's table; do not transcribe this number**.
 - [ ] **Step 7.** Commit: `test(sql): add the group member-cap dialect conformance case`.
 
 ---
@@ -770,6 +1014,19 @@ groupstore_unit_test.go}`, `sizing_option_class_gate_test.go`, **`adapter/databa
       `Permanent`-when-the-group-cannot-drain requirement (naming the default-`RetryPolicy` hot spin as the reason),
       and the **MAY**-return-the-live-snapshot clause with its D-AN consequence. Plus the D-AF note that the counted
       set is implementation-specific and must be stated.
+
+      > 🔴 **THE DOWNGRADE-ONLY CLAUSE IS RESTATED IN REVISION 4 — the revision-3 form is FALSE for two of the six
+      > exits** (audit **NEW-6**). Revision 3 promoted N-7's rule into this paragraph as *"may only ever DOWNGRADE
+      > … **on positive evidence that the group drained** … a bug in the drain path costs a retry, **never a
+      > message the implementation marked recoverable**."* But **exits 3 and 5** of Spec §3.3a.1's own table —
+      > `cerr != nil` ⇒ `return cerr` and `relErr != nil` ⇒ `return relErr` — **discard the store's
+      > `Permanent`-marked error and return an unmarked, hence transient, one**, and they do it because the drain
+      > **FAILED**: evidence of the opposite of drainage. Under `RetryPolicy{}` that is B-1's unlogged zero-delay
+      > spin, for the sub-case *"the release fires but claim/release keeps failing"*. **Write the true rule:**
+      > the Aggregator either **downgrades on positive evidence of drainage** (exits 4 and 6) **or replaces the
+      > overflow error entirely with a distinct fault carrying that fault's own classification** (exits 3 and 5);
+      > it **never upgrades** a transient rejection to permanent; and a **persistently failing claim/release path
+      > therefore RETRIES rather than terminating.** Spec §3.7 carries the wording — copy it, do not paraphrase.
 - [ ] **Step 3 (AC-7 — ONE named clause, not "§3.7's requirement").** Add one case per first-party store for
       §3.7's **MUST-report** clause, with the store **held in a `msgin.MessageGroupStore` variable** rather than
       its concrete type:
@@ -876,6 +1133,13 @@ groupstore_unit_test.go}`, `sizing_option_class_gate_test.go`, **`adapter/databa
       in revision 2 on B-2, the highest-impact finding of round 1 —
       `grep -n "same commit\|red suite\|exact set equality" docs/adrs/0033-*.md` returned **nothing**. Diff the
       three against each other; do not spot-check.
+
+      > 🔴 **AND IT RECURRED AGAIN IN REVISION 3, ON THE ROUND'S OWN FINDING LIST** (audit **NEW-8**). N-8's
+      > disposition — the two stores' divergent counts — reached the spec (5 hits) and the plan (2 hits) and
+      > **the ADR not at all**: `grep -n "65537\|holds 5 members\|members retained at the moment"
+      > docs/adrs/0033-*.md` returned nothing. **This step being scheduled at the DELIVERY gate is why it did not
+      > catch a DESIGN divergence.** Revision 4 therefore runs this reconciliation **as part of closing the
+      > revision**, not only here — and this step remains, unchanged, as the last-chance re-run.
 - [ ] **Step 1.** `/code-review` over the **whole-branch** diff `main..HEAD` — not the last commit. Fix or
       explicitly triage every finding with a written rationale.
 - [ ] **Step 2.** `/security-review` over the same range. Same rule.
@@ -897,7 +1161,9 @@ groupstore_unit_test.go}`, `sizing_option_class_gate_test.go`, **`adapter/databa
       `git ls-files` will not scan the artifact the gate governs (Plan 030's MINOR 11).
 - [ ] **Step 5.** ~~The un-mechanizable invariant.~~ **Superseded by Task 3** (audit M-5, D-AQ): the
       `default ≥ completionSizeCeiling` invariant is now enforced by an AST test, not by a hand `grep`. Confirm
-      Task 3's test is present, non-vacuous (Task 3 Step 4) and green — **that** is the evidence, and it needs no
+      **Task 3's single test** — one task, one commit, executed **after Tasks 5+6** (**D-AT**; audit **NEW-1**
+      deleted the split that would have made this two half-tests) — is present, non-vacuous (**both** probes: Task
+      3 Step 2's value RED and Step 4's not-found RED) and green. **That** is the evidence, and it needs no
       transcribed `grep` output.
 - [ ] **Step 6.** Re-derive, do not transcribe, the figures the artifacts cite: the class-gate key count (expect
       **19**) and method count (expect **27**), the `ErrInvalidCapacity` producer count — expect **six**, and
@@ -912,8 +1178,8 @@ groupstore_unit_test.go}`, `sizing_option_class_gate_test.go`, **`adapter/databa
       `docs/HANDOVER.md` **and** in CLAUDE.md's Project status paragraph. **Re-derive every count with the commands
       that paragraph names — do not increment a number in this plan**, because Plan 030 has landed and Plan 032 may
       land in parallel. Count **distinct plan numbers, not files** — and note that this increment adds
-      [`031-audit-round-1.md`](031-audit-round-1.md) and [`031-audit-round-2.md`](031-audit-round-2.md) as
-      **satellites** of plan number 031, not new plan numbers.
+      [`031-audit-round-1.md`](031-audit-round-1.md), [`031-audit-round-2.md`](031-audit-round-2.md) and
+      [`031-audit-round-3.md`](031-audit-round-3.md) as **satellites** of plan number 031, not new plan numbers.
 - [ ] **Step 8.** Also fix CLAUDE.md's stale `reliability.go:46` citation for `IsPermanent`, which is
       `reliability.go:86-97` (audit m-1 — the same stale citation this bundle inherited).
 - [ ] **Step 9.** Flip the status lines: Spec 017 → DELIVERED, ADR 0033 → ACCEPTED, this plan → DELIVERED — and
@@ -926,19 +1192,29 @@ groupstore_unit_test.go}`, `sizing_option_class_gate_test.go`, **`adapter/databa
 
 ## Sizing
 
-| Task | Modules that must be GREEN (constraint 8: *compiles against*) | Docker | Rough size |
-|---|---|---|---|
-| 1 | root | no | **large** — store + `Handle` (six exits) + classification + gate pair; the correctness core |
-| 2 | root | no | medium — 8 cases over a 5-part fixture, incl. the M-6 regression case |
-| 3 | root | no | small — one AST test over **three** files + three comments |
-| 4 | root | no | small — godoc + one example |
-| **5+6** | **root, postgres, mysql, sqlite, `harness`, `dbtest`** | Task 6 verification | **large** — a breaking SPI change across 7 sites, 3 enforcement points, **and the harness call site (audit N-1)** |
-| 7 | harness, dbtest | **yes** | medium — 3 conformance halves + the `*sql.Tx` dialect case + D-AS's `limit=0` guard |
-| 8 | root | no | small |
-| 9 | root | no | medium — ten count sites in one file, three vacuity probes |
-| 10 | all 8 | yes | medium |
+🔴 **THIS TABLE IS ORDERED BY EXECUTION, NOT BY TASK NUMBER** (audit **NEW-1**; **D-AT**). **Task 3 runs after
+Tasks 5+6** — it parses a constant Task 5 Step 4 writes, and it is **never split** (its header box gives the four
+reasons). Task numbers are stable so cross-references in Spec 017 and ADR 0033 stay valid; the **order** column is
+what an executor follows.
+
+| Order | Task | Modules that must be GREEN (constraint 8: *compiles against*) | Docker | Rough size |
+|---|---|---|---|---|
+| 1 | 1 | root | no | **large** — store + `Handle` (six exits) + classification + gate pair; the correctness core |
+| 2 | 2 | root | no | medium — 8 cases over a 5-part fixture, incl. the M-6 regression case |
+| 3 | 4 | root | no | small — godoc + one example |
+| 4 | **5+6** | **root, postgres, mysql, sqlite, `harness`, `dbtest`** | Task 6 verification | **large, and LARGER in revision 4** — a breaking SPI change across 7 sites, 3 enforcement points, the harness call site (audit N-1), **plus the `*CountMembers` live+claimed count, the `locked_by` read and the leased/not-leased classification in all three dialects** (audit **NEW-7**) |
+| 5 | **3** | root | no | small — one AST test over **three** files + three comments. **Runs HERE, after 5+6** (Step 0 is a hard order gate) |
+| 6 | 7 | harness, dbtest | **yes** | **medium→large in revision 4** — 7 conformance assertions (incl. the per-engine render, audit **NEW-5**, and the claimed-counting case, audit **NEW-7**) + the `*sql.Tx` dialect case + D-AS's `limit=0` guard |
+| 7 | 8 | root | no | small |
+| 8 | 9 | root | no | medium — ten count sites in one file, three vacuity probes |
+| 9 | 10 | all 8 | yes | medium |
 
 **Six modules touched** (root, postgres, mysql, sqlite, harness, dbtest); the delivery gate is all **eight**.
+
+**If D-AF's revision-4 reversal is itself reversed** (Spec 017 §8 item 1 — back to `sql` counting live only), Task
+6 loses the `COUNT(*)`, the `locked_by` read and the leased arm, and Task 7 loses two assertions — **and the
+durable member table becomes unbounded again** (audit **NEW-7**). That is not a sizing trade; it is the increment's
+purpose. **Do not reverse it for size.**
 
 **If D-AG is reversed to enforcement (A)** (Spec 017 §8 item 2), Tasks 5+6+7 collapse into one small root-only
 task and the increment drops from six touched modules to one. **That decision belongs before Task 5.**

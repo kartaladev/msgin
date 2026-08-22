@@ -1,6 +1,6 @@
 # ADR 0033 — A message group's member bound lives at the store, not at the release decision
 
-- **Status:** **PROPOSED — revision 3, post-audit-round-2, NOT accepted.** Written before any code, per
+- **Status:** **PROPOSED — revision 4, post-audit-round-3, NOT accepted.** Written before any code, per
   [CLAUDE.md](../../CLAUDE.md)'s design-time gate.
   - **Round 1 verdict: NOT SAFE TO IMPLEMENT** — 3 BLOCKERs, 8 MAJORs, 10 MINORs, recorded immutably in
     [`docs/plans/031-audit-round-1.md`](../plans/031-audit-round-1.md). Revision 2 folded every finding back in.
@@ -18,10 +18,40 @@
     was fixed for the transaction wrappers (D-AP) and then recurred for the **reaper** (**N-3**, D-AM's premise),
     the shared **`SelectMembers`** helper (**N-5**, D-AP's `LIMIT`) and the **shipped SPI godoc M-3 was about**
     (**N-9**). Revision 3 adds **D-AR** and **D-AS** and repairs the premises of D-AM, D-AP, D-AQ and D-AL.
-  - 🔴 **Decisions D-AC through D-AS were taken WITHOUT USER RATIFICATION.** The user was away when this bundle was
-    drafted, away again when round 1's findings were dispositioned, and away again for round 2's. Every decision
-    below is **open to reversal**; [Spec 017 §8](../specs/017-group-member-bounds.md) lists the ones that most
-    deserve a second look, and each such decision carries a **REVERSIBILITY** line stating what undoing it costs.
+  - **Round 3 verdict: NOT SAFE TO IMPLEMENT** — 1 BLOCKER, 6 MAJORs, 3 MINORs, recorded immutably in
+    [`docs/plans/031-audit-round-3.md`](../plans/031-audit-round-3.md), against a fix-verification score of
+    **9 clean LANDED, 5 LANDED-BUT-FLAWED, 0 NOT LANDED, 0 REGRESSED** — *the auditor's summary line reads 8/6;
+    both total 14, the record leaves the one-row gap **unreconciled**, and **the table governs** because each row
+    carries its own evidence while the score line is a derived tally. **Second consecutive round with that gap**,
+    recorded there as a method defect in the audit apparatus rather than in this bundle.* **Its lesson, verbatim: *revision 3
+    generalized round 2's two structural fixes correctly, but stopped the fix at the boundary of each finding's
+    own wording.*** Both generalizations — Plan 031's *compiles-against* rule and **D-AS** — survive.
+    **Revision 4 is the first revision since round 1 to change a DECISION rather than a premise:**
+    - **D-AF is REVERSED** — both stores now count **live + claimed** (audit **NEW-7**, the round's only genuine
+      design flaw). With `sql` counting live only, `ClaimGroup` zeroed the live count and the **durable member
+      table was unbounded**. This is the decision Spec 017 §8 item 1 listed as *"most likely to be reversed"*, and
+      it is reversed **toward** the alternative that item named.
+    - **D-AT is NEW** — Plan 031's Task 3 is **reordered after Tasks 5+6, never split** (audit **NEW-1**, the
+      BLOCKER), and the reasoning is recorded here so the split is not re-proposed.
+    - **D-AH's downgrade clause is RESTATED** — the revision-3 form is false for two of §3.3a.1's own six exits
+      (audit **NEW-6**).
+    - **D-AE gains the count-divergence decision** it never received in revision 3 (audit **NEW-8**) and the
+      **site-string** decision for the three dialects (audit **NEW-5**).
+    - **D-AN loses its *"a bug in the drain path costs a dead-letter, not a production-down spin"* claim**, which
+      is untrue of exits 3 and 5 (audit **NEW-6**).
+    - **D-AR gains the declaration's FILE** (audit **NEW-4**), **D-AQ its parse-set consequence**, and **D-AM its
+      `locked_by` discriminator** for `sql` (a consequence of D-AF's reversal).
+  - 🔴 **A ROUND 4 IS WARRANTED, and this ADR says so rather than leaving it to judgement.** Rounds 2 and 3 could
+    each be waved through because the revision under audit changed only premises, coverage and wording.
+    **Revision 4 is the first since round 1 to change a DECISION**, and **D-AF's reversal changes runtime behavior
+    in three dialect modules** — a new `COUNT(*)` per `AddMember`, a new `locked_by` read, and a transient
+    classification arm `sql` did not previously have. That is not the bundle round 3 audited, and the design-time
+    gate in [CLAUDE.md](../../CLAUDE.md) exists precisely for the case where fixes destabilize the design.
+  - 🔴 **Decisions D-AC through D-AT were taken WITHOUT USER RATIFICATION.** The user was away when this bundle was
+    drafted, away again when round 1's findings were dispositioned, and away again for rounds 2 and 3. Every
+    decision below is **open to reversal**; [Spec 017 §8](../specs/017-group-member-bounds.md) lists the ones that
+    most deserve a second look, and each such decision carries a **REVERSIBILITY** line stating what undoing it
+    costs.
   - **All structural claims re-derived at `d2c69fe`** (current `main`, post-Plan-030), not at `2b2dec1` where
     revision 1 measured them. [Plan 030](../plans/030-post-029-maintenance.md) landed mid-audit and shifted every
     line number in `adapter/memory/groupstore.go` (from `:93` down) and `adapter/database/sql/groupstore.go` (from
@@ -66,7 +96,8 @@ member** on every arrival, per `GroupDialect.AddMember`'s own contract (`groupdi
 in `decodeGroupRows` (`groupstore.go:365`), reached from `Add`'s tail call at `:275`.
 
 **The class gate cannot reach any of this, and not for a fixable reason.** `sizing_option_class_gate_test.go`'s
-`isIntOrInt64` (`:191-202`) matches `*ast.Ident{"int"|"int64"}` through `...`, slice and pointer wrappers.
+`isIntOrInt64` (**`:231`**, reached from `hasIntOrInt64Param` at **`:215`** — not `:191-202` as revisions 1-3
+cited, audit **NEW-9**) matches `*ast.Ident{"int"|"int64"}` through `...`, slice and pointer wrappers.
 `WithReleaseWhen`'s parameter is an `*ast.FuncType` (falls through to `false`); `WithReleaseStrategy`'s is an
 `*ast.Ident{"ReleaseStrategy"}` (a named type — a limitation the gate's header already states for
 `type Bytes int64`); and `defaultRelease` has no parameter at all. **Spec 016's class is defined over options with
@@ -211,6 +242,53 @@ sentinel cannot tell an operator which cap fired. **The existing bare arm is upg
 commit** — fix the class, not the instance. This is a message-text change only; `errors.Is` is unaffected and no
 test asserts the string (the plan verifies this before the edit).
 
+#### D-AE's `%s` — the SITE is four different strings, and one of them is not a store (NEW in revision 4)
+
+**The format is fixed; the substitution was not, and revision 3 specified `sql`'s wrong** (audit **NEW-5**).
+
+| Minted in | `site` |
+|---|---|
+| `adapter/memory/groupstore.go`, both overflow arms | `memory.GroupStore.Add` |
+| `postgres/groupdialect.go` | **`msgin/sql/postgres: AddMember`** |
+| `mysql/groupdialect.go` | **`msgin/sql/mysql: AddMember`** |
+| `sqlite/groupdialect.go` | **`msgin/sql/sqlite: AddMember`** |
+
+**Decision, and three reasons.** Spec 017 §6 AC-2c pinned the `sql` render as `sql.GroupStore.Add`. **(1)** The
+error is minted **inside the dialect** (D-AG), which cannot know it was reached through the store — and `AddMember`
+has a second caller the bundle deliberately exercises: **AC-4b drives `kit.Group.AddMember(ctx, tx, …)` directly**
+(D-AP, audit N-2), where that render names a store never involved. **(2)** It defeats D-AE's own argument: three
+dialects rendering one identical site cannot tell an operator **which engine** rejected, which is precisely the
+*"a bare sentinel cannot tell an operator which cap fired"* problem the wrap exists to solve. **(3)** It
+contradicts the shipped convention — every error these three files mint is prefixed `msgin/sql/<engine>:`
+(`postgres/groupdialect.go:67`, `mysql:63`, `sqlite:55`).
+
+**The render assertion is EXECUTED in Spec 017 §6 AC-4 item 6, against a real engine.** Revision 3 pinned the
+string in an AC that **no task ran**: outside the `harness`, the only `sql` overflow cases drive the
+`fakeGroupDialect`, where a render assertion is vacuous because the fake mints whatever the test hands it.
+
+#### D-AE's `%d` — the two stores render DIFFERENT COUNTS, deliberately (NEW in revision 4)
+
+> 🔴 **This disposition was taken in revision 3 and recorded in the SPEC and the PLAN and NOT HERE** (audit
+> **NEW-8**): `grep -n "65537\|holds 5 members\|members retained at the moment" docs/adrs/0033-*.md` returned
+> nothing, against 5 hits in the spec and 2 in the plan. **Round 2's N-8 asked for a decision — *"decide it here,
+> not at the keyboard"* — and decisions live in the ADR.** Two-of-three, the project's named failure mode, on the
+> round's own finding list.
+
+**Decision.** `%d` is **"members retained at the moment of the check"**, not a single arithmetic value. The two
+checks sit on **opposite sides of the write**, so at a cap of 4 `memory` renders `holds 4 members, limit 4` and the
+dialects render `holds 5 members, limit 4`:
+
+| Store | Check position | Why it must be there |
+|---|---|---|
+| `memory` | **before** the append | D-AO — a rejected member must leave no trace in `g.ids` |
+| `sql` dialects | **after** the member upsert | D-AP — so an idempotent re-add of an existing id at exactly the cap stays a **no-op** rather than becoming an overflow |
+
+**Rejected: normalising `sql` to `len(members)-1`** so a plan sentence reading *"identical"* would be true. It
+would render a count **no statement in that transaction ever observed**, which is the opposite of the
+debuggability this wrap exists for. Spec 017 §6 **AC-2c pins both renders** so the divergence is asserted rather
+than discovered. *(Since D-AF's revision-4 reversal the two counts are over the **same set** — live + claimed — so
+the side of the write is the only remaining difference.)*
+
 > 🔴 **SUPERSEDED WITHIN THIS ADR — revision 1's "NOT `Permanent`" clause is WRONG and is replaced by D-AM.**
 > Revision 1 argued: *"an over-cap `Add` **can** succeed later, once the group releases … or once the reaper expires
 > it. `Permanent` would deny a retry that works. For a group whose release genuinely never fires, the retry budget
@@ -285,12 +363,28 @@ capture, and the library cannot supply one.** Both options' godoc says so, **inc
 
 | Cause | Store's classification | Why |
 |---|---|---|
-| group at cap and **NOT leased** | **`msgin.Permanent(…ErrOverflowDropped…)`** | nothing will drain it on its own; the release will not re-fire without an admission this cap forbids. Terminal, diverted to a sink, WARN on the dead-letter fallback, and **works on the shipped zero-value `RetryPolicy`.** *This is what kills the retry storm.* |
+| group at cap and **NOT leased** | **`msgin.Permanent(…ErrOverflowDropped…)`** | nothing will drain it on its own; the release will not re-fire without an admission this cap forbids. Terminal, diverted to a sink, and **works on the shipped zero-value `RetryPolicy`.** **In that shipped configuration the loud signal is `divertTerminal`'s nil-sink WARN (`consumer.go:1049`) followed by `safeAck` (`:1073`) — a WARN and an ACK, so the source drops the message; `warnInvalidFallback` fires only when a dead-letter sink IS configured, and then ONCE PER CONSUMER (`:968-973`).** *This is what kills the retry storm.* |
 | group at cap and **LEASED** | plain transient `ErrOverflowDropped` | a claim is in flight; `SettleGroup`/`AbandonGroup` runs on **every** release path including a panic-safe defer, so the window is bounded and a retry genuinely succeeds after it. |
 
-For `sql` the cap counts **live** members only (D-AF), and a live member set is by definition unclaimed, so the
-leased/not-leased split collapses: **every `sql` over-cap rejection is the not-leased case and is classified
-permanent.** One rule, two stores, no asymmetry to remember.
+> 🔴 **THE FIRST ROW'S SIGNAL WAS STILL WRONG IN REVISION 3 — twenty lines below the box that corrects it** (audit
+> **NEW-10**). N-11's fix landed as the correction box above and left this cell, D-AK's *"strict improvement"*
+> paragraph, and two cells in Spec 017 (§3.3.1's contract table and §3.9's D-AJ box) all reading *"WARN on the
+> dead-letter fallback"* — the WARN N-11 **proved never fires** on `RetryPolicy{}`. **A correction box that does
+> not reach the table it corrects has fixed the prose and left the contract.** All four are edited in revision 4.
+
+**The leased/not-leased split applies to BOTH stores, and since revision 4 it is literally one predicate.**
+`memory` reads `g.leased` (`adapter/memory/groupstore.go:43`). **`sql` reads the group row's `locked_by`** —
+NULL ⇒ not leased ⇒ permanent, non-NULL ⇒ leased ⇒ transient — obtained at **zero extra round-trips** by extending
+the statement each dialect already runs to read `created_at` (D-AG). `locked_by IS NULL` is *exactly* the premise
+restated below: **nothing drains an UNLEASED group without an expiry cutoff.** One rule, two stores.
+
+> 🔴 **REVISION 3 SAID THE SPLIT *COLLAPSED* FOR `sql`, AND D-AF's REVERSAL MAKES THAT FALSE** (audit **NEW-7**).
+> It read: *"For `sql` the cap counts **live** members only (D-AF), and a live member set is by definition
+> unclaimed, so … **every** `sql` over-cap rejection is the not-leased case and is classified permanent."* **D-AF
+> now counts live + claimed**, so a `sql` group can be over cap *because* a claim is in flight — the **leased**
+> arm. Keeping the unconditional-permanent rule would **dead-letter healthy traffic in a routine claim window**,
+> which is the exact outcome the leased arm exists to prevent in `memory`. The simplification was bought by the
+> defect NEW-7 found; it does not survive the fix.
 
 ### D-AM's premise, RESTATED in revision 3 — the revision-2 form was `memory`-only
 
@@ -421,11 +515,24 @@ the source **Ack a message that was never aggregated** — the delivery-guarante
 *"Drop the over-cap member silently."* Transient is correct here and is not a re-litigation of D-AM: the group
 provably just shrank, so the retry provably succeeds.
 
-**Why the classification direction is safe.** The store's default is the **conservative** one (permanent, no spin),
-and only **positive evidence of drainability** downgrades it. A bug in the drain path costs a dead-letter, not a
-production-down spin. **This is a one-way rule and revision 3 promotes it into the SPI contract** (D-AH's MAY
-clause, audit **N-7**): *the Aggregator may only ever DOWNGRADE the store's classification, never upgrade it.* It
-was argued only in this section's prose in revision 2, which is not where a third-party store author reads.
+**Why the classification direction is safe — scoped, in revision 4, to the exits it is actually true of.** For
+exits **4** and **6** the store's default is the **conservative** one (permanent, no spin) and only **positive
+evidence of drainability** downgrades it, so a bug in the *drain-detection* logic costs a dead-letter rather than a
+production-down spin.
+
+> 🔴 **REVISION 3'S UNQUALIFIED SENTENCE IS DELETED** (audit **NEW-6**). It read: *"A bug in the drain path costs
+> a dead-letter, not a production-down spin."* **Exits 3 and 5 are a drain path that failed, and they return an
+> unmarked — transient — fault**, which under `RetryPolicy{}` is a zero-delay Nack loop. The sentence asserted the
+> exact property those two exits do not have, and revision 3 promoted it into the SPI contract (D-AH) where a
+> third-party store author would rely on it.
+
+**The rule, in the form that survives:** the Aggregator **never upgrades** a transient rejection to permanent, on
+any exit; it **downgrades on positive evidence of drainage** (exits 4 and 6) **or replaces the overflow error with
+a distinct fault carrying that fault's own classification** (exits 3 and 5). **A persistently failing
+claim/release path therefore RETRIES rather than terminating** — accepted, because marking a store fault or a
+channel fault `Permanent` merely for having been reached through an overflow would dead-letter on the wrong cause
+and misattribute it in the operator's sink. Recorded as a residual hazard in Spec 017 §3.3a.1 and §8 item 6.
+D-AH's MAY clause carries this wording, which is where a third-party store author reads it.
 
 **THE BRANCH HAS SIX EXITS, NOT FOUR** (audit **N-7**). Revision 2's coverage tables (Plan 031 B1-11…B1-14, Spec §6
 AC-9 rows 12-13) named four; the pseudocode above has six early returns, and CLAUDE.md's test-coverage gate makes
@@ -518,22 +625,85 @@ g.msgs = append(g.msgs, msg)
 
 **REVERSIBILITY:** none worth having — the alternative placements are the two defects above.
 
-### D-AF — `memory` counts live + claimed; `sql` counts live
+### D-AF — BOTH stores count live + claimed (🔴 REVERSED in revision 4; audit NEW-7)
 
-**Decision.** `memory.GroupStore` bounds `len(g.msgs)` — **live plus claimed** — because that slice is what the
-**process** retains. `sql.GroupStore` bounds the **live** member set (`claimed_epoch IS NULL`), because for `sql`
-the claimed members are retained by the **database**, not by the process, and the quantity being bounded is what
-one `Add` drags into the process heap.
+**Decision.** Both first-party stores bound **every member they still retain for one key — live plus claimed**.
+`memory.GroupStore` bounds `len(g.msgs)`; `sql.GroupStore` bounds `SELECT count(*) … WHERE group_key = ?` with
+**no `claimed_epoch` predicate**.
 
-**The stated principle, from which both follow:** *a store bounds what it retains.* The two rules differ because
-the two stores retain different sets, not because the contract is inconsistent.
+**The stated principle, unchanged and now applied consistently:** *a store bounds what it retains.* Revision 3
+applied it to two different readings of "retains" and got two rules; revision 4 applies it to the one reading that
+makes the bound a bound.
 
-**The cost, stated rather than discovered later.** `ClaimGroup` sets `g.claimedLen = len(g.msgs)`
-(`groupstore.go:151`) without shrinking `g.msgs`; the trim happens in `SettleGroup` (`groupstore.go:173-178`). So
-between claim and settle, a `memory` group sitting at exactly the cap **rejects new arrivals for that key**, even
-though its live residual is empty. That window is bounded (release settles or abandons on every path, including a
+> 🔴 **WHAT REVISION 3 SAID, AND WHY IT FAILED — this is the only genuine DESIGN flaw audit round 3 found.**
+> Revision 3: *"`sql.GroupStore` bounds the **live** member set (`claimed_epoch IS NULL`), because for `sql` the
+> claimed members are retained by the **database**, not by the process."*
+>
+> **1. The bound did not bound the durable table.** `ClaimGroup` stamps the new epoch on **every** live member —
+> `UPDATE <members> SET claimed_epoch = $2 WHERE group_key = $1 AND (claimed_epoch IS NULL OR claimed_epoch < $2)`
+> — so the live count drops to **0** and up to `cap` more members are admitted. A failed release runs
+> `AbandonGroup`, which returns them all to live (`SET claimed_epoch = NULL`), and the next claim stamps the larger
+> set. **`SettleGroup` is the only statement in any dialect that ever DELETES a member row, and it runs on success
+> only.** Each failed-release cycle therefore adds up to `cap` durable rows, **without limit** — while every
+> acceptance criterion in the bundle still passed, because the `cap+1`-th *live* member really was rejected.
+> That is the false-safety inversion D-AG rejects enforcement (A) for, reached through the counted set instead of
+> the enforcement point.
+>
+> **2. `memory` never had the hole, precisely BECAUSE it counts live + claimed.** `ClaimGroup` sets
+> `g.claimedLen = len(g.msgs)` (`groupstore.go:151`) **without shrinking `g.msgs`**, so claimed members keep
+> counting against the cap. The "Cost" paragraph below describes that as `memory`'s *price*; it is in fact the
+> property that makes its bound real, and it is now both stores'.
+>
+> **3. The justification was false on its own terms.** `sql.GroupStore.ClaimGroup` decodes the **entire** claimed
+> set into the process heap, at `limit = 0` by D-AS's own rule (`adapter/database/sql/groupstore.go:284-297`,
+> `s.decodeGroupRows(cg.GroupRows)`). The `sql` process **does** retain the claimed set.
+>
+> **Rejected alternative — keep live-only and bound the claimed set instead** (e.g. `ClaimGroup` at `LIMIT cap`).
+> That re-introduces exactly the truncation **D-AS** exists to forbid: a legitimately at-cap group releases an
+> **incomplete aggregate**, the silent data corruption Spec 017 §5 rejects. **Do not fix an unbounded table by
+> bounding `ClaimGroup`.**
+
+**Two consequences, both load-bearing and both stated rather than absorbed.**
+
+1. **The count source is FORCED to be a `COUNT(*)`, and it costs one round-trip per `AddMember`.** `len()` of the
+   live-member `SELECT` — even at D-AS's `LIMIT maxMembers+1` — cannot see claimed members at all. The three
+   dialects already ship an identical `*CountMembers(ctx, q, mt, groupKey) (int64, error)`
+   (`postgres/groupdialect.go:373`, `mysql:358`, `sqlite:375`), already called from their own `SettleGroup`, so
+   this is **zero new SQL and no new helper** — but it is **one extra statement on every add**, not only on
+   overflow. Recorded in the Consequences and in Spec 017 §8's backlog.
+2. **`sql` gains D-AM's leased arm**, discriminated on the group row's `locked_by` at zero extra round-trips
+   (D-AM, D-AG). Its residual hazard — a **crashed** releaser holds the lease for up to `WithGroupLeaseTTL`
+   (default **5m**), during which the rejection is transient and therefore a zero-delay busy-wait under
+   `RetryPolicy{}` — is bounded and self-healing (the default sweep drains a crashed-lease group at the same
+   interval, D-AM's premise box) and is recorded as **Spec 017 §8 item 9** for the user.
+
+> 🔴 **THE CONVERGENCE — this is the strongest argument that adopting symmetry was right, and it is deliberate,
+> not incidental.** Revision 3 sold its `sql`-live-only rule as a *simplification*: *"the leased/not-leased split
+> collapses; one rule, two stores, no asymmetry to remember."* **That simplification was bought by the defect
+> NEW-7 found** — it collapsed only because the counted set could never include a claimed member.
+>
+> Reversing D-AF removes the collapse and produces a **better** unification in its place. Round 2's **N-3** had
+> already forced D-AM's premise to be restated, per store, as:
+>
+> > **Nothing drains an UNLEASED group without an expiry cutoff.**
+>
+> That restatement was made for an entirely different reason — the `sql` reaper sweeps by default while `memory`'s
+> does not — and it lands on the **same predicate** the counted-set reversal now requires:
+> **`locked_by IS NULL` for `sql`, `!g.leased` for `memory`.** So the two stores share **one classification rule
+> expressed as one predicate**, and that predicate is *identical to the premise the rule rests on*. Two
+> independent findings, two rounds apart, converge on the same discriminator.
+>
+> **A simplification that survives an unrelated finding is a real one; a simplification that exists because a set
+> was under-counted is an artifact of the defect.** D-AF's reversal trades the second for the first.
+
+**The cost, stated rather than discovered later — and since revision 4 it is BOTH stores'.** In `memory`,
+`ClaimGroup` sets `g.claimedLen = len(g.msgs)` (`groupstore.go:151`) without shrinking `g.msgs`; the trim happens
+in `SettleGroup` (`groupstore.go:173-178`). In `sql`, `ClaimGroup` stamps the epoch and only `SettleGroup` deletes.
+So between claim and settle, a group sitting at exactly the cap **rejects new arrivals for that key**, even though
+its live residual is empty. That window is bounded (release settles or abandons on every path, including a
 panic-safe defer-abandon) and recoverable — it is precisely **D-AM's leased arm**, which stays **transient** so the
-retry succeeds after the settle. It is documented on the option's godoc.
+retry succeeds after the settle. It is documented on the option's godoc. **This "cost" is what bounds the durable
+table; see the box above.**
 
 > **Residual hazard, named in revision 2:** the leased arm's retry is a Nack with `retryDelay == 0` under the
 > shipped zero-value `RetryPolicy`, so it is a **busy-wait for the duration of the claim window**, not a sleep. It
@@ -541,15 +711,20 @@ retry succeeds after the settle. It is documented on the option's godoc.
 > exposure the **existing** `WithMaxGroups` overflow arm already carries. Accepted; named so it is not rediscovered
 > as a new defect. A caller who cares configures `RetryPolicy.Backoff`.
 
-> 🔴 **This asymmetry is the finding most likely to be reversed by the audit.** The uniform alternative — both
-> stores count live only — makes the SPI contract one sentence instead of two, at the price of letting `memory`
-> transiently retain up to 2× the cap across a claim boundary. **REVERSIBILITY: one line per store**, plus one
-> sentence in the SPI godoc. See Spec 017 §8 item 1.
+> 🔴 **Revision 3 called this asymmetry *"the finding most likely to be reversed by the audit"*, and round 3
+> reversed it — toward symmetry, not toward the uniform-live-only alternative it named.** Uniform live-only would
+> have made the SPI contract one sentence at the price of letting **neither** store bound anything durable; uniform
+> live-**plus**-claimed makes it one sentence and bounds both. Spec 017 §8 item 1 is now **CLOSED**.
+>
+> **REVERSIBILITY: one predicate per dialect (`count(*)` → `count(*) … WHERE claimed_epoch IS NULL`) plus the
+> `locked_by` read and one sentence in the SPI godoc — and reversing it re-opens an unbounded durable member
+> table.** That is not a cost trade; it is the increment's purpose. **Do not reverse this to save the `COUNT(*)`.**
 
 ### D-AG — the SQL bound is enforced INSIDE the dialect's transaction, and `AddMember` takes `maxMembers`
 
 **Decision.** `GroupDialect.AddMember` gains a trailing `maxMembers int` parameter. Each dialect, **inside the
-transaction it already opens and after the statement that serializes same-key adds**, counts the live members and —
+transaction it already opens and after the statement that serializes same-key adds**, counts **every member row for
+the key — live and claimed** (D-AF, reversed in revision 4) and —
 if the cap is exceeded — returns the D-AE/D-AM error, letting the dialect's own transaction wrapper roll back.
 **Nothing is committed — SUBJECT TO the precondition in D-AP, which revision 1 asserted falsely.** The per-dialect
 placement, the three different serialization mechanisms, and the caller-owned-transaction hole are all in **D-AP**;
@@ -561,7 +736,23 @@ this decision records only the *choice* of enforcement point.
 |---|---|---|---|---|---|
 | (A) count in `GroupStore.Add` after `AddMember` returns | **no** | **no** | yes | none | **no** |
 | (B) (A) + `LIMIT max+1` on the dialect's SELECT | no | yes | yes | signature | no |
-| **(C) count in-transaction, roll back — CHOSEN** | **yes** | **yes** | **yes** | signature | **yes** |
+| **(C) count in-transaction, roll back — CHOSEN** | **yes — but only over LIVE + CLAIMED** (D-AF; audit **NEW-7**) | **yes** | **yes** | signature | **yes** |
+
+> 🔴 **(C)'s first column was FALSE in revision 3, and the fix is in the PREDICATE, not the placement** (audit
+> **NEW-7**). Counting live members only, `ClaimGroup` zeroes the count and the table grows by up to `cap` per
+> failed-release cycle without limit (D-AF's box). The enforcement point was always right.
+
+**How the count is obtained, and what it costs.** Each dialect calls its own shipped `*CountMembers` helper —
+`pgCountMembers` (`postgres/groupdialect.go:373`), `mysqlCountMembers` (`mysql:358`), `sqliteCountMembers`
+(`sqlite:375`) — `SELECT count(*) … WHERE group_key = ?`, **no `claimed_epoch` predicate**, already called from
+each dialect's own `SettleGroup`. **Zero new SQL; one extra statement per `AddMember`**, on every add rather than
+only on overflow. It cannot be derived from D-AS's member `SELECT`, which is live-only.
+
+**And one more read rides along at zero cost:** the group row's **`locked_by`**, for D-AM's leased/not-leased
+classification. Each dialect already runs a statement that reads `created_at` from that row — postgres'
+`… RETURNING created_at`, mysql's and sqlite's `SELECT created_at FROM <group> WHERE group_key = ?` — so
+`locked_by` is added to the existing projection. It is **not** added to `msginsql.GroupRows`; it is local to
+`AddMember`'s classification, so the SPI's return shape is unchanged.
 
 (A) is a bound that halves the peak and fixes nothing: the member row is already committed and `[]MemberRow`
 already carries every live member's framed payload bytes. **A remedy that leaves the actual lever in place while
@@ -696,7 +887,8 @@ Each dialect's live-member `SELECT` already runs at the end of `AddMember` (`pgS
 **`LIMIT maxMembers+1`** — which is what makes enforcement (C)'s "bounds the raw fetch" claim exact rather than
 approximate. **How it emits that limit is D-AS**, because each helper has **three** callers and only one has a cap.
 On the overflow path the just-upserted member is filtered out of the materialized `[]MemberRow` in Go, and the
-remaining rows are returned **with** the error — so D-AN's live snapshot costs **no extra query**, and it equals the
+remaining rows are returned **with** the error — so D-AN's live snapshot costs **no extra query** (D-AF's
+`COUNT(*)` is the only new round-trip `AddMember` gains), and it equals the
 post-rollback set whenever the live count was ≤ cap before the add (the normal path's precondition; not the AC-4b
 caller-owned-transaction path, where `cap+1` rows stay committed in the caller's transaction).
 
@@ -733,7 +925,9 @@ declaration is `:45`) gains:
 > the store is the only site that observes every member — and the store is the only site that can refuse a member
 > *before* retaining it (D-AC).
 >
-> The exact set counted is implementation-specific and MUST be stated in the implementation's godoc (D-AF).
+> The counted set MUST include **every member the implementation still retains for that group — live and
+> claimed** — and MUST be stated in the implementation's godoc (D-AF). A bound that ignores the claimed set does
+> not bound: a claim moves members out of the live set without removing them.
 >
 > An implementation SHOULD mark the rejection `msgin.Permanent` when the group cannot drain itself, and leave it
 > transient when a claim is in flight that will drain it (D-AM). A bare transient rejection of a group that will
@@ -744,15 +938,29 @@ declaration is `:45`) gains:
 > a full-but-releasable group is not deadlocked by its own bound (D-AN). Returning `(nil, err)` remains valid and
 > is what every pre-existing implementation does.
 >
-> When the Aggregator acts on that snapshot it may only ever **DOWNGRADE** the implementation's classification —
-> permanent to transient, on positive evidence that the group drained. It never upgrades a transient rejection to
-> permanent. An implementation may therefore treat its own classification as the **conservative floor**: a bug in
-> the Aggregator's drain path costs a retry, never a message the implementation marked recoverable.
+> When the Aggregator acts on that snapshot it **NEVER UPGRADES** the implementation's classification: a transient
+> rejection is never turned permanent. It either **downgrades** the rejection to a fresh transient overflow error
+> **on positive evidence that the group drained** (or that another holder is draining it), **or it replaces the
+> overflow error entirely with a distinct fault — a claim failure or a release failure — which carries that
+> fault's own classification, not the implementation's.** An implementation MUST NOT assume its `msgin.Permanent`
+> marker survives to the consumer on every path: when the Aggregator's claim or release fails, an unmarked (hence
+> transient) fault is reported instead, so a **persistently failing claim/release path retries rather than
+> terminating** (D-AN; Spec 017 §3.3a.1).
 
-> 🔴 **The downgrade-only clause is NEW in revision 3** (audit **N-7**). D-AN argued the direction-safety in its own
-> prose — *"only positive evidence of drainability downgrades it"* — and the **MAY clause a third-party store
-> author actually reads said nothing about it**. A store author cannot design its classification around a rule that
-> is stated only in the ADR section describing the Aggregator's implementation.
+> 🔴 **The downgrade clause was NEW in revision 3 (audit N-7) and its STRONG FORM WAS FALSE — corrected in
+> revision 4** (audit **NEW-6**). Revision 3 promoted D-AN's prose into this clause as *"may only ever DOWNGRADE …
+> **on positive evidence that the group drained** … a bug in the Aggregator's drain path costs a retry, **never a
+> message the implementation marked recoverable**."* **Two of the six exits D-AN itself tabulates violate that:**
+> `cerr != nil ⇒ return cerr` (exit 3) and `relErr != nil ⇒ return relErr` (exit 5) discard the store's
+> `Permanent`-marked error and return an **unmarked, hence transient** one — and they do it **because the drain
+> FAILED**, evidence of the opposite of drainage. Under the zero-value `RetryPolicy` that is B-1's unlogged
+> zero-delay Nack loop, for the sub-case *"the release predicate fires but claim/release keeps failing"*.
+>
+> **The half that IS unconditional — *never upgrade* — is the half a store author most needs, and it is stated
+> first.** The rest is stated truthfully rather than reassuringly, because a store author designing around a
+> guarantee the Aggregator does not give is worse off than one who knows the marker can be replaced. **Promoting a
+> rule into a contract does not make the rule true; N-7 asked for the promotion and revision 3 promoted the wrong
+> form of it.**
 
 **Why the MAY rather than a MUST.** A store that cannot cheaply produce the live set on the rejection path (a
 broker-backed store, say) must not be forced to. The Aggregator's `group == nil` arm keeps such a store working
@@ -866,14 +1074,19 @@ configured** (D-AM). **This is accepted.**
 
 **Why it is a strict improvement.** On the two axes that matter it strictly dominates the status quo — memory goes
 from unbounded to bounded, and observability goes from *silent until the process dies* to *one typed, named error
-per rejected member at the operator's sink, plus a WARN when the fallback fires.* The third axis, liveness of a
+per rejected member at the operator's sink — and, with **neither** sink configured, `divertTerminal`'s nil-sink
+WARN naming both missing options (`consumer.go:1049`) followed by `safeAck` (`:1073`), so the source drops the
+message. A `DeadLetter`-only caller additionally sees `warnInvalidFallback` — **once per consumer**
+(`:968-973`), not per message.* *(Revision 3 read *"plus a WARN when the fallback fires"* here, naming the WARN
+N-11 proved never fires on `RetryPolicy{}` — audit **NEW-10**.)* The third axis, liveness of a
 group whose predicate is unsatisfiable, is **unchanged**: it never released before and it does not release now.
 **The cap does not, and is not intended to, provide liveness — but after D-AN it no longer REMOVES any.**
 
 **The remedy already ships and stays opt-in:** `routing.WithGroupTimeout` + `routing.WithExpiredGroupChannel`.
 
 **Rejected: making `WithGroupTimeout` mandatory.** It is a second, larger behavioral break; it requires a paired
-expiry channel (`NewAggregator` returns `ErrExpiryChannelRequired` otherwise, `aggregator.go:360-362`), so
+expiry channel (`NewAggregator` returns `ErrExpiryChannelRequired` otherwise — the guard is `aggregator.go:362`,
+the return `:363`, **not `:360-362`** as revisions 2-3 cited, audit **NEW-9**), so
 mandating it forces every caller to provision one; and choosing a default timeout for an unknown aggregation
 workload is the *"no value can be safe for an unknown caller"* case **for real** — the very clause D-AJ argues does
 not apply to the member count. Recorded as a follow-up: whether *cap without timeout* deserves a construction-time
@@ -1030,10 +1243,11 @@ composite literal (`cfg := groupStoreConfig{clock: clockwork.NewRealClock(), max
 implementer copying the sibling arm — which is exactly what D-AC reason 3 tells them to do — writes
 `maxGroupMembers: 1 << 16` inline.
 
-**Decision.** Both store packages declare **both** values as named package constants:
+**Decision.** Both store packages declare **both** values as named package constants, **in a NAMED FILE**:
 
 ```go
-const defaultMaxGroupMembers = 1 << 16 // 65,536 — D-AD; D-AQ's AST test locates this declaration BY NAME
+// adapter/memory/groupstore.go        AND        adapter/database/sql/groupstore.go
+const defaultMaxGroupMembers = 1 << 16 // 65,536 — D-AD; D-AQ's AST test locates this declaration BY NAME, IN THIS FILE
 const maxGroupMembersCeiling = 1 << 20 // 1,048,576 — D-AD
 ```
 
@@ -1042,6 +1256,16 @@ default **by name on the AST**. A bare literal in a composite literal has no nam
 non-vacuity guard fires and Task 3 blocks on a defect Task 1 was never told to avoid — the dependency runs
 backwards. **A shipped precedent departed from silently is a future audit finding**, so it is recorded here with
 its reason: *the declaration form is load-bearing for a mechanical gate.*
+
+> 🔴 **AND SO IS THE DECLARATION'S FILE — NEW in revision 4** (audit **NEW-4**). D-AQ's parse set is **asserted**,
+> not discovered (its mutant (c)), so a constant declared **anywhere else in the same package** fires the same
+> not-found guard a bare literal would. Revision 3 mandated the *form* and left the *location* unstated — **N-4
+> one attribute over** — and the natural wrong home is real: Plan 031 Task 5 Step 4's own subject is
+> `adapter/database/sql/helpers.go` (where the fifth `checkRange` copy lands), and `checkRange`'s range arms are
+> the constants' obvious neighbours. **`groupstore.go` is also the local-precedent home** in that package, which
+> already declares `defaultGroupLeaseTTL` (`:22`) and `defaultExpiredGroupsLimit` (`:30`) as named constants — so
+> for `adapter/database/sql` this decision is *consistent* with local precedent, and only `adapter/memory`'s
+> `maxGroups: 1024` is actually deviated from.
 
 **Scope.** `maxGroups: 1024` is **not** changed. No invariant test reads it, and changing shipped code for symmetry
 alone is the kind of unforced edit this project's review gate rejects.
@@ -1091,6 +1315,54 @@ mutant the "0 means unlimited" rule is a comment.
 **REVERSIBILITY:** one parameter per dialect. Reversing it degrades enforcement (C)'s *"bounds the raw fetch"* claim
 from exact to approximate — and reversing it by baking the `LIMIT` into the helper re-introduces the truncation.
 
+> 🔴 **`limit = 0` on `ClaimGroup` IS CORRECT, AND IT IS ALSO HALF OF NEW-7.** Composed with revision 3's
+> live-only counted set, passing `0` there left the durable table unbounded (D-AF's box). **The remedy is D-AF's
+> reversal, not a `LIMIT` on `ClaimGroup`** — truncating a claimed set releases an incomplete aggregate, which is
+> the silent data corruption this decision exists to prevent. Recorded here because the two decisions are only
+> safe *together*, and a future reader looking at either alone will not see it.
+
+### D-AT — Plan 031's Task 3 is REORDERED after Tasks 5+6, never SPLIT
+
+**NEW in revision 4. This is the disposition of audit round 3's BLOCKER, NEW-1, and it REVERSES an instruction
+revision 3 gave.**
+
+**What revision 3 said.** Plan 031 Task 3's header offered two permitted orders: *"Run Task 3 **after** Tasks 5+6
+land, **or split it**: the `memory` + `routing` assertions with Task 1 and the `sql` assertion with Task 5."* The
+split was justified from B-2/N-1's rule — *a gate reading a declaration must ship in that declaration's commit*.
+
+**Why that reads the rule's SHAPE and not its MECHANISM.**
+
+| | B-2 / N-1's gate | Task 3's gate |
+|---|---|---|
+| Does it exist yet? | **Yes** — `sizing_option_class_gate_test.go` ships on `main` | **No** — `group_member_bound_invariant_test.go` is created by Task 3 |
+| What is already red? | **Root's suite**, the moment `memory.WithMaxGroupMembers` exists on disk, because half 1 asserts **exact set equality in both directions** (`:321-324`) | **Nothing.** Adding `const defaultMaxGroupMembers` makes no existing test fail |
+| Which way does the dependency run? | The **declaration** depends on the **gate** ⇒ they must ship **together** | The **test** depends on the **declarations** ⇒ the test ships **no earlier** than the last one |
+| Therefore | a **co-commit** constraint | a **reorder** constraint |
+
+**Decision.** Task 3 runs **after Tasks 5+6**, as a single task producing a single commit. **The split
+alternative is deleted from the plan** — not deprecated, deleted — because a plan that offers a defective option
+as a co-equal alternative will have that option taken. The task keeps its number (renumbering would churn every
+cross-reference in three artifacts for no gain); Plan 031's Sizing table carries an explicit **execution-order**
+column, and Task 3 opens with a hard **Step 0 order gate** that greps for all three declarations and stops if any
+is missing.
+
+**And the split is strictly worse in four independent ways**, which is why this is a decision rather than a
+preference:
+
+1. **B3-3's mutant is unprovable in the first half.** `sql`'s constant legitimately does not exist yet, so the
+   *asserted* file list would have to be written as two files and then rewritten to three — a file list edited to
+   match what happens to exist, which is precisely what B3-3 forbids.
+2. **The mandatory non-vacuity probe runs twice**, giving the second half a standing excuse to skip it.
+3. **The RED probe becomes impossible.** In the Task-1 half there is no constant, so what fires is the
+   **not-found guard** — a different failure, proving the guard rather than the value read. The two distinct
+   probes collapse and the weaker one wins.
+4. **Three references dangle** — Plan 031 Task 10 Step 5, the Sizing table's single Task 3 row, and Step 6's
+   single commit message.
+
+**REVERSIBILITY:** free — it is an ordering, not code. **But do not re-derive it from N-1's rule**: that is the
+mistake this decision exists to record. *A gate that already runs constrains the commit; a gate you are about to
+write constrains only the order.*
+
 ## Consequences
 
 **Positive.**
@@ -1101,6 +1373,9 @@ from exact to approximate — and reversing it by baking the `LIMIT` into the he
   whose members cannot all be listed.
 - **The SQL store is bounded for the first time**, and D-AG's in-transaction placement makes that bound exact,
   durable and **atomic across horizontally-scaled instances** — properties the cheap alternative does not have.
+  🔴 **"Durable" became true only in revision 4** (D-AF, audit **NEW-7**): with `sql` counting live members only,
+  `ClaimGroup` zeroed the count and the member table grew by up to `cap` rows per failed-release cycle, without
+  limit, while every acceptance criterion passed. **Counting live + claimed is what makes this sentence true.**
   **For a store built by `NewGroupStore` the bound is unconditionally durable**: the store holds a concrete
   `*stdsql.DB` and always owns the transaction the dialect runs in (D-AP, audit **N-2**). The
   caller-owned-`*sql.Tx` exception is a **`GroupDialect`-level** contract, reachable only by a direct dialect
@@ -1122,7 +1397,11 @@ from exact to approximate — and reversing it by baking the `LIMIT` into the he
   the comments it replaces — **for BOTH stores**, over **named** constants the test can actually locate (D-AR).
 - **The class gate's ordering rule is now recorded in the decision that owns the gate** (D-AL), not only in the
   spec and the plan — and it is stated as the **class** (*a cross-module edit is a red commit*) rather than as the
-  one instance it was found on.
+  one instance it was found on. **D-AT records where that class does NOT apply** (a gate that does not exist yet
+  constrains only the order), so the generalization does not over-fire the way it did on Task 3.
+- **Both stores now count the same set** (D-AF), so `MessageGroupStore.Add`'s contract paragraph carries **one**
+  sentence about the counted set instead of two, and `memory`'s claim-window rejection stops reading as an
+  idiosyncrasy: it is the mechanism that bounds the group across a claim boundary in **both** stores.
 
 **Negative / accepted costs.**
 
@@ -1147,19 +1426,36 @@ from exact to approximate — and reversing it by baking the `LIMIT` into the he
   (audit **N-7**), including a deliberate divergence from the success path's `claim == nil` behavior. All six are
   now covered and mutation-proven (Spec 017 §3.3a.1, §6 AC-9 rows 12a-12d).
 - **Two new declaration-level constraints** that a reader copying local precedent would violate: named
-  `defaultMaxGroupMembers` constants (**D-AR**, deviating from `maxGroups: 1024`) and the private `limit int`
-  parameter on the three `*SelectMembers` helpers (**D-AS**, because one shared helper serves three callers with
-  different bounds).
-- **`memory`'s claim window transiently rejects arrivals** for a group at exactly the cap (D-AF). Bounded and
-  retryable — but under the zero-value `RetryPolicy` the retry is a **zero-delay busy-wait** for the claim
-  window's duration, the same exposure the existing `WithMaxGroups` arm carries. Real, observable, named.
+  `defaultMaxGroupMembers` constants **in a named file** (**D-AR**, deviating from `maxGroups: 1024`) and the
+  private `limit int` parameter on the three `*SelectMembers` helpers (**D-AS**, because one shared helper serves
+  three callers with different bounds).
+- **🔴 `sql`'s `AddMember` costs ONE EXTRA `COUNT(*)` PER ADD** (D-AF, D-AG) — on every add, not only on overflow,
+  inside a transaction that already issues three statements. It is the price of counting live + claimed, it needs
+  no new SQL (the `*CountMembers` helpers ship today), and it cannot be derived from D-AS's live-only member
+  `SELECT`. Named as a follow-up in Spec 017 §8.
+- **BOTH stores' claim windows transiently reject arrivals** for a group at exactly the cap (D-AF — `sql` joins
+  `memory` here in revision 4). Bounded and retryable — but under the zero-value `RetryPolicy` the retry is a
+  **zero-delay busy-wait** for the claim window's duration, the same exposure the existing `WithMaxGroups` arm
+  carries. **For `sql` that window has a longer tail: a CRASHED releaser holds the lease until it expires —
+  `WithGroupLeaseTTL`, default 5 minutes.** It is bounded and self-healing (the default sweep drains a
+  crashed-lease group at the same interval, D-AM's premise box), transient is therefore the correct
+  classification, and it is recorded as **Spec 017 §8 item 9** for the user rather than absorbed.
+- **🔴 A persistently failing claim/release path RETRIES rather than terminating** (D-AN exits 3 and 5, D-AH;
+  audit **NEW-6**). The overflow error is replaced by an unmarked — hence transient — store or channel fault, so
+  under `RetryPolicy{}` that sub-case is B-1's zero-delay Nack loop. Accepted, because marking a store or channel
+  fault `Permanent` merely for having been reached through an overflow would dead-letter on the wrong cause. The
+  remedy for a caller who cares is `RetryPolicy.Backoff`; the root cause is the zero-value policy itself, which
+  Spec 017 §8 already records as surviving this increment.
 - **`Aggregator.Handle` gains a second release-firing site** (D-AN). The release path is now reachable from the
   error branch as well as the success branch, which is more surface to keep correct — mitigated by driving both
   through the same `a.release` helper and by AC-1b's id-less case.
 - **Neither store's quadratic per-`Add` cost is fixed.** The cap bounds the damage; `memory` still clones the group
   on every call and `sql` still re-fetches and re-decodes every live member on every arrival (now capped by
   `AddMember`'s `LIMIT maxMembers+1` — D-AP via D-AS's `limit` parameter; **`ClaimGroup` and `ExpiredGroups` stay
-  unbounded, deliberately**). Both are named follow-ups.
+  unbounded, deliberately**). Both are named follow-ups. **`sql.GroupStore.ClaimGroup` in particular decodes the
+  whole claimed set into the process heap at `limit = 0` (`groupstore.go:284-297`)** — which is why D-AF's
+  *"claimed members are retained by the database, not the process"* was false, and which the member cap (not a
+  `LIMIT`) is what bounds.
 - **Every overflow rejection on the `sql` path costs an extra `SchemaExists` round-trip** through
   `classifyQueryErr` (D-AP / audit m-6). Bounded now that D-AM makes the rejection terminal; it was unbounded
   under revision 1.
@@ -1169,8 +1465,9 @@ from exact to approximate — and reversing it by baking the `LIMIT` into the he
 
 **Neutral / to watch.**
 
-- **The `memory`/`sql` counting asymmetry (D-AF)** is defensible per-store but reads as two rules for one option
-  name. If the audit prefers uniformity, the change is one line per store and one sentence in the SPI.
+- ~~**The `memory`/`sql` counting asymmetry (D-AF)**~~ — **RESOLVED in revision 4 by adopting symmetry** (audit
+  **NEW-7**). It was defensible per-store and it did not bound the durable table. Both stores now count live +
+  claimed; the SPI carries one sentence. Spec 017 §8 item 1 is closed.
 - **Nothing in the library can enforce that horizontally-scaled instances agree on the cap** (Spec 017 §7.1). It is
   documented as an operator requirement, in the same family as the existing `WithGroupLeaseTTL` coherence
   requirement.
