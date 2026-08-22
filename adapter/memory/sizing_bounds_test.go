@@ -1,5 +1,30 @@
 package memory_test
 
+// Spec: 016  Plan: 029 (Task 3), 030 (Task 2)  ADR: 0032
+//
+// # The oversized-buffer literal is 1<<30, not 1<<62 (Plan 030 Task 2)
+//
+// Every out-of-range WithBuffer literal in this file is 1<<30. It exceeds
+// memory.WithBuffer's ceiling (1<<20) by three orders of magnitude, so it
+// selects the identical out-of-range branch, while fitting an int32 so this
+// package compiles under GOARCH=386. The rendered decimal in
+// assertFirstFaultIsSizing below is 1073741824 and must move with it.
+//
+// 🔴 ACCEPTED TRADE — DO NOT RE-RUN THE `makechan` MUTANT OF
+// TestNew_SizingGuardIsIndependentOfTheLatch. That test's doc describes a
+// wrong implementation shape which, at the OLD 1<<62, reached
+// `make(chan msgin.Message[any], n)` and PANICKED immediately:
+// runtime.makechan raises "size out of range" only when
+// elemsize × cap > maxAlloc (≈1<<48 on 64-bit), and 16 × 1<<62 overflows it.
+// At 1<<30 the product is ~16 GiB — UNDER that threshold — so reproducing the
+// mutation now attempts a real allocation and will likely OOM-kill the test
+// binary instead of producing a recoverable panic.
+//
+// THE SHIPPED TEST IS UNAFFECTED: the ceiling check rejects 1<<30 and returns
+// long before any make is reached, so require.NotPanics holds exactly as it
+// did at 1<<62. Only *reproducing* the mutant became expensive. The guard's
+// mutation evidence stands from Plan 029 Task 3, where it was cheap.
+
 import (
 	"context"
 	"testing"
@@ -287,18 +312,22 @@ func TestWithBuffer_InRangeIsAccepted(t *testing.T) {
 // (ADR 0032 D-Y).
 //
 // ADR 0031 D-U makes New's apply loop `continue` past a nil option, so a LATER
-// WithBuffer(1<<62) still runs when an earlier nil already took the latch. The
+// WithBuffer(1<<30) still runs when an earlier nil already took the latch. The
 // latch is first-fault-wins, so at that point `b.err == nil` is FALSE and the
 // sizing fault is not recorded. An implementation that gates the allocation on
 // the latch taking — i.e. that nests the `return` inside `if b.err == nil` —
-// therefore reaches `make(chan msgin.Message[any], 1<<62)` and panics.
+// therefore reaches `make(chan msgin.Message[any], 1<<30)` and blows up — at
+// the original 1<<62 that was an immediate makechan panic; at 1<<30 it is a
+// ~16 GiB allocation attempt instead (see this file's header for why the
+// literal changed and why that mutant must not be re-run). Either way the
+// wrong shape is fatal and the right one never reaches the make.
 //
 // So the guard is the UNCONDITIONAL `return`; the latch only decides WHICH
 // error the caller reads:
 //
-//   - AC-3  New(nil, WithBuffer(1<<62)) → no panic, and the reported fault is
+//   - AC-3  New(nil, WithBuffer(1<<30)) → no panic, and the reported fault is
 //     ErrNilFunc at index 0 (the first fault), NOT ErrInvalidCapacity;
-//   - AC-3b New(WithBuffer(1<<62), nil) → the reported fault is
+//   - AC-3b New(WithBuffer(1<<30), nil) → the reported fault is
 //     ErrInvalidCapacity, because index 0 wins there instead.
 //
 // Both orderings are asserted through BOTH reporting surfaces. Every other test
@@ -317,25 +346,25 @@ func TestNew_SizingGuardIsIndependentOfTheLatch(t *testing.T) {
 	}{
 		{
 			name:   "AC-3: nil first, oversized buffer second — the NIL is reported (Send)",
-			opts:   []memory.Option{nil, memory.WithBuffer(1 << 62)},
+			opts:   []memory.Option{nil, memory.WithBuffer(1 << 30)},
 			report: sendFault,
 			assert: assertFirstFaultIsNilOption,
 		},
 		{
 			name:   "AC-3: nil first, oversized buffer second — the NIL is reported (Stream)",
-			opts:   []memory.Option{nil, memory.WithBuffer(1 << 62)},
+			opts:   []memory.Option{nil, memory.WithBuffer(1 << 30)},
 			report: streamFault,
 			assert: assertFirstFaultIsNilOption,
 		},
 		{
 			name:   "AC-3b: oversized buffer first, nil second — the SIZE is reported (Send)",
-			opts:   []memory.Option{memory.WithBuffer(1 << 62), nil},
+			opts:   []memory.Option{memory.WithBuffer(1 << 30), nil},
 			report: sendFault,
 			assert: assertFirstFaultIsSizing,
 		},
 		{
 			name:   "AC-3b: oversized buffer first, nil second — the SIZE is reported (Stream)",
-			opts:   []memory.Option{memory.WithBuffer(1 << 62), nil},
+			opts:   []memory.Option{memory.WithBuffer(1 << 30), nil},
 			report: streamFault,
 			assert: assertFirstFaultIsSizing,
 		},
@@ -375,5 +404,5 @@ func assertFirstFaultIsSizing(t *testing.T, err error) {
 	require.NotErrorIs(t, err, msgin.ErrNilFunc,
 		"the latch is first-fault-wins: the nil at index 1 must not overwrite the sizing fault")
 	assert.True(t, msgin.IsPermanent(err))
-	assert.Contains(t, err.Error(), "memory.WithBuffer: 4611686018427387904 not in [0, 1048576]")
+	assert.Contains(t, err.Error(), "memory.WithBuffer: 1073741824 not in [0, 1048576]")
 }

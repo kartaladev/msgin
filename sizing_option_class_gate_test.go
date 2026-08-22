@@ -28,14 +28,53 @@ package msgin_test
 //                          first use of the object it produced.
 //       - "rejects"  (1) — msghttp.WithSuccessStatus. It is safe (a) by §2.1's
 //                          criterion and NOTHING HERE FIXES IT; it rejects
-//                          1<<62 only through its own pre-existing [100,599]
+//                          1<<30 only through its own pre-existing [100,599]
 //                          check. It gets an arm of its own because it belongs
 //                          in neither "fixed" (not a class member) nor "safe"
 //                          (which asserts ACCEPTS).
 //       - "deferred" (3) — accepts 1<<62, annotated so it never reads as a
 //                          safety certificate.
-//       - "safe"     (6) — accepts 1<<62 AND its product is usable.
+//       - "safe"     (6) — accepts math.MaxInt AND its product is usable.
 //     9 + 1 + 3 + 6 = 19 rows = 17 AST keys + 2 manual rows.
+//
+// # THE OVERSIZED LITERAL IS NOT ONE VALUE — IT IS THREE, BY ARM (Plan 030 Task 2)
+//
+// Every row above previously passed the literal 1<<62, which does not fit an
+// int on GOARCH=386 and made this whole test binary fail to COMPILE there.
+// The replacement SPLITS BY ARM, because the arms need OPPOSITE properties —
+// a blanket rewrite to one value would leave rows green while probing nothing:
+//
+//   - "fixed" (9) and "rejects" (1) → 1<<30 = 1,073,741,824. These rows assert
+//     an EqualError against a rendered decimal. 1<<30 fits an int32 yet still
+//     exceeds every ceiling in the codebase (the largest is 1<<20 = 1,048,576),
+//     so it selects the identical out-of-range branch on both architectures
+//     while keeping the expected decimal — 1073741824 — architecture-INDEPENDENT.
+//     That fixed decimal is the whole point; math.MaxInt here would render
+//     differently on 386 and 64-bit and break the assertions.
+//
+//   - "deferred" (3) → still 1<<62. These three take an int64, NOT an int, so
+//     they compile fine on 386 and were never part of the defect. 🔴 DO NOT
+//     "finish the job" by converting them: 1<<62 is what makes the row's claim
+//     — "this knob accepts an absurd value and the remedy is DEFERRED" — mean
+//     anything. See the arm's own comment below.
+//
+//   - "safe" (6) → math.MaxInt. These rows assert require.NoError plus a
+//     product-usable check and carry NO decimal string, so architecture
+//     dependence is harmless — and the value must stay MAXIMALLY absurd,
+//     because that is the row's entire purpose (see the arm's comment at the
+//     "safe" section: the knob is exercised "past the point where a buggy
+//     comparison, e.g. an int32 truncation, would misbehave"). 1<<30 IS an
+//     int32 value, so demoting these rows to it would leave every assertion
+//     green while the int32-truncation probe silently stopped running. Worse,
+//     if an implementation regressed to make([]T, n), math.MaxInt fails fast
+//     whereas 1<<30 quietly allocates ~1 GiB.
+//
+//     ACCEPTED, RECORDED LIMITATION: on GOARCH=386 no int value exceeds int32,
+//     so the int32-truncation probe these six rows exist to run is
+//     UNACHIEVABLE there by any choice of magnitude. math.MaxInt keeps the
+//     probe intact where it is meaningful (64-bit) and degrades to a tautology
+//     where it cannot be (32-bit). Do not "fix" that by picking a smaller
+//     number — that would disable the probe on BOTH architectures.
 //
 // # The Recv == nil boundary — a decision, not an omission (Spec 016 §2.0)
 //
@@ -96,6 +135,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -372,11 +412,11 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 			arm: "fixed",
 			assert: func(t *testing.T) {
 				h := func(context.Context, msgin.Message[any]) error { return nil }
-				_, err := endpoint.NewConsumer[any](discardPollingSource{}, h, endpoint.WithMaxInFlight[any](1<<62))
+				_, err := endpoint.NewConsumer[any](discardPollingSource{}, h, endpoint.WithMaxInFlight[any](1<<30))
 				require.ErrorIs(t, err, msgin.ErrInvalidMaxInFlight)
 				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
 				assert.EqualError(t, err,
-					"msgin: max in-flight out of range: endpoint.WithMaxInFlight: 4611686018427387904 not in [1, 1048576]")
+					"msgin: max in-flight out of range: endpoint.WithMaxInFlight: 1073741824 not in [1, 1048576]")
 			},
 		},
 		{
@@ -384,22 +424,22 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 			arm: "fixed",
 			assert: func(t *testing.T) {
 				h := func(context.Context, msgin.Message[any]) error { return nil }
-				_, err := endpoint.NewConsumer[any](discardPollingSource{}, h, endpoint.WithConcurrency[any](1<<62))
+				_, err := endpoint.NewConsumer[any](discardPollingSource{}, h, endpoint.WithConcurrency[any](1<<30))
 				require.ErrorIs(t, err, msgin.ErrInvalidConcurrency)
 				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
 				assert.EqualError(t, err,
-					"msgin: concurrency out of range: endpoint.WithConcurrency: 4611686018427387904 not in [1, 65536]")
+					"msgin: concurrency out of range: endpoint.WithConcurrency: 1073741824 not in [1, 65536]")
 			},
 		},
 		{
 			key: "msghttp.WithConnectionBuffer",
 			arm: "fixed",
 			assert: func(t *testing.T) {
-				_, err := msghttp.NewConfig(msghttp.WithConnectionBuffer(1 << 62))
+				_, err := msghttp.NewConfig(msghttp.WithConnectionBuffer(1 << 30))
 				require.ErrorIs(t, err, msghttp.ErrInvalidConnectionBuffer)
 				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
 				assert.EqualError(t, err,
-					"msghttp: connection buffer out of range: msghttp.WithConnectionBuffer: 4611686018427387904 not in [1, 65536]")
+					"msghttp: connection buffer out of range: msghttp.WithConnectionBuffer: 1073741824 not in [1, 65536]")
 			},
 		},
 		{
@@ -408,46 +448,46 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 			assert: func(t *testing.T) {
 				// R2 (Spec 016 §3.2): New has no error return, so the fault must
 				// surface at the object's first use — Send — not at New itself.
-				b := memory.New(memory.WithBuffer(1 << 62))
+				b := memory.New(memory.WithBuffer(1 << 30))
 				require.NotNil(t, b, "New must not panic")
 				err := b.Send(t.Context(), msgin.New[any]("x"))
 				require.ErrorIs(t, err, msgin.ErrInvalidCapacity)
 				assert.True(t, msgin.IsPermanent(err), "R2: latched and reported wrapped in Permanent (ADR 0031 D-V)")
 				assert.EqualError(t, err,
-					"msgin: permanent: msgin: capacity out of range: memory.WithBuffer: 4611686018427387904 not in [0, 1048576]")
+					"msgin: permanent: msgin: capacity out of range: memory.WithBuffer: 1073741824 not in [0, 1048576]")
 			},
 		},
 		{
 			key: "memory.WithCapacity",
 			arm: "fixed",
 			assert: func(t *testing.T) {
-				_, err := memory.NewQueueStore(memory.WithCapacity(1 << 62))
+				_, err := memory.NewQueueStore(memory.WithCapacity(1 << 30))
 				require.ErrorIs(t, err, msgin.ErrInvalidCapacity)
 				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
 				assert.EqualError(t, err,
-					"msgin: capacity out of range: memory.WithCapacity: 4611686018427387904 not in [1, 1048576]")
+					"msgin: capacity out of range: memory.WithCapacity: 1073741824 not in [1, 1048576]")
 			},
 		},
 		{
 			key: "memory.WithMaxGroups",
 			arm: "fixed",
 			assert: func(t *testing.T) {
-				_, err := memory.NewGroupStore(memory.WithMaxGroups(1 << 62))
+				_, err := memory.NewGroupStore(memory.WithMaxGroups(1 << 30))
 				require.ErrorIs(t, err, msgin.ErrInvalidCapacity)
 				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
 				assert.EqualError(t, err,
-					"msgin: capacity out of range: memory.WithMaxGroups: 4611686018427387904 not in [1, 1048576]")
+					"msgin: capacity out of range: memory.WithMaxGroups: 1073741824 not in [1, 1048576]")
 			},
 		},
 		{
 			key: "msghttp.WithMaxConnections",
 			arm: "fixed",
 			assert: func(t *testing.T) {
-				_, err := msghttp.NewConfig(msghttp.WithMaxConnections(1 << 62))
+				_, err := msghttp.NewConfig(msghttp.WithMaxConnections(1 << 30))
 				require.ErrorIs(t, err, msghttp.ErrInvalidMaxConnections)
 				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
 				assert.EqualError(t, err,
-					"msghttp: max connections out of range: msghttp.WithMaxConnections: 4611686018427387904 not in [1, 65536]")
+					"msghttp: max connections out of range: msghttp.WithMaxConnections: 1073741824 not in [1, 65536]")
 			},
 		},
 		{
@@ -459,22 +499,22 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 				fn := func(context.Context, []msgin.Message[int]) (msgin.Message[int], error) {
 					return msgin.New(0), nil
 				}
-				_, err = routing.NewAggregator[int, int](store, fn, routing.WithCompletionSize(1<<62))
+				_, err = routing.NewAggregator[int, int](store, fn, routing.WithCompletionSize(1<<30))
 				require.ErrorIs(t, err, msgin.ErrInvalidCapacity)
 				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
 				assert.EqualError(t, err,
-					"msgin: capacity out of range: routing.WithCompletionSize: 4611686018427387904 not in [1, 65536]")
+					"msgin: capacity out of range: routing.WithCompletionSize: 1073741824 not in [1, 65536]")
 			},
 		},
 		{
 			key: "msghttp.WithReplayBuffer",
 			arm: "fixed",
 			assert: func(t *testing.T) {
-				_, err := msghttp.NewConfig(msghttp.WithReplayBuffer(1 << 62))
+				_, err := msghttp.NewConfig(msghttp.WithReplayBuffer(1 << 30))
 				require.ErrorIs(t, err, msghttp.ErrInvalidReplayBuffer)
 				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
 				assert.EqualError(t, err,
-					"msghttp: replay buffer out of range: msghttp.WithReplayBuffer: 4611686018427387904 not in [1, 65536]")
+					"msghttp: replay buffer out of range: msghttp.WithReplayBuffer: 1073741824 not in [1, 65536]")
 			},
 		},
 		// ---- arm: rejects — 1 row that is NOT a class member and is NOT fixed here ----
@@ -482,15 +522,15 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 		// where a reader re-deriving Spec 016 §2.1 counted 10 class members against
 		// the spec's 9 — the exact count drift that spec fought through six
 		// revisions. It is "safe (a)" by §2.1's criterion (a pure comparison over a
-		// scalar; nothing accumulates), and it rejects 1<<62 only through its OWN
+		// scalar; nothing accumulates), and it rejects the oversized value only through its OWN
 		// pre-existing [100,599] check, which this increment did not add and does
 		// not touch. It cannot sit in "safe" either, because that arm asserts the
-		// knob ACCEPTS 1<<62. Hence an arm of its own — Spec 016 §6 AC-5.
+		// knob ACCEPTS an oversized value. Hence an arm of its own — Spec 016 §6 AC-5.
 		{
 			key: "msghttp.WithSuccessStatus",
 			arm: "rejects",
 			assert: func(t *testing.T) {
-				_, err := msghttp.NewConfig(msghttp.WithSuccessStatus(1 << 62))
+				_, err := msghttp.NewConfig(msghttp.WithSuccessStatus(1 << 30))
 				require.ErrorIs(t, err, msghttp.ErrInvalidStatusCode)
 				assert.EqualError(t, err, "msghttp: status code must be in [100,599]")
 			},
@@ -513,6 +553,18 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 		// string), exactly as WithReplayBuffer's row was moved when revision 5
 		// reclassified it. Do not delete the assertion, and do not relax the
 		// bound — a red row here means the remedy landed, not that it broke.
+		//
+		// 🔴 THESE THREE ROWS KEEP THE 1<<62 LITERAL — DO NOT CONVERT THEM
+		// (Plan 030 Task 2). Every OTHER oversized literal in this file moved off
+		// 1<<62 to make the package compile on GOARCH=386. These three did not,
+		// and must not: WithMaxBodyBytes / WithMaxEventBytes /
+		// WithMaxResponseBytes are `func(n int64)`, so 1<<62 is in range on EVERY
+		// architecture and produced no 386 compile error at all — they were never
+		// part of that defect. Converting them would silently shrink the value
+		// this arm's claim rests on ("accepts an absurd bound; the remedy is
+		// DEFERRED, Spec 016 §3.8"), and on 386 math.MaxInt would shrink it to
+		// 2,147,483,647 — well inside any plausible future ceiling. A sweep that
+		// "finishes the job" here is a regression, not a cleanup.
 		{
 			key: "msghttp.WithMaxBodyBytes",
 			arm: "deferred", // class member, remedy deferred — Spec 016 §3.8
@@ -542,9 +594,14 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 		},
 
 		// ---- arm: safe — 4 AST rows + 2 manual rows ----
-		// Each accepts 1<<62 AND its product is proven usable, not merely
+		// Each accepts math.MaxInt AND its product is proven usable, not merely
 		// constructed: a comparison-only knob is exercised past the point where a
 		// buggy comparison (e.g. an int32 truncation) would misbehave.
+		//
+		// math.MaxInt, NOT the 1<<30 the reject arms use (Plan 030 Task 2):
+		// 1<<30 IS an int32 value, so it would leave every require.NoError below
+		// green while the int32-truncation probe stopped running. See the file
+		// header for the full split and its accepted 32-bit limitation.
 		{
 			key: "endpoint.WithPollMaxBatch",
 			arm: "safe",
@@ -565,9 +622,9 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 					return nil
 				}
 				c, err := endpoint.NewConsumer[any](qc, h,
-					endpoint.WithPollMaxBatch[any](1<<62),
+					endpoint.WithPollMaxBatch[any](math.MaxInt),
 					endpoint.WithPollInterval[any](time.Millisecond))
-				require.NoError(t, err, "accepts 1<<62 — derivatively safe: held is bounded by "+
+				require.NoError(t, err, "accepts math.MaxInt — derivatively safe: held is bounded by "+
 					"min(pollMaxBatch, free credits), and free credits are maxInFlight's own ceiling (Spec 016 §2.1)")
 
 				stop := runAndStop(t, c.Run)
@@ -577,21 +634,21 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 					defer mu.Unlock()
 					return seen == 2
 				}, 2*time.Second, time.Millisecond,
-					"product usable: both queued messages must still be delivered under a 1<<62 poll-batch cap")
+					"product usable: both queued messages must still be delivered under a math.MaxInt poll-batch cap")
 			},
 		},
 		{
 			key: "resilience.WithBreakerThreshold",
 			arm: "safe",
 			assert: func(t *testing.T) {
-				b, err := resilience.NewCircuitBreaker(resilience.WithBreakerThreshold(1 << 62))
-				require.NoError(t, err, "accepts 1<<62 — the option silently ignores n < 1 and never rejects "+
+				b, err := resilience.NewCircuitBreaker(resilience.WithBreakerThreshold(math.MaxInt))
+				require.NoError(t, err, "accepts math.MaxInt — the option silently ignores n < 1 and never rejects "+
 					"(Spec 016 §2.1 safety cause (a): a pure comparison over a scalar counter)")
 				for range 1000 {
 					b.Record(false)
 				}
 				assert.True(t, b.Allow(),
-					"product usable: 1,000 consecutive failures must not trip a breaker whose threshold is 1<<62")
+					"product usable: 1,000 consecutive failures must not trip a breaker whose threshold is math.MaxInt")
 			},
 		},
 		{
@@ -609,9 +666,9 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 				}
 				c, err := endpoint.NewConsumer[[]byte](src, h,
 					endpoint.WithConsumerCodec[[]byte](msgin.BytesPayloadCodec{}),
-					endpoint.WithMaxPayloadBytes[[]byte](1<<62),
+					endpoint.WithMaxPayloadBytes[[]byte](math.MaxInt),
 					endpoint.WithPollInterval[[]byte](time.Millisecond))
-				require.NoError(t, err, "accepts 1<<62 — the option never validates n at all "+
+				require.NoError(t, err, "accepts math.MaxInt — the option never validates n at all "+
 					"(Spec 016 §2.1 safety cause (b): len(b) is already-materialised)")
 
 				stop := runAndStop(t, c.Run)
@@ -621,7 +678,7 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 					defer mu.Unlock()
 					return got != nil
 				}, 2*time.Second, time.Millisecond,
-					"product usable: a normal payload must still be decoded and delivered under a 1<<62 byte cap")
+					"product usable: a normal payload must still be decoded and delivered under a math.MaxInt byte cap")
 				mu.Lock()
 				assert.Equal(t, []byte("hello"), got)
 				mu.Unlock()
@@ -631,8 +688,8 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 			key: "resilience.NewTokenBucket",
 			arm: "safe",
 			assert: func(t *testing.T) {
-				rl, err := resilience.NewTokenBucket(1, 1<<62) // burst is the 17th key, positional
-				require.NoError(t, err, "accepts 1<<62 — burst is a scalar comparison, safety cause (a)")
+				rl, err := resilience.NewTokenBucket(1, math.MaxInt) // burst is the 17th key, positional
+				require.NoError(t, err, "accepts math.MaxInt — burst is a scalar comparison, safety cause (a)")
 				require.NoError(t, rl.Wait(t.Context()),
 					"product usable: a bucket that starts full at burst tokens must admit immediately")
 			},
@@ -644,8 +701,8 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 				store, err := memory.NewQueueStore()
 				require.NoError(t, err)
 				require.NoError(t, store.Enqueue(t.Context(), msgin.New[any]("payload")))
-				ds, err := store.Claim(t.Context(), 1<<62)
-				require.NoError(t, err, "accepts 1<<62 — capacity is min(max, len(s.ready)), never max itself, "+
+				ds, err := store.Claim(t.Context(), math.MaxInt)
+				require.NoError(t, err, "accepts math.MaxInt — capacity is min(max, len(s.ready)), never max itself, "+
 					"so it is safe by construction regardless of max (Spec 016 §2.0)")
 				require.Len(t, ds, 1, "product usable: the one enqueued message must still be delivered")
 				assert.Equal(t, "payload", ds[0].Msg.Payload())
@@ -663,8 +720,8 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 				// Poll forwards verbatim into QueueStore.Claim (Spec 016 §2.0) — this
 				// row and the one above exercise the same underlying safety property
 				// through msgin's two different public entry points to it.
-				ds, err := qc.Poll(t.Context(), 1<<62)
-				require.NoError(t, err, "accepts 1<<62 — delegates into QueueStore.Claim's safety")
+				ds, err := qc.Poll(t.Context(), math.MaxInt)
+				require.NoError(t, err, "accepts math.MaxInt — delegates into QueueStore.Claim's safety")
 				require.Len(t, ds, 1, "product usable: the one enqueued message must still be delivered")
 				assert.Equal(t, "payload", ds[0].Msg.Payload())
 			},

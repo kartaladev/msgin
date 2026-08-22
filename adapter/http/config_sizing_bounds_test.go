@@ -183,7 +183,8 @@ func TestNewSSEServer_ReplayBufferCeilingAccepts(t *testing.T) {
 // WithReplayBuffer(8) and 20 Sends (ids "1".."20"), the ring retains the last
 // 8 (ids "13".."20"). Resuming from a RETAINED id (13) replays the 7 entries
 // after it; resuming from an EVICTED id (1) replays 0 (live-only,
-// best-effort) — exactly what an unbounded ring would NOT do at n=1<<62.
+// best-effort) — exactly what an unbounded ring would NOT do at n=1<<30, the
+// oversized value the root sizing class gate drives WithReplayBuffer with.
 func TestSSEServer_ReplayBuffer_CapStillCaps(t *testing.T) {
 	t.Parallel()
 
