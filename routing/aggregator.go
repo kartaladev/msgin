@@ -401,6 +401,41 @@ func boxAggFn[A, B any](fn func(ctx context.Context, group []msgin.Message[A]) (
 // Handle/process is already releasing, returns nil (the source Acks;
 // durability now rests on the store). See the Aggregator doc for the
 // concurrency and settlement contract.
+//
+// # A store error that ARRIVES WITH a group snapshot
+//
+// MessageGroupStore.Add MAY return a non-nil group alongside a non-nil error.
+// That pair means "this MEMBER was refused, but here is the group as it
+// stands" — a bounded store rejecting a member past its cap is the shipped
+// case. Handle then re-evaluates the release predicate against that snapshot,
+// because the group may be COMPLETE and merely untriggered (its previous
+// release failed and was abandoned), and refusing the redelivery that would
+// have re-fired it would wedge the key forever. The member is rejected; the
+// release is not. A store returning (nil, err) keeps the previous behavior
+// exactly — the error is propagated unchanged.
+//
+// DIRECTION RULE for the six exits of that branch, in two clauses:
+//
+//  1. Handle NEVER UPGRADES the store's classification. A transient rejection
+//     is never turned permanent, on any exit. A store author may rely on this
+//     unconditionally.
+//  2. Handle either DOWNGRADES on positive evidence of drainage — the group
+//     provably shrank, or another holder is provably draining it, so a fresh
+//     TRANSIENT ErrOverflowDropped is minted — or REPLACES the overflow error
+//     entirely with a distinct fault (a ClaimGroup failure, a release
+//     failure) carrying that fault's own classification. Those faults are
+//     unmarked, hence transient, so a persistently failing claim/release path
+//     RETRIES rather than terminating. That is deliberate: marking a store or
+//     channel fault permanent because it was reached through an overflow
+//     would dead-letter messages for a cause that has nothing to do with the
+//     cap, and would misattribute it in the operator's sink. Configure
+//     RetryPolicy.Backoff if the retry rate matters.
+//
+// WHY `claim == nil` RETURNS AN ERROR HERE while the success path below
+// returns nil for the identical condition: on the success path the member is
+// already stored, so a nil (an Ack) is safe — durability rests on the store.
+// In this branch the member was never stored, so a nil would Ack a message
+// that was never aggregated. The divergence is required, not an oversight.
 func (a *Aggregator) Handle(ctx context.Context, msg msgin.Message[any]) error {
 	if err := a.assert(msg); err != nil {
 		return err // ErrPayloadType: fail fast, never added to the store
@@ -411,7 +446,30 @@ func (a *Aggregator) Handle(ctx context.Context, msg msgin.Message[any]) error {
 	}
 	group, err := a.store.Add(ctx, key, msg)
 	if err != nil {
-		return err
+		if group == nil {
+			return err // unchanged for every store that returns (nil, err)
+		}
+		// The store rejected the MEMBER and handed back the group's live
+		// snapshot anyway, so the release is still evaluable. Reject the
+		// member, not the release: without this, a store cap turns a group
+		// that is complete-but-untriggered (its last release failed and was
+		// abandoned) into a permanent deadlock, because the redelivery that
+		// would have re-fired the release is now refused at the door.
+		ok, rerr := a.cfg.release(group)
+		if rerr != nil || !ok {
+			return err // nothing to drain — the store's classification stands
+		}
+		claim, cerr := a.store.ClaimGroup(ctx, key)
+		if cerr != nil {
+			return cerr
+		}
+		if claim == nil {
+			return overflowRetryable(key) // another holder is releasing it
+		}
+		if relErr := a.release(ctx, claim); relErr != nil {
+			return relErr
+		}
+		return overflowRetryable(key) // drained — the retry WILL be admitted
 	}
 	if group == nil {
 		// SPI contract violation: Add returned a nil snapshot AND a nil error.
@@ -439,6 +497,24 @@ func (a *Aggregator) Handle(ctx context.Context, msg msgin.Message[any]) error {
 		return nil // another Handle/process is releasing this group; held
 	}
 	return a.release(ctx, claim)
+}
+
+// overflowRetryable mints the FRESH, transient msgin.ErrOverflowDropped that
+// Handle returns when a rejected member's group provably drained (or is
+// provably being drained by another holder).
+//
+// It deliberately takes no cause and wraps nothing. The store's rejection is
+// msgin.Permanent-wrapped whenever the group was unleased, and wrapping it
+// would carry that marker straight through errors.As — turning the downgrade
+// into a no-op and dead-lettering a member the retry is now guaranteed to
+// admit. A fresh error is the only shape that can be transient.
+//
+// An error rather than nil is returned because the member was never stored:
+// nil would make the source Ack a message that was never aggregated.
+func overflowRetryable(key string) error {
+	return fmt.Errorf(
+		"%w: routing.Aggregator.Handle: group %q drained by this release; retry to admit the rejected member",
+		msgin.ErrOverflowDropped, key)
 }
 
 // releaseOnce aggregates a claimed group, forwards it to the output channel,

@@ -16,17 +16,18 @@ package msgin_test
 //     "func With..." parameter — resilience.NewTokenBucket's positional
 //     `burst` is why). Fail if that set differs from sizingConformanceKeys in
 //     EITHER direction.
-//  2. CONFORMANCE (behavioral). Every one of the 17 AST-discovered keys, plus
+//  2. CONFORMANCE (behavioral). Every one of the 18 AST-discovered keys, plus
 //     2 MANUAL rows for the class members the Recv == nil boundary excludes
 //     but a root test can still construct, gets an executable row — never a
 //     declaration string — in one of FOUR arms. The arms are BEHAVIORAL and are
 //     NOT a relabelling of Spec 016 §2.1's three classification verdicts; §2.1's
 //     "classification arms ≠ AC-5 behavioral arms" note is normative for the
 //     split, and §6 AC-5 tabulates it:
-//       - "fixed"   (12) — the fault is reported through the surface Spec 016
+//       - "fixed"   (13) — the fault is reported through the surface Spec 016
 //                          §3 names for it: the constructor's return, or the
 //                          first use of the object it produced. 9 were bounded
-//                          by Spec 016 / Plan 029; the 3 msghttp byte caps
+//                          by Spec 016 / Plan 029; memory.WithMaxGroupMembers
+//                          by Spec 017 / Plan 031; the 3 msghttp byte caps
 //                          joined them from "deferred" at Spec 018 / Plan 032.
 //       - "rejects"  (1) — msghttp.WithSuccessStatus. It is safe (a) by §2.1's
 //                          criterion and NOTHING HERE FIXES IT; it rejects
@@ -42,7 +43,7 @@ package msgin_test
 //                          so an empty arm has NO KEY there — it is absent,
 //                          not zero.
 //       - "safe"     (6) — accepts math.MaxInt AND its product is usable.
-//     12 + 1 + 6 = 19 rows = 17 AST keys + 2 manual rows.
+//     13 + 1 + 6 = 20 rows = 18 AST keys + 2 manual rows.
 //
 // # THE OVERSIZED LITERAL IS TWO-DIMENSIONAL (Plan 030 Task 2; Plan 032)
 //
@@ -58,7 +59,7 @@ package msgin_test
 //     math.MaxInt, and nothing else. The parameter type does NOT get a vote
 //     here — all six of these rows are int-typed, and demoting them to a
 //     reject-arm literal would silently disable the probe (see below).
-//   - "fixed" (12) and "rejects" (1): the value must be OUT OF RANGE and must
+//   - "fixed" (13) and "rejects" (1): the value must be OUT OF RANGE and must
 //     render an architecture-INDEPENDENT decimal, because these rows assert an
 //     EqualError against a rendered decimal. That fixed decimal is the whole
 //     point; math.MaxInt here would render differently on 386 and 64-bit and
@@ -108,8 +109,8 @@ package msgin_test
 //
 // In go/ast a method is a *ast.FuncDecl with a non-nil Recv, so "every
 // exported function with an int/int64 parameter" reads two ways. Measured on
-// this tree: Recv == nil yields 17 keys, every one constructible from a root
-// blackbox test; ANY FuncDecl yields 44, of which 22 sit on UNEXPORTED
+// this tree: Recv == nil yields 18 keys, every one constructible from a root
+// blackbox test; ANY FuncDecl yields 45, of which 22 sit on UNEXPORTED
 // receivers (mysqlDialect.Claim, postgresGroupDialect.AddMember, ... — 21 in
 // leaf modules, plus msghttp's own responseTracker.WriteHeader) that a
 // root-module blackbox test cannot construct at all, which would make half 2
@@ -132,7 +133,7 @@ package msgin_test
 //
 //   - ROOT-MODULE IMPORT BOUNDARY. Half 1 sees all 8 modules (a filesystem
 //     walk needs no go.mod); half 2 is a root-module test and can only import
-//     root-module packages. All 17 keys live in root-module packages today
+//     root-module packages. All 18 keys live in root-module packages today
 //     (endpoint, adapter/http, adapter/memory, channel, resilience, routing),
 //     so both halves cover all of them. A sizing option added to expr, one of
 //     the sql dialects, or another leaf module FAILS half 1 and cannot be
@@ -188,7 +189,7 @@ import (
 // Half 1 — completeness (AST)
 // ---------------------------------------------------------------------------
 
-// sizingConformanceKeys is Spec 016 §2's conformance key set: the 16 exported
+// sizingConformanceKeys is Spec 016 §2's conformance key set: the 17 exported
 // `With...` sizing options that take an int/int64 PLUS
 // resilience.NewTokenBucket's positional `burst` (§2's note — the scan is
 // "any position", not "first", precisely so this one is not invisible).
@@ -199,9 +200,9 @@ import (
 // BLOCKER-1). Re-derive with:
 //
 //	git ls-files '*.go' | grep -v _test | xargs grep -hnE \
-//	  '^func With[A-Za-z]+(\[[^]]*\])?\([a-z]+ (int|int64)\)' | wc -l   # → 16 `With...` options
+//	  '^func With[A-Za-z]+(\[[^]]*\])?\([a-z]+ (int|int64)\)' | wc -l   # → 17 `With...` options
 //
-// and cross-check the full 17 (including the positional burst) against
+// and cross-check the full 18 (including the positional burst) against
 // TestSizingOptionClass_Completeness's own output below, which is the
 // authoritative source — not this comment, not the spec.
 var sizingConformanceKeys = []string{
@@ -212,6 +213,7 @@ var sizingConformanceKeys = []string{
 	"memory.WithBuffer",
 	"memory.WithCapacity",
 	"memory.WithMaxGroups",
+	"memory.WithMaxGroupMembers",
 	"msghttp.WithConnectionBuffer",
 	"msghttp.WithMaxConnections",
 	"msghttp.WithReplayBuffer",
@@ -347,7 +349,7 @@ func TestSizingOptionClass_Completeness(t *testing.T) {
 		methodCount)
 
 	assert.Equal(t, want, found, "the AST-discovered set of exported sizing-shaped functions must match "+
-		"Spec 016 §2's 17-key conformance set in BOTH directions (ADR 0032 D-AA). A new sizing option must be "+
+		"Spec 016 §2's 18-key conformance set in BOTH directions (ADR 0032 D-AA). A new sizing option must be "+
 		"folded into sizingConformanceKeys AND given a row in TestSizingOptionClass_Conformance — this diff "+
 		"alone is not the gate, it is half of it.")
 
@@ -418,8 +420,8 @@ func runAndStop(t *testing.T, run func(ctx context.Context) error) (stop func())
 	}
 }
 
-// sizingConformanceCase is one of the 19 rows Spec 016 §6 AC-5 half 2
-// requires: 17 AST-discovered keys (matching sizingConformanceKeys) plus 2
+// sizingConformanceCase is one of the 20 rows Spec 016 §6 AC-5 half 2
+// requires: 18 AST-discovered keys (matching sizingConformanceKeys) plus 2
 // manual rows for the Recv == nil boundary's two excluded class members.
 // assert is a closure, never a want/wantErr field pair (project table-test
 // rule) — each row's construction differs too much (different packages,
@@ -434,9 +436,10 @@ type sizingConformanceCase struct {
 // half 1 discovers is EXECUTABLE, never a declaration string (round-1 M-4).
 func TestSizingOptionClass_Conformance(t *testing.T) {
 	tests := []sizingConformanceCase{
-		// ---- arm: fixed — the 12 class members bounded here: 9 by Spec 016 /
-		// Plan 029, then the 3 msghttp byte caps that moved out of "deferred"
-		// at Spec 018 / Plan 032 (the three int64-typed rows at the end) ----
+		// ---- arm: fixed — the 13 class members bounded here: 9 by Spec 016 /
+		// Plan 029, memory.WithMaxGroupMembers by Spec 017 / Plan 031, then the
+		// 3 msghttp byte caps that moved out of "deferred" at Spec 018 /
+		// Plan 032 (the three int64-typed rows at the end) ----
 		{
 			key: "endpoint.WithMaxInFlight",
 			arm: "fixed",
@@ -507,6 +510,17 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
 				assert.EqualError(t, err,
 					"msgin: capacity out of range: memory.WithMaxGroups: 1073741824 not in [1, 1048576]")
+			},
+		},
+		{
+			key: "memory.WithMaxGroupMembers",
+			arm: "fixed",
+			assert: func(t *testing.T) {
+				_, err := memory.NewGroupStore(memory.WithMaxGroupMembers(1 << 30))
+				require.ErrorIs(t, err, msgin.ErrInvalidCapacity)
+				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
+				assert.EqualError(t, err,
+					"msgin: capacity out of range: memory.WithMaxGroupMembers: 1073741824 not in [1, 1048576]")
 			},
 		},
 		{
@@ -804,12 +818,13 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 	require.Equal(t, want, astKeys,
 		"every key in sizingConformanceKeys must have exactly one conformance row — half 2 must be executable "+
 			"for every key half 1 discovers, never a declaration string (Spec 016 §6 AC-5)")
-	require.Len(t, tests, 19,
-		"17 AST rows + 2 manual rows (memory.QueueStore.Claim, channel.QueueChannel.Poll — Spec 016 §2.0)")
+	require.Len(t, tests, 20,
+		"18 AST rows + 2 manual rows (memory.QueueStore.Claim, channel.QueueChannel.Poll — Spec 016 §2.0)")
 
 	// The ARM PARTITION is normative, so assert it rather than merely naming it
 	// in a subtest prefix. Spec 016 §2.1's arm table and §6 AC-5 both fix the
-	// split — 12/1/0/6 since Spec 018 moved the three msghttp byte caps out of
+	// split — 13/1/0/6 since Spec 017 added memory.WithMaxGroupMembers and
+	// Spec 018 moved the three msghttp byte caps out of
 	// "deferred"; without this, a contributor could move a row between
 	// arms — precisely the reclassification that round-4 BLOCKER-1
 	// (WithReplayBuffer, safe -> class member) and round-5 BLOCKER-1
@@ -830,6 +845,7 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 		"memory.WithBuffer":                  "fixed",
 		"memory.WithCapacity":                "fixed",
 		"memory.WithMaxGroups":               "fixed",
+		"memory.WithMaxGroupMembers":         "fixed",
 		"msghttp.WithMaxConnections":         "fixed",
 		"routing.WithCompletionSize":         "fixed",
 		"msghttp.WithReplayBuffer":           "fixed",
@@ -851,14 +867,15 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 		byArm[tc.arm]++
 	}
 	require.Equal(t, wantArms, gotArms,
-		"Spec 016 §2.1's arm table and §6 AC-5 fix EVERY key's arm, not just the per-arm counts: 12 class "+
-			"members fixed here (9 by Spec 016/Plan 029, 3 by Spec 018/Plan 032), 1 that rejects without "+
+		"Spec 016 §2.1's arm table and §6 AC-5 fix EVERY key's arm, not just the per-arm counts: 13 class "+
+			"members fixed here (9 by Spec 016/Plan 029, 1 by Spec 017/Plan 031, 3 by Spec 018/Plan 032), "+
+			"1 that rejects without "+
 			"being a class member (msghttp.WithSuccessStatus), 0 deferred (the arm is a tombstone since "+
 			"Spec 018), 6 safe (4 AST + 2 manual). Moving a row between arms is a "+
 			"SPEC change — update §2.1 and §6 AC-5, do not just edit this map")
-	require.Equal(t, map[string]int{"fixed": 12, "rejects": 1, "safe": 6}, byArm,
+	require.Equal(t, map[string]int{"fixed": 13, "rejects": 1, "safe": 6}, byArm,
 		"the per-arm counts follow from wantArms above; a mismatch here means wantArms itself drifted "+
-			"from Spec 016 §2.1's split, now 12/1/0/6. NOTE: byArm is built by COUNTING, so the empty "+
+			"from Spec 016 §2.1's split, now 13/1/0/6. NOTE: byArm is built by COUNTING, so the empty "+
 			"\"deferred\" arm has NO KEY here — do not add \"deferred\": 0, it would fail")
 
 	for _, tc := range tests {

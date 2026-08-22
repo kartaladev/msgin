@@ -3,6 +3,7 @@ package routing_test
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -279,6 +280,106 @@ func corrMsg(payload any, id, corrID string, extra map[string]any) msgin.Message
 		h[k] = v
 	}
 	return msgin.New[any](payload, msgin.WithID(id), msgin.WithHeaders(h))
+}
+
+// nilClaimStore wraps a real msgin.MessageGroupStore and reports EVERY
+// ClaimGroup as "already held by another holder" — (nil, nil) — while
+// delegating Add. It drives Handle's over-cap `claim == nil` exit, which is a
+// DELIBERATE divergence from the success path: there the same condition
+// returns nil (the group is held, the member is stored), here the member was
+// never stored, so nil would Ack an unstored message.
+type nilClaimStore struct {
+	msgin.MessageGroupStore
+}
+
+func (s *nilClaimStore) ClaimGroup(context.Context, string) (msgin.MessageGroupClaim, error) {
+	return nil, nil
+}
+
+var _ msgin.MessageGroupStore = (*nilClaimStore)(nil)
+
+// failOnceChannel is a MessageChannel whose FIRST Send fails and whose later
+// Sends succeed — the AC-1b fixture, where the release must fail once so the
+// group is left complete-but-abandoned and the redelivery has something to
+// re-trigger.
+type failOnceChannel struct {
+	mu     sync.Mutex
+	failed bool
+	sent   []msgin.Message[any]
+	err    error
+}
+
+func (c *failOnceChannel) Send(_ context.Context, m msgin.Message[any]) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.failed {
+		c.failed = true
+		return c.err
+	}
+	c.sent = append(c.sent, m)
+	return nil
+}
+
+func (c *failOnceChannel) sentCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.sent)
+}
+
+var _ msgin.MessageChannel = (*failOnceChannel)(nil)
+
+// declineThenRelease returns a ReleaseStrategy that DECLINES its first n calls
+// and from call n+1 onward returns (true, err).
+//
+// The staging is what makes Handle's over-cap branch reachable: a strategy
+// that fires (or errors) on the way UP would release — or fail — before the
+// group ever reaches its member cap, so the branch under test would never run.
+func declineThenRelease(n int, err error) routing.ReleaseStrategy {
+	var mu sync.Mutex
+	calls := 0
+	return func(msgin.MessageGroup) (bool, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if calls <= n {
+			return false, nil
+		}
+		return true, err
+	}
+}
+
+// releaseAt returns a count-based ReleaseStrategy that fires once the group
+// holds n members, with no header dependency.
+func releaseAt(n int) routing.ReleaseStrategy {
+	return func(g msgin.MessageGroup) (bool, error) { return len(g.Messages()) >= n, nil }
+}
+
+// fixedKey correlates every message to one group, so a test need not stamp a
+// correlation header on an id-less fixture.
+func fixedKey(msgin.Message[any]) (string, error) { return "k", nil }
+
+// cappedAgg builds an Aggregator over a memory.GroupStore capped at
+// maxMembers, correlating everything to one key and releasing per fn.
+func cappedAgg(
+	t *testing.T,
+	maxMembers int,
+	out msgin.MessageChannel,
+	fn routing.ReleaseStrategy,
+	wrap func(msgin.MessageGroupStore) msgin.MessageGroupStore,
+) *routing.Aggregator {
+	t.Helper()
+	base, err := memory.NewGroupStore(memory.WithMaxGroupMembers(maxMembers))
+	require.NoError(t, err)
+	var store msgin.MessageGroupStore = base
+	if wrap != nil {
+		store = wrap(store)
+	}
+	agg, err := routing.NewAggregator[int, int](store, sumFn,
+		routing.WithOutputChannel(out),
+		routing.WithCorrelationStrategy(fixedKey),
+		routing.WithReleaseStrategy(fn))
+	require.NoError(t, err)
+	return agg
 }
 
 func newIntStore(t *testing.T) *memory.GroupStore {
@@ -858,6 +959,168 @@ func TestAggregator_Handle(t *testing.T) {
 				group, addErr := base.Add(t.Context(), "g", corrMsg(2, "probe", "g", nil))
 				require.NoError(t, addErr)
 				assert.Len(t, group.Messages(), 2, "m1 (abandoned back to live) plus this probe")
+			},
+		},
+
+		// ---- Spec 017 §3.3a / Plan 031 Task 1: store.Add returned an error
+		// TOGETHER WITH a live snapshot. Six exits, one case each. ----
+		{
+			// B1-11 + B1-12 / AC-1b — THE case the branch exists for, and the
+			// only one that catches the deadlock the member cap would
+			// otherwise introduce. The fixture must be ID-LESS: with an id the
+			// dedup branch returns a NIL error, Handle reaches the predicate
+			// anyway and the deadlock is never entered.
+			name: "over cap: an id-less redelivery re-fires the release and the retry is admitted",
+			assert: func(t *testing.T) {
+				out := &failOnceChannel{err: errors.New("send boom")}
+				agg := cappedAgg(t, 4, out, releaseAt(4), nil)
+
+				idless := msgin.NewMessage[any](1, msgin.Headers{})
+				require.Empty(t, idless.ID(),
+					"the fixture must be id-LESS: msgin.New always stamps an id (message.go's NewID fallback)")
+
+				// 1-3: held. 4th: the release fires and its Send FAILS, so the
+				// claim is abandoned and the group is left complete, unleased
+				// and with nothing to re-trigger it.
+				for range 3 {
+					require.NoError(t, agg.Handle(t.Context(), idless))
+				}
+				require.Error(t, agg.Handle(t.Context(), idless))
+				require.Equal(t, 0, out.sentCount())
+
+				// The redelivery is REJECTED by the cap — and the rejection
+				// re-evaluates the release instead of dead-ending.
+				err := agg.Handle(t.Context(), idless)
+				require.ErrorIs(t, err, msgin.ErrOverflowDropped)
+				assert.False(t, msgin.IsPermanent(err),
+					"the group provably just drained, so the retry provably succeeds")
+				assert.Contains(t, err.Error(), "routing.Aggregator.Handle")
+				assert.Equal(t, 1, out.sentCount(), "the release re-fired and succeeded")
+
+				// And the retry IS admitted — an error was still returned
+				// above precisely so the source would redeliver.
+				require.NoError(t, agg.Handle(t.Context(), idless))
+			},
+		},
+		{
+			// B1-13 / exit 2a — the strategy DECLINED, so nothing will drain
+			// the group and the store's permanent classification stands.
+			name: "over cap: an unreleasable group keeps the store's Permanent classification",
+			assert: func(t *testing.T) {
+				out := &fakeAggChannel{}
+				never := func(msgin.MessageGroup) (bool, error) { return false, nil }
+				agg := cappedAgg(t, 4, out, never, nil)
+
+				for i := range 4 {
+					require.NoError(t, agg.Handle(t.Context(), corrMsg(i, "m"+strconv.Itoa(i), "k", nil)))
+				}
+				err := agg.Handle(t.Context(), corrMsg(9, "m9", "k", nil))
+				require.ErrorIs(t, err, msgin.ErrOverflowDropped)
+				assert.True(t, msgin.IsPermanent(err), "no drainage happened, so no downgrade is earned")
+				assert.Equal(t, 0, out.count())
+			},
+		},
+		{
+			// B1-13b / exit 2b — the strategy ERRORED. A strategy's error is
+			// not a "yes": a mutant dropping `rerr != nil` from the || would
+			// claim and release a group the strategy just rejected.
+			name: "over cap: a release-strategy error keeps the store's classification and releases nothing",
+			assert: func(t *testing.T) {
+				out := &fakeAggChannel{}
+				strategyErr := errors.New("strategy boom")
+				agg := cappedAgg(t, 4, out, declineThenRelease(4, strategyErr), nil)
+
+				for i := range 4 {
+					require.NoError(t, agg.Handle(t.Context(), corrMsg(i, "m"+strconv.Itoa(i), "k", nil)))
+				}
+				err := agg.Handle(t.Context(), corrMsg(9, "m9", "k", nil))
+				require.ErrorIs(t, err, msgin.ErrOverflowDropped)
+				assert.True(t, msgin.IsPermanent(err))
+				assert.NotErrorIs(t, err, strategyErr)
+				assert.Equal(t, 0, out.count(), "a strategy error must NOT claim-and-release the group")
+			},
+		},
+		{
+			// B1-13c / exit 3 — ClaimGroup failed. The store fault is returned
+			// VERBATIM, deliberately discarding the overflow classification:
+			// masking a store fault behind ErrOverflowDropped would point an
+			// operator at the cap. Note it is thereby TRANSIENT (unmarked).
+			name: "over cap: a ClaimGroup failure is returned instead of the overflow error",
+			assert: func(t *testing.T) {
+				out := &fakeAggChannel{}
+				claimErr := errors.New("claim boom")
+				agg := cappedAgg(t, 4, out, declineThenRelease(4, nil),
+					func(s msgin.MessageGroupStore) msgin.MessageGroupStore {
+						return &failNthClaimStore{MessageGroupStore: s, n: 1, err: claimErr}
+					})
+
+				for i := range 4 {
+					require.NoError(t, agg.Handle(t.Context(), corrMsg(i, "m"+strconv.Itoa(i), "k", nil)))
+				}
+				err := agg.Handle(t.Context(), corrMsg(9, "m9", "k", nil))
+				require.ErrorIs(t, err, claimErr)
+				assert.NotErrorIs(t, err, msgin.ErrOverflowDropped)
+				assert.False(t, msgin.IsPermanent(err))
+			},
+		},
+		{
+			// B1-13d / exit 4 — another holder is releasing the group. The
+			// success path returns NIL for this exact condition
+			// (aggregator.go's "another Handle/process is releasing this
+			// group; held"); here the member was never stored, so nil would
+			// Ack an unstored message. The divergence is deliberate.
+			name: "over cap: a claim taken by another holder is a transient overflow, never nil",
+			assert: func(t *testing.T) {
+				out := &fakeAggChannel{}
+				agg := cappedAgg(t, 4, out, declineThenRelease(4, nil),
+					func(s msgin.MessageGroupStore) msgin.MessageGroupStore {
+						return &nilClaimStore{MessageGroupStore: s}
+					})
+
+				for i := range 4 {
+					require.NoError(t, agg.Handle(t.Context(), corrMsg(i, "m"+strconv.Itoa(i), "k", nil)))
+				}
+				err := agg.Handle(t.Context(), corrMsg(9, "m9", "k", nil))
+				require.ErrorIs(t, err, msgin.ErrOverflowDropped)
+				assert.False(t, msgin.IsPermanent(err))
+				assert.Contains(t, err.Error(), "routing.Aggregator.Handle")
+			},
+		},
+		{
+			// B1-13e / exit 5 — the release itself failed. The Nack must name
+			// the OUTPUT CHANNEL, not the cap, or an operator debugging a full
+			// group is pointed at the wrong subsystem.
+			name: "over cap: a release failure returns the release error, not the overflow error",
+			assert: func(t *testing.T) {
+				sendErr := errors.New("send boom")
+				out := &fakeAggChannel{sendErr: sendErr}
+				agg := cappedAgg(t, 4, out, declineThenRelease(4, nil), nil)
+
+				for i := range 4 {
+					require.NoError(t, agg.Handle(t.Context(), corrMsg(i, "m"+strconv.Itoa(i), "k", nil)))
+				}
+				err := agg.Handle(t.Context(), corrMsg(9, "m9", "k", nil))
+				require.ErrorIs(t, err, sendErr)
+				assert.NotErrorIs(t, err, msgin.ErrOverflowDropped)
+			},
+		},
+		{
+			// B1-14 / exit 1 — the compatibility arm. A store returning
+			// (nil, err) — every third-party store shipped before this
+			// increment — keeps the old path EXACTLY. A mutant dropping the
+			// nil guard nil-derefs here.
+			name: "a store error without a snapshot is returned verbatim",
+			assert: func(t *testing.T) {
+				addErr := errors.New("add boom")
+				out := &fakeAggChannel{}
+				agg, err := routing.NewAggregator[int, int](&failingAddStore{addErr: addErr}, sumFn,
+					routing.WithOutputChannel(out),
+					routing.WithCorrelationStrategy(fixedKey))
+				require.NoError(t, err)
+
+				err = agg.Handle(t.Context(), msgin.New[any](1))
+				require.ErrorIs(t, err, addErr)
+				assert.Equal(t, 0, out.count())
 			},
 		},
 	}

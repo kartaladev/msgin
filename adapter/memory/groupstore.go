@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"sync"
 	"time"
@@ -25,10 +26,11 @@ import (
 // no crash-recovery sweep to run, since a lease cannot outlive the goroutine
 // that holds it within one process.
 type GroupStore struct {
-	mu        sync.Mutex
-	groups    map[string]*groupState
-	clock     clockwork.Clock
-	maxGroups int
+	mu              sync.Mutex
+	groups          map[string]*groupState
+	clock           clockwork.Clock
+	maxGroups       int
+	maxGroupMembers int
 }
 
 // groupState is one correlation group's mutable state. msgs grows only by
@@ -45,8 +47,9 @@ type groupState struct {
 }
 
 type groupStoreConfig struct {
-	clock     clockwork.Clock
-	maxGroups int
+	clock           clockwork.Clock
+	maxGroups       int
+	maxGroupMembers int
 }
 
 // GroupStoreOption configures a GroupStore.
@@ -73,6 +76,85 @@ func WithMaxGroups(n int) GroupStoreOption {
 	return func(c *groupStoreConfig) { c.maxGroups = n }
 }
 
+// defaultMaxGroupMembers is the number of members WithMaxGroupMembers admits
+// into ONE correlation group when the option is not set: 65,536 (Spec 017
+// §3.2). The value is not a fresh judgement — it REUSES routing's
+// completionSizeCeiling (Spec 016 §3.4, ADR 0032 D-Z), which fixed 65,536 as
+// "far beyond any plausible aggregation" over the identical unit, members of
+// one correlation group.
+//
+// The cost basis is TIME, not bytes: Add clones the live member slice on
+// every call, so growing one group to m members clones Θ(m²) message headers
+// — 8.6 s and 48.3 GiB of allocation churn at 65,536, against only ~31 MiB
+// live (Spec 016 §1.4). That is why no test grows a group to this value.
+//
+// INVARIANT: this default must stay >= routing's completionSizeCeiling. A
+// caller may legally configure routing.WithCompletionSize up to that ceiling,
+// and a smaller default cap here would make such a group reject its own
+// completing member before the release predicate could ever fire — a silent
+// deadlock in place of a bound (Spec 017 §3.5).
+const defaultMaxGroupMembers = 1 << 16
+
+// maxGroupMembersCeiling is the upper bound WithMaxGroupMembers accepts
+// (Spec 017 §3.2). It matches maxGroupsCeiling above, the sibling bound in the
+// same struct, so one number reads as "the largest in-flight aggregation
+// quantity this library will accept" for both group COUNT and members per
+// group. The ceiling matters even though the check itself is a scalar
+// comparison: it is what stops a caller from configuring a cap so large that
+// the bound is nominal, and — per defaultMaxGroupMembers' cost note — the
+// quadratic clone cost makes even the ceiling unreachable in practice.
+const maxGroupMembersCeiling = 1 << 20
+
+// WithMaxGroupMembers bounds the number of members ONE correlation group may
+// hold to n, which must be in [1, maxGroupMembersCeiling] (1,048,576);
+// default 65,536 (see defaultMaxGroupMembers for why that number). n outside
+// the range is a construction-time error (msgin.ErrInvalidCapacity), not a
+// silent clamp.
+//
+// WHAT IT COUNTS: every member the store retains for the key — LIVE plus
+// CLAIMED. ClaimGroup freezes a prefix without shrinking the group, so
+// claimed members keep counting until SettleGroup deletes them; a group at
+// exactly n therefore rejects new arrivals for the duration of a claim, even
+// though its live residual may be empty. That is what makes the bound a
+// bound. The count rendered in the error is "members retained at the moment
+// of the check", and this store checks BEFORE the append, so at n = 4 it
+// renders "holds 4 members, limit 4".
+//
+// AT THE BOUNDARY: an Add that would take the group past n returns
+// msgin.ErrOverflowDropped, wrapped with the site, the group key, the count
+// and the limit. The member is NOT stored, and it leaves no trace in the
+// dedup set — a redelivery after the group drains is admitted normally. The
+// live snapshot is returned ALONGSIDE the error so routing.Aggregator.Handle
+// can still re-evaluate the release: the member is rejected, the release is
+// not.
+//
+// CLASSIFICATION — the rejection is classified by CAUSE (Spec 017 §3.3.1):
+//
+//   - The group is NOT leased: nothing will drain it on its own (nothing
+//     drains an unleased group without an expiry cutoff, and this store's
+//     RecoverInterval is 0, so an Aggregator with no WithGroupTimeout never
+//     sweeps). The error is msgin.Permanent-wrapped, which the runtime
+//     settles TERMINALLY — one attempt at the invalid-message sink, or the
+//     dead-letter sink as a fallback, never a Nack. This is deliberate: a
+//     plain transient rejection on the SHIPPED zero-value msgin.RetryPolicy
+//     (no MaxAttempts, no Backoff) is an unlogged, zero-delay redelivery
+//     loop. With NEITHER sink configured the runtime WARNs, naming both
+//     missing options, and then ACKs — so the source DROPS the message.
+//     Configure endpoint.WithInvalidMessageSink (or RetryPolicy.DeadLetter) to
+//     turn that loss into a capture; the library cannot supply one.
+//   - The group IS leased: a claim is in flight and Settle/Abandon runs on
+//     every release path, so the retry genuinely succeeds afterwards. The
+//     error stays transient (unwrapped). Under the zero-value RetryPolicy
+//     that retry is a zero-delay busy-wait for the width of the claim window;
+//     set RetryPolicy.Backoff if that matters.
+//
+// A group that is full and unreleasable stays full: this option bounds
+// growth, it does not provide liveness. Set routing.WithGroupTimeout to have
+// the reaper expire such a group.
+func WithMaxGroupMembers(n int) GroupStoreOption {
+	return func(c *groupStoreConfig) { c.maxGroupMembers = n }
+}
+
 // WithGroupClock injects the clock used to stamp group CreatedAt (default real
 // clock; tests pass clockwork.NewFakeClock()). Named distinctly from
 // queuestore.go's WithClock(QueueStoreOption) to avoid a same-package function
@@ -95,7 +177,7 @@ func WithGroupClock(c clockwork.Clock) GroupStoreOption {
 // runs BEFORE the WithMaxGroups validation below, which runs after the loop and so
 // loses to it.
 func NewGroupStore(opts ...GroupStoreOption) (*GroupStore, error) {
-	cfg := groupStoreConfig{clock: clockwork.NewRealClock(), maxGroups: 1024}
+	cfg := groupStoreConfig{clock: clockwork.NewRealClock(), maxGroups: 1024, maxGroupMembers: defaultMaxGroupMembers}
 	for i, opt := range opts {
 		if opt == nil {
 			return nil, nilOptionAt("memory.NewGroupStore", i)
@@ -106,30 +188,75 @@ func NewGroupStore(opts ...GroupStoreOption) (*GroupStore, error) {
 		cfg.maxGroups, 1, maxGroupsCeiling); err != nil {
 		return nil, err
 	}
-	return &GroupStore{groups: make(map[string]*groupState), clock: cfg.clock, maxGroups: cfg.maxGroups}, nil
+	if err := checkRange(msgin.ErrInvalidCapacity, "memory.WithMaxGroupMembers",
+		cfg.maxGroupMembers, 1, maxGroupMembersCeiling); err != nil {
+		return nil, err
+	}
+	return &GroupStore{
+		groups:          make(map[string]*groupState),
+		clock:           cfg.clock,
+		maxGroups:       cfg.maxGroups,
+		maxGroupMembers: cfg.maxGroupMembers,
+	}, nil
 }
 
 // Add durably appends msg to group key and returns the resulting group
 // snapshot of the LIVE (unclaimed) members, allocating a new group (stamped
 // with the current clock time) on first arrival for key. It is idempotent by
 // msg.ID(): re-adding an already-stored member id is a no-op returning the
-// unchanged live-members snapshot. A new key beyond WithMaxGroups returns
-// msgin.ErrOverflowDropped.
+// unchanged live-members snapshot.
+//
+// It has TWO overflow arms, both reporting msgin.ErrOverflowDropped wrapped
+// with the site, the offending key, the count and the limit:
+//
+//   - a NEW key beyond WithMaxGroups — the store already holds its maximum
+//     number of concurrently held groups. TRANSIENT: the group map drains
+//     whenever any group settles, so the retry genuinely can succeed.
+//   - a member beyond WithMaxGroupMembers — this one correlation group is
+//     full. Classified by cause: msgin.Permanent when the group is not
+//     leased (nothing will drain it), transient while a claim is in flight.
+//     See WithMaxGroupMembers for the full contract.
+//
+// The member-cap arm returns the LIVE SNAPSHOT ALONGSIDE the error so
+// routing.Aggregator.Handle can re-evaluate the release predicate against a
+// group that is complete but was never re-triggered. The group-count arm has
+// no group to report and returns (nil, err).
+//
+// The member check sits BETWEEN the dedup lookup and the dedup insert, and
+// the id is hoisted out of the dedup branch so the check also runs for
+// id-less messages. Both positions are load-bearing: above the lookup, an
+// idempotent re-add at exactly the cap would become an overflow; below the
+// insert, a rejected member would be recorded as seen and its redelivery
+// would return the dedup no-op with a NIL error — the source would Ack a
+// message that was never appended.
 func (s *GroupStore) Add(_ context.Context, key string, msg msgin.Message[any]) (msgin.MessageGroup, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	g, ok := s.groups[key]
 	if !ok {
 		if len(s.groups) >= s.maxGroups {
-			return nil, msgin.ErrOverflowDropped
+			return nil, fmt.Errorf("%w: memory.GroupStore.Add: new group %q rejected: store holds %d groups, limit %d",
+				msgin.ErrOverflowDropped, key, len(s.groups), s.maxGroups)
 		}
 		g = &groupState{ids: make(map[string]struct{}), createdAt: s.clock.Now()}
 		s.groups[key] = g
 	}
-	if id := msg.ID(); id != "" {
+	id := msg.ID()
+	if id != "" {
 		if _, seen := g.ids[id]; seen {
 			return snapshot{key: key, msgs: slices.Clone(g.msgs[g.claimedLen:]), createdAt: g.createdAt}, nil
 		}
+	}
+	if len(g.msgs) >= s.maxGroupMembers {
+		live := snapshot{key: key, msgs: slices.Clone(g.msgs[g.claimedLen:]), createdAt: g.createdAt}
+		err := fmt.Errorf("%w: memory.GroupStore.Add: group %q holds %d members, limit %d",
+			msgin.ErrOverflowDropped, key, len(g.msgs), s.maxGroupMembers)
+		if !g.leased {
+			return live, msgin.Permanent(err) // structurally stuck: nothing drains an unleased group
+		}
+		return live, err // a claim is in flight; Settle/Abandon will drain it
+	}
+	if id != "" {
 		g.ids[id] = struct{}{}
 	}
 	g.msgs = append(g.msgs, msg)
