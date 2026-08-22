@@ -6,12 +6,12 @@
 > silently invalidated **41** `file:line` citations in an in-flight design bundle that had just passed a dedicated
 > mechanical sweep — and the citation *of the finding about stale citations* was itself off by eleven.
 >
-> ### ✅ SEVEN OF EIGHT BACKLOG ITEMS SETTLED. 20 commits on a feature branch. NOTHING MERGED OR PUSHED.
+> ### ✅ SEVEN OF EIGHT BACKLOG ITEMS SETTLED. NOTHING MERGED OR PUSHED.
 > ### Next: **ratify or reverse D-AC…D-AT** (§6.1) — the only thing blocking the last item.
 >
 > | | State |
 > |---|---|
-> | Branch | **`chore/backlog-sweep-post-029`**, clean, **20 commits ahead of `main`** |
+> | Branch | **`chore/backlog-sweep-post-029`**, clean — `git rev-list --count main..HEAD` (was 21 at handover; **this file's own commit moved it**, which is §8's first gotcha demonstrated on the handover itself) |
 > | `main` / `origin/main` | **`2b2dec1`**, untouched — verified with `git ls-remote origin main` |
 > | Working tree | **clean** |
 > | Suite | **11/11 root packages green**, `-race -shuffle=on`, at `7abc9f8` |
