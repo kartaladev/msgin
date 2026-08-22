@@ -1,13 +1,16 @@
 # Spec 018 — A byte cap carries a representability ceiling, and no off-state
 
-- **Status:** **PROPOSED — revision 3, post-audit-round-2, NOT accepted.** Written before any code, per
-  [CLAUDE.md](../../CLAUDE.md)'s design-time gate. **Two rounds of the adversarial design audit have run** over the
-  assembled bundle (this spec + [ADR 0034](../adrs/0034-byte-cap-ceilings.md) +
+- **Status:** **PROPOSED — revision 4, post-audit-round-3, NOT accepted.** Written before any code, per
+  [CLAUDE.md](../../CLAUDE.md)'s design-time gate. **Three rounds of the adversarial design audit have run** over
+  the assembled bundle (this spec + [ADR 0034](../adrs/0034-byte-cap-ceilings.md) +
   [Plan 032](../plans/032-byte-cap-ceilings.md)). Round 1 returned **NOT SAFE TO IMPLEMENT** — 3 BLOCKERs,
   7 MAJORs, 4 MINORs ([`docs/plans/032-audit-round-1.md`](../plans/032-audit-round-1.md), immutable). Round 2
   returned **NOT SAFE TO IMPLEMENT** — 1 BLOCKER, 5 MAJORs, 6 MINORs
-  ([`docs/plans/032-audit-round-2.md`](../plans/032-audit-round-2.md), immutable). This revision folds every
-  round-2 finding back. **Round 3 has not run.** Two rounds is this project's norm; Plan 029 needed five.
+  ([`docs/plans/032-audit-round-2.md`](../plans/032-audit-round-2.md), immutable). Round 3 returned **NOT SAFE TO
+  IMPLEMENT** — 0 BLOCKERs, 3 MAJORs, 4 MINORs
+  ([`docs/plans/032-audit-round-3.md`](../plans/032-audit-round-3.md), immutable), with **all twelve round-2
+  findings LANDED and nothing regressed**. This revision folds every round-3 finding back. **Round 4 has not
+  run.** Two rounds is this project's norm; Plan 029 needed five.
   - 🔴 **Every decision here was taken by the coordinator WITHOUT USER RATIFICATION.** The user was not asked.
     Each is **explicitly reversible**; §8 lists the four that most deserve a second look, and each ADR 0034
     decision carries a **REVERSIBILITY** line stating what undoing it costs.
@@ -28,6 +31,25 @@
     item 3; **N-12** (AC-3 never vacuity-probed) → §6 AC-3, §6 AC-7. The two round-1 residues round 2 re-raised —
     **m-11 not landed in the ADR**, and **M-8's wrong string still in §6 AC-4.1 site 2** — are fixed in ADR 0034
     Context and in §6 AC-4.1 respectively.
+  - **Round-3 findings and where each is discharged:** **NEW-1** (MAJOR — `:48-49` is a third instance of the
+    arm→literal claim and goes false in **both** clauses) → §6 AC-4.1 site 14, extended to **`:47-49`** with the
+    `int`-typed narrowing spelled out; **NEW-2** (MAJOR — the widened selector still under-selects: `:409`,
+    `:601`, `:799-800`) → §6 AC-4.1, **16 sites**, site 12 extended to the whole `require.Equal` message, the
+    selector replaced by a **deliberately noisy** one, **and** §7 *Out* / §8 item 5 recording that the durable
+    fix is to derive the counts from `wantArms` at test time; **NEW-3** (MAJOR — the bundle asserted three
+    inconsistent Plan 030 states) → §1's re-derive note, corrected to the delivered state; **NEW-4** (MINOR —
+    mutant M3-6 cannot discriminate) → Plan mutant table; **NEW-5** (MINOR — B1-4's 2 MiB fixture is larger and
+    weaker than the boundary pair) → §6 AC-1's small-`n` paragraph and Plan constraint 6 / B1-4;
+    **NEW-6** (MINOR — AC-1's *"observable"* is unachievable for a ceiling-valued cap) → §6 AC-1, reworded to
+    *"its product is usable"* with the unobservability stated; **NEW-7** (MINOR — the narrow sub-check has no
+    command) → §6 AC-4.1, sub-check **dropped**. The two smaller notes — D-3's non-wrap-safe count and the
+    unnamed over-inclusion lines `:33`/`:521` — land in Plan Step 11 and §6 AC-4.1 respectively.
+  - 🔴 **One defect the coordinator found while folding NEW-5 back, not raised by any round.** Revision 3's §6
+    AC-1 claimed the small-`n` proof *"already exists and is re-asserted, not invented: `WithMaxBodyBytes(1<<20)`
+    + a 64 MiB body → `http: request body too large`."* **It does not exist** —
+    `grep -rn 'body too large' --include='*.go' .` returns **zero hits** workspace-wide. The quoted line is a
+    **Plan 029 measurement** from §1's benchmark transcript, not a shipped assertion, and a 64 MiB fixture would
+    breach Plan Global constraint 6's ≤ 2 MiB bound by 32×. Corrected in §6 AC-1.
   - **Line/offset convention, stated once (m-11).** Every `file.go:NNN` citation in this bundle names the
     **`func` (or `const`/`var`) declaration line**, never a line inside its godoc — except where a specific
     godoc *sentence* is the subject, in which case the sentence's own line is cited and the text is quoted.
@@ -59,9 +81,15 @@ accepts a value that is effectively infinite.** They are the last members of Spe
 | `msghttp.WithMaxResponseBytes` | `(n int64)` `options.go:767` | `1 << 20` (1 MiB) `options.go:30` | the `[]byte` **retained as the reply payload** | `exchange.go:130-131` |
 | `msghttp.WithMaxEventBytes` | `(n int64)` `options.go:856` | `1 << 20` (1 MiB) `options.go:44` | a `bytes.Buffer` and a line `[]byte` | `sse.go:387`, `sse.go:472` |
 
-> **Re-derive every line number before citing it.** `adapter/http/options.go` and `adapter/http/helpers.go` are
-> being edited concurrently by Plan 030; the *anchors* below (function names, sentinel names, predicate shapes)
-> are what this spec is written over, not the offsets.
+> **Re-derive every line number before citing it.** The *anchors* below (function names, sentinel names,
+> predicate shapes) are what this spec is written over, not the offsets.
+>
+> 🔴 **Round-3 NEW-3, corrected: `adapter/http/options.go` and `adapter/http/helpers.go` are NOT contested.**
+> Revision 3 said they were *"being edited concurrently by Plan 030"*. **[Plan 030](../plans/030-post-029-maintenance.md)
+> is fully delivered** — Task 1 at `1a1c135`, Task 2 at `d2c69fe`, Task 3 at `7ab91cd`. Its checkboxes were never
+> ticked and two of its three commit subjects omit "030", so both naive signals read as undelivered; **the
+> reliable signal is the trailer**, `git log --format='%h %s' --grep='Plan: 030'`. Offsets in this spec are
+> post-030 and stable; re-derive them because plans drift, not because a sibling is mid-edit.
 
 Measured by Plan 029 (Go 1.25.13, darwin/arm64), and **not re-run this revision** — cited as a prior measurement,
 not as a fresh one:
@@ -678,9 +706,31 @@ Additionally:
 
 **AC-1 — the ceiling is the boundary, asserted on both sides.** For each of the three knobs, a `table-test` in
 `adapter/http` (blackbox `package msghttp_test`) with:
-- `NewConfig(WithX(byteCapCeiling))` → nil error, non-nil `*Config`, **and the knob's effect is observable**;
+- `NewConfig(WithX(byteCapCeiling))` → nil error, non-nil `*Config`, **and its product is usable**;
 - `NewConfig(WithX(byteCapCeiling + 1))` → `errors.Is` the knob's sentinel;
 - `NewConfig(WithX(1 << 62))` → the same sentinel.
+
+> 🔴 **"Usable", not "observable" — and the difference is not pedantry (round-3 NEW-6).** Revision 3's third
+> clause read *"**and the knob's effect is observable**"*, which **cannot be satisfied for a ceiling-valued cap
+> under Plan Global constraint 6**. The ceiling is `2,147,483,647`; the constraint caps every fixture at ~2 MiB.
+> So each prescribed observation runs a *small* fixture against a *ceiling-sized* cap, and succeeds **identically**
+> under the 1 MiB default and with the option dropped entirely:
+>
+> | Prescribed observation | Under `WithX(byteCapCeiling)` | Under the 1 MiB default | Option dropped |
+> |---|---|---|---|
+> | `DecodeRequest` on a small body | succeeds | succeeds | succeeds |
+> | `httptest` round-trip, small response | succeeds | succeeds | succeeds |
+> | `NewSSEParser` + `Next` on a small event | succeeds | succeeds | succeeds |
+>
+> Three identical columns is the definition of an unobservable setting. **The ceiling's effect is unobservable by
+> construction, and that is ACCEPTED, not a gap:** no legal fixture distinguishes a 2 GiB cap from the 1 MiB
+> default — anything above ~2 MiB is forbidden, anything below 1 MiB passes under both. The ceiling is therefore
+> proven **at the constructor only** (accepted at `byteCapCeiling`, rejected at `byteCapCeiling + 1` — AC-2's
+> upper arm), and the separate property *"the cap caps"* is proven at **small `n`** with a small fixture, where it
+> is a fact about the comparison rather than about the ceiling value. **The two together are the whole contract;
+> neither alone is.** *"Its product is usable"* is Spec 016 §6's own phrase, it is exactly what the three checks
+> establish, and it is the heading [Plan 032](../plans/032-byte-cap-ceilings.md) already uses for this paragraph —
+> revision 3 was the only artifact of the three saying *"observable"*.
 
 > 🔴 **The accessor clause was DELETED in revision 2 (round-1 M-10).** Revision 1 required *"and the accessor
 > returns the value set"*, which is unsatisfiable: `maxBody()` (`options.go:272`) is **unexported**, and
@@ -694,8 +744,34 @@ Additionally:
 
 **No test reads 2 GiB.** These three join Spec 016 §6 AC-1's **growth** family: the property *"the cap caps"* is a
 fact about the comparison, not about the ceiling value, so it is proven at small `n` and the ceiling is exercised
-by the **constructor only**. The small-`n` proof already exists and is re-asserted, not invented:
-`WithMaxBodyBytes(1<<20)` + a 64 MiB body → `http: request body too large`.
+by the **constructor only**.
+
+**The small-`n` proof is the BOUNDARY PAIR, at the default** — `1<<20` bytes **accepted**, `1<<20 + 1` bytes
+**rejected**:
+
+> 🔴 **Revision 3 claimed this proof "already exists and is re-asserted, not invented", citing
+> `WithMaxBodyBytes(1<<20)` + a 64 MiB body → `http: request body too large`. IT DOES NOT EXIST.**
+> `grep -rn 'body too large' --include='*.go' .` returns **zero hits** across the whole workspace. The quoted
+> line is a **Plan 029 benchmark measurement** (transcribed in §1 above), not a shipped assertion — and a 64 MiB
+> fixture would breach Plan Global constraint 6's ≤ 2 MiB bound by **32×**, so it could not be written even if
+> someone wanted to. Found by the coordinator while folding round-3 **NEW-5** back; not raised by any round.
+
+**Why the pair, and why it is small (round-3 NEW-5).** Revision 3's Plan branch B1-4 proved the default arm with
+a **2 MiB** body rejected under the unset cap. That is both larger and weaker than the pair:
+
+| | 2 MiB body, rejected | `1<<20` accepted / `1<<20 + 1` rejected |
+|---|---|---|
+| What it proves about the default | it lies somewhere in `(0, 2 MiB)` | it is **exactly** `1048576` — the only value satisfying both arms |
+| Kills *"delete the default assignment"* (cap reads `0`) | yes — but a **one-byte** body kills it too | yes, via the accept arm |
+| Kills `default = 1<<20 - 1` | no | **yes** — the accept arm goes red |
+| Kills `default = 1<<20 + 1` | no | **yes** — the reject arm goes green |
+| Exercises `MaxBytesReader`'s exact boundary (`encode.go:102`) | no | **yes** |
+| Largest allocation | 2 MiB | **1 MiB + 1** |
+
+The pair is strictly stronger, strictly smaller at the peak, and **the same shape already ships in this package**
+for the response cap — `adapter/http/exchange_test.go:309-334` runs `defaultCap` accepted / `defaultCap+1` →
+`ErrReplyTooLarge`, with `const defaultCap = 1 << 20` at `:309`. Mirror it, do not invent a new form. This also
+sets Plan Global constraint 6's real bound: the largest fixture in the increment is **`1 MiB + 1`**, not 2 MiB.
 
 > **This split is mandatory, not a convenience.** Running `WithMaxBodyBytes(byteCapCeiling)` against a real 2 GiB
 > body would allocate ~4 GiB at `io.ReadAll`'s doubling peak, in a package whose sibling runs
@@ -793,30 +869,59 @@ scheduled away. It also closes m-14's six-false-godoc-sentences window.
 
 **AC-4.1 — derive the site list, do not transcribe it** (round-1 B-3, round-2 N-2). Revision 1 listed **7**
 sites and **every offset but one was stale** — they predated Plan 030's already-landed conversion
-(`d2c69fe`), which moved the rows from `:519/:528/:537` to `:570/:579/:588`. Revision 2 listed **12**.
-**The count at revision 3 is 14.** This project's stored lesson is
-*derive move-lists mechanically*.
+(`d2c69fe`), which moved the rows from `:519/:528/:537` to `:570/:579/:588`. Revision 2 listed **12**. Revision 3
+listed **14**. **The count at revision 4 is 16.** This project's stored lesson is *derive move-lists
+mechanically*.
 
-> 🔴 **Revision 2 adopted the method and got the PREDICATE wrong (round-2 N-2).** Its grep selected on the word
-> `deferred` and on the string `9/1/3/6` — but the property this increment changes is **the `fixed` partition**,
-> which goes from 9 rows to 12 and from one literal to two. **Two sites record that partition and contain none of
-> the four tokens**, so a derivation that looked mechanical returned a confident wrong answer. *Fix the class, not
-> the instance:* select on the **property** (any site recording an arm partition or its literals), and accept
-> over-inclusion — the rows at `:412`-`:511` and `:772`-`:780` classify as "no change" in one pass, whereas a
-> missed site ships. Revision 2 also pasted **"17 lines"**; the command returns **18**.
+> 🔴 **THREE CONSECUTIVE ROUNDS HAVE EACH FIXED THE NAMED SITES WHILE THE SAME DEFECT RETURNED THROUGH NEW ONES
+> (round-3 NEW-2). A better `grep` is NOT the remedy — say so plainly rather than raising the count again.**
+>
+> | Round | Inventory | What it fixed | How it was defeated |
+> |---|---|---|---|
+> | 1 (B-3) | 7 sites | offsets were stale — *derive, don't transcribe* | the derivation's **predicate** selected on `deferred` while the property is the `fixed` partition |
+> | 2 (N-2) | 12 sites | widened the predicate to `"fixed"`, `(9)`, `(3)` … | still a **token enumeration**: `:409`, `:601` and `:799-800` contain none of the seven alternatives |
+> | 3 (NEW-1, NEW-2) | 14 sites | added `:26` and `:47` | `:409`, `:601` and `:799-800` **still** missed; and `:47`'s bullet was quoted only to line 1 of 3, leaving `:48-49` unscheduled (NEW-1) |
+>
+> **The durable defect is structural, not lexical.** The arm partition is restated in roughly **ten** prose
+> locations — the header's arm list, the header's arithmetic identity, Plan 030's per-arm literal block, the
+> `arm` field's doc comment, two section banners, the `wantArms` rationale comment's illustrative map, and **two
+> live `require.Equal` failure messages** — with **NO MECHANICAL LINK to `wantArms`**, which is the map the test
+> actually computes from. Nothing fails when one of them drifts; every count in that list is a hand-maintained
+> copy of a value already in the file. Widening the token list is what produced the last two findings. The
+> follow-up in §7 *Out* / §8 item 5 is the real fix; this inventory is the stop-gap.
 
-Run this against **current `HEAD`**, paste the output into the task's Evidence block, and classify **every** hit:
+**Select DELIBERATELY BROADLY and accept the noise.** Run this against **current `HEAD`**, paste the output into
+the task's Evidence block, and classify **every** hit:
 
 ```bash
-grep -nE 'deferred|DEFERRED|"fixed"|9/1/3/6|9 \+ 1 \+ 3 \+ 6|\(9\)|\(3\)' sizing_option_class_gate_test.go
+grep -nE 'deferred|DEFERRED|fixed|rejects|safe|1<<30|1<<20|1<<62|9/1/3/6|9 \+ 1 \+ 3 \+ 6|[0-9]+ (class|rows|AST)' \
+  sizing_option_class_gate_test.go
 ```
 
-The narrow revision-2 form is retained **only** as a sub-check, and its own output is **18 lines** (`:35 :38 :55
-:58 :401 :539 :565 :570 :579 :588 :758 :761 :782 :783 :784 :801 :803 :805`), not 17. Nothing in this file changed
-between `1212c63` and `46803c6` (`git diff 1212c63 HEAD -- sizing_option_class_gate_test.go` is empty), so both
-figures are authoring errors rather than drift — **re-derive anyway.**
+**104 of the file's 812 lines** on the tree at `a1247d1` — a ten-minute classification pass, and the correct
+trade against a defect that has now shipped past three inventories. Its hit set is a **strict superset** of
+revision 3's 42-line form: verified, every one of the 29 sites this bundle and round 3 have named is present,
+including the four that only the `DEFERRED` (upper-case) and `9/1/3/6` alternatives reach — `:58`, `:565`,
+`:758`, `:805`. **Both of those alternatives are retained above for exactly that reason; do not prune them.**
 
-**14 distinct edit sites:**
+**The over-inclusion account, so the classification pass has guidance rather than a shrug.** These classify as
+**no change** in one pass and are the bulk of the noise: the `arm:` field rows at `:412`-`:511` (the nine `fixed`),
+`:531` (`rejects`) and `:607`-`:713` (the six `safe`), the `wantArms` entries at `:772`-`:780`, the two
+`require.Len` / `astKeys` assertions at `:746`-`:756`, and — 🔴 **round-3, smaller note 2** — the two *individual* lines that
+fall outside every range revision 3 named, and which an implementer will otherwise meet with no guidance:
+
+| Line | Text | Classification |
+|---|---|---|
+| **`:33`** | `//                          in neither "fixed" (not a class member) nor "safe"` | the `rejects` bullet's neither-nor clause for `WithSuccessStatus`. **Still true after the move — no change** |
+| **`:521`** | `// M2 (Task 7 review): this row previously sat in the arm labelled "fixed",` | a historical note, **past tense**, recording a round-4 reclassification. **Still true — no change** |
+
+> 🔴 **The narrow revision-2 form is DROPPED, not retained (round-3 NEW-7).** Revision 3 kept it *"only as a
+> sub-check"*, quoted its expected 18-line output, and **never gave the command**, so a reader told to *"run it
+> too"* could not. A check specified by its **result** rather than its **procedure** cannot be re-derived, which
+> is what the surrounding paragraphs forbid. It is also strictly subsumed by the broad form above, and keeping a
+> second weaker selector alongside it invites the wrong one to be used. Gone.
+
+**16 distinct edit sites:**
 
 | # | Line(s) | Site | Change |
 |---|---|---|---|
@@ -831,13 +936,46 @@ figures are authoring errors rather than drift — **re-derive anyway.**
 | 9 | `:539-546` | the `---- arm: deferred ----` section banner | the arm no longer exists; the rows join `fixed` |
 | 10 | `:547-556` | 🔴 block **one** — *"WHEN §3.8's CEILING LANDS…"* | instructions → record |
 | 11 | `:557-568` | 🔴 block **two** — *"THESE THREE ROWS KEEP THE 1<<62 LITERAL"* | revision 1 counted these two blocks as one |
-| 12 | `:758`, `:761`, `:801`, `:805` | four prose strings **inside live assertion messages** naming the `9/1/3/6` split | they are arguments to `require.Equal`, not comments |
+| 12 | `:758`, `:761`, **`:799`, `:800`**, `:801`, `:805` | prose **inside live assertion messages** naming the `9/1/3/6` split — they are arguments to `require.Equal`, not comments | 🔴 **round-3 NEW-2 extends this site.** `:799-801` is **ONE** message, a three-line string concatenation; revision 3 listed lines 3 and 5 of it (`:801`, `:805`) and omitted lines 1 and 2 (`:799`, `:800`) purely because those two happen to contain no selector token. **Edit the MESSAGE, not the lines.** `:799-800` reads *"…not just the per-arm counts: 9 class members fixed here, 1 that rejects…"* — `9` → `12` |
 | **13** | **`:26`** | the header's `fixed` bullet — `- "fixed"    (9) — the fault is reported through…` | 🔴 **round-2 N-2, invisible to the narrow grep.** `9` → `12` |
-| **14** | **`:47`** | Plan 030's `fixed`/`rejects` literal bullet — `- "fixed" (9) and "rejects" (1) → 1<<30 = 1,073,741,824. These rows assert an EqualError against a rendered decimal.` | 🔴 **round-2 N-2, and it goes false TWICE** — the count (9 → 12) **and** the literal, since 3 of the 12 sit at `1<<62` and render a different decimal. This is site 7's defect one bullet higher; revision 2 found `:55` only because that bullet happens to contain the word `deferred` |
+| **14** | **`:47-49`** | Plan 030's `fixed`/`rejects` literal bullet, **in full** — `- "fixed" (9) and "rejects" (1) → 1<<30 = 1,073,741,824. These rows assert / an EqualError against a rendered decimal. 1<<30 fits an int32 yet still / exceeds every ceiling in the codebase (the largest is 1<<20 = 1,048,576),` | 🔴 **round-2 N-2 + round-3 NEW-1 — it goes false in FOUR ways, not two.** See the site-14 block below |
+| **15** | **`:409`** | the `fixed` arm's section banner — `// ---- arm: fixed — the 9 class members this increment bounds ----` | 🔴 **round-3 NEW-2.** `9` → `12`. Invisible even to revision 3's widened grep: `fixed` here is **unquoted**, and the selector required `"fixed"` |
+| **16** | **`:601`** | the `safe` arm's literal rationale — `// math.MaxInt, NOT the 1<<30 the reject arms use (Plan 030 Task 2):` | 🔴 **round-3 NEW-2.** After the move the reject arms use **TWO** literals — `1<<30` (the 9 `int`-typed rows) and `1<<62` (the 3 `int64`-typed ones). Narrow the sentence to *"NOT the `1<<30`/`1<<62` the reject arms use"*, or restate it as *"NOT any reject-arm literal"*. The paragraph's **substance** — why `safe` may not be demoted to an int32 value — is correct and must survive verbatim |
 
 **Also classify, do not skip:** `:766` carries `map[string]int{"fixed": 9, ...}` inside the comment explaining why
-`wantArms` is a mapping rather than a count. It is illustrative, not normative, so it may stay — but it is
-likewise invisible to the narrow predicate and must be *decided*, not missed.
+`wantArms` is a mapping rather than a count. It is illustrative, not normative, so it may stay — but it must be
+*decided*, not missed.
+
+> 🔴 **Site 14 goes false in FOUR independent ways, and revision 3 scheduled only two of them (round-3 NEW-1).**
+> The bullet does not end at *"…against a rendered decimal"* where revision 3's quotation stopped; it runs two
+> lines further:
+>
+> ```
+> 47: //   - "fixed" (9) and "rejects" (1) → 1<<30 = 1,073,741,824. These rows assert
+> 48: //     an EqualError against a rendered decimal. 1<<30 fits an int32 yet still
+> 49: //     exceeds every ceiling in the codebase (the largest is 1<<20 = 1,048,576),
+> ```
+>
+> | # | Clause | Goes false because |
+> |---|---|---|
+> | 1 | the count `(9)` | the arm becomes **12** *(scheduled since revision 3)* |
+> | 2 | `→ 1<<30` as the arm's single literal | 3 of the 12 sit at `1<<62` *(scheduled since revision 3 — this is site 7's defect one bullet higher)* |
+> | 3 | **`1<<30` … "exceeds every ceiling in the codebase"** | 🔴 **NEW** — `1,073,741,824 < byteCapCeiling = 2,147,483,647`. After this increment there is a ceiling `1<<30` does **not** exceed, which is exactly why the corollary below says `1<<30` cannot serve the three moved rows |
+> | 4 | **"(the largest is `1<<20` = 1,048,576)"** | 🔴 **NEW** — `1<<20` stops being the largest ceiling the moment `byteCapCeiling` is declared |
+>
+> **Required replacement wording, not merely "edit the count":**
+>
+> - Narrow clause 3 to *"exceeds every **`int`-typed** ceiling in the codebase (the largest is `1<<20` =
+>   1,048,576)"* — which is **exactly the narrowing this spec already uses one screen below**, in the
+>   two-dimensional invariant's *"`int` → `1<<30` (fits int32, exceeds every **`int`-typed** ceiling…)"*.
+>   Leaving `:48-49` unnarrowed would put the true, narrowed statement and the false, broad one **seven lines
+>   apart in the same header block, describing the same literal** — CLAUDE.md's stored lesson *docs can
+>   contradict the code they describe*, with the correct wording already present in the file.
+> - **State the reason inline** so the next reader does not re-broaden it: *"`byteCapCeiling` is an `int64`
+>   ceiling above `1<<30`; that is why the three `int64`-typed rows keep `1<<62`."*
+> - Clause 4's parenthetical is an **enumeration**, and this project's stored lesson is *assert the invariant, not
+>   the enumeration.* Either name `byteCapCeiling` as the largest ceiling and `1<<20` as the largest `int`-typed
+>   one, or delete the parenthetical.
 
 > 🔴 **Site 4 is the trap.** `byArm` is built by counting (`:793` `byArm := map[string]int{}`, `:797`
 > `byArm[tc.arm]++`), so an emptied arm has **no key at all** — writing `{"fixed": …, "deferred": 0, …}` fails,
@@ -985,8 +1123,9 @@ standing rule that *a killed mutant is the evidence, not a green run*. Enumerate
 [Plan 032](../plans/032-byte-cap-ceilings.md).
 
 **AC-7 — vacuity probes, on every gate this increment relies on.** Both arms of the docs-link gate are run over
-the **five** new files (this spec, ADR 0034, Plan 032, [`docs/plans/032-audit-round-1.md`](../plans/032-audit-round-1.md)
-and [`docs/plans/032-audit-round-2.md`](../plans/032-audit-round-2.md)) **and** proven non-vacuous by planting a
+the **six** new files (this spec, ADR 0034, Plan 032, [`docs/plans/032-audit-round-1.md`](../plans/032-audit-round-1.md),
+[`docs/plans/032-audit-round-2.md`](../plans/032-audit-round-2.md) and
+[`docs/plans/032-audit-round-3.md`](../plans/032-audit-round-3.md)) **and** proven non-vacuous by planting a
 bad link and a bad anchor in one of them (not in root — the Plan 028 blindness came from probing only root) and
 confirming exactly one hit each, which disappears on revert.
 
@@ -1002,7 +1141,7 @@ M3-3 and M3-6). A gate that has only ever been observed passing is recorded as u
 **In:** `byteCapCeiling`; `checkRangeInt64`; the three upper arms in `NewConfig`; the three sentinel messages
 (`must be > 0` → `out of range`); the three options' godoc, the three sentinel godocs (including Spec 016 §3.8
 item 2's undelivered disclosure) **and** `checkRange`'s own godoc (§4 item 4); the rewrite of
-`adapter/http/exchange_test.go` branch 20 (§6 AC-2c); the class-gate arm move over the **14**-site inventory
+`adapter/http/exchange_test.go` branch 20 (§6 AC-2c); the class-gate arm move over the **16**-site inventory
 (§6 AC-4.1); the 386 gate's vacuity probe (§6 AC-3b); the fold-back into Spec 016 / ADR 0032 / HANDOVER, **owned
 unconditionally and re-derived from the tree** (§6 AC-4.2b).
 
@@ -1013,6 +1152,8 @@ change; any off-state (§3.4b — decided, not deferred); a representability cei
 **an outbound-frame cap for the SSE *server*** (§1.3 item 3 — `WithMaxEventBytes` is parse-side only and the
 server has no `n`, so there is no D-AB class member there to bound); restructuring `exchange.go:130-131` (§1.2);
 streaming payload types; `time.Duration` knobs; a 386 CI runner or `qemu` to close D-AR(b)'s gap (§6 AC-3);
+**deriving the class gate's prose counts from `wantArms` at test time** (§8 item 5, round-3 NEW-2 — a refactor of
+a delivered gate, and the actual fix for a defect three audit rounds have each patched at the instance level);
 `docs/HANDOVER.md` §7 items 3, 4, 5, 7, 8.
 
 **Multi-instance / deployment topology** (CLAUDE.md's mandatory statement, even where N/A): `byteCapCeiling` is a
@@ -1048,3 +1189,16 @@ with the user absent. These four change the shape or the cost of the increment:
    only; `sse_server.go` frames outbound events through `EncodeSSEEvent` into a `bytes.Buffer` with no size
    check. There is no D-AB class member there — no `n` exists to be the sole bound — so this is a *new knob*
    question, not a ceiling question. Recorded so it is not rediscovered as an omission in this increment.
+5. 🔴 **FOLLOW-UP, and the one that matters most for the next increment: derive the class gate's prose counts
+   from `wantArms` at test time** (round-3 **NEW-2**). `sizing_option_class_gate_test.go` restates the arm
+   partition in roughly **ten** prose locations — the header's arm list and arithmetic identity, Plan 030's
+   per-arm literal block, the `arm` field's doc comment, two section banners, the `wantArms` rationale comment's
+   illustrative map, and **two live `require.Equal` failure messages** — none of them mechanically linked to the
+   `wantArms` map the test already computes from. Nothing fails when one drifts, which is why **three
+   consecutive audit rounds each fixed the named sites and were each overtaken by new ones** (B-3 → 7 sites,
+   N-2 → 12, NEW-1/NEW-2 → 16). The fix is not a wider `grep`: **format the two assertion messages from
+   `byArm`/`wantArms`** instead of spelling the partition as a string literal, and reduce the header block's
+   counts to a one-line pointer at the assertion. Then a partition change breaks exactly one place and no
+   derivation is needed at all. **Out of scope here** — it is a behavior-preserving refactor of a delivered,
+   gate-cleared test, and this increment must not also restructure the file it is moving rows inside — but it is
+   recorded as a backlog item so a fourth round does not find a seventeenth site.

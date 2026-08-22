@@ -1,13 +1,16 @@
 # ADR 0034 — A byte cap is bounded by what a `[]byte` can represent, not by what a payload might be
 
-- **Status:** **PROPOSED — revision 3, post-audit-round-2, NOT accepted.** Written before any code, per
-  [CLAUDE.md](../../CLAUDE.md)'s design-time gate. **Two rounds of the adversarial design audit have run** over
+- **Status:** **PROPOSED — revision 4, post-audit-round-3, NOT accepted.** Written before any code, per
+  [CLAUDE.md](../../CLAUDE.md)'s design-time gate. **Three rounds of the adversarial design audit have run** over
   the assembled bundle ([Spec 018](../specs/018-byte-cap-ceilings.md) + this ADR +
   [Plan 032](../plans/032-byte-cap-ceilings.md)). Round 1 returned **NOT SAFE TO IMPLEMENT** — 3 BLOCKERs,
   7 MAJORs, 4 MINORs ([`docs/plans/032-audit-round-1.md`](../plans/032-audit-round-1.md), immutable). Round 2
   returned **NOT SAFE TO IMPLEMENT** — 1 BLOCKER, 5 MAJORs, 6 MINORs
-  ([`docs/plans/032-audit-round-2.md`](../plans/032-audit-round-2.md), immutable). This revision folds every
-  round-2 finding back. **Round 3 has not run.**
+  ([`docs/plans/032-audit-round-2.md`](../plans/032-audit-round-2.md), immutable). Round 3 returned **NOT SAFE TO
+  IMPLEMENT** — 0 BLOCKERs, 3 MAJORs, 4 MINORs
+  ([`docs/plans/032-audit-round-3.md`](../plans/032-audit-round-3.md), immutable), verifying that **all twelve
+  round-2 findings landed, both round-1 residues closed, and nothing regressed**. This revision folds every
+  round-3 finding back. **Round 4 has not run.**
   - 🔴 **Decisions D-AM through D-AT were taken WITHOUT USER RATIFICATION.** The user was not asked. Every
     decision below is **open to reversal**; [Spec 018 §8](../specs/018-byte-cap-ceilings.md) lists the four that
     most deserve a second look, and each decision here carries a **REVERSIBILITY** line stating what undoing it
@@ -30,6 +33,34 @@
     (N-12); **Context** records the `WithMaxEventBytes` parse-side scope (N-11) and **corrects the
     `WithReplayBuffer` citation round 1 raised as m-11 and revision 2 fixed in the spec and the plan but NOT
     here** — the project's named *fold-into-all-three* failure.
+  - 🔴 **And it happened AGAIN, in the same revision: round-2 N-9 landed in the spec (§4 item 4) and the plan
+    (Task 1 Step 5) and NOT in this ADR** — `grep -rn 'N-9'` over the bundle returned hits in two files of
+    three. Round 3 recorded it as a fix-verification note rather than a numbered finding, because the *substance*
+    landed; the *pattern* is what matters. **N-9's cost is now priced in D-AP(b)**, where the sibling helper's
+    cost paragraph belongs. **Diff the three artifacts against each other before closing any revision** — this is
+    the second consecutive round in which the two-of-three failure was the residue.
+  - **What round 3 changed here:** **D-AS**'s inventory goes to **16 sites** and its derivation command is
+    replaced by a **deliberately broad, deliberately noisy** selector — the widened revision-3 form was still a
+    token enumeration and missed `:409`, `:601` and `:799-800`, the last of which is **inside a live
+    `require.Equal` failure message** (NEW-2); **D-AS** site 14 is extended from `:47` to **`:47-49`**, because
+    the bullet goes false in **four** ways, not two, and two of them (`1<<30` no longer exceeding *every* ceiling;
+    `1<<20` no longer being the largest) were unscheduled (NEW-1); **D-AS** records that the durable fix is to
+    **derive the gate's prose counts from `wantArms` at test time** ([Spec 018 §8 item 5](../specs/018-byte-cap-ceilings.md)),
+    since three rounds have each patched the instances; **D-AS** drops the narrow sub-check, which had a stated
+    output and no command (NEW-7); **D-AQ** records that the `IsPermanent` covering test is proven by **B1-10**,
+    not by the non-discriminating mutant M3-6 (NEW-4); **D-AP(b)** gains N-9's cost. NEW-5 (B1-4's fixture),
+    NEW-6 (AC-1's *"observable"* → *"its product is usable"*) and NEW-3 (Plan 030 is **delivered** —
+    `1a1c135` / `d2c69fe` / `7ab91cd`; derive it from `git log --grep='Plan: 030'`, never from checkboxes or
+    subject lines) are spec- and plan-level and are discharged there. Round 3's two **smaller notes** — D-3's
+    non-wrap-safe `grep -c` (Plan Step 11) and the unaccounted over-inclusion lines `:33` / `:521` (D-AS above,
+    Spec §6 AC-4.1) — land likewise.
+  - 🔴 **One defect the coordinator found while folding NEW-5 back, raised by no round:** Spec 018 revision 3's
+    §6 AC-1 claimed the small-`n` proof *"already exists"*, citing `WithMaxBodyBytes(1<<20)` + a 64 MiB body →
+    `http: request body too large`. **It does not exist** — `grep -rn 'body too large' --include='*.go' .`
+    returns **zero** hits — and a 64 MiB fixture would breach Plan Global constraint 6 by 32×. The quoted line is
+    a Plan 029 **benchmark measurement**, not an assertion. This does not change any decision here; it is
+    recorded because a decision resting on a test that does not exist is the failure mode
+    *verify structural claims against code* names.
   - The decision-letter series continues from [ADR 0033](0033-group-member-bounds.md), which ends at **D-AL**.
 - **Prompted by:** [Spec 018](../specs/018-byte-cap-ceilings.md); the backlog item in
   [`docs/HANDOVER.md`](../HANDOVER.md) §7 item **6**.
@@ -391,6 +422,21 @@ for the third time in this class's history.
 **Cost: ~7 duplicated lines in one file**, plus one more helper for a future reader to notice — mitigated by
 godoc that names the 32-bit truncation as its reason to exist.
 
+🔴 **A cost this ADR omitted until revision 4: the EXISTING helper's godoc must be amended too** (round-2 **N-9**,
+which landed in [Spec 018 §4 item 4](../specs/018-byte-cap-ceilings.md) and
+[Plan 032](../plans/032-byte-cap-ceilings.md) Task 1 Step 5 but **not here** — the *fold-into-all-three* failure,
+for the second consecutive round). Neither of `checkRange`'s enumerations becomes literally *false* — it keeps
+exactly three callers (`options.go:1219`, `:1226`, `:1238`), all R1 — but *"each of this package's **three
+sites**"* (`helpers.go:51`) and *"**All three sites** are R1"* (`:57`) both read as **package-wide** statements,
+and after this decision the package has **six** range-checked sizing options across **two** helpers sitting seven
+lines apart. Its closing paragraph enumerates the peer copies (`endpoint`, `routing`, `memory`) and a hypothetical
+fifth in `adapter/http/stdlib` while saying nothing about the sibling immediately below it. **Adding a sibling
+helper therefore costs two godocs, not one:** scope the incumbent's counts (*"the three `int`-typed sites this
+helper serves"*), cross-reference the sibling and why it exists, and have the sibling point back — so the pair
+reads as a pair from either end. This is the same class as CLAUDE.md's stored lesson *docs can contradict the code
+they describe*, and it generalises: **whenever D-R's duplication precedent is invoked to add a copy, the existing
+copies' godoc is part of the change.**
+
 **REVERSIBILITY:** (b) is free — one unexported function in one file; promoting it to a generic later is
 mechanical if a second package ever needs an `int64` range check. **(a) is not free**: reversing to `(n int)`
 means re-doing Spec 018 §6 AC-2, AC-3 and AC-4 for an architecture-conditional gate, and is an **exported-surface
@@ -434,6 +480,16 @@ criterion tested it** (round-1 M-8) — an untested typed-error claim, which CLA
 [Spec 018 §6 AC-2b](../specs/018-byte-cap-ceilings.md) now requires
 `assert.False(t, msgin.IsPermanent(err), …)` on every rejecting case, matching the shape the class gate's `fixed`
 arm already carries on eight of its nine rows.
+
+🔴 **The assertion's load-bearing-ness is proven by mutant B1-10, NOT by M3-6 (round-3 NEW-4).** Revision 3's
+gate-mutant table carried M3-6 — *"drop the assertion from one moved row **and** wrap that sentinel in
+`msgin.Permanent`"* — annotated *"must fail: nothing, which is the point."* **That mutant changes the assertion
+and the behaviour it checks at once, so it can only ever pass and discriminates nothing**; with the assertion
+deleted, no case observes `IsPermanent` and the second edit is inert. It also collides with Plan Global
+constraint 7's *"a case that survives its own mutant is rewritten."* The discriminating experiment is the
+opposite one and already exists: **B1-10 — KEEP the assertion, wrap the return in `msgin.Permanent(...)`, and
+every rejecting case (including the three moved gate rows) goes red.** A killed mutant is the evidence; a mutant
+specified to survive is not.
 
 **REVERSIBILITY:** the wrap is three `checkRangeInt64` call sites; the message text is three string literals.
 
@@ -500,7 +556,7 @@ assuming a mutant was killed.
 
 ### D-AS — the class gate's `deferred` arm is **emptied**, and its name is kept as a tombstone
 
-`sizing_option_class_gate_test.go` files all three knobs in `deferred`. Moving them is **fourteen** coordinated
+`sizing_option_class_gate_test.go` files all three knobs in `deferred`. Moving them is **sixteen** coordinated
 edits, **derived mechanically** and enumerated in [Spec 018 §6 AC-4.1](../specs/018-byte-cap-ceilings.md).
 
 > 🔴 **Revision 1 said SEVEN, and every offset but one was stale (round-1 B-3).** The cited offsets predated Plan
@@ -516,14 +572,46 @@ edits, **derived mechanically** and enumerated in [Spec 018 §6 AC-4.1](../specs
 > bullet) and `:47` (Plan 030's `fixed`/`rejects` literal bullet, which goes false **twice**: the count *and* the
 > literal). `:47` is site 7's defect one bullet higher, and revision 2 found `:55` only because that bullet
 > happens to contain the word `deferred`. Revision 2 also pasted *"17 lines"*; the narrow command returns **18**.
-> **Select on the PROPERTY, not on a token enumeration** — *fix the class, not the instance*:
+>
+> 🔴 **AND REVISION 3'S WIDENED FORM WAS STILL A TOKEN ENUMERATION (round-3 NEW-2). This is the third
+> consecutive round to fix the named sites and be overtaken by new ones — the remedy is NOT a better `grep`.**
+> Three further partition-recording sites contain none of revision 3's seven alternatives:
+> **`:409`** (`// ---- arm: fixed — the 9 class members this increment bounds ----` — `fixed` **unquoted**, so
+> the `"fixed"` alternative misses it; count 9 → 12), **`:601`** (`// math.MaxInt, NOT the 1<<30 the reject arms
+> use` — after the move the reject arms use **two** literals), and **`:799-800`**, which is **inside a live
+> `require.Equal` failure message**: revision 3's site 12 listed `:758 :761 :801 :805` and reached into the
+> middle of a three-line string concatenation, taking lines 3 and 5 and leaving lines 1 and 2, because those two
+> happen to carry no token. An implementer satisfying the delivery checklist verbatim would ship a green gate
+> whose own diagnostic reads *"9 class members fixed here"* over a `wantArms` map of **twelve**.
+>
+> **THE DURABLE DEFECT IS STRUCTURAL, NOT LEXICAL.** The arm partition is restated in roughly **ten** prose
+> locations with **no mechanical link to `wantArms`** — the map the test already computes. Nothing fails when one
+> drifts. Two things follow, and D-AS adopts both:
+>
+> **(1) Select deliberately broadly and accept the noise** — 104 of 812 lines on this tree, a strict superset of
+> revision 3's 42:
 >
 > ```bash
-> grep -nE 'deferred|DEFERRED|"fixed"|9/1/3/6|9 \+ 1 \+ 3 \+ 6|\(9\)|\(3\)' sizing_option_class_gate_test.go
+> grep -nE 'deferred|DEFERRED|fixed|rejects|safe|1<<30|1<<20|1<<62|9/1/3/6|9 \+ 1 \+ 3 \+ 6|[0-9]+ (class|rows|AST)' \
+>   sizing_option_class_gate_test.go
 > ```
 >
-> Over-inclusion is safe (the `arm:` rows and `wantArms` entries classify as "no change" in one pass);
-> under-inclusion ships. **Four traps, not three:**
+> Keep the upper-case `DEFERRED` and `9/1/3/6` alternatives explicitly: they are the only ones reaching `:58`,
+> `:565`, `:758` and `:805`, which a lower-case-only word list drops. **Over-inclusion is safe** — the `arm:`
+> rows, the `wantArms` entries, and — **round-3, smaller note 2** — the two individual lines `:33` (the
+> `rejects` bullet's neither-nor clause) and `:521` (the historical M2 note, past tense), which fall outside
+> every range earlier revisions named, all classify as "no change" in one pass. **Under-inclusion ships.** The narrow revision-2 form is **dropped**, not retained as a sub-check: revision 3 quoted its expected
+> 18-line output and never gave its command (round-3 NEW-7), and a check specified by its result rather than its
+> procedure cannot be re-derived.
+>
+> **(2) Record the real fix as a follow-up** — format the two `require.Equal` messages from `byArm`/`wantArms`
+> instead of spelling the partition as a string literal, and reduce the header block's counts to a pointer at
+> the assertion. Then a partition change breaks exactly one place. **Out of scope for this increment** (a
+> behavior-preserving refactor of a delivered gate, inside the file this increment is already moving rows in),
+> and recorded at [Spec 018 §8 item 5](../specs/018-byte-cap-ceilings.md) so a fourth round does not find a
+> seventeenth site.
+>
+> **Four traps, not three:**
 
 1. **`byArm` is built by counting, so an emptied arm has no key.**
    `{"fixed": 12, "rejects": 1, "deferred": 0, "safe": 6}` **fails** — Go's counting map never produces a zero
@@ -533,10 +621,25 @@ edits, **derived mechanically** and enumerated in [Spec 018 §6 AC-4.1](../specs
    arm."* **This increment is that event.** Both blocks (`:547-556` and `:557-568`) are rewritten into a record of
    what happened, so the next reader is not told to wait for something already done. A mechanical row-move misses
    this, and the warning about weakening the production check is **generalised, not deleted**.
-3. 🔴 **Plan 030's header block (`:40-59`) goes false in TWO independent ways, and revision 1 missed it
-   entirely.** It declares the oversized literal to be a function of the **arm**. **(a)** After the move, `fixed`
-   holds 12 rows carrying **two** literals — 9 at `1<<30`, 3 at `1<<62` — so the arm→literal mapping is no longer
-   true of any arm. **(b)** Its *"deferred (3) → still 1<<62"* bullet loses its referent.
+3. 🔴 **Plan 030's header block (`:40-59`) goes false in FOUR independent ways — revision 1 missed it entirely,
+   and revision 3 scheduled only two.** It declares the oversized literal to be a function of the **arm**.
+   **(a)** After the move, `fixed` holds 12 rows carrying **two** literals — 9 at `1<<30`, 3 at `1<<62` — so the
+   arm→literal mapping is no longer true of any arm. **(b)** Its *"deferred (3) → still 1<<62"* bullet loses its
+   referent.
+
+   🔴 **(c) and (d) are round-3 NEW-1, and they live at `:48-49`, four lines from the `:47` revision 3 already
+   schedules.** The `fixed`/`rejects` bullet does not stop at *"…against a rendered decimal"* where revision 3's
+   quotation stopped; it continues: *"`1<<30` fits an int32 yet still **exceeds every ceiling in the codebase
+   (the largest is `1<<20` = 1,048,576)**"*. **(c)** `1,073,741,824 < byteCapCeiling = 2,147,483,647`, so after
+   this decision there **is** a ceiling `1<<30` does not exceed — which is precisely the corollary D-AP already
+   states. **(d)** `1<<20` stops being the largest ceiling the moment `byteCapCeiling` is declared.
+
+   **Narrow clause (c) to *"exceeds every `int`-typed ceiling"*, state inline that `byteCapCeiling` is an `int64`
+   ceiling above `1<<30`, and replace or delete (d)'s parenthetical.** Note that **this ADR's own dimension-(ii)
+   wording is already correctly narrowed** — trap 4 below says *"`int` → `1<<30`"* against `int`-typed ceilings —
+   so leaving `:48-49` broad would put the true, narrowed statement and the false, broad one **seven lines apart
+   in the same header block, describing the same literal.** The site table's entry is therefore `:47-49`, not
+   `:47`.
 4. 🔴 **THE REPLACEMENT INVARIANT IS TWO-DIMENSIONAL, and revision 2's one-dimensional form was FALSE
    (round-2 N-1, the BLOCKER).** Revision 2 wrote *"the literal is chosen by the option's PARAMETER TYPE, not by
    its arm — `int` → `1<<30`, `int64` → `1<<62`, both then select the out-of-range branch."* **That is false of
