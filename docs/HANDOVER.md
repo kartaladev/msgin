@@ -143,9 +143,9 @@ because only the store observes every append. New `memory.WithMaxGroupMembers`, 
 
 | # | Item | State |
 |---|---|---|
-| 2 | Dedup the delegator loops | **CLOSED-WONTFIX** (§1). Not a defect. |
+| 2 | Dedup the delegator loops | **CLOSED-WONTFIX** (§1; Plan 030 decision **D1**). Not a defect. |
 | 3 | Guard gate is syntactic, not a dominance proof | **🔴 Now load-bearing** — D1 rests on it. `go/analysis` promotion stays rejected pre-v1; Plan 031 should widen the gate's *stated limitations* to name func-typed and named-type options. |
-| 4 | gin plan number + ADR 0024 | Planned as Plan 030 Task 3. Adopt-gin decision still open. |
+| 4 | gin plan number + ADR 0024 | **Citations retired by Plan 030 Task 3** — the gin increment is now stated **unnumbered until written** and ADR 0024 as **reserved but unwritten** in Spec 011 (×4 sites), ADR 0023 (×3), Plan 020, Plan 027, `docs/rfcs/README.md` (×3) and CLAUDE.md. No concrete number was substituted — that is the class fix. **The adopt-gin dependency decision is still open and still yours** (§6.1). |
 | 5 | False "first statement" godoc | Planned as Plan 030 Task 1, **16 sites**. |
 | 6 | Byte-ceiling class | **Untouched.** Needs its own spec/ADR/plan. The open question is *"should an explicit off-state exist at all, and which sentinel value carries it"* — a negative `n` is already taken by the rejection, so it needs a **new** sentinel value, not a reinterpretation. |
 | 7 | Aggregator group growth | **Designed (`2c4aa98`), unaudited, unimplemented.** |

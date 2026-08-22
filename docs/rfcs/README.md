@@ -113,17 +113,21 @@ Plan 027 therefore sequences the `*Expr` deletion **first**, before any extracti
 
 **The compensating decision: run the window FIRST, ahead of the feature roadmap.** Blast radius is at its
 smallest today (87 `msgin.*` symbols referenced by `adapter/`), and every adapter landed first enlarges it.
-**Plan 028** (the HTTP SSE gin binding — renumbered from 027, which the window now occupies) and any future
+**The HTTP gin binding** — **unnumbered; a plan number is assigned when the increment is written** — and any future
 `pgx`/`redis`/`nats` adapter get written directly into the new layout rather than migrated into it.
 
 1. **Split from `main` now.** RFC-0001's moves + RFC-0002's renames and channel split + RFC-0003's behavior
    types and `expr` module, as one apidiff pass and one ADR set. **This is [Plan 027](../plans/027-core-package-layout.md).**
 2. **Then increment 2:** RFC-0004 (Trigger, exported `Poller`, dissolve `adapter/cron`), born into `endpoint`.
-3. **Then the feature roadmap:** Plan 028 (gin), then RFC-0005's five components incrementally — Idempotent
-   Receiver and Recipient List first; the Resequencer carries `MessageGroupStore.SettleMembers` with it.
+3. **Then the feature roadmap:** the gin binding (**unnumbered**; and its **ADR 0024** is a *reserved but unwritten*
+   number — admitting `github.com/gin-gonic/gin` is an **open dependency decision**, not a scheduled increment), then
+   RFC-0005's five components incrementally — Idempotent Receiver and Recipient List first; the Resequencer carries
+   `MessageGroupStore.SettleMembers` with it.
 
-> **Audit (2026-07-24) — deferral risk compounds.** The roadmap is still *growing* (the gin binding — now
-> Plan 028 — next, and
+> **Audit (2026-07-24) — deferral risk compounds.** The roadmap is still *growing* (the gin binding — next, and
+> **unnumbered**; it was pencilled in as Plan 028 until
+> [nil option elements](../plans/028-nil-option-elements.md) consumed that number, corrected 2026-08-22 by
+> [Plan 030](../plans/030-post-029-maintenance.md) Task 3 — and
 > CLAUDE.md's blueprint still lists **unbuilt** `redis`/`nats`/`pgx` adapters). Every adapter landed before the
 > window **enlarges RFC-0001's blast radius** and RFC-0002's rename churn, and the "quiet `main`" to split from
 > keeps receding. **Resolved 2026-07-27:** the original mitigation (pull the non-breaking work forward) died
