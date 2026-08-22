@@ -18,7 +18,7 @@ type creditGate struct {
 // newCreditGate builds a credit gate holding n credits (n >= 1, validated by
 // NewConsumer via ErrInvalidMaxInFlight).
 func newCreditGate(n int) *creditGate {
-	return &creditGate{tokens: make(chan struct{}, n)}
+	return &creditGate{tokens: make(chan struct{}, n)} // zero-size element (struct{}) — panic-proof at any n; pinned by Spec 016 §6 AC-4.
 }
 
 // acquire blocks until a credit is free or ctx is done, returning ctx.Err() in

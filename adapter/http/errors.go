@@ -138,16 +138,20 @@ var (
 	ErrInvalidMaxEventBytes = errors.New("msghttp: max event bytes must be > 0")
 
 	// ErrInvalidMaxConnections is returned by NewConfig when an explicit
-	// WithMaxConnections is <= 0. Leaving WithMaxConnections unset takes the
-	// 1024 default instead of hitting this error — the set-flag pattern
-	// distinguishes "unset" from "explicit invalid", mirroring
+	// WithMaxConnections value is outside its documented [lo, hi] range
+	// (below 1, or above maxConnectionsCeiling) — see the option's own godoc
+	// for the bounds and their rationale. Leaving WithMaxConnections unset
+	// takes the 1024 default instead of hitting this error — the set-flag
+	// pattern distinguishes "unset" from "explicit invalid", mirroring
 	// ErrInvalidMaxBodyBytes.
-	ErrInvalidMaxConnections = errors.New("msghttp: max connections must be > 0")
+	ErrInvalidMaxConnections = errors.New("msghttp: max connections out of range")
 
 	// ErrInvalidConnectionBuffer is returned by NewConfig when an explicit
-	// WithConnectionBuffer is <= 0. Leaving WithConnectionBuffer unset takes
-	// the 16 default instead of hitting this error.
-	ErrInvalidConnectionBuffer = errors.New("msghttp: connection buffer must be > 0")
+	// WithConnectionBuffer value is outside its documented [lo, hi] range
+	// (below 1, or above maxConnBufferCeiling) — see the option's own godoc
+	// for the bounds and their rationale. Leaving WithConnectionBuffer unset
+	// takes the 16 default instead of hitting this error.
+	ErrInvalidConnectionBuffer = errors.New("msghttp: connection buffer out of range")
 
 	// ErrInvalidSlowClientPolicy is returned by NewConfig when an explicit
 	// WithSlowClientPolicy value is neither SlowClientDrop nor
@@ -156,10 +160,12 @@ var (
 	ErrInvalidSlowClientPolicy = errors.New("msghttp: unrecognized slow client policy")
 
 	// ErrInvalidReplayBuffer is returned by NewConfig when an explicit
-	// WithReplayBuffer is <= 0. Leaving WithReplayBuffer unset takes the off
-	// (no replay ring) default instead of hitting this error — there is no
-	// explicit value that means "off"; only leaving the option unset does.
-	ErrInvalidReplayBuffer = errors.New("msghttp: replay buffer must be > 0")
+	// WithReplayBuffer value is outside its documented [lo, hi] range (below
+	// 1, or above replayBufferCeiling) — see the option's own godoc for the
+	// bounds and their rationale. Leaving WithReplayBuffer unset takes the
+	// off (no replay ring) default instead of hitting this error — there is
+	// no explicit value that means "off"; only leaving the option unset does.
+	ErrInvalidReplayBuffer = errors.New("msghttp: replay buffer out of range")
 
 	// ErrInvalidHeartbeat is returned by NewConfig when an explicit
 	// WithHeartbeat duration is <= 0. Leaving WithHeartbeat unset takes the

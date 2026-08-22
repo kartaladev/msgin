@@ -39,6 +39,17 @@ type entry struct {
 
 const defaultCapacity = 1024
 
+// maxCapacityCeiling is the upper bound WithCapacity accepts (Spec 016 §3.4).
+// capacity sizes s.sem, a chan struct{} (zero-size element — panic-proof at
+// any n), but s.sem is also the ONLY thing gating s.ready's append
+// (queuestore.go's Enqueue): with no ceiling, a huge capacity admits an
+// unbounded number of enqueues before the semaphore ever fills, so s.ready
+// grows without bound — reinstating the exact overflow lever WithCapacity's
+// own godoc says it prevents (Spec 016 §1.3). The ceiling is the same unit
+// as WithBuffer/WithMaxInFlight (queued messages), matched to the queue
+// depth those knobs already bound, and 1024x the default (ADR 0032).
+const maxCapacityCeiling = 1 << 20
+
 var _ msgin.ChannelStore = (*QueueStore)(nil)
 
 // QueueStoreOption configures a QueueStore.
@@ -51,10 +62,13 @@ type config struct {
 	clock       clockwork.Clock
 }
 
-// WithCapacity bounds the number of occupied messages (ready + in-flight);
-// default 1024. A bounded buffer is the safe default — an unbounded in-memory
-// queue is an OOM lever (CLAUDE.md fail-safe defaults). An explicit n <= 0 is
-// msgin.ErrInvalidCapacity.
+// WithCapacity bounds the number of occupied messages (ready + in-flight) to
+// n, which must be in [1, maxCapacityCeiling] (1,048,576); default 1024. A
+// bounded buffer is the safe default — an unbounded in-memory queue is an OOM
+// lever (CLAUDE.md fail-safe defaults). An explicit n outside that range is a
+// construction-time error (msgin.ErrInvalidCapacity), not a silent clamp — see
+// maxCapacityCeiling's godoc for why the upper bound matters even though the
+// semaphore it sizes is itself panic-proof.
 func WithCapacity(n int) QueueStoreOption {
 	return func(c *config) { c.capacity = n; c.capacitySet = true }
 }
@@ -96,8 +110,9 @@ func NewQueueStore(opts ...QueueStoreOption) (*QueueStore, error) {
 	}
 	capacity := defaultCapacity
 	if cfg.capacitySet {
-		if cfg.capacity <= 0 {
-			return nil, msgin.ErrInvalidCapacity
+		if err := checkRange(msgin.ErrInvalidCapacity, "memory.WithCapacity",
+			cfg.capacity, 1, maxCapacityCeiling); err != nil {
+			return nil, err
 		}
 		capacity = cfg.capacity
 	}
@@ -105,7 +120,7 @@ func NewQueueStore(opts ...QueueStoreOption) (*QueueStore, error) {
 		cfg.clock = clockwork.NewRealClock()
 	}
 	return &QueueStore{
-		sem:      make(chan struct{}, capacity),
+		sem:      make(chan struct{}, capacity), // zero-size element (struct{}) — panic-proof at any n; pinned by Spec 016 §6 AC-4.
 		overflow: cfg.overflow,
 		clock:    cfg.clock,
 		inflight: map[int64]entry{},

@@ -12,13 +12,25 @@ import (
 // aggregatorConfig accumulates AggregatorOption settings before NewAggregator
 // builds an Aggregator.
 type aggregatorConfig struct {
-	output    msgin.MessageChannel
-	correlate CorrelationStrategy
-	release   ReleaseStrategy
-	timeout   time.Duration
-	expired   msgin.MessageChannel
-	clock     clockwork.Clock
+	output            msgin.MessageChannel
+	correlate         CorrelationStrategy
+	release           ReleaseStrategy
+	timeout           time.Duration
+	expired           msgin.MessageChannel
+	clock             clockwork.Clock
+	completionSize    int
+	completionSizeSet bool
 }
+
+// completionSizeCeiling is the upper bound WithCompletionSize accepts (Spec
+// 016 §3.4): group MEMBERS per group, 65,536 — far beyond any plausible
+// aggregation. It is sized by TIME, not bytes: memory.GroupStore.Add clones
+// the group snapshot per call, so the cost of growing a group is quadratic
+// in its member count, not linear. Reaching this ceiling costs a measured
+// 48.3 GiB of allocation churn and 8.6s (Plan 029 Task 4); a 400,000-member
+// probe did not finish inside a 4m20s timeout. That churn is why the ceiling
+// is where it is, and why no test grows a group to it.
+const completionSizeCeiling = 1 << 16
 
 // CorrelationStrategy derives a message's group key. It is one of the two named
 // behavior types behind the Aggregator pattern (EIP ch. 7); Spring Integration
@@ -129,8 +141,19 @@ func WithReleaseWhen(fn func(msgin.MessageGroup) bool) AggregatorOption {
 // processes sharing a durable store: the store's atomic ClaimGroup is the
 // sole serializer, not a per-key lock. It is not safe against id-less
 // duplicate members (no dedup).
+//
+// n must be in [1, completionSizeCeiling] (65,536); [NewAggregator] returns
+// a construction-time msgin.ErrInvalidCapacity naming this option's site and
+// n's value/range otherwise, rather than accepting a value that would let a
+// single group grow without limit — see completionSizeCeiling's godoc for
+// why the bound is sized by the quadratic cost of growing a group, not by
+// bytes. The bound is validated on the value n itself, whether or not a
+// later option (WithReleaseStrategy or WithReleaseWhen) goes on to overwrite
+// the release strategy this option installs — an oversized n is rejected
+// even though it would otherwise have no effect.
 func WithCompletionSize(n int) AggregatorOption {
 	return func(c *aggregatorConfig) {
+		c.completionSize, c.completionSizeSet = n, true
 		c.release = func(g msgin.MessageGroup) (bool, error) { return len(g.Messages()) >= n, nil }
 	}
 }
@@ -269,7 +292,11 @@ var _ msgin.MessageHandler = (*Aggregator)(nil)
 // fn, and opts. store and an output channel (WithOutputChannel) are required;
 // a nil store is ErrNilStore and no WithOutputChannel is ErrNilOutput — no
 // panic on caller input. WithGroupTimeout without a paired
-// WithExpiredGroupChannel is ErrExpiryChannelRequired.
+// WithExpiredGroupChannel is ErrExpiryChannelRequired. [WithCompletionSize]'s
+// n, if set, must be in [1, completionSizeCeiling]; out of range is a
+// construction-time msgin.ErrInvalidCapacity naming the site and n's
+// value/range (see that option's godoc) — checked AFTER the strategy checks
+// below and BEFORE the output-channel and expiry-channel checks.
 //
 // EVERY FUNCTION Handle CALLS UNCONDITIONALLY IS REJECTED HERE, as a BARE
 // ErrNilFunc naming its position so the caller knows which one:
@@ -282,8 +309,8 @@ var _ msgin.MessageHandler = (*Aggregator)(nil)
 // A nil ELEMENT of opts is a bare [msgin.ErrNilFunc] too, naming the element's
 // 0-based index ("routing.NewAggregator: nil option at index 1"), checked as
 // opts is applied — so it runs AFTER the store and fn checks above and loses to
-// either of them, but BEFORE the strategy, output-channel and expiry-channel
-// checks below, which run after the loop and so lose to it.
+// either of them, but BEFORE the strategy, completion-size, output-channel and
+// expiry-channel checks below, which run after the loop and so lose to it.
 //
 // Rejecting at construction is what keeps a misconfiguration VISIBLE: Handle
 // calls correlate and release unconditionally, so a nil one would panic on the
@@ -322,6 +349,12 @@ func NewAggregator[A, B any](
 	}
 	if cfg.release == nil {
 		return nil, nilFuncAt("routing.NewAggregator: nil release strategy")
+	}
+	if cfg.completionSizeSet {
+		if err := checkRange(msgin.ErrInvalidCapacity, "routing.WithCompletionSize",
+			cfg.completionSize, 1, completionSizeCeiling); err != nil {
+			return nil, err
+		}
 	}
 	if cfg.output == nil {
 		return nil, msgin.ErrNilOutput

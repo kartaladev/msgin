@@ -26,3 +26,8 @@ go.work.sum
 .idea/
 .vscode/
 *.swp
+
+# Subagent-driven-development scratch (ledgers, task briefs, review packages).
+# Per-plan workspaces under .superpowers/sdd/<plan>/; the git history is the
+# durable record, this is coordination scratch.
+.superpowers/

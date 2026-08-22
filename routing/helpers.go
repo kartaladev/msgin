@@ -61,3 +61,33 @@ func nilFuncAt(position string) error {
 func nilOptionAt(ctor string, i int) error {
 	return fmt.Errorf("%w: %s: nil option at index %d", msgin.ErrNilFunc, ctor, i)
 }
+
+// checkRange reports a sizing option whose value falls outside [lo, hi],
+// returning nil when it is in range. site names the OPTION the caller invoked
+// (e.g. "routing.WithCompletionSize"), not the constructor that validated it.
+//
+// It renders Spec 016 §3.1's single shape, "%w: %s: %d not in [%d, %d]", true
+// at BOTH ends — revision 2's "%d exceeds %d" lied on the lower arm, where 0
+// exceeds nothing. Do not "improve" it back.
+//
+// The helper exists so the ENFORCED range and the PRINTED range are the same
+// two values; written inline, a site spells each bound twice and the two can
+// disagree. This package has exactly ONE caller (WithCompletionSize, added by
+// Plan 029), so there is no duplication here to collapse — the copy exists for
+// uniformity of shape across the four packages that render this error, which
+// is the property Spec 016 §3.1 is about.
+//
+// The sentinel is a PARAMETER so each knob keeps its own errors.Is target
+// (ADR 0032 D-X). This package's single caller is R1 and passes a BARE
+// sentinel — a constructor return is never msgin.Permanent-wrapped (ADR 0029
+// D-M).
+//
+// This mirrors endpoint.checkRange, memory.checkRange and msghttp.checkRange
+// rather than sharing one of them — the same ADR 0031 D-R / Spec 014 §3.3
+// precedent that governs nilOptionAt and nilFuncAt above.
+func checkRange(sentinel error, site string, n, lo, hi int) error {
+	if n >= lo && n <= hi {
+		return nil
+	}
+	return fmt.Errorf("%w: %s: %d not in [%d, %d]", sentinel, site, n, lo, hi)
+}

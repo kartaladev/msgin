@@ -47,8 +47,10 @@ var (
 	ErrPayloadTooLarge = errors.New("msgin: payload exceeds the configured maximum size")
 	// ErrUnexpectedCodec is returned when a live-value source (memory) is given a codec.
 	ErrUnexpectedCodec = errors.New("msgin: live-value source must not have a payload codec")
-	// ErrInvalidConcurrency is returned when WithConcurrency is < 1.
-	ErrInvalidConcurrency = errors.New("msgin: concurrency must be >= 1")
+	// ErrInvalidConcurrency is returned when WithConcurrency's value is outside
+	// its documented [lo, hi] range (below 1, or above endpoint's concurrency
+	// ceiling) — see the option's own godoc for the bounds and their rationale.
+	ErrInvalidConcurrency = errors.New("msgin: concurrency out of range")
 	// ErrUnsupportedSource is returned when a Source is neither Polling nor Streaming.
 	ErrUnsupportedSource = errors.New("msgin: source implements neither PollingSource nor EventDrivenSource")
 	// ErrHandlerPanic wraps a value recovered from a panicking handler. It is a
@@ -140,8 +142,10 @@ var (
 	// chain", not "is this message in the sink I configured". Where the
 	// distinction matters, give each level its own sink and inspect that sink.
 	ErrDeadLettered = errors.New("msgin: message diverted to the dead-letter sink")
-	// ErrInvalidMaxInFlight is returned when WithMaxInFlight is given n < 1.
-	ErrInvalidMaxInFlight = errors.New("msgin: max in-flight must be >= 1")
+	// ErrInvalidMaxInFlight is returned when WithMaxInFlight's value is outside
+	// its documented [lo, hi] range (below 1, or above endpoint's max-in-flight
+	// ceiling) — see the option's own godoc for the bounds and their rationale.
+	ErrInvalidMaxInFlight = errors.New("msgin: max in-flight out of range")
 	// ErrInvalidRateLimit is returned when a rate-limit configuration is invalid
 	// (non-positive rps or burst on the default token bucket).
 	ErrInvalidRateLimit = errors.New("msgin: rate limit must have positive rps and burst")
@@ -253,9 +257,22 @@ var (
 	ErrScheduledSendUnsupported = errors.New("msgin: outbound adapter does not support scheduled send")
 	// ErrNilStore is returned by NewQueueChannel when the ChannelStore is nil.
 	ErrNilStore = errors.New("msgin: channel store is nil")
-	// ErrInvalidCapacity is returned by a bounded store constructor (e.g.
-	// memory.NewQueueStore) when an explicit capacity is <= 0.
-	ErrInvalidCapacity = errors.New("msgin: capacity must be > 0")
+	// ErrInvalidCapacity is returned when a sizing option's value is outside
+	// its documented [lo, hi] range (Spec 016 §3.1/§3.5). It is shared by
+	// every option whose value is the sole bound on a structure that grows
+	// by insertion (Spec 016 §1.3), since one sentinel cannot state four
+	// different stated ranges. As of Plan 029 Task 5 all FOUR producers have
+	// landed — memory.NewQueueStore (WithCapacity), memory.NewGroupStore
+	// (WithMaxGroups), routing.NewAggregator (WithCompletionSize), and
+	// memory.WithBuffer, which alone reports through Send/Stream rather than a
+	// constructor return (family R2) and alone has a range starting at 0.
+	// Spec 016 §3.5 enumerates them in a different fixed order
+	// (NewQueueStore, NewGroupStore, WithBuffer, NewAggregator), so its
+	// "fourth" is routing.NewAggregator; the set is the same.
+	// The sentinel's own message stays generic ("capacity out of range") —
+	// the offending site, value and range live in the wrapping error each
+	// producer returns; see each option's own godoc for its bounds.
+	ErrInvalidCapacity = errors.New("msgin: capacity out of range")
 	// ErrNoCorrelation is returned when an Aggregator's correlation strategy
 	// yields no key for a message. It is always wrapped with Permanent (a
 	// missing correlation id will not appear on redelivery), so the runtime

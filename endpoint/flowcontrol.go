@@ -11,6 +11,14 @@ import (
 // always active.
 const defaultMaxInFlight = 1024
 
+// maxInFlightCeiling is the upper bound WithMaxInFlight accepts (Spec 016 §3.4).
+// It is 1024x defaultMaxInFlight: at the ceiling, sizing workerCh's backing
+// array (managedDelivery is 48 B) costs 1<<20 * 48 = 50,331,648 B (48 MiB) —
+// four orders of magnitude below the platform's unrecoverable-OOM band, so the
+// ceiling demonstrably prevents the crash a caller-supplied huge n would
+// otherwise cause (ADR 0032).
+const maxInFlightCeiling = 1 << 20
+
 // defaultAttemptTTL is how long an idle attempt-tracker entry survives before the
 // clockwork sweep reclaims it (ADR 0008 D8). It vastly exceeds any in-process
 // redelivery cadence, so an actively-redelivering id (re-observed each attempt)
@@ -32,10 +40,16 @@ const defaultPollMaxBatch = 100
 // cadence rather than backing off unboundedly.
 const maxPollErrorBackoff = 30 * time.Second
 
-// WithMaxInFlight bounds claimed-but-unsettled messages to n (n >= 1). This is
-// the load-bearing flood defense (spec §7.4.1); default defaultMaxInFlight.
-// Setting the flag lets NewConsumer tell an explicit WithMaxInFlight(0) (a
-// caller error → ErrInvalidMaxInFlight) apart from "unset" (→ default) (C2).
+// WithMaxInFlight bounds claimed-but-unsettled messages to n, which must be in
+// [1, maxInFlightCeiling] (1,048,576) — an n outside that range is a
+// construction-time error (msgin.ErrInvalidMaxInFlight), not a silent clamp.
+// This is the load-bearing flood defense (spec §7.4.1); default
+// defaultMaxInFlight (1024). The ceiling exists because n directly sizes the
+// worker channel's backing array: at 1<<20 that costs ~48 MiB (Spec 016 §3.4)
+// — comfortably affordable, and 1024x the default, but far below the point at
+// which a mistyped huge n would exhaust process memory. Setting the flag lets
+// NewConsumer tell an explicit WithMaxInFlight(0) (a caller error →
+// ErrInvalidMaxInFlight) apart from "unset" (→ default) (C2).
 func WithMaxInFlight[T any](n int) ConsumerOption[T] {
 	return func(o *consumerConfig[T]) { o.maxInFlight = n; o.maxInFlightSet = true }
 }

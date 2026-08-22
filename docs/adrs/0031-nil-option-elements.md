@@ -1,6 +1,10 @@
 # ADR 0031 — A nil option element is a reported fault, not a panic
 
-- **Status:** **PROPOSED (2026-08-17), revision 5 — AUDIT-CLEARED** — written before any code, per CLAUDE.md's design-time gate.
+- **Status:** **ACCEPTED (2026-08-19)** — revision 5 was written before any code and audit-cleared, per
+  CLAUDE.md's design-time gate; **delivered by Plan 028**, merged to `main` at `48bbe83`. (Corrected at the
+  Plan 029 delivery gate: it had been left reading `PROPOSED` after merging. ADR 0032 was the second instance of
+  the same slip — an ADR whose decisions have shipped is `ACCEPTED`, per the Nygard convention CLAUDE.md
+  mandates. Check the status line when an increment lands.)
   Decisions **D-P**, **D-Q**, **D-R** were settled with the user during the Spec 015 brainstorm; **D-P was then
   materially rewritten** and **D-S/D-T added** after the round-1 adversarial audit
   ([`028-audit-round-1.md`](../plans/028-audit-round-1.md)) proved revision 1's mechanism contradicts
@@ -200,6 +204,13 @@ only the loop's continuation is.
 
 **Consequence for the spec:** §3.2's applied-prefix property collapses to the simpler *"every non-nil option
 applies"*, and non-error methods no longer depend on where the nil sat.
+
+> **Known open edge, resolved later by [ADR 0032 D-Y](0032-sizing-option-bounds.md).** Because every non-nil option
+> after the nil still applies, an option that can itself fault — `memory.WithBuffer(1<<62)`, which panics on its
+> `make` — is *reached* even when the latch is already taken. Plan 028 recorded this out of scope
+> ([Spec 015 §3.7](../specs/015-nil-option-elements.md)); [Spec 016](../specs/016-sizing-option-bounds.md) closes it
+> by requiring that option's range check to `return` unconditionally, independently of the latch. **D-U itself is
+> unchanged** — the `continue` stays.
 
 ### D-V (NEW) — a latched fault is reported before the method's own argument checks, uniformly
 

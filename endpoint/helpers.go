@@ -64,6 +64,43 @@ func nilOptionAt(ctor string, i int) error {
 	return fmt.Errorf("%w: %s: nil option at index %d", msgin.ErrNilFunc, ctor, i)
 }
 
+// checkRange reports a sizing option whose value falls outside [lo, hi],
+// returning nil when it is in range. site names the OPTION the caller invoked
+// (e.g. "endpoint.WithMaxInFlight"), not the constructor that validated it —
+// the caller wrote WithMaxInFlight(n), and that is the call they must fix.
+//
+// It renders Spec 016 §3.1's single shape, "%w: %s: %d not in [%d, %d]", which
+// is deliberately true at BOTH ends: revision 2's "%d exceeds %d" lied on the
+// lower arm, where 0 exceeds nothing. Do not "improve" it back.
+//
+// The point of the helper is that the ENFORCED range and the PRINTED range are
+// the same two values. Written inline, each site spelled the bound twice — once
+// in the condition and once in the format arguments — so the two could disagree
+// with nothing but a hand-written EqualError string to catch it. (This
+// package's own two sites both spelled it "< 1" and never drifted; the
+// divergent "<= 0" spellings were in memory and msghttp. The hazard is
+// structural, not a defect this package had.)
+//
+// The sentinel is a PARAMETER, not a constant, so each knob keeps its own
+// errors.Is target (ADR 0032 D-X — zero net exported surface). Both callers
+// here are R1 and pass a BARE sentinel: a constructor return is never
+// msgin.Permanent-wrapped (ADR 0029 D-M). Keeping it a parameter is also what
+// lets memory's R2 caller pass an already-wrapped sentinel through its own
+// copy without this one growing a flag.
+//
+// This mirrors routing.checkRange, memory.checkRange and msghttp.checkRange
+// rather than sharing one of them: the body is three lines over exported API,
+// and exporting an internal detail from root to spare a package a duplicate was
+// rejected in ADR 0031 D-R, on the Spec 014 §3.3 precedent that already governs
+// nilOptionAt/nilFuncAt above. (An unexported internal/ package would sidestep
+// that trade-off entirely and is recorded as backlog, not decided here.)
+func checkRange(sentinel error, site string, n, lo, hi int) error {
+	if n >= lo && n <= hi {
+		return nil
+	}
+	return fmt.Errorf("%w: %s: %d not in [%d, %d]", sentinel, site, n, lo, hi)
+}
+
 // nilExchangeStep is nilFuncStep for the OTHER nil a Step-returning constructor
 // in this package can be handed: a nil msgin.RequestReplyExchange. It is a
 // sibling rather than a parameter on nilFuncStep because the SENTINEL is the
