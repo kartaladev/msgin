@@ -481,7 +481,10 @@ reuses the exported `msgin.ErrNilExchange`.
 
 **Phase 2 added set** (Plan 024 — `adapter/http/errors.go` + `options.go`). **Six new sentinels:** **`ErrEmptyURL`**
 and **`ErrInvalidURL`** (`validateURL` at construction — empty/whitespace, and a parse failure / non-{http,https}
-scheme / empty host respectively); **`ErrInvalidMaxResponseBytes`** (an explicit `WithMaxResponseBytes(n <= 0)`);
+scheme / empty host respectively); **`ErrInvalidMaxResponseBytes`** (an explicit `WithMaxResponseBytes(n)` **outside
+`[1, 2147483647]`** — *this read `n <= 0` until [Plan 032](../plans/032-byte-cap-ceilings.md) added the
+`byteCapCeiling = math.MaxInt32` upper arm, 2026-08-22; the `<= 0` clause was never wrong, only narrower than the
+contract. See [Spec 018](018-byte-cap-ceilings.md) / [ADR 0034](../adrs/0034-byte-cap-ceilings.md)*);
 **`ErrReplyTooLarge`** (O2 reply body over the cap, INV-6); **`ErrOutboundStatus`** (the sentinel `StatusError` unwraps
 to — a non-2xx classification, INV-3); and **`ErrOutboundTransport`** (the redacted wrapper for a `(*http.Client).Do`
 transport failure, INV-5). Outbound reuses `msgin.Permanent` / `msgin.RetryAfter` for retry classification (no new
@@ -500,7 +503,8 @@ value); **`ErrEventTooLarge`** (per-event cap exceeded, C6); **`ErrInvalidMaxCon
 **`ErrInvalidConnectionBuffer`**, **`ErrInvalidReplayBuffer`**, **`ErrInvalidHeartbeat`**,
 **`ErrInvalidWriteTimeout`** (server construction-time validation — explicit non-positive values, the set-flag
 pattern; `WithWriteTimeout` is the per-write stalled-reader reap, audit BLOCKER-1); **`ErrInvalidMaxEventBytes`**
-(an explicit `WithMaxEventBytes(n <= 0)` — the `ErrInvalidMaxResponseBytes` precedent);
+(an explicit `WithMaxEventBytes(n)` **outside `[1, 2147483647]`** — the `ErrInvalidMaxResponseBytes` precedent, upper
+arm included; *the `<= 0` form this read until 2026-08-22 was narrowed by [Plan 032](../plans/032-byte-cap-ceilings.md)*);
 **`ErrInvalidSlowClientPolicy`** (an unknown `WithSlowClientPolicy` enum value); **`ErrSSEServerClosed`** (a `Send`
 after `Close`, classified `msgin.Permanent`). *Client:* **`ErrNotEventStream`** (a 2xx whose `Content-Type` is not
 `text/event-stream`, C3 — **terminal**); **`ErrInvalidReconnectBackoff`** (non-positive or `min > max`);

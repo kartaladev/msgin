@@ -1,5 +1,28 @@
 # Plan 032 — Bound the three `msghttp` byte caps, and empty the class gate's `deferred` arm
 
+> ✅ **DELIVERED — 2026-08-22.** Task 1 `f39725d` (production + godoc + gate move + parent fold-back, one commit),
+> Task 2 this commit (delivery gates + the PROPOSED → DELIVERED/ACCEPTED flip). Executed via
+> `superpowers:subagent-driven-development`: a fresh implementer subagent per task, the coordinator verifying and
+> committing. **The boxes below are ticked as each step ran** — Plan 030's execution left them all clear, and this
+> plan's own plan-number box (line ~166) records that an executed plan then reads identically to an untouched one.
+> Two boxes are deliberately left clear because they belong to the coordinator, not the task: **Task 2 Step 6's
+> `/code-review` + `/security-review`** halves, and **Task 2 Step 9's commit**.
+>
+> **Delivered state:** all three caps bounded at `byteCapCeiling = math.MaxInt32`; class-gate partition
+> **12 fixed / 1 rejects / 0 deferred (tombstoned) / 6 safe**, `require.Len(…, 19)` — Step 7's *"Plan 031 has not
+> landed"* branch is the one that applied. Gates: **8 modules × 8 CI-parity steps green**, `adapter/http` at
+> **100.0%** statement coverage, `apidiff` **0/0** (vacuity-probed), 386 `vet`+`build` **exit 0**, both docs-link
+> arms clean but for the two known false positives (vacuity-probed on the new files).
+>
+> **Three as-delivered corrections**, folded into [Spec 018](../specs/018-byte-cap-ceilings.md) and
+> [ADR 0034](../adrs/0034-byte-cap-ceilings.md) rather than rewritten here:
+> **(i) B1-4's FIRST mutant is not a kill** — `maxBody()` back-fills the default whenever the field is `<= 0`, so
+> deleting the `!set` assignment is invisible through `DecodeRequest`; the two boundary mutants do fire and are the
+> stronger pair. **(ii) M1-7 survived on `darwin/arm64`**, exactly as ADR 0034 D-AR(b) says it must — recorded, not
+> faked. **(iii) [Spec 011](../specs/011-http-adapter.md) `:484`/`:503`** described two of the sentinels as firing
+> on `n <= 0` — still literally true, but narrower than the contract once the upper arm landed; corrected at the
+> Task 2 gate, in Plan 030 Task 3's dated-parenthetical style. That file was in no task's Files list.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: `superpowers:subagent-driven-development` (the project default) or
 > `superpowers:executing-plans`. Steps use checkbox (`- [ ]`) syntax.
 >
@@ -349,14 +372,14 @@ needed.** No new dependency, in any module.
 > have landed**; that is the only live rebase question. Run `git log --format='%h %s' --grep='Plan: 031'`,
 > `git log --oneline main..`, and Step 6's `grep` before editing anything.
 
-- [ ] **Step 1 (SKILLS + READ).** Load `cc-skills-golang:golang-how-to` (→ `golang-safety`, `golang-security`,
+- [x] **Step 1 (SKILLS + READ).** Load `cc-skills-golang:golang-how-to` (→ `golang-safety`, `golang-security`,
       `golang-error-handling`, `golang-design-patterns`, `golang-documentation`) and the `table-test` override.
       With **`gopls`, not `grep`**, read `adapter/http/helpers.go`'s `checkRange`, the three `NewConfig` gates,
       the three sentinel declarations, and the two sibling godocs to copy the shape from —
       `WithMaxConnections` (`options.go:908`, citing Spec 016 **§1.3** at `:901`) and `WithReplayBuffer`
       (`:986`, citing Spec 016 **§1.5** at `:977`). *(Round-1 m-11: revision 1 said both cited §1.3, at `:976`.)*
       Confirm all of it still reads as "The three knobs" table records it.
-- [ ] **Step 2 (TEST-SAFETY — the RIGHT check).** 🔴 **Do NOT use revision 1's message-string grep.** It asks
+- [x] **Step 2 (TEST-SAFETY — the RIGHT check).** 🔴 **Do NOT use revision 1's message-string grep.** It asks
       *"does a test assert the wording?"* and is structurally blind to *"does a test depend on a value we stop
       accepting?"* — which is how `exchange_test.go:615` was missed (round-1 B-2). Run **both**:
 
@@ -381,9 +404,9 @@ needed.** No new dependency, in any module.
       `1<<62` rows + `exchange_test.go:615`'s `math.MaxInt64`), with the rest unaffected, and the four classes
       must sum to the call count. **Any out-of-range hit not in this task's Files list is a stop-and-reassess.**
       A total that merely disagrees with this plan is **not** a stop-and-reassess — record the new figure.
-- [ ] **Step 3 (RED — production).** Write the failing cases of the tables below. All must fail before any
+- [x] **Step 3 (RED — production).** Write the failing cases of the tables below. All must fail before any
       production edit.
-- [ ] **Step 4 (GREEN — production).** Add, in this order:
+- [x] **Step 4 (GREEN — production).** Add, in this order:
       1. `const byteCapCeiling int64 = math.MaxInt32` in `adapter/http/options.go`, beside the three
          `defaultMax*Bytes` (import `math`).
       2. `func checkRangeInt64(sentinel error, site string, n, lo, hi int64) error` in
@@ -391,7 +414,7 @@ needed.** No new dependency, in any module.
       3. The three `NewConfig` gates rewritten to
          `else if err := checkRangeInt64(<sentinel>, "msghttp.With<X>", cfg.<field>, 1, byteCapCeiling); err != nil { return nil, err }`.
       4. The three sentinel messages: `must be > 0` → `out of range` (D-AQ).
-- [ ] **Step 5 (GODOC — same commit, not a follow-up).** Six sentences become false the instant Step 4 lands
+- [x] **Step 5 (GODOC — same commit, not a follow-up).** Six sentences become false the instant Step 4 lands
       (round-1 m-14). Rewrite all six **now**:
 
       | # | Site | Today | Becomes |
@@ -428,7 +451,7 @@ needed.** No new dependency, in any module.
       and when to reach for it — so the pair reads as a pair **from either end**. This is
       [Spec 018 §4](../specs/018-byte-cap-ceilings.md) item 4, and it is the class CLAUDE.md's stored lesson
       names: *docs can contradict the code they describe.*
-- [ ] **Step 6 (GATE — DERIVE the site list, do not read one).** 🔴 Round-1 **B-3**: revision 1 listed 7 sites and
+- [x] **Step 6 (GATE — DERIVE the site list, do not read one).** 🔴 Round-1 **B-3**: revision 1 listed 7 sites and
       every offset but one was stale. 🔴 Round-2 **N-2**: revision 2 fixed the *method* and got the *predicate*
       wrong — it selected on the word `deferred`, while the property being changed is the **`fixed` partition**
       (9 rows → 12, one literal → two). 🔴 Round-3 **NEW-2**: revision 3's *widened* form was **still a token
@@ -571,7 +594,7 @@ needed.** No new dependency, in any module.
       > Rewrite both into a record of what happened; **generalise** the warning about weakening the check, do not
       > delete it.
 
-- [ ] **Step 7 (DELTAS, not literals).** 🔴 Round-1 **M-9**: [Plan 031](031-group-member-bounds.md) takes
+- [x] **Step 7 (DELTAS, not literals).** 🔴 Round-1 **M-9**: [Plan 031](031-group-member-bounds.md) takes
       `sizingConformanceKeys` 17 → 19 and the partition to `11 fixed + 1 rejects + 3 deferred + 6 safe = 21`.
       Revision 1 declared `require.Len(t, tests, 19)`, `sizingConformanceKeys` unchanged, and
       `{"fixed": 12, "rejects": 1, "safe": 6}` as **normative literals** — all three of which Plan 031 falsifies.
@@ -589,7 +612,7 @@ needed.** No new dependency, in any module.
       **If Plan 031 has not landed**, the concrete values are `{"fixed": 12, "rejects": 1, "safe": 6}` and
       `require.Len(t, tests, 19)`. **If it has**, they are `{"fixed": 14, "rejects": 1, "safe": 6}` and
       `require.Len(t, tests, 21)`. Both orders converge on the same end state. Record which case applied.
-- [ ] **Step 8 (BRANCH 20).** Rewrite `adapter/http/exchange_test.go:613-620` from `math.MaxInt64` to the ceiling
+- [x] **Step 8 (BRANCH 20).** Rewrite `adapter/http/exchange_test.go:613-620` from `math.MaxInt64` to the ceiling
       value — 🔴 **spell it `math.MaxInt32`, NOT the decimal `2147483647` (round-2 N-10).** `math` is used
       **exactly once** in that file (`grep -n 'math\.' adapter/http/exchange_test.go` → only `:615`), so a bare
       decimal orphans the import and the package stops compiling: `"math" imported and not used`. The RED step
@@ -601,12 +624,12 @@ needed.** No new dependency, in any module.
       non-empty body intact, the overflow regression"* — to name the ceiling and record that `MaxInt64` is no
       longer reachable through the public API. **Do not delete the case.** Spec 018 §1.3 item 2 states what still
       covers INV-6's arithmetic (branches 18 and 19).
-- [ ] **Step 9 (386).** `GOTOOLCHAIN=go1.25.13 GOARCH=386 GOOS=linux go vet ./...` → **exit 0**, and
+- [x] **Step 9 (386).** `GOTOOLCHAIN=go1.25.13 GOARCH=386 GOOS=linux go vet ./...` → **exit 0**, and
       `… go build ./...` → **exit 0**. 🔴 **Do NOT use `go test -gcflags=all=-e -run=NONE ./...`** — it exits
       **1** on an untouched tree (`exec format error`, all 11 root packages), so it cannot detect a regression
       (round-1 M-4). `go vet` is the usable form because it **type-checks `_test.go` files**, which is where the
       32-bit exposure lives. Record both exit codes.
-- [ ] **Step 9b (386 VACUITY PROBE — the gate has only ever passed).** 🔴 Round-2 **N-12**: AC-3 was the one gate
+- [x] **Step 9b (386 VACUITY PROBE — the gate has only ever passed).** 🔴 Round-2 **N-12**: AC-3 was the one gate
       in this bundle without a probe, and it *replaced* a command round 1 proved could not work. The claim under
       test is not *"vet exits 0"* but *"vet type-checks `_test.go` files, so a 32-bit-only overflow in a test
       literal goes red"* — **prove it, per [Spec 018 §6 AC-3b](../specs/018-byte-cap-ceilings.md)**:
@@ -620,9 +643,9 @@ needed.** No new dependency, in any module.
 
       Paste all four outputs into Evidence. *Proving a gate FIRES is not proving it COVERS — plant the probe
       where the coverage is doubtful.*
-- [ ] **Step 10.** Mutation-prove every case (tables below). `GOWORK=off go test ./... -race -shuffle=on` green
+- [x] **Step 10.** Mutation-prove every case (tables below). `GOWORK=off go test ./... -race -shuffle=on` green
       in root. Coverage on `adapter/http` ≥ 85% and every branch below covered.
-- [ ] **Step 11 (FALSIFICATION SWEEP — the godoc half).** Not a mutant table; a sweep:
+- [x] **Step 11 (FALSIFICATION SWEEP — the godoc half).** Not a mutant table; a sweep:
 
       | # | Claim to falsify | How |
       |---|---|---|
@@ -660,7 +683,7 @@ needed.** No new dependency, in any module.
       > the wrap-tolerant form reports **2**. Under the naive form the vacuity probe would itself have been
       > satisfiable by an occurrence that was never counted in the first place.
 
-- [ ] **Step 11b (PARENT FOLD-BACK — in THIS commit, not the next one).** 🔴 Round-2 **N-6**; ADR 0034
+- [x] **Step 11b (PARENT FOLD-BACK — in THIS commit, not the next one).** 🔴 Round-2 **N-6**; ADR 0034
       **D-AT(b)**; [Spec 018 §6 AC-5](../specs/018-byte-cap-ceilings.md). Spec 016 revision 6's BLOCKER-2 was a
       reclassification that reached one file and missed seven, because the cross-file grep guard *"was written
       and not run."* **Run it, and paste the output:**
@@ -718,7 +741,7 @@ needed.** No new dependency, in any module.
       | [`029-sizing-option-bounds.md`](029-sizing-option-bounds.md) | **delivered plan** | ✅ yes, in place, **if** it states the deferral as a standing fact. Prefer a dated one-line note over a rewrite |
       | 🔴 **[`030-post-029-maintenance.md`](030-post-029-maintenance.md)** | **delivered plan** — round 3's NEW-3 left this undecided, and revision 3 did not mention the file at all | ✅ **YES, editable in place** — the **Plan 020 precedent**, and the same latitude Plan 029 gets one row up. **Only `030-audit-round-*.md` is immutable; the plan itself is not.** Its delivery banner (added at `7d671b4`) is an exercise of exactly this latitude. Prefer a dated one-line note over a rewrite |
       | [`031-group-member-bounds.md`](031-group-member-bounds.md), [`../adrs/0033-group-member-bounds.md`](../adrs/0033-group-member-bounds.md) | **undelivered sibling, under concurrent revision** | ❌ **NO** — do not edit another increment's live design; N-4's whole point is that this task must not depend on, or write into, Plan 031 |
-- [ ] **Step 12.** Commit: `fix(http): bound the three byte caps at the representability ceiling`. The commit
+- [x] **Step 12.** Commit: `fix(http): bound the three byte caps at the representability ceiling`. The commit
       carries the production change, its godoc, the class-gate arm move **and** the Spec 016 / ADR 0032 /
       HANDOVER fold-back, per CLAUDE.md's couple-plans-with-code rule.
 
@@ -848,7 +871,7 @@ classified (a)/(b)/(c), **plus the `wantArms`/`byArm` values the Spec 016 §2.1 
 (status headers and any *"as delivered"* addenda only).
 **Module:** none (docs) — but every gate below runs against the **code** Task 1 landed.
 
-- [ ] **Step 1 (RE-RUN THE FOLD-BACK GUARD).** Task 1 Step 11b ran the cross-file grep and amended the **(a)**
+- [x] **Step 1 (RE-RUN THE FOLD-BACK GUARD).** Task 1 Step 11b ran the cross-file grep and amended the **(a)**
       sites. **Run it again here and confirm the (a) class is now EMPTY** — a guard that is only ever run before
       the edit proves the edit was *needed*, not that it was *complete*:
 
@@ -861,15 +884,15 @@ classified (a)/(b)/(c), **plus the `wantArms`/`byArm` values the Spec 016 §2.1 
       Every surviving hit must classify as *(b) immutable audit record* or *(c) historical prose, still true*.
       **Any (a)-class survivor is a blocker** — it is the "stopped ONE FILE SHORT" failure, caught one commit
       late rather than not at all.
-- [ ] **Step 2.** Re-confirm the immutable/editable split — **Task 1 Step 11b's table is the authority**, and it
+- [x] **Step 2.** Re-confirm the immutable/editable split — **Task 1 Step 11b's table is the authority**, and it
       now covers [`032-audit-round-3.md`](032-audit-round-3.md) and [`032-audit-round-4.md`](032-audit-round-4.md) (both immutable) and
       [`030-post-029-maintenance.md`](030-post-029-maintenance.md) (a **delivered plan**, editable in place —
       round-3 NEW-3's open disposition). Confirm no `*-audit-round-*.md` or `*-derivation-findings.md` appears in
       `git diff --name-only main..HEAD`.
-- [ ] **Step 3.** Flip Spec 018 / ADR 0034 status headers from **PROPOSED** to **ACCEPTED** with the date, and add
+- [x] **Step 3.** Flip Spec 018 / ADR 0034 status headers from **PROPOSED** to **ACCEPTED** with the date, and add
       the *"as delivered"* addenda for anything the implementation taught (the amend-don't-pile-on rule: fold
       these into this task's commit, do not add a follow-up `docs:`).
-- [ ] **Step 4 (LINK GATE).** Run **both arms** of CLAUDE.md's docs-link gate over every tracked `.md`.
+- [x] **Step 4 (LINK GATE).** Run **both arms** of CLAUDE.md's docs-link gate over every tracked `.md`.
       🔴 **Round-4 R4-8 — `git add -N` is a GUARD, and its no-op result is the EXPECTED state.** `git ls-files`
       is blind to **untracked** files (Plan 030 round-1 MINOR 11), so `git add -N` **any bundle artifact not yet
       tracked** before running the gate; on a clean tree this does nothing, and that is what it should do. It
@@ -877,7 +900,7 @@ classified (a)/(b)/(c), **plus the `wantArms`/`byArm` values the Spec 016 §2.1 
       the first time a round-N record is written and not yet committed. **Do not skip it because it looks
       inert.** Known false positives on this tree are exactly two — `docs/plans/m` and
       `docs/specs/factory(fireTime`, both Go identifiers in wrapped code spans. **Anything else is a blocker.**
-- [ ] **Step 5 (VACUITY PROBE).** Prove the gate is not vacuous **on the new files, not on root** (the Plan 028
+- [x] **Step 5 (VACUITY PROBE).** Prove the gate is not vacuous **on the new files, not on root** (the Plan 028
       `apidiff` blindness came from probing only root): plant one bad relative link and one bad `#anchor` in
       `docs/specs/018-byte-cap-ceilings.md`, re-run both arms, confirm **exactly one new hit each**, revert, and
       confirm both vanish.
@@ -909,9 +932,24 @@ classified (a)/(b)/(c), **plus the `wantArms`/`byArm` values the Spec 016 §2.1 
       `go mod tidy` + `git diff --exit-code -- go.mod go.sum`, `govulncheck ./...`, `golangci-lint run ./...`.
       `harness` has no test files — check it with `go vet` instead. `govulncheck` lives in
       `$(go env GOPATH)/bin`, not on `PATH`.
-- [ ] **Step 7 (SURFACE).** Prove Global constraint 5: `apidiff` **0/0**, and the AST exported-symbol set diff
+
+      > ✅ **The GATE half is DONE; the box stays clear for the REVIEW half, which is the coordinator's.**
+      > All **eight** CI-parity steps ran over all **eight** module directories with `GOWORK=off`, and every one
+      > passed — plus the `GOWORK`-auto workspace-coherence `go build ./...` loop over the same eight. Docker was
+      > up, so `dbtest` (133.8 s) and `crontest` (48.4 s) ran for real rather than being skipped.
+      >
+      > 🔴 **TWO of the eight steps are FALSE PASSES in this workspace and were checked another way**, per
+      > CLAUDE.md's *"`./...` does NOT mean the repo"* note: **`harness` has no `_test.go` files**, so its
+      > `go test` reports `[no test files]` and proves nothing — `go vet ./...` is the real check (exit 0). And
+      > **`dbtest`/`crontest` contain ONLY `_test.go` files**, so their `go build ./...` compiles nothing and is
+      > the same false pass inverted — again `go vet ./...` (exit 0), which type-checks test files.
+      >
+      > Coverage on the two packages Task 1 touched: **`adapter/http` 100.0%** (`checkRangeInt64` 100.0%,
+      > `NewConfig` 100.0%) and **root `msgin` 95.6%** — both above CLAUDE.md's ≥ 85% target, and `adapter/http`'s
+      > 100.0% of statements is what discharges the hot-path/typed-error branch requirement for B1-1…B1-11.
+- [x] **Step 7 (SURFACE).** Prove Global constraint 5: `apidiff` **0/0**, and the AST exported-symbol set diff
       empty, **probed in `adapter/http`** — plant an exported symbol there, confirm the diff reports it, revert.
-- [ ] **Step 8 (386, again).** Re-run `GOARCH=386 GOOS=linux go vet ./...` and `… go build ./...` — both exit 0.
+- [x] **Step 8 (386, again).** Re-run `GOARCH=386 GOOS=linux go vet ./...` and `… go build ./...` — both exit 0.
       This task cannot break them, which is exactly why running it here proves the gate survived Task 1.
 - [ ] **Step 9.** Commit: `docs: accept the byte-cap ceiling design and record the delivery gates`.
 
@@ -921,6 +959,56 @@ classified (a)/(b)/(c), **plus the `wantArms`/`byArm` values the Spec 016 §2.1 
 before and after the probe; the eight-module loop; `apidiff` 0/0 and the AST set diff with its probe; the 386
 re-run's two exit codes; the `/code-review` and `/security-review` findings with their resolutions.
 
+### Task 2 — evidence, as run (2026-08-22, `HEAD = f39725d`)
+
+**Step 1 — fold-back guard re-run: the (a) class is EMPTY.** Guard A (`deferred` in the four parent artifacts)
+returns hits in all four files; every one classifies **(b)** or **(c)**. `docs/HANDOVER.md:150` states item 6
+**CLOSED**; ADR 0032 `:8-10` and Spec 016 `:7-10` are the new **delivery banners**, and each explicitly declares
+the census lines below it *"superseded, not wrong for their date"*; ADR 0032 `:249`, Spec 016 `:1021`/`:1051` are
+struck through with a superseded pointer; Spec 016 `:102` (*"no deferred `recover`"*) and ADR 0032 `:117` are
+**unrelated uses of the word**; Plan 029's hits are all under its own dated `SUPERSEDED IN ONE RESPECT` banner at
+`:5`. Guard B (the three option names across `docs/` + CLAUDE.md) returns **280 hits**, of which **177 over 14
+files** once the immutable `*-audit-round-*.md` records are excluded. A **widened** sweep was run alongside it —
+`positive` / `non-positive` / `greater than zero` / `> 0` within a byte-cap context across Spec 011, ADR 0023 and
+Plans 020/024/025/026 — and returned **zero** further hits, so `<= 0` was the whole class. The only
+**(a)-class survivors anywhere were [Spec 011](../specs/011-http-adapter.md) `:484` and `:503`**, corrected in
+this commit (see the delivery banner, correction iii). `docs/plans/{020,024,025,026}` and `docs/adrs/0023`
+restate `n <= 0` too, but as **delivered-increment execution records under their own dates** — (c), left alone,
+per Task 1 Step 11b's file-kind rule.
+
+**Step 2 — immutable records untouched.** `git diff --name-status main..HEAD -- '*audit-round*'
+'*derivation-findings*'` returns **eight files, every one `A` (added), none `M`**. The plan's literal wording
+(*"confirm no `*-audit-round-*.md` appears in `git diff --name-only main..HEAD`"*) **cannot hold on this branch**
+and is a plan defect, not a violation: the branch *authors* Plans 030/031/032's audit records, so they are
+necessarily in its diff. **The invariant that matters is `M`, not presence** — no audit record was modified.
+
+**Steps 4/5 — docs-link gate, both arms, over every tracked `.md`, vacuity-probed.** `git add -N` on the seven
+bundle files was the expected **no-op** (tree already clean). Baseline: arm 1 → exactly the **two known false
+positives** (`docs/plans/016-aggregator.md -> docs/plans/m`,
+`docs/specs/006-cron-source.md -> docs/specs/factory(fireTime` — Go identifiers in wrapped code spans); arm 2 →
+**zero**. Probed **on a new file** (`docs/specs/018-*`, not root): one bad relative link and one bad `#anchor`
+produced **exactly one new hit each**, and **both vanished on revert**. The set under gate is **seven** files
+(`ls docs/specs/018-* docs/adrs/0034-* docs/plans/032-* | wc -l` → `7`) — derived, per R4-8, not transcribed.
+
+**Step 7 — surface.** `apidiff` main→HEAD reports **nothing** on `adapter/http` **and** on root: **0 removals /
+0 additions**. 🔴 **`apidiff` exits 0 even when it reports changes — the OUTPUT is the signal, never `$?`.**
+Vacuity-probed in `adapter/http` per the step: a planted `const ProbeExportedSymbol` produced
+`Compatible changes: - ProbeExportedSymbol: added`, and the diff went empty again on revert.
+
+**Step 8 — 386, and Step 9b's probe RE-RUN rather than trusted.** `GOARCH=386 GOOS=linux go vet ./...` →
+**exit 0**; `… go build ./...` → **exit 0**. Task 1 ran Step 9b, but *"the gate was probed once, upstream"* is
+the shape of claim this project's stored lessons say to re-derive, so it was re-run here: a planted
+`const zz32 int = 1 << 40` in a root `_test.go` gave **exactly one** 386 vet failure —
+`vet: ./zz_probe_test.go:4:18: cannot use 1 << 40 … as int value in constant declaration (overflows)` — while
+`GOARCH=amd64 GOOS=linux go vet ./...` stayed **clean**, which is the half that makes it a *32-bit* probe and not
+a syntax probe. Reverted; both back to exit 0. *Proving a gate FIRES is not proving it COVERS.*
+
+**Step 6 (gate half) — 8 modules × 8 steps, all green.** See the note under Step 6, including the **two false
+passes** (`harness`'s `go test`, `dbtest`/`crontest`'s `go build`) and how each was checked instead.
+
+**Not run here, and owed by the coordinator:** `/code-review` and `/security-review` over `main..HEAD`, and the
+Step 9 commit. Their three boxes above are deliberately left clear.
+
 ---
 
 ## Delivery checklist
@@ -929,52 +1017,52 @@ re-run's two exit codes; the `/code-review` and `/security-review` findings with
       🔴 **Two, not four** — revision 1's Tasks 1-3 are one commit (round-1 B-1), **and the parent artifacts ride
       in that same commit** (round-2 N-6). **At no point between commits is the root suite red, and at no point
       does a normative artifact assert an arm the tree does not have.**
-- [ ] `sizing_option_class_gate_test.go` has **no `deferred` row**, `wantArms` maps all three byte caps to
+- [x] `sizing_option_class_gate_test.go` has **no `deferred` row**, `wantArms` maps all three byte caps to
       `"fixed"`, and `byArm` has **no `deferred` key** (Plan 031 adds only to `fixed`, so this holds under either
       landing order — Task 1 Step 7).
-- [ ] The gate's header block states the arm→literal rule **two-dimensionally** — arm fixes the property, then
+- [x] The gate's header block states the arm→literal rule **two-dimensionally** — arm fixes the property, then
       parameter type chooses the literal **within the reject arms only** — and `:61-77`'s "do not demote the
       `safe` rows to `1<<30`" warning survives verbatim (round-2 N-1).
-- [ ] All **17** derived gate sites edited or explicitly classified — including `:26` and `:47-49` (round-2 N-2,
+- [x] All **17** derived gate sites edited or explicitly classified — including `:26` and `:47-49` (round-2 N-2,
       round-3 NEW-1) and `:409`, `:601`, `:799-800` (round-3 NEW-2) — plus the over-inclusion account for `:33`
       and `:521`, and a decision recorded for `:766`.
-- [ ] `:48-49`'s *"exceeds every ceiling in the codebase (the largest is `1<<20`)"* is **narrowed to
+- [x] `:48-49`'s *"exceeds every ceiling in the codebase (the largest is `1<<20`)"* is **narrowed to
       `int`-typed**, with `byteCapCeiling`'s `int64` width stated inline (round-3 NEW-1) — the file agrees with
       its own dimension-2 wording.
-- [ ] The gate's own `require.Equal` failure message at `:799-801` reports the **post-move** partition, not
+- [x] The gate's own `require.Equal` failure message at `:799-801` reports the **post-move** partition, not
       *"9 class members fixed here"* over a table of twelve (round-3 NEW-2).
-- [ ] **B1-4 is the boundary pair** — `1<<20` accepted, `1<<20 + 1` rejected — mirroring
+- [x] **B1-4 is the boundary pair** — `1<<20` accepted, `1<<20 + 1` rejected — mirroring
       `adapter/http/exchange_test.go:309-334`, and it is the largest fixture in the increment (round-3 NEW-5).
-- [ ] **M3-6 is absent**; B1-10 is the mutant proving the `IsPermanent` assertion load-bearing (round-3 NEW-4),
+- [x] **M3-6 is absent**; B1-10 is the mutant proving the `IsPermanent` assertion load-bearing (round-3 NEW-4),
       **and its TARGETED arm was run** — wrap plus the corrected `EqualError` expectation, so `assert.False` is
       the only failure (round-4 R4-3). The bare wrap alone is a kill, but not an attributable one.
-- [ ] **B1-11 was run** — reverting `errors.go:19`'s message reds both `WithMaxBodyBytes` `EqualError`
+- [x] **B1-11 was run** — reverting `errors.go:19`'s message reds both `WithMaxBodyBytes` `EqualError`
       assertions while every `ErrorIs` assertion stays green (round-4 R4-9). D-AQ's rename is the increment's
       stated behavioral change and this is the only mutant that targets it.
-- [ ] **Site 5 is a TOMBSTONE, not a deletion**, and site 17 (`:22`, *"in one of FOUR arms"*) is therefore
+- [x] **Site 5 is a TOMBSTONE, not a deletion**, and site 17 (`:22`, *"in one of FOUR arms"*) is therefore
       **no change** — the file documents four arms, one empty, and agrees with itself (round-4 R4-4).
-- [ ] `docs/HANDOVER.md` §7 carries a **NEW row** for *"derive the class gate's prose counts from `wantArms` at
+- [x] `docs/HANDOVER.md` §7 carries a **NEW row** for *"derive the class gate's prose counts from `wantArms` at
       test time"*, opened in the same edit that closed item 6 (round-4 R4-10).
-- [ ] Step 11 D-3 uses the **wrap-tolerant** `perl -0777` count, not `grep -c` (round-3, smaller note 1).
-- [ ] The three moved rows each carry `require.ErrorIs` + `assert.EqualError` **on the render they themselves
+- [x] Step 11 D-3 uses the **wrap-tolerant** `perl -0777` count, not `grep -c` (round-3, smaller note 1).
+- [x] The three moved rows each carry `require.ErrorIs` + `assert.EqualError` **on the render they themselves
       produce** (`…: 4611686018427387904 not in [1, 2147483647]`) + `assert.False(t, msgin.IsPermanent(err), …)`.
-- [ ] `adapter/http/exchange_test.go` branch 20 and its header comment reflect the ceiling, spelled
+- [x] `adapter/http/exchange_test.go` branch 20 and its header comment reflect the ceiling, spelled
       **`math.MaxInt32`** so the `math` import stays live (round-2 N-10), not `MaxInt64`.
-- [ ] `GOARCH=386 GOOS=linux go vet ./...` and `go build ./...` both exit **0** (not `go test -run=NONE`),
+- [x] `GOARCH=386 GOOS=linux go vet ./...` and `go build ./...` both exit **0** (not `go test -run=NONE`),
       **and the gate is vacuity-probed** — one planted 32-bit-only overflow, exactly one 386 vet failure, an
       amd64-clean run, reverted (round-2 N-12).
-- [ ] Spec 016 §2.1's arm table was **written in full by this increment, re-derived from the tree**, under
+- [x] Spec 016 §2.1's arm table was **written in full by this increment, re-derived from the tree**, under
       whichever landing order applied (round-2 N-4); Spec 016, ADR 0032 and `docs/HANDOVER.md` §7 item 6 all
       record the class as **closed**, with no site left asserting a deferral (Task 2 Step 1's re-run grep is
       empty of (a)-class hits).
-- [ ] `checkRange`'s **existing** godoc is scoped and cross-references `checkRangeInt64` (round-2 N-9), and
+- [x] `checkRange`'s **existing** godoc is scoped and cross-references `checkRangeInt64` (round-2 N-9), and
       `errors.go:132` keeps its `(and so by NewSSEParser)` clause (round-2 N-11).
-- [ ] `apidiff` **0 removals / 0 additions**; no new exported symbol in any module.
-- [ ] Both link-gate arms clean but for the two known false positives, run over **every `docs/specs/018-*`,
+- [x] `apidiff` **0 removals / 0 additions**; no new exported symbol in any module.
+- [x] Both link-gate arms clean but for the two known false positives, run over **every `docs/specs/018-*`,
       `docs/adrs/0034-*` and `docs/plans/032-*` file, whatever their number** (`git add -N` any not yet tracked —
       a no-op on a clean tree, and that is the expected result), and **vacuity-probed on the new files**
       (round-4 R4-8).
-- [ ] Eight-module loop green; the six non-test quality-gate steps run per touched module.
+- [x] Eight-module loop green; the six non-test quality-gate steps run per touched module.
 - [ ] Every finding from `/code-review` and `/security-review` over `main..HEAD` fixed or triaged in writing.
 - [ ] **Then, and only then, ask** before merging or pushing. `git push`, merge, tag and branch deletion each need
       explicit per-action approval. Delete `fix/byte-cap-ceilings` after it merges.

@@ -1,17 +1,42 @@
 # Spec 018 — A byte cap carries a representability ceiling, and no off-state
 
-- **Status:** **PROPOSED — revision 5, post-audit-round-4. CLEARED FOR IMPLEMENTATION.** Written before any code,
-  per [CLAUDE.md](../../CLAUDE.md)'s design-time gate. **Four rounds of the adversarial design audit have run**
-  over the assembled bundle (this spec + [ADR 0034](../adrs/0034-byte-cap-ceilings.md) +
-  [Plan 032](../plans/032-byte-cap-ceilings.md)). Round 1 returned **NOT SAFE TO IMPLEMENT** — 3 BLOCKERs,
-  7 MAJORs, 4 MINORs ([`docs/plans/032-audit-round-1.md`](../plans/032-audit-round-1.md), immutable). Round 2
-  returned **NOT SAFE TO IMPLEMENT** — 1 BLOCKER, 5 MAJORs, 6 MINORs
-  ([`docs/plans/032-audit-round-2.md`](../plans/032-audit-round-2.md), immutable). Round 3 returned **NOT SAFE TO
-  IMPLEMENT** — 0 BLOCKERs, 3 MAJORs, 4 MINORs
-  ([`docs/plans/032-audit-round-3.md`](../plans/032-audit-round-3.md), immutable), with **all twelve round-2
-  findings LANDED and nothing regressed**. **Round 4 returned SAFE TO IMPLEMENT** — 0 BLOCKERs, 1 MAJOR,
-  9 MINORs ([`docs/plans/032-audit-round-4.md`](../plans/032-audit-round-4.md), immutable), verifying **6 LANDED,
-  3 LANDED-BUT-FLAWED, 0 NOT LANDED, 0 REGRESSED** and the N-9 residue **CLOSED**.
+- **Status:** **DELIVERED (2026-08-22)** — revision 5 was written before any code, per
+  [CLAUDE.md](../../CLAUDE.md)'s design-time gate; realized by
+  [Plan 032](../plans/032-byte-cap-ceilings.md) Tasks 1–2 (`f39725d` + this commit), whole-branch gate green.
+  All three caps are bounded at `byteCapCeiling = math.MaxInt32`, the class gate's `deferred` arm is empty and
+  tombstoned (`12 fixed / 1 rejects / 0 deferred / 6 safe`, `require.Len(…, 19)` — the *"Plan 031 has not
+  landed"* branch of §6 AC-4.2), and [Spec 016](016-sizing-option-bounds.md) §3.8 item 2's hazard-disclosure
+  godoc shipped with it. **Two as-delivered corrections** are recorded below (§6 AC-1's B1-4 mutant, and §1.3's
+  Spec 011 predicate); the revision-5 text is otherwise unchanged.
+  - 🔴 **AS DELIVERED — §6 AC-1 / Plan 032 B1-4's FIRST mutant is not a kill.** The plan listed three killing
+    mutants for the body cap's `!set → default` arm, the first being *"delete the default assignment ⇒ the cap
+    reads `0` ⇒ the accept arm fails."* **It survives.** `maxBody()` (`options.go:272`) back-fills
+    `defaultMaxBodyBytes` whenever the field is `<= 0`, so a deleted `!set` assignment is invisible through
+    `DecodeRequest` — the read path never observes the zero. **The two boundary mutants DO fire**
+    (`default = 1<<20 - 1` reds the accept arm; `default = 1<<20 + 1` reds the reject arm) and between them pin
+    the default at exactly `1048576`, which is the stronger pair and the reason round-3 NEW-5 replaced the 2 MiB
+    fixture with the boundary pair in the first place. **The branch is covered; only the plan's mutant list was
+    wrong.** *(`adapter/http` measures 100.0% statement coverage, `checkRangeInt64` and `NewConfig` both 100.0%.)*
+  - 🔴 **AS DELIVERED — §1.3's sentinel predicates were narrower than the contract in a NEIGHBOURING spec.**
+    [Spec 011](011-http-adapter.md) `:484` and `:503` described `ErrInvalidMaxResponseBytes` and
+    `ErrInvalidMaxEventBytes` as firing on an explicit `n <= 0`. Still literally true after this increment, but
+    **no longer the whole predicate** — both also fire above the ceiling. Corrected in place at the Task 2 gate,
+    in the same dated-parenthetical style Plan 030 Task 3 used on that file. Neither was in Plan 032's Files
+    list; the delivery-gate grep found them.
+  - 🔴 **AS DELIVERED — M1-7 survived on `darwin/arm64`, exactly as [ADR 0034](../adrs/0034-byte-cap-ceilings.md)
+    **D-AR(b)** states it must.** Recorded, not faked (Plan 032 Global constraint 7's stated exception). The
+    32-bit compile arm is clean: `GOARCH=386 GOOS=linux go vet ./...` and `go build ./...` both exit **0**.
+  - **Design history — four rounds of the adversarial design audit ran**
+    over the assembled bundle (this spec + [ADR 0034](../adrs/0034-byte-cap-ceilings.md) +
+    [Plan 032](../plans/032-byte-cap-ceilings.md)). Round 1 returned **NOT SAFE TO IMPLEMENT** — 3 BLOCKERs,
+    7 MAJORs, 4 MINORs ([`docs/plans/032-audit-round-1.md`](../plans/032-audit-round-1.md), immutable). Round 2
+    returned **NOT SAFE TO IMPLEMENT** — 1 BLOCKER, 5 MAJORs, 6 MINORs
+    ([`docs/plans/032-audit-round-2.md`](../plans/032-audit-round-2.md), immutable). Round 3 returned **NOT SAFE TO
+    IMPLEMENT** — 0 BLOCKERs, 3 MAJORs, 4 MINORs
+    ([`docs/plans/032-audit-round-3.md`](../plans/032-audit-round-3.md), immutable), with **all twelve round-2
+    findings LANDED and nothing regressed**. **Round 4 returned SAFE TO IMPLEMENT** — 0 BLOCKERs, 1 MAJOR,
+    9 MINORs ([`docs/plans/032-audit-round-4.md`](../plans/032-audit-round-4.md), immutable), verifying **6 LANDED,
+    3 LANDED-BUT-FLAWED, 0 NOT LANDED, 0 REGRESSED** and the N-9 residue **CLOSED**.
   - ✅ **Revision 5 folds R4-1…R4-10, and NO FIFTH ROUND IS REQUIRED — the auditor said so explicitly:**
     *"Fold R4-1 through R4-10 in without a fifth round; they are corrections, not re-designs."* Not one of the
     ten changes a decision, a value, a signature, a task boundary or a commit boundary. **Implementation may

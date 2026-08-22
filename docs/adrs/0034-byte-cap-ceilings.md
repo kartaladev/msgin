@@ -1,18 +1,37 @@
 # ADR 0034 — A byte cap is bounded by what a `[]byte` can represent, not by what a payload might be
 
-- **Status:** **PROPOSED — revision 5, post-audit-round-4. CLEARED FOR IMPLEMENTATION.** Written before any code,
-  per [CLAUDE.md](../../CLAUDE.md)'s design-time gate. **Four rounds of the adversarial design audit have run**
-  over the assembled bundle ([Spec 018](../specs/018-byte-cap-ceilings.md) + this ADR +
-  [Plan 032](../plans/032-byte-cap-ceilings.md)). Round 1 returned **NOT SAFE TO IMPLEMENT** — 3 BLOCKERs,
-  7 MAJORs, 4 MINORs ([`docs/plans/032-audit-round-1.md`](../plans/032-audit-round-1.md), immutable). Round 2
-  returned **NOT SAFE TO IMPLEMENT** — 1 BLOCKER, 5 MAJORs, 6 MINORs
-  ([`docs/plans/032-audit-round-2.md`](../plans/032-audit-round-2.md), immutable). Round 3 returned **NOT SAFE TO
-  IMPLEMENT** — 0 BLOCKERs, 3 MAJORs, 4 MINORs
-  ([`docs/plans/032-audit-round-3.md`](../plans/032-audit-round-3.md), immutable), verifying that **all twelve
-  round-2 findings landed, both round-1 residues closed, and nothing regressed**. **Round 4 returned SAFE TO
-  IMPLEMENT** — 0 BLOCKERs, 1 MAJOR, 9 MINORs
-  ([`docs/plans/032-audit-round-4.md`](../plans/032-audit-round-4.md), immutable), verifying **6 LANDED,
-  3 LANDED-BUT-FLAWED, 0 NOT LANDED, 0 REGRESSED** and the N-9 residue **CLOSED**.
+- **Status:** **ACCEPTED (2026-08-22)** — revision 5 was written before any code, per
+  [CLAUDE.md](../../CLAUDE.md)'s design-time gate, and every decision below is now **implemented and
+  gate-cleared** on `chore/backlog-sweep-post-029` ([Plan 032](../plans/032-byte-cap-ceilings.md) Tasks 1–2,
+  `f39725d` + this commit): `byteCapCeiling = math.MaxInt32` enforced in `NewConfig` through the
+  `checkRangeInt64` sibling, the three sentinels reused and re-messaged, the class gate's `deferred` arm emptied
+  and tombstoned, and `apidiff` **0 removals / 0 additions** on both `adapter/http` and root.
+  **D-AR(b) carries an as-delivered confirmation, and D-AN(b) a note** (see each).
+  - 🔴 **AS DELIVERED — D-AR(b)'s accepted mutation gap is REAL, and was observed, not assumed.** M1-7
+    (`checkRangeInt64(…)` → `checkRange(…, int(n), …)`) **survives** the whole suite on `darwin/arm64`, exactly
+    as this decision states it must, because `int` is 64-bit there and `int(n)` is lossless. **Recorded, not
+    faked** ([Plan 032](../plans/032-byte-cap-ceilings.md) Global constraint 7's stated exception). The
+    compensating compile arm is clean: `GOARCH=386 GOOS=linux go vet ./...` **and** `go build ./...` both exit
+    **0**, and that arm was **re-vacuity-probed at the Task 2 gate**, not taken on trust: a planted
+    `const zz32 int = 1 << 40` in a root `_test.go` produced **exactly one** 386 vet failure naming that file,
+    while `GOARCH=amd64` stayed **clean** — which is what makes it a *32-bit* probe rather than a syntax probe —
+    and both returned to exit 0 on revert.
+  - **AS DELIVERED — D-AN(b) (no off-state) shipped unchanged and unratified.** No `Unbounded` sentinel, no
+    `-1` escape. Adding one later stays **purely additive**, which is the property that made deferring the
+    user's ratification safe; [Spec 018 §8](../specs/018-byte-cap-ceilings.md) still lists it first among the
+    four decisions worth a second look.
+  - **Design history — four rounds of the adversarial design audit ran**
+    over the assembled bundle ([Spec 018](../specs/018-byte-cap-ceilings.md) + this ADR +
+    [Plan 032](../plans/032-byte-cap-ceilings.md)). Round 1 returned **NOT SAFE TO IMPLEMENT** — 3 BLOCKERs,
+    7 MAJORs, 4 MINORs ([`docs/plans/032-audit-round-1.md`](../plans/032-audit-round-1.md), immutable). Round 2
+    returned **NOT SAFE TO IMPLEMENT** — 1 BLOCKER, 5 MAJORs, 6 MINORs
+    ([`docs/plans/032-audit-round-2.md`](../plans/032-audit-round-2.md), immutable). Round 3 returned **NOT SAFE TO
+    IMPLEMENT** — 0 BLOCKERs, 3 MAJORs, 4 MINORs
+    ([`docs/plans/032-audit-round-3.md`](../plans/032-audit-round-3.md), immutable), verifying that **all twelve
+    round-2 findings landed, both round-1 residues closed, and nothing regressed**. **Round 4 returned SAFE TO
+    IMPLEMENT** — 0 BLOCKERs, 1 MAJOR, 9 MINORs
+    ([`docs/plans/032-audit-round-4.md`](../plans/032-audit-round-4.md), immutable), verifying **6 LANDED,
+    3 LANDED-BUT-FLAWED, 0 NOT LANDED, 0 REGRESSED** and the N-9 residue **CLOSED**.
   - ✅ **Revision 5 folds R4-1…R4-10, and NO FIFTH ROUND IS REQUIRED — the auditor said so explicitly:**
     *"Fold R4-1 through R4-10 in without a fifth round; they are corrections, not re-designs."* **Not one of the
     ten changes a decision here.** D-AM through D-AT stand exactly as revision 4 states them — the same class,
