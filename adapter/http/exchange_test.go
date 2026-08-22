@@ -574,8 +574,14 @@ func (b *nilReadAtBoundary) Read(p []byte) (int, error) {
 
 // TestExchange_bodyBounds covers branches 18-23, 20b (INV-6 and INV-7 body
 // lifecycle): a body exactly at cap succeeds intact (18); cap+1 -> ErrReplyTooLarge
-// (19); WithMaxResponseBytes(MaxInt64) returns a non-empty body intact, the
-// overflow regression (20); an over-cap body whose boundary read returns (0, nil)
+// (19); WithMaxResponseBytes at the byte-cap CEILING (math.MaxInt32) returns a
+// non-empty body intact, the overflow regression (20) — the probe formerly ran
+// at math.MaxInt64, which Spec 018's ceiling makes UNREACHABLE through the
+// public API (NewExchange now returns ErrInvalidMaxResponseBytes for it), so
+// the magnitude half of the assurance is now structural rather than tested:
+// no max above the ceiling can exist. Branches 18 and 19 still exercise the
+// int64(len(body)) == max comparison at its boundary from both sides, which is
+// where its correctness lives (Spec 018 §1.3 item 2); an over-cap body whose boundary read returns (0, nil)
 // still -> ErrReplyTooLarge (20b); a mid-body read failure errors with the body
 // closed (21); and the body is closed on the success (22) and non-2xx (23) paths.
 func TestExchange_bodyBounds(t *testing.T) {
@@ -610,11 +616,14 @@ func TestExchange_bodyBounds(t *testing.T) {
 		assert.ErrorIs(t, err, msghttp.ErrReplyTooLarge)
 	})
 
-	t.Run("branch 20: WithMaxResponseBytes(MaxInt64) returns a non-empty body intact", func(t *testing.T) {
+	t.Run("branch 20: WithMaxResponseBytes at the ceiling returns a non-empty body intact", func(t *testing.T) {
 		t.Parallel()
-		x := newExchange(t, http.StatusOK, io.NopCloser(strings.NewReader("hello")), msghttp.WithMaxResponseBytes(math.MaxInt64))
+		// math.MaxInt32, NOT the decimal: math is used exactly once in this
+		// file, so a bare literal would orphan the import; and this spelling
+		// reads as the same constant byteCapCeiling is defined from.
+		x := newExchange(t, http.StatusOK, io.NopCloser(strings.NewReader("hello")), msghttp.WithMaxResponseBytes(math.MaxInt32))
 		reply, err := x.Exchange(t.Context(), msgin.New[any]([]byte("req")))
-		require.NoError(t, err, "MaxInt64 must not overflow the cap arithmetic into a silent empty body")
+		require.NoError(t, err, "the ceiling must not overflow the cap arithmetic into a silent empty body")
 		assert.Equal(t, []byte("hello"), reply.Payload())
 	})
 

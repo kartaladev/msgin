@@ -3,6 +3,7 @@ package msghttp
 import (
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"slices"
 	"strings"
@@ -42,6 +43,44 @@ const defaultMaxResponseBytes int64 = 1 << 20 // 1 MiB
 // events — the library cannot guess a caller's legitimate event size, so the
 // default errs conservative rather than permissive.
 const defaultMaxEventBytes int64 = 1 << 20 // 1 MiB
+
+// byteCapCeiling is the upper bound WithMaxBodyBytes, WithMaxResponseBytes and
+// WithMaxEventBytes all accept (Spec 018 §3.2). It is math.MaxInt32 =
+// 2,147,483,647 — one byte under 2 GiB.
+//
+// The justification is WIDTH SAFETY, and it never mentions the caller's
+// payload. All three caps terminate in a single contiguous in-memory buffer —
+// io.ReadAll's []byte (encode.go), the retained reply payload (exchange.go),
+// the parser's data/line buffers (sse.go) — and a Go slice's len and cap are
+// of type int, whose width is GOARCH-dependent (64-bit on amd64/arm64, 32-bit
+// on 386/arm/mips). math.MaxInt32 is the largest value for which the cap is
+// exactly representable as an int on EVERY GOARCH this module builds for, so
+// one configuration means the same thing everywhere. Above it the knob's
+// meaning becomes architecture-dependent: honourable on 64-bit, inexpressible
+// as a []byte length on 32-bit.
+//
+// It is NOT a payload guess, which is the distinction CLAUDE.md's
+// Sensible-defaults gate turns on and the reason Spec 016 §3.8 deferred these
+// three. 1<<30 ("no sane API sends more than a gigabyte") would be a guess
+// about the caller wearing a ceiling's clothes; this value is a property of
+// the language's int on the platforms in scope. Stated plainly so nobody is
+// later surprised: on a 64-bit build a cap ABOVE this CAN be honoured — the
+// ceiling is a deliberate portability choice, not a claim that larger reads
+// are impossible.
+//
+// ONE constant for three knobs, not three (Spec 018 §3.2). Unlike
+// maxConnectionsCeiling / maxConnBufferCeiling / replayBufferCeiling — each
+// expressed in its own unit and justified by what its knob means — these three
+// share a unit (bytes) AND the entire justification ([]byte width), so three
+// constants would encode an independence that does not exist and invite three
+// divergent edits.
+//
+// It is NOT a safety guarantee: a 2 GiB read can still exhaust a container.
+// What it delivers is that every configuration is finite, and that the absurd
+// one fails at NewConfig with a message naming the value, the site and the
+// range instead of at an OOM. The 1 MiB defaults above are what protect the
+// caller who configures nothing.
+const byteCapCeiling int64 = math.MaxInt32
 
 // defaultMaxConnections bounds the number of concurrently registered SSE
 // connections NewSSEServer's http.Handler accepts, applied when
@@ -455,11 +494,23 @@ type Option func(*Config)
 // long as the queued message lives. Lower MaxHeaderBytes alongside this option
 // if the header surface matters to your threat model.
 //
-// n MUST be > 0: NewConfig returns ErrInvalidMaxBodyBytes for an explicit
-// n <= 0, so a caller mistake (e.g. an uninitialized zero value passed
-// through) is a construction error rather than a silently-disabled cap.
-// Leaving this option unset (rather than calling it with 0) is how a caller
-// asks for the default.
+// HAZARD DISCLOSURE, read before raising this: the ceiling below is
+// not a safety guarantee. This option is the ONLY bound on a read driven by
+// a REMOTE PEER that is then retained in memory, so raising it above the
+// 1 MiB default trades flood protection for payload size — a 2 GiB body is a
+// legal configuration and can still exhaust a container. The default is what
+// protects a caller who configures nothing (Spec 016 §3.8 / Spec 018 §3.3).
+//
+// n MUST be in [1, 2147483647]: NewConfig returns ErrInvalidMaxBodyBytes for
+// an explicit n outside that range, so a caller mistake (an uninitialized
+// zero value passed through, a units slip, an env var read as 1<<62) is a
+// construction error naming the value and the range rather than a
+// silently-disabled cap or an OOM. The ceiling is math.MaxInt32 — the read
+// lands in a single []byte whose length is an int, whose width is
+// GOARCH-dependent, so this is the largest cap exactly representable
+// EVERYWHERE this module builds (Spec 018 §3.2). There is no value meaning
+// "unbounded"; leaving this option unset (rather than calling it with 0) is
+// how a caller asks for the default.
 func WithMaxBodyBytes(n int64) Option {
 	return func(c *Config) {
 		c.maxBodyBytes = n
@@ -761,9 +812,23 @@ func WithOutboundReplyHeaders(names ...string) Option {
 // additionally consumes up to errorBodyExcerptMax (256) bytes for the excerpt —
 // a separate, bounded budget on top of this drain.
 //
-// n MUST be > 0: NewConfig returns ErrInvalidMaxResponseBytes for an explicit
-// n <= 0 (the set-flag pattern distinguishes "unset" → default from "explicit
-// invalid"). Leaving this option unset is how a caller asks for the default.
+// HAZARD DISCLOSURE, read before raising this: the ceiling below is
+// not a safety guarantee. This option is the ONLY bound on a read driven by
+// a REMOTE PEER that is then RETAINED as the reply payload (exchange.go), so
+// raising it above the 1 MiB default trades flood protection for payload
+// size — a 2 GiB reply is a legal configuration and can still exhaust a
+// container. The default is what protects a caller who configures nothing
+// (Spec 016 §3.8 / Spec 018 §3.3).
+//
+// n MUST be in [1, 2147483647]: NewConfig returns ErrInvalidMaxResponseBytes
+// for an explicit n outside that range (the set-flag pattern distinguishes
+// "unset" → default from "explicit invalid"), so an absurd value is a
+// construction error naming the value and the range rather than an OOM. The
+// ceiling is math.MaxInt32 — the reply lands in a single []byte whose length
+// is an int, whose width is GOARCH-dependent, so this is the largest cap
+// exactly representable EVERYWHERE this module builds (Spec 018 §3.2). There
+// is no value meaning "unbounded"; leaving this option unset is how a caller
+// asks for the default.
 func WithMaxResponseBytes(n int64) Option {
 	return func(c *Config) {
 		c.maxResponseBytes = n
@@ -848,11 +913,26 @@ func WithEventName(name string) Option {
 // ending, the data buffer at every dispatch — so the cap bounds a single
 // line or a single event, not the stream's lifetime.
 //
-// n MUST be > 0: NewSSEParser (via NewConfig) returns ErrInvalidMaxEventBytes
-// for an explicit n <= 0, so a caller mistake (e.g. an uninitialized zero
-// value passed through) is a construction error rather than a
-// silently-disabled cap. Leaving this option unset (rather than calling it
-// with 0) is how a caller asks for the default.
+// HAZARD DISCLOSURE, read before raising this: the ceiling below is
+// not a safety guarantee. This option is the ONLY bound on a read driven by
+// a REMOTE PEER — the SSE stream the parser is buffering — so raising it above
+// the 1 MiB default trades flood protection for event size; a 2 GiB event is
+// a legal configuration and can still exhaust a container. The default is
+// what protects a caller who configures nothing (Spec 016 §3.8 / Spec 018
+// §3.3). Note the scope: this cap is PARSE-SIDE only — NewSSEParser and the
+// SSE client consult it; NewSSEServer's outbound frames are sized by the
+// caller's own message and are not bounded by this option.
+//
+// n MUST be in [1, 2147483647]: NewSSEParser (via NewConfig) returns
+// ErrInvalidMaxEventBytes for an explicit n outside that range, so a caller
+// mistake (an uninitialized zero value passed through, a units slip) is a
+// construction error naming the value and the range rather than a
+// silently-disabled cap or an OOM. The ceiling is math.MaxInt32 — the event
+// accumulates in a single []byte / bytes.Buffer whose length is an int, whose
+// width is GOARCH-dependent, so this is the largest cap exactly representable
+// EVERYWHERE this module builds (Spec 018 §3.2). There is no value meaning
+// "unbounded"; leaving this option unset (rather than calling it with 0) is
+// how a caller asks for the default.
 func WithMaxEventBytes(n int64) Option {
 	return func(c *Config) {
 		c.maxEventBytes = n
@@ -1188,8 +1268,9 @@ func NewConfig(opts ...Option) (*Config, error) {
 
 	if !cfg.maxBodyBytesSet {
 		cfg.maxBodyBytes = defaultMaxBodyBytes
-	} else if cfg.maxBodyBytes <= 0 {
-		return nil, ErrInvalidMaxBodyBytes
+	} else if err := checkRangeInt64(ErrInvalidMaxBodyBytes, "msghttp.WithMaxBodyBytes",
+		cfg.maxBodyBytes, 1, byteCapCeiling); err != nil {
+		return nil, err
 	}
 
 	if !cfg.successStatusSet {
@@ -1200,8 +1281,9 @@ func NewConfig(opts ...Option) (*Config, error) {
 
 	if !cfg.maxResponseBytesSet {
 		cfg.maxResponseBytes = defaultMaxResponseBytes
-	} else if cfg.maxResponseBytes <= 0 {
-		return nil, ErrInvalidMaxResponseBytes
+	} else if err := checkRangeInt64(ErrInvalidMaxResponseBytes, "msghttp.WithMaxResponseBytes",
+		cfg.maxResponseBytes, 1, byteCapCeiling); err != nil {
+		return nil, err
 	}
 
 	if cfg.eventNameSet && !validSSEField(cfg.eventName) {
@@ -1210,8 +1292,9 @@ func NewConfig(opts ...Option) (*Config, error) {
 
 	if !cfg.maxEventBytesSet {
 		cfg.maxEventBytes = defaultMaxEventBytes
-	} else if cfg.maxEventBytes <= 0 {
-		return nil, ErrInvalidMaxEventBytes
+	} else if err := checkRangeInt64(ErrInvalidMaxEventBytes, "msghttp.WithMaxEventBytes",
+		cfg.maxEventBytes, 1, byteCapCeiling); err != nil {
+		return nil, err
 	}
 
 	if !cfg.maxConnectionsSet {

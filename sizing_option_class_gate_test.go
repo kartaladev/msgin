@@ -23,40 +23,68 @@ package msgin_test
 //     NOT a relabelling of Spec 016 §2.1's three classification verdicts; §2.1's
 //     "classification arms ≠ AC-5 behavioral arms" note is normative for the
 //     split, and §6 AC-5 tabulates it:
-//       - "fixed"    (9) — the fault is reported through the surface Spec 016
+//       - "fixed"   (12) — the fault is reported through the surface Spec 016
 //                          §3 names for it: the constructor's return, or the
-//                          first use of the object it produced.
+//                          first use of the object it produced. 9 were bounded
+//                          by Spec 016 / Plan 029; the 3 msghttp byte caps
+//                          joined them from "deferred" at Spec 018 / Plan 032.
 //       - "rejects"  (1) — msghttp.WithSuccessStatus. It is safe (a) by §2.1's
 //                          criterion and NOTHING HERE FIXES IT; it rejects
 //                          1<<30 only through its own pre-existing [100,599]
 //                          check. It gets an arm of its own because it belongs
 //                          in neither "fixed" (not a class member) nor "safe"
 //                          (which asserts ACCEPTS).
-//       - "deferred" (3) — accepts 1<<62, annotated so it never reads as a
-//                          safety certificate.
+//       - "deferred" (0) — no members as of Plan 032; see Spec 018. The arm is
+//                          retained so a future knob with a genuinely deferred
+//                          remedy has it, and so this file keeps documenting
+//                          four arms rather than silently dropping the
+//                          vocabulary. NOTE: byArm below is built by COUNTING,
+//                          so an empty arm has NO KEY there — it is absent,
+//                          not zero.
 //       - "safe"     (6) — accepts math.MaxInt AND its product is usable.
-//     9 + 1 + 3 + 6 = 19 rows = 17 AST keys + 2 manual rows.
+//     12 + 1 + 6 = 19 rows = 17 AST keys + 2 manual rows.
 //
-// # THE OVERSIZED LITERAL IS NOT ONE VALUE — IT IS THREE, BY ARM (Plan 030 Task 2)
+// # THE OVERSIZED LITERAL IS TWO-DIMENSIONAL (Plan 030 Task 2; Plan 032)
 //
 // Every row above previously passed the literal 1<<62, which does not fit an
 // int on GOARCH=386 and made this whole test binary fail to COMPILE there.
-// The replacement SPLITS BY ARM, because the arms need OPPOSITE properties —
-// a blanket rewrite to one value would leave rows green while probing nothing:
+// The replacement is NOT "one value per arm" — a blanket rewrite to one value
+// would leave rows green while probing nothing. Read it in two dimensions, in
+// this order:
 //
-//   - "fixed" (9) and "rejects" (1) → 1<<30 = 1,073,741,824. These rows assert
-//     an EqualError against a rendered decimal. 1<<30 fits an int32 yet still
-//     exceeds every ceiling in the codebase (the largest is 1<<20 = 1,048,576),
-//     so it selects the identical out-of-range branch on both architectures
-//     while keeping the expected decimal — 1073741824 — architecture-INDEPENDENT.
-//     That fixed decimal is the whole point; math.MaxInt here would render
-//     differently on 386 and 64-bit and break the assertions.
+// DIMENSION 1 — THE ARM FIXES THE REQUIRED PROPERTY.
 //
-//   - "deferred" (3) → still 1<<62. These three take an int64, NOT an int, so
-//     they compile fine on 386 and were never part of the defect. 🔴 DO NOT
-//     "finish the job" by converting them: 1<<62 is what makes the row's claim
-//     — "this knob accepts an absurd value and the remedy is DEFERRED" — mean
-//     anything. See the arm's own comment below.
+//   - "safe" (6): the value must be ACCEPTED and must stay MAXIMALLY absurd ⇒
+//     math.MaxInt, and nothing else. The parameter type does NOT get a vote
+//     here — all six of these rows are int-typed, and demoting them to a
+//     reject-arm literal would silently disable the probe (see below).
+//   - "fixed" (12) and "rejects" (1): the value must be OUT OF RANGE and must
+//     render an architecture-INDEPENDENT decimal, because these rows assert an
+//     EqualError against a rendered decimal. That fixed decimal is the whole
+//     point; math.MaxInt here would render differently on 386 and 64-bit and
+//     break the assertions.
+//
+// DIMENSION 2 — ONLY WITHIN THE REJECT ARMS ("fixed" / "rejects") DOES THE
+// PARAMETER TYPE CHOOSE THE LITERAL.
+//
+//   - int-typed → 1<<30 = 1,073,741,824. It fits an int32 yet still exceeds
+//     every INT-TYPED ceiling in the codebase (the largest of those is 1<<20 =
+//     1,048,576), so it selects the identical out-of-range branch on both
+//     architectures while keeping the expected decimal — 1073741824 —
+//     architecture-INDEPENDENT.
+//
+//   - int64-typed → 1<<62. The three msghttp byte caps (WithMaxBodyBytes,
+//     WithMaxEventBytes, WithMaxResponseBytes) are `func(n int64)`, so 1<<62
+//     is in range on EVERY architecture, compiles fine on 386, and was never
+//     part of that defect. 🔴 DO NOT "finish the job" by converting them to an
+//     int-sized literal. 1<<30 in particular CANNOT be used for them:
+//     byteCapCeiling is an int64 ceiling of 2,147,483,647, which is ABOVE
+//     1<<30, so those rows would be ACCEPTED and every require.ErrorIs would
+//     fail. And on 386 math.MaxInt would shrink the value to exactly
+//     2,147,483,647 — the ceiling itself, hence in range — leaving the row
+//     green while asserting nothing.
+//
+// AND THE WARNING DIMENSION 2 DOES NOT REACH — CARRIED FORWARD VERBATIM:
 //
 //   - "safe" (6) → math.MaxInt. These rows assert require.NoError plus a
 //     product-usable check and carry NO decimal string, so architecture
@@ -398,7 +426,7 @@ func runAndStop(t *testing.T, run func(ctx context.Context) error) (stop func())
 // different constructor shapes) to share one SUT call.
 type sizingConformanceCase struct {
 	key    string // matches a sizingConformanceKeys entry, or "(manual) ..." for the two excluded methods
-	arm    string // "fixed" | "rejects" | "deferred" | "safe" — Spec 016 §6 AC-5's four BEHAVIORAL arms, not §2.1's three classification verdicts
+	arm    string // "fixed" | "rejects" | "deferred" (no members as of Plan 032 — see Spec 018) | "safe" — Spec 016 §6 AC-5's four BEHAVIORAL arms, not §2.1's three classification verdicts
 	assert func(t *testing.T)
 }
 
@@ -406,7 +434,9 @@ type sizingConformanceCase struct {
 // half 1 discovers is EXECUTABLE, never a declaration string (round-1 M-4).
 func TestSizingOptionClass_Conformance(t *testing.T) {
 	tests := []sizingConformanceCase{
-		// ---- arm: fixed — the 9 class members this increment bounds ----
+		// ---- arm: fixed — the 12 class members bounded here: 9 by Spec 016 /
+		// Plan 029, then the 3 msghttp byte caps that moved out of "deferred"
+		// at Spec 018 / Plan 032 (the three int64-typed rows at the end) ----
 		{
 			key: "endpoint.WithMaxInFlight",
 			arm: "fixed",
@@ -517,6 +547,54 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 					"msghttp: replay buffer out of range: msghttp.WithReplayBuffer: 1073741824 not in [1, 65536]")
 			},
 		},
+
+		// The three int64-typed byte caps, moved here from the "deferred" arm
+		// by Spec 018 / ADR 0034 / Plan 032. Each is the sole bound on a
+		// REMOTE-PEER-DRIVEN read retained in memory; each is now bounded at
+		// byteCapCeiling = math.MaxInt32 = 2,147,483,647 — a REPRESENTABILITY
+		// ceiling (the largest cap exactly expressible as a []byte length on
+		// every GOARCH), not a guess about the caller's payload, which is what
+		// CLAUDE.md's Sensible-defaults gate forbids and why Spec 016 §3.8
+		// deferred them.
+		//
+		// 🔴 THEY KEEP THE 1<<62 LITERAL — see the file header's dimension 2.
+		// 1<<30 is BELOW byteCapCeiling and would be ACCEPTED, turning every
+		// require.ErrorIs below into a failure; on 386, math.MaxInt lands
+		// exactly ON the ceiling and would be accepted too. The literal is
+		// chosen by the PARAMETER TYPE within a reject arm, not by the arm.
+		{
+			key: "msghttp.WithMaxBodyBytes",
+			arm: "fixed",
+			assert: func(t *testing.T) {
+				_, err := msghttp.NewConfig(msghttp.WithMaxBodyBytes(1 << 62))
+				require.ErrorIs(t, err, msghttp.ErrInvalidMaxBodyBytes)
+				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
+				assert.EqualError(t, err,
+					"msghttp: max body bytes out of range: msghttp.WithMaxBodyBytes: 4611686018427387904 not in [1, 2147483647]")
+			},
+		},
+		{
+			key: "msghttp.WithMaxEventBytes",
+			arm: "fixed",
+			assert: func(t *testing.T) {
+				_, err := msghttp.NewConfig(msghttp.WithMaxEventBytes(1 << 62))
+				require.ErrorIs(t, err, msghttp.ErrInvalidMaxEventBytes)
+				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
+				assert.EqualError(t, err,
+					"msghttp: max event bytes out of range: msghttp.WithMaxEventBytes: 4611686018427387904 not in [1, 2147483647]")
+			},
+		},
+		{
+			key: "msghttp.WithMaxResponseBytes",
+			arm: "fixed",
+			assert: func(t *testing.T) {
+				_, err := msghttp.NewConfig(msghttp.WithMaxResponseBytes(1 << 62))
+				require.ErrorIs(t, err, msghttp.ErrInvalidMaxResponseBytes)
+				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
+				assert.EqualError(t, err,
+					"msghttp: max response bytes out of range: msghttp.WithMaxResponseBytes: 4611686018427387904 not in [1, 2147483647]")
+			},
+		},
 		// ---- arm: rejects — 1 row that is NOT a class member and is NOT fixed here ----
 		// M2 (Task 7 review): this row previously sat in the arm labelled "fixed",
 		// where a reader re-deriving Spec 016 §2.1 counted 10 class members against
@@ -536,72 +614,48 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 			},
 		},
 
-		// ---- arm: deferred — 3 class members whose ceiling is DEFERRED (Spec 016 §3.8) ----
-		// Each is the sole bound on a REMOTE-PEER-DRIVEN read retained in memory,
-		// which CLAUDE.md's Sensible-defaults gate names as the one case where no
-		// library-picked ceiling can be safe. The assertion is deliberately just
-		// "accepts" — asserting "and its product is usable" here would certify an
-		// unbounded remote-driven read as conformant, which is the exact inversion
-		// ADR 0032's round-5 BLOCKER-1 was about.
+		// ---- arm: deferred — NO MEMBERS as of Spec 018 / Plan 032 ----
+		// TOMBSTONE, deliberately retained. The arm held 3 rows —
+		// msghttp.WithMaxBodyBytes, WithMaxEventBytes and WithMaxResponseBytes,
+		// each the sole bound on a REMOTE-PEER-DRIVEN read retained in memory,
+		// each asserting only "accepts 1<<62" because asserting "and its
+		// product is usable" would have certified an unbounded remote-driven
+		// read as conformant (ADR 0032's round-5 BLOCKER-1). Spec 018 / ADR
+		// 0034 bounded all three at byteCapCeiling, so all three MOVED into the
+		// "fixed" arm above, keeping the 1<<62 literal.
 		//
-		// 🔴 WHEN §3.8's CEILING LANDS, THIS GATE WILL GO RED, AND THAT IS CORRECT.
-		// M1 (Task 7 review): a contributor who bounds WithMaxBodyBytes meets a red
-		// row here and the tempting repair is to weaken the production check back
-		// to "accepts 1<<62" so the gate passes. Do NOT. The repair is to MOVE the
-		// row into the "fixed" arm above and rewrite its assertion to the fixed
+		// The name stays, and the file header still documents FOUR arms, so a
+		// future knob whose remedy is genuinely deferred has an arm to sit in
+		// and does not have to re-invent the vocabulary and its warnings.
+		// 🔴 byArm below is built by COUNTING, so this arm has NO KEY there —
+		// absent, not zero. A "deferred": 0 entry FAILS that assertion.
+		//
+		// 🔴 THE WARNING THAT MADE THE MOVE HAPPEN, GENERALISED AND KEPT.
+		// M1 (Task 7 review) told a contributor who bounded one of these knobs
+		// that the red row they met here was CORRECT, and that the repair was
+		// to MOVE the row into "fixed" and rewrite its assertion to the fixed
 		// shape (require.ErrorIs on the knob's sentinel + the §3.1 rendered
-		// string), exactly as WithReplayBuffer's row was moved when revision 5
-		// reclassified it. Do not delete the assertion, and do not relax the
-		// bound — a red row here means the remedy landed, not that it broke.
-		//
-		// 🔴 THESE THREE ROWS KEEP THE 1<<62 LITERAL — DO NOT CONVERT THEM
-		// (Plan 030 Task 2). Every OTHER oversized literal in this file moved off
-		// 1<<62 to make the package compile on GOARCH=386. These three did not,
-		// and must not: WithMaxBodyBytes / WithMaxEventBytes /
-		// WithMaxResponseBytes are `func(n int64)`, so 1<<62 is in range on EVERY
-		// architecture and produced no 386 compile error at all — they were never
-		// part of that defect. Converting them would silently shrink the value
-		// this arm's claim rests on ("accepts an absurd bound; the remedy is
-		// DEFERRED, Spec 016 §3.8"), and on 386 math.MaxInt would shrink it to
-		// 2,147,483,647 — well inside any plausible future ceiling. A sweep that
-		// "finishes the job" here is a regression, not a cleanup.
-		{
-			key: "msghttp.WithMaxBodyBytes",
-			arm: "deferred", // class member, remedy deferred — Spec 016 §3.8
-			assert: func(t *testing.T) {
-				cfg, err := msghttp.NewConfig(msghttp.WithMaxBodyBytes(1 << 62))
-				require.NoError(t, err)
-				require.NotNil(t, cfg)
-			},
-		},
-		{
-			key: "msghttp.WithMaxEventBytes",
-			arm: "deferred", // class member, remedy deferred — Spec 016 §3.8
-			assert: func(t *testing.T) {
-				cfg, err := msghttp.NewConfig(msghttp.WithMaxEventBytes(1 << 62))
-				require.NoError(t, err)
-				require.NotNil(t, cfg)
-			},
-		},
-		{
-			key: "msghttp.WithMaxResponseBytes",
-			arm: "deferred", // class member, remedy deferred — Spec 016 §3.8
-			assert: func(t *testing.T) {
-				cfg, err := msghttp.NewConfig(msghttp.WithMaxResponseBytes(1 << 62))
-				require.NoError(t, err)
-				require.NotNil(t, cfg)
-			},
-		},
+		// string) — never to weaken the production check back to "accepts"
+		// so the gate passes. Plan 032 is that event, and it took that repair.
+		// The instruction is not spent: it governs EVERY future row in this
+		// file. Whenever bounding a knob turns a row red, the repair is to move
+		// the row and rewrite its assertion. Do not delete the assertion, and
+		// do not relax the bound — a red row here means the remedy landed, not
+		// that it broke.
 
 		// ---- arm: safe — 4 AST rows + 2 manual rows ----
 		// Each accepts math.MaxInt AND its product is proven usable, not merely
 		// constructed: a comparison-only knob is exercised past the point where a
 		// buggy comparison (e.g. an int32 truncation) would misbehave.
 		//
-		// math.MaxInt, NOT the 1<<30 the reject arms use (Plan 030 Task 2):
-		// 1<<30 IS an int32 value, so it would leave every require.NoError below
-		// green while the int32-truncation probe stopped running. See the file
-		// header for the full split and its accepted 32-bit limitation.
+		// math.MaxInt, NOT any reject-arm literal (Plan 030 Task 2; Plan 032 —
+		// since the three int64-typed byte caps joined "fixed", the reject arms
+		// carry TWO literals, 1<<30 for their 10 int-typed rows and 1<<62 for
+		// their 3 int64-typed ones, so naming just one of them here would go
+		// stale): 1<<30 IS an int32 value, so it would leave every
+		// require.NoError below green while the int32-truncation probe stopped
+		// running. See the file header for the full two-dimensional split and
+		// its accepted 32-bit limitation.
 		{
 			key: "endpoint.WithPollMaxBatch",
 			arm: "safe",
@@ -755,7 +809,8 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 
 	// The ARM PARTITION is normative, so assert it rather than merely naming it
 	// in a subtest prefix. Spec 016 §2.1's arm table and §6 AC-5 both fix the
-	// split at 9/1/3/6; without this, a contributor could move a row between
+	// split — 12/1/0/6 since Spec 018 moved the three msghttp byte caps out of
+	// "deferred"; without this, a contributor could move a row between
 	// arms — precisely the reclassification that round-4 BLOCKER-1
 	// (WithReplayBuffer, safe -> class member) and round-5 BLOCKER-1
 	// (WithMaxResponseBytes, safe -> deferred) each were — and the suite would
@@ -763,7 +818,7 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 	// the subtest name. A verdict nothing asserts is a comment.
 	//
 	// Asserted as a key->arm MAPPING, not a per-arm COUNT (Task 8 review M-1):
-	// a count map (map[string]int{"fixed": 9, ...}) is blind to a PAIRWISE
+	// a count map (map[string]int{"fixed": 12, ...}) is blind to a PAIRWISE
 	// swap — relabel two keys' arms in opposite directions and every count
 	// stays put, so the gate would stay green through exactly the
 	// reclassification this comment describes. Binding each key to its own
@@ -779,9 +834,9 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 		"routing.WithCompletionSize":         "fixed",
 		"msghttp.WithReplayBuffer":           "fixed",
 		"msghttp.WithSuccessStatus":          "rejects",
-		"msghttp.WithMaxBodyBytes":           "deferred",
-		"msghttp.WithMaxEventBytes":          "deferred",
-		"msghttp.WithMaxResponseBytes":       "deferred",
+		"msghttp.WithMaxBodyBytes":           "fixed",
+		"msghttp.WithMaxEventBytes":          "fixed",
+		"msghttp.WithMaxResponseBytes":       "fixed",
 		"endpoint.WithPollMaxBatch":          "safe",
 		"resilience.WithBreakerThreshold":    "safe",
 		"endpoint.WithMaxPayloadBytes":       "safe",
@@ -796,13 +851,15 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 		byArm[tc.arm]++
 	}
 	require.Equal(t, wantArms, gotArms,
-		"Spec 016 §2.1's arm table and §6 AC-5 fix EVERY key's arm, not just the per-arm counts: 9 class "+
-			"members fixed here, 1 that rejects without being a class member (msghttp.WithSuccessStatus), "+
-			"3 with a deferred ceiling (§3.8), 6 safe (4 AST + 2 manual). Moving a row between arms is a "+
+		"Spec 016 §2.1's arm table and §6 AC-5 fix EVERY key's arm, not just the per-arm counts: 12 class "+
+			"members fixed here (9 by Spec 016/Plan 029, 3 by Spec 018/Plan 032), 1 that rejects without "+
+			"being a class member (msghttp.WithSuccessStatus), 0 deferred (the arm is a tombstone since "+
+			"Spec 018), 6 safe (4 AST + 2 manual). Moving a row between arms is a "+
 			"SPEC change — update §2.1 and §6 AC-5, do not just edit this map")
-	require.Equal(t, map[string]int{"fixed": 9, "rejects": 1, "deferred": 3, "safe": 6}, byArm,
+	require.Equal(t, map[string]int{"fixed": 12, "rejects": 1, "safe": 6}, byArm,
 		"the per-arm counts follow from wantArms above; a mismatch here means wantArms itself drifted "+
-			"from Spec 016 §2.1's 9/1/3/6 split")
+			"from Spec 016 §2.1's split, now 12/1/0/6. NOTE: byArm is built by COUNTING, so the empty "+
+			"\"deferred\" arm has NO KEY here — do not add \"deferred\": 0, it would fail")
 
 	for _, tc := range tests {
 		t.Run(tc.arm+"/"+tc.key, func(t *testing.T) {

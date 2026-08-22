@@ -1,5 +1,13 @@
 # Plan 030 — Post-029 maintenance: false godoc, 32-bit test overflow, stale plan numbers
 
+> 🔴 **ONE STATEMENT SUPERSEDED — 2026-08-22, by [Plan 032](032-byte-cap-ceilings.md).** This plan's Task 2 and
+> its backlog table describe the three `msghttp` byte caps as *"the gate's **deferred** arm"*. That was true
+> when it ran; Plan 032 ([Spec 018](../specs/018-byte-cap-ceilings.md) / [ADR 0034](../adrs/0034-byte-cap-ceilings.md))
+> has since bounded all three and moved their rows into the **`fixed`** arm, leaving `deferred` empty (a
+> retained tombstone). **The literal Task 2 chose for them — `1<<62` — is unchanged and still correct**, and
+> for the reason this plan gives: they are `func(n int64)`, so the value is in range on every `GOARCH`. It is
+> now also load-bearing in a second way — `1<<30` sits BELOW `byteCapCeiling` and would be accepted.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: `superpowers:subagent-driven-development` (the project default).
 > Steps use checkbox (`- [ ]`) syntax.
 >

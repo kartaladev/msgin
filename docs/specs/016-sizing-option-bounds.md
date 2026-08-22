@@ -2,7 +2,13 @@
 
 - **Status:** **DELIVERED (2026-08-22)** — revision 6 was written before any code, per CLAUDE.md's design-time
   gate; realized by [`plans/029-sizing-option-bounds.md`](../plans/029-sizing-option-bounds.md) Tasks 1–8 on
-  `fix/sizing-option-bounds`, whole-branch gate green. Two corrections landed at the delivery gate: §2.1's
+  `fix/sizing-option-bounds`, whole-branch gate green.
+  🔴 **FINISHED BY [Spec 018](018-byte-cap-ceilings.md) / [ADR 0034](../adrs/0034-byte-cap-ceilings.md) /
+  [Plan 032](../plans/032-byte-cap-ceilings.md):** §3.8's **deferred** byte-ceiling class —
+  `msghttp.WithMaxBodyBytes`, `WithMaxEventBytes`, `WithMaxResponseBytes` — is **CLOSED**. All three are bounded
+  at `byteCapCeiling = math.MaxInt32` and their class-gate rows moved from the `deferred` arm to `fixed`, so the
+  arm partition is now **12 fixed / 1 rejects / 0 deferred / 6 safe** (§2.1, §6 AC-5, both amended in place).
+  §3.8 item 2's undelivered **hazard-disclosure godoc** shipped in the same increment. Two corrections landed at the delivery gate: §2.1's
   `WithSuccessStatus` row (classification arms ≠ AC-5 behavioral arms — see §2.1) and §3.1/§3.3's as-delivered
   `checkRange` notes. Revision-6 text below is otherwise unchanged.
   - **Revision 6** folds round-5 findings ([`029-audit-round-5.md`](../plans/029-audit-round-5.md)): 2 BLOCKERs,
@@ -383,12 +389,12 @@ per row and AC-4 pins the two that rest on a structural property.
 | `WithMaxGroups` | `memory` | `len(s.groups) >= n` `groupstore.go:108` | **DEFECTIVE — fixed here** · sole bound on `s.groups` (§1.3) |
 | `WithMaxConnections` | `msghttp` | `len(s.conns) >= n` `sse_server.go:182` | **DEFECTIVE — fixed here** · sole bound on `s.conns` (§1.3) |
 | **`WithCompletionSize`** | `routing` | `len(g.Messages()) >= n` `aggregator.go:134` | **DEFECTIVE — fixed here** · **sole bound on group MEMBERS** (§1.4) — *was certified "safe — comparison only" through revision 3* |
-| **`WithMaxBodyBytes`** | `msghttp` | `io.ReadAll(http.MaxBytesReader(…, cfg.maxBody()))` `encode.go:102` | **DEFECTIVE — ceiling DEFERRED** (§3.8) · sole bound on a **remote-driven** full read |
-| **`WithMaxEventBytes`** | `msghttp` | `p.dataBuf.WriteString(value)` then `> p.maxEventBytes` `sse.go:384-389` | **DEFECTIVE — ceiling DEFERRED** (§3.8) · sole bound on a **remote-driven** `bytes.Buffer` |
+| **`WithMaxBodyBytes`** | `msghttp` | `io.ReadAll(http.MaxBytesReader(…, cfg.maxBody()))` `encode.go:102` | **DEFECTIVE — ceiling DELIVERED by [Spec 018](018-byte-cap-ceilings.md)** (§3.8) · sole bound on a **remote-driven** full read |
+| **`WithMaxEventBytes`** | `msghttp` | `p.dataBuf.WriteString(value)` then `> p.maxEventBytes` `sse.go:384-389` | **DEFECTIVE — ceiling DELIVERED by [Spec 018](018-byte-cap-ceilings.md)** (§3.8) · sole bound on a **remote-driven** `bytes.Buffer` |
 | **`WithReplayBuffer`** | `msghttp` | `appendRing` `sse_server.go:466-476`, evicting **at `n`** | **DEFECTIVE — fixed here** · **sole bound on retained events** (§1.5) — *was certified safe in revisions 1–4, most recently as cause (c)* |
 | `WithPollMaxBatch` | `endpoint` | `held < c.pollMaxBatch` `poller.go:36` | safe **(a)** — loop bound ≤ free credits; **derivatively** safe, see note |
 | `WithBreakerThreshold` | `resilience` | `b.fails >= b.threshold` `breaker.go:164` | safe **(a)** — scalar counter, accumulates nothing |
-| **`WithMaxResponseBytes`** | `msghttp` | **`io.ReadAll(io.LimitReader(resp.Body, max))`** `exchange.go:130-131` | **DEFECTIVE — ceiling DEFERRED** (§3.8) · sole bound on a **remote-driven** read whose body is **RETAINED** as the reply payload — *`drainBounded` is only 5 of its 6 reads* |
+| **`WithMaxResponseBytes`** | `msghttp` | **`io.ReadAll(io.LimitReader(resp.Body, max))`** `exchange.go:130-131` | **DEFECTIVE — ceiling DELIVERED by [Spec 018](018-byte-cap-ceilings.md)** (§3.8) · sole bound on a **remote-driven** read whose body is **RETAINED** as the reply payload — *`drainBounded` is only 5 of its 6 reads* |
 | `WithMaxPayloadBytes` | `endpoint` | `len(b) > c.maxPayloadBytes` `consumer.go:1199` | safe **(b)** — `b` is already materialised |
 | `WithSuccessStatus` | `msghttp` | HTTP status code | safe **(a)** — **already range-checked**, `[100,599]`. **Its AC-5 row is the `rejects` arm, not the `safe` arm** — it is the one safe knob that does *not* accept `1<<62`; see the note below |
 | **+ `NewTokenBucket`'s `burst`** | `resilience` | `float64(burst)` `ratelimit.go:48-49` | safe **(a)** — **positional, not an option**; carries a conformance row (§2 note) |
@@ -397,6 +403,15 @@ per row and AC-4 pins the two that rest on a structural property.
 17 rows for that reason. §6 AC-5 keys on **17**. **Re-derive this line before citing it** — it has been wrong in
 **every** prior revision (7/9 → 8/2/6 → 9/2/5 → **9/3/4**), which is precisely why §2.1 now leads with a criterion instead of
 a list.
+
+> 🔴 **The `3 deferred` term is SPENT — [Spec 018](018-byte-cap-ceilings.md) / [ADR 0034](../adrs/0034-byte-cap-ceilings.md)
+> / [Plan 032](../plans/032-byte-cap-ceilings.md).** The census line above is kept **verbatim** because it
+> records this spec's own scope — *"fixed **here**"* means fixed by Plan 029 — and because the totals (16
+> options, 17 conformance keys) are unchanged. **Membership did not change either:** D-AB's criterion still
+> classes all three byte caps as class members, and no fourth safety cause was added. What changed is the
+> **remedy**: the three are now bounded at `byteCapCeiling = math.MaxInt32`, so read the line as
+> **9 fixed here + 3 fixed by Spec 018 + 4 safe**. The AC-5 behavioral partition that follows is amended in
+> place.
 
 > **CLASSIFICATION arms ≠ AC-5 BEHAVIORAL arms — they are two different partitions of the same rows, and
 > conflating them was a live self-contradiction in revisions 1–6.** The census above partitions by *why* a knob
@@ -408,13 +423,21 @@ a list.
 >
 > | AC-5 arm | Rows | Which keys |
 > |---|---|---|
-> | `fixed` | **9** | the 9 class members this increment bounds |
+> | `fixed` | **12** | the 9 class members this increment bounds, **+ the 3 byte caps [Spec 018](018-byte-cap-ceilings.md) bounded** |
 > | `rejects` | **1** | `WithSuccessStatus` — safe by the criterion, but pre-existing `[100,599]` makes it reject |
-> | `deferred` | **3** | `WithMaxBodyBytes`, `WithMaxEventBytes`, `WithMaxResponseBytes` |
+> | `deferred` | **0** | *(empty since Spec 018; the arm is retained as a tombstone — see [Spec 018](018-byte-cap-ceilings.md) / [ADR 0034](../adrs/0034-byte-cap-ceilings.md) **D-AS**)* |
 > | `safe` | **6** | `WithPollMaxBatch`, `WithBreakerThreshold`, `WithMaxPayloadBytes`, `burst`, + the **2 manual** rows |
 >
-> **9 + 1 + 3 + 6 = 19 rows = 17 AST keys + 2 manual rows.** Both totals are re-derivable from the census line
+> **12 + 1 + 0 + 6 = 19 rows = 17 AST keys + 2 manual rows.** Both totals are re-derivable from the census line
 > above; neither is incremented from a prior revision.
+>
+> 🔴 **AMENDED BY [Spec 018](018-byte-cap-ceilings.md) / [Plan 032](../plans/032-byte-cap-ceilings.md).** The
+> table above read `fixed 9 / deferred 3` while this spec's own §3.8 remedy was outstanding. Spec 018 bounded
+> `WithMaxBodyBytes`, `WithMaxEventBytes` and `WithMaxResponseBytes` at a representability ceiling
+> (`math.MaxInt32`), so all three moved from `deferred` into `fixed`. **This table was re-derived from
+> `sizing_option_class_gate_test.go`'s own `wantArms` / `byArm` values after the move, not transcribed from a
+> plan.** The `deferred` arm keeps its name and its documentation so a future knob with a genuinely deferred
+> remedy has somewhere to sit; note that `byArm` is built by COUNTING, so an empty arm has **no key** there.
 
 **Note how narrowly the safe rows escape.** `WithBreakerThreshold` shares row-shape with `WithCompletionSize` and
 is safe only because `b.fails` is a scalar; `WithMaxPayloadBytes` shares a verdict string with `WithMaxBodyBytes`
@@ -702,6 +725,19 @@ This is a behavioral change to shipped, non-crashing code — free at pre-v1 wit
 
 ### 3.8 The byte-ceiling class is DEFERRED, with a stated reason — not called "safe"
 
+> 🔴 **DELIVERED — the deferral this section opened is CLOSED by [Spec 018](018-byte-cap-ceilings.md) /
+> [ADR 0034](../adrs/0034-byte-cap-ceilings.md) / [Plan 032](../plans/032-byte-cap-ceilings.md).** All three
+> knobs now carry a finite upper bound, `byteCapCeiling = math.MaxInt32`, enforced by `NewConfig` through the
+> same `checkRange` render this spec's §3.1 fixes. **The remedy is not the "explicit opt-in unbounded state"
+> this section anticipated:** Spec 018 §3.4 rejected an off-state (`-1` and `0` are already spoken for by the
+> typed rejection, so one would cost new exported surface whose only purpose is to re-enable the hazard), and
+> answered the Sensible-defaults objection restated below with a ceiling justified by **representability** —
+> the largest cap exactly expressible as a `[]byte` length on every `GOARCH` — rather than by a guess about
+> the caller's payload. **The section below is retained as the record of why the deferral was correct at the
+> time; read it against Spec 018 §3.2, not as a live to-do.** Item 2 of *"What this increment DOES do for
+> them"* below was **never delivered by [Plan 029](../plans/029-sizing-option-bounds.md)** and is delivered by
+> Plan 032 instead.
+
 `msghttp.WithMaxBodyBytes`, `msghttp.WithMaxEventBytes` and — added in revision 6 — **`msghttp.WithMaxResponseBytes`**
 **are class members** by §2.1's criterion: each is the sole bound on an accumulation, and — worse than any knob in
 §1.3 — the accumulation is driven by a **remote peer**, not by the caller. Measured:
@@ -767,12 +803,18 @@ negative `n` is already taken by the rejection, so it would need a new sentinel 
 
 **What this increment DOES do for them**, at zero risk and zero exported-surface change:
 1. §2.1 records them as **class members with a deferred remedy**, with the true reason replacing the false
-   *"limit, never allocated"*.
+   *"limit, never allocated"*. *(Since [Spec 018](018-byte-cap-ceilings.md): **class members, bounded** — the
+   `deferred` arm is empty.)*
 2. Their **godoc gains the hazard disclosure**: the knob is the only bound on a remote-driven read, the default is
-   safe, and a large explicit value removes the protection.
-3. AC-5 half 2 puts them in an arm that asserts **acceptance without claiming safety** (§6 AC-5).
+   safe, and a large explicit value removes the protection. 🔴 **This one was PROMISED HERE AND NEVER SCHEDULED
+   — Plan 029 has no task for it** (`grep -c 'hazard disclosure' docs/plans/029-sizing-option-bounds.md` → `0`).
+   It is delivered by [Plan 032](../plans/032-byte-cap-ceilings.md) instead, in the superseding form: the
+   honest disclosure after the ceiling lands is *"bounded at the ceiling, and the ceiling is not a safety
+   guarantee"*, not *"unbounded"*.
+3. AC-5 half 2 puts them in an arm that asserts **acceptance without claiming safety** (§6 AC-5). *(Since
+   Spec 018: the `fixed` arm, asserting rejection at `1<<62`.)*
 
-Tracked as `docs/HANDOVER.md` §8 backlog item 6.
+Tracked as `docs/HANDOVER.md` §8 backlog item 6 — **CLOSED** by Spec 018 / ADR 0034 / Plan 032.
 
 ### 3.9 `WithCompletionSize` needs a config field before it can be validated
 
@@ -976,7 +1018,7 @@ plain and under `-race`, with a no-op noise floor of exactly `0` bytes.
    |---|---|---|
    | **class member, fixed here** (9) | the 7 + `WithCompletionSize` + `WithReplayBuffer` | **reports the fault through the surface §3 names for it** — the constructor's return, **or the first use of the object it produced** |
    | **rejects, but not a class member** (1) | `WithSuccessStatus` | **rejects** `1<<62` through its **pre-existing** `[100,599]` check. It is `safe (a)` by §2.1's criterion and **nothing here fixes it** — the arm exists because it cannot honestly sit in either the `fixed` arm (it is not a class member) or the `safe` arm (which asserts *accepts*) |
-   | **class member, ceiling deferred** (3) | `WithMaxBodyBytes`, `WithMaxEventBytes`, `WithMaxResponseBytes` | **accepts** `1<<62`, and the row is annotated *"class member, remedy deferred — §3.8"* so it never reads as a safety certificate. **When §3.8's ceiling lands, MOVE the row to the `fixed` arm — do not weaken the production check to keep the gate green** |
+   | ~~**class member, ceiling deferred** (3)~~ → **fixed** (0 deferred) | `WithMaxBodyBytes`, `WithMaxEventBytes`, `WithMaxResponseBytes` | 🔴 **SUPERSEDED BY [Spec 018](018-byte-cap-ceilings.md) / [Plan 032](../plans/032-byte-cap-ceilings.md).** Each row USED to assert it *accepts* `1<<62`, annotated *"class member, remedy deferred — §3.8"* so it never read as a safety certificate, under the standing instruction *"when §3.8's ceiling lands, MOVE the row to the `fixed` arm — do not weaken the production check to keep the gate green"*. **Spec 018 is that event and took exactly that repair:** each row now asserts `require.ErrorIs` on its own sentinel + the §3.1 render at `1<<62` + `assert.False(msgin.IsPermanent(err))`, in the `fixed` arm. The instruction is not spent — it governs every future row |
    | **safe** (3 + `burst` + the 2 manual rows = 6) | §2.1's safe rows **minus `WithSuccessStatus`** | **accepts** `1<<62` and its product is usable |
 
    **9 + 1 + 3 + 6 = 19 rows.** Re-derive from §2.1's arm table; do not increment.
@@ -1006,8 +1048,8 @@ plain and under `-race`, with a no-op noise floor of exactly `0` bytes.
    | Arm | Keys | Fixture needed |
    |---|---|---|
    | rejects `1<<62` | `WithConnectionBuffer`, `WithMaxConnections`, **`WithReplayBuffer`** (all newly), `WithSuccessStatus` (already) | `NewConfig` only — one line each |
-   | accepts, deferred (§3.8) | `WithMaxBodyBytes`, `WithMaxEventBytes`, **`WithMaxResponseBytes`** | `NewConfig` only |
-   | accepts, safe | *(none — `WithMaxResponseBytes` moved to the deferred arm in revision 6)* | — |
+   | ~~accepts, deferred (§3.8)~~ → **rejects, fixed** ([Spec 018](018-byte-cap-ceilings.md)) | `WithMaxBodyBytes`, `WithMaxEventBytes`, **`WithMaxResponseBytes`** | `NewConfig` only |
+   | accepts, safe | *(none — `WithMaxResponseBytes` moved to the deferred arm in revision 6, then to `fixed` by Spec 018)* | — |
 
    **After revision 5's BLOCKER-1 fix, NO row needs a live `SSEServer` at all.** `WithReplayBuffer` — the one
    candidate revision 4 identified — moves into the **rejects** arm, where `NewConfig` alone suffices. So the
