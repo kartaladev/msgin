@@ -22,16 +22,49 @@
 > **This plan is deliberately thin** (Plan 024/026/028/029/031 precedent): signatures, positions, branch coverage
 > and commit boundaries — **no embedded implementations**. Write the code TDD-first from the tables below.
 
-**Revision 4 — post-audit-round-3. NOT approved for implementation.**
+**Revision 5 — post-audit-round-4. ✅ CLEARED FOR IMPLEMENTATION.**
 
-**Three rounds of the adversarial design audit have run** over the assembled bundle
+**Four rounds of the adversarial design audit have run** over the assembled bundle
 ([Spec 018](../specs/018-byte-cap-ceilings.md) + [ADR 0034](../adrs/0034-byte-cap-ceilings.md) + this plan).
 Round 1 returned **NOT SAFE TO IMPLEMENT** — 3 BLOCKERs, 7 MAJORs, 4 MINORs
 ([`032-audit-round-1.md`](032-audit-round-1.md), **immutable**). Round 2 returned **NOT SAFE TO IMPLEMENT** —
 1 BLOCKER, 5 MAJORs, 6 MINORs ([`032-audit-round-2.md`](032-audit-round-2.md), **immutable**). Round 3 returned
 **NOT SAFE TO IMPLEMENT** — 0 BLOCKERs, 3 MAJORs, 4 MINORs ([`032-audit-round-3.md`](032-audit-round-3.md),
 **immutable**), and verified that **all twelve round-2 findings LANDED, both round-1 residues closed, and nothing
-regressed.** This revision folds every round-3 finding back. **Round 4 has not run.**
+regressed.** **Round 4 returned SAFE TO IMPLEMENT** — 0 BLOCKERs, 1 MAJOR, 9 MINORs
+([`032-audit-round-4.md`](032-audit-round-4.md), **immutable**), verifying **6 LANDED, 3 LANDED-BUT-FLAWED,
+0 NOT LANDED, 0 REGRESSED** and the N-9 residue **CLOSED**.
+
+✅ **This revision folds R4-1…R4-10, and NO FIFTH ROUND IS REQUIRED — the auditor said so explicitly:**
+*"Fold R4-1 through R4-10 in without a fifth round; they are corrections, not re-designs."* Not one of the ten
+changes a decision, a value, a signature, a task boundary or a commit boundary. **Implementation may begin at
+Task 1**, subject to CLAUDE.md's separate *ask-before-implementing* gate and its **SDD default** (a fresh
+implementer subagent per task; the coordinator verifies green and commits; an adversarial reviewer before
+delivery). The per-task commits below are pre-authorized **once an execution mode is chosen** (Global
+constraint 9).
+
+🔴 **Serialization — this changed at revision 5, and it changes Step 7.**
+[Plan 031](031-group-member-bounds.md) is **still in audit and undelivered**; this bundle is cleared, so
+**PLAN 032 NOW LANDS FIRST.** Both increments edit `sizing_option_class_gate_test.go`. Under this order Step 7's
+*"If Plan 031 has not landed"* branch is the expected one — `{"fixed": 12, "rejects": 1, "safe": 6}` and
+`require.Len(t, tests, 19)` — and **Plan 031 rebases, re-deriving its own gate figures against the post-032
+file** rather than against the pre-032 counts its current revision assumes. **Still run Step 7's determination:**
+the order is *expected*, not *guaranteed*, and the check costs one `git log`.
+
+**What round 4 changed in THIS plan** — ten corrections, no re-design:
+
+| Finding | Change here |
+|---|---|
+| **R4-1** MAJOR (Spec §6 AC-1 stated **both** definitions of its third clause) | Spec-level; the plan's contribution is `:206`'s trailing *"accepted with an observable effect"* → **"accepted, with its product usable"**, so the constraint-6 history block stops re-introducing the retired term. |
+| **R4-2** (M3-6 deleted here, still cited as a live probe in the spec and the ADR) | Discharged there — Spec §6 AC-7 and ADR D-AR(b) now read **M3-1…M3-5 and B1-10**. **Nothing in this plan changes**; the deletion, the Evidence note and the checklist item were already correct, and *satisfying them* is what made the other two false. |
+| **R4-3** (B1-10's mutant is killed but **NOT attributably**) | 🔴 **The one an implementer would otherwise get wrong. B1-10 re-specified.** `permanentError.Error()` prefixes `"msgin: permanent: "` (`reliability.go:13`), so the bare wrap also reds every `EqualError` in AC-1/AC-2 and the three moved rows — deleting the `assert.False` line entirely reds the same cases. The mutant now has a **two-part targeted arm**: wrap **and** update that case's `EqualError` expectation, so only `assert.False` fails. The *"ONLY mutant proving"* claim is qualified. |
+| **R4-4** (a seventeenth site at `:22`; site 5's disposition under-specified) | Step 6 gains **site 17 (`:22`)** — unreachable by the union selector — and **site 5 is made explicit: TOMBSTONE the header's arm-list bullet**, matching site 8, because deleting it falsifies `:22`. Inventory **16 → 17** here, in Global constraint 10 and in the delivery checklist. |
+| **R4-5** (the INV-6 comparison is at `exchange.go:135`, not `:133`) | Spec/ADR-level; this plan never cited the offset. No change. |
+| **R4-6** (constraint 6 tightened to `1 MiB + 1`, the spec's prose still argued from 2 MiB / 32×) | **This plan's constraint 6 was already correct** and is the authority; the stale prose was in Spec §6 AC-1 and is fixed there, at `1 MiB + 1` and **64×**. No change here. |
+| **R4-7** (`:95` said *"has run TWICE"*, `:98` said *"All three rounds"*) | The header block above is rewritten: **four rounds**, round 4 **cleared** the bundle, and the *"Round 4 must run before implementation begins"* instruction is **discharged and replaced** — leaving it standing would order the fifth round the auditor said not to convene. |
+| **R4-8** (`git add -N` is a no-op; the file count goes stale) | Task 2 Steps 4 and 5 restate `git add -N` as a **guard whose no-op result is the expected state**, and replace the literal *"six"* with the derived set — *every `docs/specs/018-*`, `docs/adrs/0034-*`, `docs/plans/032-*` file, whatever their number* (it is **seven** now that `032-audit-round-4.md` exists). |
+| **R4-9** (no mutant reverts a sentinel's text or the `site` argument) | New mutant **B1-11**, plus an optional `site`-string arm. Step 4 item 4's rename is the increment's stated behavioral change and six new `EqualError` assertions carry it; every previously-listed mutant is killed by a bare `require.ErrorIs`, so none targeted the text. |
+| **R4-10** (the deferred follow-up is recorded where the next session will not look) | Step 11b's `docs/HANDOVER.md` bullet now **opens a new §7 row** for *"derive the class gate's prose counts from `wantArms` at test time"* in the same edit that closes item 6. §7 is the discoverable backlog; Spec 018 §8 is not. |
 
 **What round 3 changed in THIS plan:**
 
@@ -92,15 +125,25 @@ plan's shape:**
   assertion in Task 1 (`2147483647` appears in ~8 string literals, across three files). Changing it after Task 1
   is a cross-file sweep, not a one-line edit.
 
-**The adversarial design audit has run TWICE and has not yet cleared this bundle.**
+**The adversarial design audit has run FOUR TIMES, and round 4 CLEARED this bundle.**
 [CLAUDE.md](../../CLAUDE.md) makes it a hard gate: a fresh Opus subagent attacks the complete bundle —
 [Spec 018](../specs/018-byte-cap-ceilings.md) + [ADR 0034](../adrs/0034-byte-cap-ceilings.md) + this plan —
-**together**, before any implementation code. **All three rounds returned NOT SAFE TO IMPLEMENT**
-([round 1](032-audit-round-1.md), [round 2](032-audit-round-2.md), [round 3](032-audit-round-3.md)). Two rounds
-is this project's established norm and **this bundle has now exhausted it by 50% without clearing**; Plan 029
-needed **five**. **Round 4 must run on revision 4 before implementation begins** — and round 3's own verdict
-names the shape of what a fourth round should attack first: the class-gate inventory, which three rounds have
-each patched at the instance level (Step 6; [Spec 018 §8 item 5](../specs/018-byte-cap-ceilings.md)).
+**together**, before any implementation code. **Rounds 1-3 returned NOT SAFE TO IMPLEMENT**
+([round 1](032-audit-round-1.md), [round 2](032-audit-round-2.md), [round 3](032-audit-round-3.md)); **round 4
+returned SAFE TO IMPLEMENT** ([round 4](032-audit-round-4.md)). Two rounds is this project's established norm
+and this bundle needed four; Plan 029 needed five. **No fifth round is required** — round 4's instruction is
+verbatim *"fold R4-1 through R4-10 in without a fifth round; they are corrections, not re-designs."*
+
+> 🔴 **Round-4 R4-7: revision 4 said *"has run TWICE"* here and *"All three rounds"* three lines later, and
+> `:100`'s *"exhausted it by 50%"* agreed with neither.** A header that under-counts the scrutiny a design has
+> had is how a fifth round gets convened. **Do not restore a percentage or a fixed count** — state the round
+> number and the verdict.
+
+Round 3's verdict named the class-gate inventory as what a fourth round should attack first, and **round 4 did,
+finding a seventeenth site (`:22`, R4-4) that no selector can reach — and cleared the bundle anyway**, because
+the harm no longer depends on the inventory being complete: it is blocked by a standalone delivery-checklist
+invariant (the gate's own `require.Equal` message reports the post-move partition). The durable fix stays a
+backlog item (Step 11b; [Spec 018 §8 item 5](../specs/018-byte-cap-ceilings.md)).
 
 > **Plan number — re-derived, not assumed.** `ls docs/plans/[0-9]*.md | sed -E 's|.*/([0-9]{3}).*|\1|' | sort -u | tail -3`
 > → `029 030 031`. Both numbers are **TAKEN** ([`030-post-029-maintenance.md`](030-post-029-maintenance.md),
@@ -203,9 +246,11 @@ needed.** No new dependency, in any module.
    > (an integer) and collides with **five** branches — **B1-1** (`2147483647`), **B1-3** (`2147483648`),
    > **B1-5** (`2147483647`), **B1-9** (`1<<62`) — plus **both AC-2 upper-arm `EqualError` assertions** and
    > **AC-1's own first bullet**, which round-1 M-10 rewrote this same revision to require
-   > `NewConfig(WithX(byteCapCeiling))` → accepted with an observable effect. An implementer applying revision 2
+   > `NewConfig(WithX(byteCapCeiling))` → **accepted, with its product usable**. An implementer applying revision 2
    > literally deletes the increment's entire upper arm. **Do not restore the revision-2 wording on the strength
-   > of the m-13 citation.**
+   > of the m-13 citation.** *(🔴 **Round-4 R4-1:** this clause read *"accepted with an observable effect"* until
+   > revision 5 — the term round-3 NEW-6 retired, re-introduced in a paragraph that has nothing to do with the
+   > distinction. See the *"Its product is usable"* block below Task 1's branch table.)*
 7. **Mutation-prove every new assertion** with a mutant that targets **that** assertion (the project's standing
    rule: *a killed mutant is the evidence, not a green run*). Each task carries a mutant table; record the killed
    mutant per case in the task's Evidence block. **A case that survives its own mutant is rewritten.**
@@ -226,11 +271,15 @@ needed.** No new dependency, in any module.
     **every offset but one stale** because Plan 030's conversion had already landed (`d2c69fe`). 🔴 Round-2
     **N-2** found revision 2's *derivation* under-selected: its grep's predicate was "mentions `deferred`" while
     the property being changed is "records the `fixed` partition", so two sites (`:26`, `:47`) were invisible and
-    the pasted line count was wrong. **The inventory is 14 sites; the widened command in Task 1 Step 6 is the
-    authority.** This project's stored lesson is *derive move-lists mechanically* — **and derive them against the
+    the pasted line count was wrong. 🔴 Round-3 **NEW-2** found the *widened* form still under-selecting by
+    three; 🔴 round-4 **R4-4** found a **seventeenth** site (`:22`) that the deliberately-noisy form cannot reach
+    either, because it carries no arm name, no literal and no digit. **The inventory is 17 sites; the broad
+    command in Task 1 Step 6 is the authority for the 16 a selector can find, and `:22` is listed because one
+    cannot.** This project's stored lesson is *derive move-lists mechanically* — **and derive them against the
     PROPERTY, not against a token list drawn from the sites you already know about** (*fix the class, not the
     instance*). **Re-derive every `adapter/http` offset with `gopls`** (match on the function name, the sentinel
     name and the predicate shape), and **generate** the gate's site list with the `grep` in Task 1 Step 6.
+    **The inventory is a STOP-GAP and Step 6 says so; the durable fix is the Spec 018 §8 item 5 refactor.**
 11. **Docs links are relative to the CITING file's directory.** A bare `[0034](0034-byte-cap-ceilings.md)` from
     inside `docs/plans/` silently 404s. The pre-merge link gate (CLAUDE.md, **both arms**) is a Task 2 blocker.
 
@@ -386,9 +435,11 @@ needed.** No new dependency, in any module.
       enumeration** and missed three more — `:409` (`fixed` unquoted), `:601`, and `:799-800`, **which is inside a
       live `require.Equal` failure message.**
 
-      🔴 **SAY THIS OUT LOUD BEFORE YOU RUN ANYTHING: three consecutive audit rounds have each fixed the sites
-      they were shown and been overtaken by new ones.** 7 sites → 12 → 14 → 16. The remedy is **not** a better
-      `grep`, and raising the count a fifth time will not work either. **The durable defect is structural:** the
+      🔴 **SAY THIS OUT LOUD BEFORE YOU RUN ANYTHING: FOUR consecutive audit rounds have each fixed the sites
+      they were shown and been overtaken by new ones.** 7 sites → 12 → 14 → 16 → **17**. Round 4's addition
+      (`:22`, R4-4) was **not** found by a selector and **could not have been** — it carries no arm name, no
+      literal, no `9/1/3/6` and no digit, so even the deliberately-broad form below misses it. The remedy is
+      **not** a better `grep`, and raising the count a sixth time will not work either. **The durable defect is structural:** the
       arm partition is restated in roughly **ten** prose locations — the header's arm list, its arithmetic
       identity, Plan 030's per-arm literal block, the `arm` field's doc comment, two section banners, the
       `wantArms` rationale comment's illustrative map, and **two live assertion messages** — with **no mechanical
@@ -420,8 +471,8 @@ needed.** No new dependency, in any module.
       row **previously** sat in the arm labelled `"fixed"`"* — past tense, still true).
 
       Then edit **every** hit that changes, per [Spec 018 §6 AC-4.1](../specs/018-byte-cap-ceilings.md)'s
-      **16-site** table. The offsets below are **from `1212c63`/`46803c6`/`a1247d1` and will drift** — the grep is
-      the authority:
+      **17-site** table. The offsets below are **from `1212c63`/`46803c6`/`a1247d1`/`6865886` and will drift** —
+      the grep is the authority for sites 1-16, and **site 17 is listed because no grep produces it**:
 
       | # | Line(s) | Change |
       |---|---|---|
@@ -429,7 +480,7 @@ needed.** No new dependency, in any module.
       | 2 | `:571-575`, `:580-584`, `:589-593` | `require.NoError` → `require.ErrorIs` on the knob's sentinel **+** `assert.EqualError` on the render **the row itself produces** — each row passes `1 << 62`, so the string is `msghttp: max body bytes out of range: msghttp.WithMaxBodyBytes: 4611686018427387904 not in [1, 2147483647]` and its twins — **+** `assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")` |
       | 3 | `:782-784` | `wantArms` entries → `"fixed"` |
       | 4 | `:803` | `byArm` — **remove** the `deferred` key |
-      | 5 | `:35` | the header's arm-list bullet |
+      | 5 | `:35` | the header's arm-list bullet — 🔴 **round-4 R4-4: TOMBSTONE it, do not delete it.** Revisions 1-4 said only *"the header's arm-list bullet"*, which does not choose. Write `- "deferred" (0) — no members as of Plan 032; see Spec 018. The arm is retained so a future knob with a genuinely deferred remedy has it.` — consistent with **site 8**'s tombstone for the same vocabulary, and it is what keeps **site 17**'s *"FOUR arms"* true. **Deleting the bullet instead leaves `:22` asserting four arms four lines above a three-item list.** The `byArm` **counts map** loses the key either way (Trap 1) |
       | 6 | `:38` | `9 + 1 + 3 + 6 = 19` → `12 + 1 + 6 = 19` |
       | 7 | `:55-59` | **Plan 030's per-arm literal block** — goes false twice; see below |
       | 8 | `:401` | the `arm` field's vocabulary doc — **keep `"deferred"` with a tombstone**: *(no members as of Plan 032 — see Spec 018)* |
@@ -441,6 +492,7 @@ needed.** No new dependency, in any module.
       | **14** | **`:47-49`** | 🔴 **round-2 N-2 + round-3 NEW-1 — FOUR falsehoods, not two.** See Trap 3c below. Revision 3 quoted this bullet only to line 1 of 3 and scheduled only the count and the literal |
       | **15** | **`:409`** | 🔴 **round-3 NEW-2** — the `fixed` arm's section banner, `// ---- arm: fixed — the 9 class members this increment bounds ----`. `9` → `12`. Invisible even to revision 3's widened grep, because `fixed` here is **unquoted** and that selector required `"fixed"` |
       | **16** | **`:601`** | 🔴 **round-3 NEW-2** — the `safe` arm's literal rationale, `// math.MaxInt, NOT the 1<<30 the reject arms use (Plan 030 Task 2):`. After the move the reject arms use **TWO** literals (`1<<30` for the 9 `int`-typed rows, `1<<62` for the 3 `int64`-typed ones). Narrow to *"NOT the `1<<30`/`1<<62` the reject arms use"*, or *"NOT any reject-arm literal"*. 🔴 **Its substance — why `safe` may not be demoted to an int32 value — is CORRECT and must survive verbatim** |
+      | **17** | **`:22`** | 🔴 **round-4 R4-4** — the CONFORMANCE preamble's arm **cardinality**: `//     declaration string — in one of FOUR arms. The arms are BEHAVIORAL and are`. Under site 5's **tombstone** this is **NO CHANGE** — four arms stay documented, one with zero members — and that is why the tombstone is chosen. **Listed because no selector can find it:** no arm name, no literal, no `9/1/3/6`, no digit. Verified — `grep -nE '<the broad form>' … \| cut -d: -f1 \| grep -cx 22` → **0**. **If you deviate from the tombstone, this line goes false and must be edited too.** It is the standing evidence for [Spec 018 §8 item 5](../specs/018-byte-cap-ceilings.md): a site four rounds of better selectors could not have produced |
 
       **Also classify, do not skip:** `:766` carries `map[string]int{"fixed": 9, ...}` inside the comment
       explaining why `wantArms` is a mapping rather than a count. Illustrative, not normative — it may stay, but
@@ -625,7 +677,22 @@ needed.** No new dependency, in any module.
       - **Spec 016** §2.1's census line (`9 fixed + 3 deferred + 4 safe`) and arm table, the three verdict rows,
         §3.8 (now *"deferred → delivered by Spec 018"*), §6 AC-5's arm table and its "accepts, deferred" row.
       - **ADR 0032 D-AB**'s deferral paragraph and the status header's census line.
-      - **`docs/HANDOVER.md`** §7 item 6 → **CLOSED**, citing this bundle.
+      - **`docs/HANDOVER.md`** §7 item 6 → **CLOSED**, citing this bundle — **and, in the SAME edit, ADD a new
+        §7 row** (🔴 round-4 **R4-10**):
+
+        > *"Derive the class gate's prose counts from `wantArms` at test time"* —
+        > `sizing_option_class_gate_test.go` restates the arm partition in ~10 prose locations with no
+        > mechanical link to the map the test computes; four audit rounds have each patched the instances
+        > (7 → 12 → 14 → 16 → 17 sites). Designed at
+        > [Spec 018 §8 item 5](../specs/018-byte-cap-ceilings.md); **unscheduled**.
+
+        **Why this is not optional.** §7 is the project's **discoverable backlog** — it is where Spec 018's own
+        origin (item 6) lived. Spec 018 §8 is a section of a 1,200-line design document for an increment about
+        to be marked delivered. Revision 4 closed §8 item 5 with *"so a fourth round does not find a seventeenth
+        site"*; **round 4 found it** (`:22`, R4-4), and the next thing to touch this file is Plan 031's
+        hand-edit, which would meet the same duplication with no backlog entry pointing at the fix. The file is
+        being edited in this commit either way. **Closing item 6 without opening this row is an incomplete
+        fold-back.**
       - A **Superseded/finished-by** pointer from Spec 016 §3.8 and ADR 0032 D-AB to Spec 018 / ADR 0034.
 
       > 🔴 **PLAN 032 OWNS SPEC 016 §2.1 UNCONDITIONALLY, AND RE-DERIVES IT FROM THE TREE (round-2 N-4).**
@@ -647,7 +714,7 @@ needed.** No new dependency, in any module.
 
       | File | Kind | May this task edit it? |
       |---|---|---|
-      | `docs/plans/029-audit-round-*.md`, `docs/plans/030-audit-round-1.md`, [`032-audit-round-1.md`](032-audit-round-1.md), [`032-audit-round-2.md`](032-audit-round-2.md), [`032-audit-round-3.md`](032-audit-round-3.md), any `*-derivation-findings.md` | **immutable execution record** — correctly records what was true when written (`docs/HANDOVER.md` §8) | ❌ **NO** |
+      | `docs/plans/029-audit-round-*.md`, `docs/plans/030-audit-round-1.md`, [`032-audit-round-1.md`](032-audit-round-1.md), [`032-audit-round-2.md`](032-audit-round-2.md), [`032-audit-round-3.md`](032-audit-round-3.md), [`032-audit-round-4.md`](032-audit-round-4.md), any `*-derivation-findings.md` | **immutable execution record** — correctly records what was true when written (`docs/HANDOVER.md` §8) | ❌ **NO** |
       | [`029-sizing-option-bounds.md`](029-sizing-option-bounds.md) | **delivered plan** | ✅ yes, in place, **if** it states the deferral as a standing fact. Prefer a dated one-line note over a rewrite |
       | 🔴 **[`030-post-029-maintenance.md`](030-post-029-maintenance.md)** | **delivered plan** — round 3's NEW-3 left this undecided, and revision 3 did not mention the file at all | ✅ **YES, editable in place** — the **Plan 020 precedent**, and the same latitude Plan 029 gets one row up. **Only `030-audit-round-*.md` is immutable; the plan itself is not.** Its delivery banner (added at `7d671b4`) is an exercise of exactly this latitude. Prefer a dated one-line note over a rewrite |
       | [`031-group-member-bounds.md`](031-group-member-bounds.md), [`../adrs/0033-group-member-bounds.md`](../adrs/0033-group-member-bounds.md) | **undelivered sibling, under concurrent revision** | ❌ **NO** — do not edit another increment's live design; N-4's whole point is that this task must not depend on, or write into, Plan 031 |
@@ -669,7 +736,8 @@ no test is a delivery blocker):
 | B1-7 | response gate, all three arms | the `…/response` twins of B1-4/5/6 | as above, per arm |
 | B1-8 | event gate, all three arms | the `…/event` twins of B1-4/5/6 | as above, per arm |
 | B1-9 | **the `1<<62` case specifically** | `NewConfig_rejects_the_gate_value` (all three) — the exact literal the class gate uses | keep the `<= 0` check and drop the upper arm ⇒ fails. **This is the case Step 6's gate rows depend on** |
-| B1-10 | **the classification** (round-1 M-8) | `assert.False(t, msgin.IsPermanent(err), …)` on every rejecting case, and on the three moved gate rows | wrap the return in `msgin.Permanent(...)` — **keeping the assertion** — ⇒ every rejecting case fails, **including the three moved gate rows**. **Without this, D-AQ's non-`Permanent` claim has no covering test at all.** 🔴 **This is the ONLY mutant proving that assertion load-bearing (round-3 NEW-4); revision 3's M3-6 could not, and is deleted** |
+| B1-10 | **the classification** (round-1 M-8) | `assert.False(t, msgin.IsPermanent(err), …)` on every rejecting case, and on the three moved gate rows | **TWO ARMS — 🔴 round-4 R4-3.** **(coarse)** wrap the return in `msgin.Permanent(...)`, keeping every assertion ⇒ every rejecting case fails, including the three moved gate rows. **(targeted — this is the one constraint 7 requires)** on **one** rejecting case, wrap the return **AND** update that case's `assert.EqualError` expectation to the `"msgin: permanent: …"` render ⇒ **only `assert.False(t, msgin.IsPermanent(err), …)` fails.** **Without this, D-AQ's non-`Permanent` claim has no covering test at all** |
+| **B1-11** | **the RENAMED sentinel text** (D-AQ; 🔴 round-4 R4-9) | the six `assert.EqualError` assertions of Spec 018 §6 AC-2 — two arms × three knobs — which are the only thing asserting Step 4 item 4's rename | revert `errors.go:19` to `errors.New("msghttp: max body bytes must be > 0")` ⇒ **both** `WithMaxBodyBytes` `EqualError` assertions fail while **every `ErrorIs` assertion stays green** — which is what proves the pair is carrying the rename. **Optional second arm:** change one call site's `site` literal (`"msghttp.WithMaxBodyBytes"` → `"msghttp.WithMaxResponseBytes"`) ⇒ that knob's two `EqualError` assertions fail and nothing else does. Both are one-token edits to a string literal |
 
 > **B1-4/B1-7/B1-8's default arms are pre-existing branches**, not new ones. They are listed because the
 > `else if` rewrite sits inside the same `if/else if` and a botched edit can swallow the `!set` arm — a class of
@@ -748,11 +816,22 @@ AC-1's accessor clause was deleted in revision 2 for exactly this reason (round-
 > in `msgin.Permanent(...)`, and every rejecting case **including the three moved gate rows** goes red. That is a
 > killed mutant, and it is the evidence. B1-10's scope clause now says so explicitly. *A mutant specified to
 > survive is not proof of anything.*
+>
+> 🔴 **But the BARE wrap is not ATTRIBUTABLE, and revision 4 claimed it was the ONLY mutant proving that
+> assertion load-bearing (round-4 R4-3).** `permanentError.Error()` **prefixes** the message —
+> `reliability.go:13`, `return "msgin: permanent: " + e.err.Error()` — so wrapping the `checkRangeInt64` return
+> also reds **every `assert.EqualError`** in the increment: the six AC-2 render assertions and the three moved
+> rows' `EqualError` on the `1<<62` render. **Delete the `assert.False(t, msgin.IsPermanent(err), …)` line from
+> every case and the wrap still reds them** — via `EqualError`. Global constraint 7 asks for a mutant targeting
+> **that** assertion, so the bare wrap does not discharge it on its own. **B1-10 therefore has two arms**, and
+> the *targeted* one is the evidence: wrap **and** correct that case's `EqualError` expectation to the
+> `"msgin: permanent: …"` render, leaving `assert.False` as the only failure. Record **both** arms' outcomes in
+> the Evidence block. *This narrows B1-10; it does not reinstate M3-6, which could not fail at all.*
 
 **Evidence block to record:** Step 2's two greps with every hit classified **and the re-derived totals**; the RED
-failures (count and names); Step 6's **broad** `grep` output verbatim plus which of the **16** sites each hit
+failures (count and names); Step 6's **broad** `grep` output verbatim plus which of the **17** sites each hit
 maps to, the over-inclusion classifications, and the disposition of `:766`; Step 7's landing-order determination;
-the killed mutants (B1-1 … B1-10, M3-1 … M3-5 — **M3-6 is deleted**); M1-7's stated non-kill; Step 9's two exit codes **and Step 9b's four probe outputs**; Step 11's
+the killed mutants (B1-1 … B1-11 — **B1-10 in BOTH arms, the coarse and the targeted (R4-3)** — and M3-1 … M3-5; **M3-6 is deleted**); M1-7's stated non-kill; Step 9's two exit codes **and Step 9b's four probe outputs**; Step 11's
 three sweep outputs **and D-1's / D-3's vacuity probes**; Step 11b's two cross-file greps with every hit
 classified (a)/(b)/(c), **plus the `wantArms`/`byArm` values the Spec 016 §2.1 table was re-derived from**;
 `go test -cover` for `adapter/http` before and after; the post-edit `byArm` and `wantArms` values pasted verbatim.
@@ -783,23 +862,39 @@ classified (a)/(b)/(c), **plus the `wantArms`/`byArm` values the Spec 016 §2.1 
       **Any (a)-class survivor is a blocker** — it is the "stopped ONE FILE SHORT" failure, caught one commit
       late rather than not at all.
 - [ ] **Step 2.** Re-confirm the immutable/editable split — **Task 1 Step 11b's table is the authority**, and it
-      now covers [`032-audit-round-3.md`](032-audit-round-3.md) (immutable) and
+      now covers [`032-audit-round-3.md`](032-audit-round-3.md) and [`032-audit-round-4.md`](032-audit-round-4.md) (both immutable) and
       [`030-post-029-maintenance.md`](030-post-029-maintenance.md) (a **delivered plan**, editable in place —
       round-3 NEW-3's open disposition). Confirm no `*-audit-round-*.md` or `*-derivation-findings.md` appears in
       `git diff --name-only main..HEAD`.
 - [ ] **Step 3.** Flip Spec 018 / ADR 0034 status headers from **PROPOSED** to **ACCEPTED** with the date, and add
       the *"as delivered"* addenda for anything the implementation taught (the amend-don't-pile-on rule: fold
       these into this task's commit, do not add a follow-up `docs:`).
-- [ ] **Step 4 (LINK GATE).** Run **both arms** of CLAUDE.md's docs-link gate over every tracked `.md` — note
-      that `git ls-files` is blind to **untracked** files, so `git add -N` the **six** new artifacts first
-      (Plan 030 round-1 MINOR 11). Known false positives on this tree are exactly two — `docs/plans/m` and
+- [ ] **Step 4 (LINK GATE).** Run **both arms** of CLAUDE.md's docs-link gate over every tracked `.md`.
+      🔴 **Round-4 R4-8 — `git add -N` is a GUARD, and its no-op result is the EXPECTED state.** `git ls-files`
+      is blind to **untracked** files (Plan 030 round-1 MINOR 11), so `git add -N` **any bundle artifact not yet
+      tracked** before running the gate; on a clean tree this does nothing, and that is what it should do. It
+      exists so an uncommitted new artifact cannot slip past `git ls-files`, which is exactly what would happen
+      the first time a round-N record is written and not yet committed. **Do not skip it because it looks
+      inert.** Known false positives on this tree are exactly two — `docs/plans/m` and
       `docs/specs/factory(fireTime`, both Go identifiers in wrapped code spans. **Anything else is a blocker.**
 - [ ] **Step 5 (VACUITY PROBE).** Prove the gate is not vacuous **on the new files, not on root** (the Plan 028
       `apidiff` blindness came from probing only root): plant one bad relative link and one bad `#anchor` in
       `docs/specs/018-byte-cap-ceilings.md`, re-run both arms, confirm **exactly one new hit each**, revert, and
-      confirm both vanish. The **six** files under gate are this plan, Spec 018, ADR 0034,
-      [`032-audit-round-1.md`](032-audit-round-1.md), [`032-audit-round-2.md`](032-audit-round-2.md) and
-      [`032-audit-round-3.md`](032-audit-round-3.md).
+      confirm both vanish.
+
+      🔴 **The files under gate are DESCRIBED, not counted (round-4 R4-8):** **every `docs/specs/018-*`,
+      `docs/adrs/0034-*` and `docs/plans/032-*` file, whatever their number.** Revisions 1-4 said *"the **six**
+      new files"* and named them; the count had already gone stale once (round 3's record made it six) and went
+      stale again the moment [`032-audit-round-4.md`](032-audit-round-4.md) landed, making it **seven**. Where a
+      figure is genuinely wanted, derive it and paste the output:
+
+      ```bash
+      ls docs/specs/018-* docs/adrs/0034-* docs/plans/032-*        # the set under gate
+      ls docs/specs/018-* docs/adrs/0034-* docs/plans/032-* | wc -l
+      ```
+
+      This is the same *assert the invariant, not the enumeration* rule Step 6 applies to the gate file, applied
+      to the bundle's own file list. Spec 018 §6 AC-7 carries the same wording.
 - [ ] **Step 6 (WHOLE-BRANCH GATE).** `/code-review` and `/security-review` over `main..HEAD` — **not** the last
       commit. Resolve or explicitly triage every finding with a written rationale. Then the full **Library quality
       gates**, all eight steps, over all eight modules:
@@ -840,7 +935,7 @@ re-run's two exit codes; the `/code-review` and `/security-review` findings with
 - [ ] The gate's header block states the arm→literal rule **two-dimensionally** — arm fixes the property, then
       parameter type chooses the literal **within the reject arms only** — and `:61-77`'s "do not demote the
       `safe` rows to `1<<30`" warning survives verbatim (round-2 N-1).
-- [ ] All **16** derived gate sites edited or explicitly classified — including `:26` and `:47-49` (round-2 N-2,
+- [ ] All **17** derived gate sites edited or explicitly classified — including `:26` and `:47-49` (round-2 N-2,
       round-3 NEW-1) and `:409`, `:601`, `:799-800` (round-3 NEW-2) — plus the over-inclusion account for `:33`
       and `:521`, and a decision recorded for `:766`.
 - [ ] `:48-49`'s *"exceeds every ceiling in the codebase (the largest is `1<<20`)"* is **narrowed to
@@ -850,7 +945,16 @@ re-run's two exit codes; the `/code-review` and `/security-review` findings with
       *"9 class members fixed here"* over a table of twelve (round-3 NEW-2).
 - [ ] **B1-4 is the boundary pair** — `1<<20` accepted, `1<<20 + 1` rejected — mirroring
       `adapter/http/exchange_test.go:309-334`, and it is the largest fixture in the increment (round-3 NEW-5).
-- [ ] **M3-6 is absent**; B1-10 is the mutant proving the `IsPermanent` assertion load-bearing (round-3 NEW-4).
+- [ ] **M3-6 is absent**; B1-10 is the mutant proving the `IsPermanent` assertion load-bearing (round-3 NEW-4),
+      **and its TARGETED arm was run** — wrap plus the corrected `EqualError` expectation, so `assert.False` is
+      the only failure (round-4 R4-3). The bare wrap alone is a kill, but not an attributable one.
+- [ ] **B1-11 was run** — reverting `errors.go:19`'s message reds both `WithMaxBodyBytes` `EqualError`
+      assertions while every `ErrorIs` assertion stays green (round-4 R4-9). D-AQ's rename is the increment's
+      stated behavioral change and this is the only mutant that targets it.
+- [ ] **Site 5 is a TOMBSTONE, not a deletion**, and site 17 (`:22`, *"in one of FOUR arms"*) is therefore
+      **no change** — the file documents four arms, one empty, and agrees with itself (round-4 R4-4).
+- [ ] `docs/HANDOVER.md` §7 carries a **NEW row** for *"derive the class gate's prose counts from `wantArms` at
+      test time"*, opened in the same edit that closed item 6 (round-4 R4-10).
 - [ ] Step 11 D-3 uses the **wrap-tolerant** `perl -0777` count, not `grep -c` (round-3, smaller note 1).
 - [ ] The three moved rows each carry `require.ErrorIs` + `assert.EqualError` **on the render they themselves
       produce** (`…: 4611686018427387904 not in [1, 2147483647]`) + `assert.False(t, msgin.IsPermanent(err), …)`.
@@ -866,8 +970,10 @@ re-run's two exit codes; the `/code-review` and `/security-review` findings with
 - [ ] `checkRange`'s **existing** godoc is scoped and cross-references `checkRangeInt64` (round-2 N-9), and
       `errors.go:132` keeps its `(and so by NewSSEParser)` clause (round-2 N-11).
 - [ ] `apidiff` **0 removals / 0 additions**; no new exported symbol in any module.
-- [ ] Both link-gate arms clean but for the two known false positives, run over the **six** `git add -N`'d
-      artifacts, and **vacuity-probed on the new files**.
+- [ ] Both link-gate arms clean but for the two known false positives, run over **every `docs/specs/018-*`,
+      `docs/adrs/0034-*` and `docs/plans/032-*` file, whatever their number** (`git add -N` any not yet tracked —
+      a no-op on a clean tree, and that is the expected result), and **vacuity-probed on the new files**
+      (round-4 R4-8).
 - [ ] Eight-module loop green; the six non-test quality-gate steps run per touched module.
 - [ ] Every finding from `/code-review` and `/security-review` over `main..HEAD` fixed or triaged in writing.
 - [ ] **Then, and only then, ask** before merging or pushing. `git push`, merge, tag and branch deletion each need

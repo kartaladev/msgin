@@ -1,16 +1,29 @@
 # ADR 0034 — A byte cap is bounded by what a `[]byte` can represent, not by what a payload might be
 
-- **Status:** **PROPOSED — revision 4, post-audit-round-3, NOT accepted.** Written before any code, per
-  [CLAUDE.md](../../CLAUDE.md)'s design-time gate. **Three rounds of the adversarial design audit have run** over
-  the assembled bundle ([Spec 018](../specs/018-byte-cap-ceilings.md) + this ADR +
+- **Status:** **PROPOSED — revision 5, post-audit-round-4. CLEARED FOR IMPLEMENTATION.** Written before any code,
+  per [CLAUDE.md](../../CLAUDE.md)'s design-time gate. **Four rounds of the adversarial design audit have run**
+  over the assembled bundle ([Spec 018](../specs/018-byte-cap-ceilings.md) + this ADR +
   [Plan 032](../plans/032-byte-cap-ceilings.md)). Round 1 returned **NOT SAFE TO IMPLEMENT** — 3 BLOCKERs,
   7 MAJORs, 4 MINORs ([`docs/plans/032-audit-round-1.md`](../plans/032-audit-round-1.md), immutable). Round 2
   returned **NOT SAFE TO IMPLEMENT** — 1 BLOCKER, 5 MAJORs, 6 MINORs
   ([`docs/plans/032-audit-round-2.md`](../plans/032-audit-round-2.md), immutable). Round 3 returned **NOT SAFE TO
   IMPLEMENT** — 0 BLOCKERs, 3 MAJORs, 4 MINORs
   ([`docs/plans/032-audit-round-3.md`](../plans/032-audit-round-3.md), immutable), verifying that **all twelve
-  round-2 findings landed, both round-1 residues closed, and nothing regressed**. This revision folds every
-  round-3 finding back. **Round 4 has not run.**
+  round-2 findings landed, both round-1 residues closed, and nothing regressed**. **Round 4 returned SAFE TO
+  IMPLEMENT** — 0 BLOCKERs, 1 MAJOR, 9 MINORs
+  ([`docs/plans/032-audit-round-4.md`](../plans/032-audit-round-4.md), immutable), verifying **6 LANDED,
+  3 LANDED-BUT-FLAWED, 0 NOT LANDED, 0 REGRESSED** and the N-9 residue **CLOSED**.
+  - ✅ **Revision 5 folds R4-1…R4-10, and NO FIFTH ROUND IS REQUIRED — the auditor said so explicitly:**
+    *"Fold R4-1 through R4-10 in without a fifth round; they are corrections, not re-designs."* **Not one of the
+    ten changes a decision here.** D-AM through D-AT stand exactly as revision 4 states them — the same class,
+    the same ceiling value, the same signature, the same helper, the same sentinels, the same tombstone, the same
+    one-commit coupling. **Implementation may begin** at [Plan 032](../plans/032-byte-cap-ceilings.md) Task 1,
+    subject to CLAUDE.md's separate *ask-before-implementing* gate and its SDD default.
+  - 🔴 **Serialization. [Plan 031](../plans/031-group-member-bounds.md) / [ADR 0033](0033-group-member-bounds.md)
+    is still in audit and undelivered; this bundle is cleared, so PLAN 032 NOW LANDS FIRST.** Both increments
+    edit `sizing_option_class_gate_test.go` (D-AS, and D-AL on the other side). **Plan 031 rebases**, and must
+    re-derive its gate figures **against the post-032 file**. D-AS's delta table and Spec 018 §6 AC-4.2's
+    two-order table are unchanged and still correct under either order — the order is simply now known.
   - 🔴 **Decisions D-AM through D-AT were taken WITHOUT USER RATIFICATION.** The user was not asked. Every
     decision below is **open to reversal**; [Spec 018 §8](../specs/018-byte-cap-ceilings.md) lists the four that
     most deserve a second look, and each decision here carries a **REVERSIBILITY** line stating what undoing it
@@ -54,6 +67,20 @@
     subject lines) are spec- and plan-level and are discharged there. Round 3's two **smaller notes** — D-3's
     non-wrap-safe `grep -c` (Plan Step 11) and the unaccounted over-inclusion lines `:33` / `:521` (D-AS above,
     Spec §6 AC-4.1) — land likewise.
+  - **What round 4 changed here — four edits, none of them a decision.** **D-AS**'s inventory goes to **17
+    sites**: `:22` (*"…in one of FOUR arms"*) records the partition's **cardinality** and is unreachable by the
+    deliberately-noisy selector — no arm name, no literal, no digit — so it was found by reading the file, which
+    is R4-4's point and the standing evidence for the §8 item 5 follow-up. **D-AS also makes site 5 explicit:**
+    the header's arm-list bullet is **TOMBSTONED, not deleted**, matching site 8, because deleting it would
+    falsify `:22`; the **counts map** still loses the key, because `byArm` is built by counting. **D-AQ** drops
+    the last live citation of the deleted mutant M3-6 (R4-2), records that B1-10's bare wrap is killed **but not
+    attributably** — `permanentError.Error()` prefixes `"msgin: permanent: "`, so the wrap also reds every
+    `EqualError` — and adopts the two-part mutant that targets the `IsPermanent` assertion alone (R4-3); it also
+    gains **B1-11**, the mutant that proves the renamed sentinel text is asserted (R4-9). **D-AR(a)**'s INV-6
+    citation moves from `exchange.go:133` to **`:135`** (R4-5). **D-AT(b)** requires the fold-back to open a
+    `docs/HANDOVER.md` §7 row for the deferred refactor in the same edit that closes item 6 (R4-10). R4-1
+    (Spec §6 AC-1's two definitions), R4-6 (the spec's stale 2 MiB prose), R4-7 (the plan's round count) and
+    R4-8 (the plan's `git add -N` / file count) are spec- and plan-level and are discharged there.
   - 🔴 **One defect the coordinator found while folding NEW-5 back, raised by no round:** Spec 018 revision 3's
     §6 AC-1 claimed the small-`n` proof *"already exists"*, citing `WithMaxBodyBytes(1<<20)` + a 64 MiB body →
     `http: request body too large`. **It does not exist** — `grep -rn 'body too large' --include='*.go' .`
@@ -491,6 +518,31 @@ opposite one and already exists: **B1-10 — KEEP the assertion, wrap the return
 every rejecting case (including the three moved gate rows) goes red.** A killed mutant is the evidence; a mutant
 specified to survive is not.
 
+> 🔴 **B1-10's bare wrap is KILLED but NOT ATTRIBUTABLE, and revision 4 claimed otherwise (round-4 R4-3).**
+> `msgin.Permanent` returns a `*permanentError` whose `Error()` **prefixes** the message —
+> `reliability.go:13`, `return "msgin: permanent: " + e.err.Error()` — so wrapping the `checkRangeInt64` return
+> changes the rendered string, and **every `assert.EqualError` in the increment reds under the same mutant**: the
+> six D-AQ render assertions (Spec 018 §6 AC-2) and the three moved gate rows' `EqualError` on the `1<<62`
+> render. Delete `assert.False(t, msgin.IsPermanent(err), …)` from every case and the wrap still reds them, via
+> `EqualError`. Plan Global constraint 7 asks for a mutant that targets **that** assertion, so the bare wrap does
+> not discharge it, and Plan 032's *"the ONLY mutant proving that assertion load-bearing"* claim overreached.
+> **The fix is one clause, not a new mutant:** apply the wrap **and** update that case's `EqualError` expectation
+> to the `"msgin: permanent: …"` render, so `EqualError` passes and **only `assert.False` fails**. The bare wrap
+> is retained as the coarse arm — it is true that it reds every rejecting case. This narrows the sentence above;
+> it does not reinstate M3-6, which could not fail at all.
+
+🔴 **The rename itself needs a mutant, and revision 4 had none (round-4 R4-9).** The message change in the table
+above is this decision's **stated behavioral change**, and after the increment six `EqualError` assertions carry
+it — yet every mutant Plan 032 listed (`lo`, `hi`, the deleted arm, the gate's arms and lengths) is killed by a
+bare `require.ErrorIs`, so none targets the rendered text. The *pre*-condition is verified — no test asserts the
+wording today, and the three-message grep returns only the three `errors.go` declarations — but that is the
+question the round-1 B-2 finding already showed to be the wrong one: it says nothing about whether the **new**
+assertions would notice a revert. **Plan mutant B1-11** closes it: revert `errors.go:19` to
+`"msghttp: max body bytes must be > 0"` ⇒ both `WithMaxBodyBytes` `EqualError` assertions fail while every
+`ErrorIs` assertion stays green. A `site`-argument mutant
+(`"msghttp.WithMaxBodyBytes"` → `"msghttp.WithMaxResponseBytes"` at one call site) is the optional second arm,
+proving the `site` string is asserted rather than merely rendered. Both are one-token edits to a string literal.
+
 **REVERSIBILITY:** the wrap is three `checkRangeInt64` call sites; the message text is three string literals.
 
 ### D-AR — the sixth read is **bounded, not restructured**; and the 32-bit guard's proof is a compile arm
@@ -504,9 +556,13 @@ ADR, `max` at that site is bounded by `byteCapCeiling` instead of by `1<<62`, an
 finite bound from the same field. Nothing moves in the production code. Say so explicitly, because *"5 of 6"*
 reads like an omission and the next reader will try to close it.
 
-> 🔴 **The half revision 1 omitted, and it was a BLOCKER (round-1 B-2).** `exchange.go:133`'s
+> 🔴 **The half revision 1 omitted, and it was a BLOCKER (round-1 B-2).** `exchange.go:135`'s
 > `int64(len(body)) == max` INV-6 check is unaffected — but the test that exercised it at the overflow boundary is
-> not. `adapter/http/exchange_test.go:613` — *"branch 20: `WithMaxResponseBytes(MaxInt64)` returns a non-empty
+> not. *(🔴 **Round-4 R4-5: revisions 1-4 cited `:133`, which is the `io.ReadAll` error arm's `return zero, err`.**
+> The comparison is at **`:135`**. Under this bundle's line/offset convention a quoted-text citation must name
+> the quoted line, so the offset was load-bearing and wrong by two; the argument is unaffected. Spec 018 §1.3
+> item 2 carries the same correction.)*
+> `adapter/http/exchange_test.go:613` — *"branch 20: `WithMaxResponseBytes(MaxInt64)` returns a non-empty
 > body intact, **the overflow regression**"* — passes `math.MaxInt64` through a helper that `require.NoError`s on
 > construction (`:590-596`). **After this ADR that input is unreachable through the public API, so the ceiling
 > RETIRES the probe.** Revision 1's §1.3 claim that INV-6 is *"unaffected"* was true of the production code and
@@ -548,15 +604,18 @@ assuming a mutant was killed.
 > makes the probe a criterion: plant a 32-bit-only overflow in one root `_test.go`, confirm **exactly one** 386
 > vet failure naming that file, confirm `GOARCH=amd64 go vet ./...` stays clean (which is what makes it a
 > *32-bit* probe rather than a syntax probe), revert, confirm both return to 0. The rest of the bundle probes
-> conscientiously — the link gate on the new files, `apidiff` in `adapter/http`, the class gate via M3-3/M3-6 —
-> and this was the omission in an otherwise disciplined set.
+> conscientiously — the link gate on the bundle artifacts, `apidiff` in `adapter/http`, the class gate via
+> **M3-3 and B1-10** — and this was the omission in an otherwise disciplined set. *(🔴 **Round-4 R4-2:**
+> revisions 3-4 named **M3-6** here, which round-3 NEW-4 had already deleted — so satisfying Plan 032's
+> *"M3-6 is absent"* checklist item made this sentence, and Spec 018 §6 AC-7's identical list, false. The class
+> gate's probes are M3-1…M3-5 plus B1-10.)*
 
 **REVERSIBILITY:** (a) free — reversing means designing a streaming payload type, a different increment. (b) free
 — adding a 386 CI runner later strengthens the guard without changing any code here.
 
 ### D-AS — the class gate's `deferred` arm is **emptied**, and its name is kept as a tombstone
 
-`sizing_option_class_gate_test.go` files all three knobs in `deferred`. Moving them is **sixteen** coordinated
+`sizing_option_class_gate_test.go` files all three knobs in `deferred`. Moving them is **seventeen** coordinated
 edits, **derived mechanically** and enumerated in [Spec 018 §6 AC-4.1](../specs/018-byte-cap-ceilings.md).
 
 > 🔴 **Revision 1 said SEVEN, and every offset but one was stale (round-1 B-3).** The cited offsets predated Plan
@@ -608,8 +667,19 @@ edits, **derived mechanically** and enumerated in [Spec 018 §6 AC-4.1](../specs
 > instead of spelling the partition as a string literal, and reduce the header block's counts to a pointer at
 > the assertion. Then a partition change breaks exactly one place. **Out of scope for this increment** (a
 > behavior-preserving refactor of a delivered gate, inside the file this increment is already moving rows in),
-> and recorded at [Spec 018 §8 item 5](../specs/018-byte-cap-ceilings.md) so a fourth round does not find a
-> seventeenth site.
+> and recorded at [Spec 018 §8 item 5](../specs/018-byte-cap-ceilings.md) — **and, from revision 5, also as a
+> `docs/HANDOVER.md` §7 row**, because a spec section is not a backlog (D-AT(b), round-4 R4-10).
+>
+> 🔴 **AND ROUND 4 FOUND THE SEVENTEENTH SITE ANYWAY (R4-4) — which is the argument for (2), not against the
+> stop-gap.** `:22` reads *"…gets an executable row — never a declaration string — **in one of FOUR arms**"*: it
+> records the partition's **cardinality**, and it contains no arm name, no literal, no `9/1/3/6` and **no
+> digit**, so even the deliberately-noisy selector above misses it — verified,
+> `grep -nE '…' … | cut -d: -f1 | grep -cx 22` → **0**. It was found by reading the file. **No selector could
+> have produced it**, which is precisely why the durable fix is (2) and not a fifth widening. Round 4
+> nevertheless cleared the bundle, because revision 4 had already moved the load-bearing guarantee out of the
+> inventory and into a **standalone delivery-checklist invariant** (*"the gate's own `require.Equal` failure
+> message reports the post-move partition"*), whose truth does not depend on the site count. The residual risk
+> is a stale comment: it fails no gate and corrupts no assertion.
 >
 > **Four traps, not three:**
 
@@ -661,9 +731,19 @@ edits, **derived mechanically** and enumerated in [Spec 018 §6 AC-4.1](../specs
 
 **Keep `"deferred"` in the `arm` field's documented vocabulary with a tombstone** — *(no members as of Plan 032 —
 see Spec 018)* — mirroring how ADR 0032 D-AB retained safety causes **(c)** and **(d)** as tombstones so the
-surviving identifiers kept their letters. Delete it from the counts map (it must be absent) and from the header's
-arm list. **Do not delete the concept:** a future knob whose remedy is genuinely deferred needs the arm back, and
-the tombstone tells the next author it existed and why.
+surviving identifiers kept their letters. Delete it from the **counts map**: it must be absent there, because
+`byArm` is built by counting and Go's counting map cannot produce a zero entry (trap 1). **Do not delete the
+concept:** a future knob whose remedy is genuinely deferred needs the arm back, and the tombstone tells the next
+author it existed and why.
+
+🔴 **The header's arm-list bullet (site 5) is TOMBSTONED TOO, not deleted (round-4 R4-4).** Revision 4 read
+*"Delete it from the counts map … **and from the header's arm list**"*, which pushed site 5 the opposite way from
+site 8 and would have falsified **site 17** — `:22`'s *"in one of FOUR arms"*, four lines above a list that would
+then carry three items. **The counts map and the documentation are different objects.** The `byArm` **key** must
+be absent because the data structure cannot express it; the **vocabulary** is retained in both places that
+document it — the `arm` field's doc comment (site 8) and the header's arm list (site 5) — at `(0)`, with the
+*(no members as of Plan 032 — see Spec 018)* note. Under that disposition site 17 classifies as **no change**,
+and the file stays self-consistent at four documented arms with one empty.
 
 **The counts are stated as DELTAS, not literals (round-1 M-9).** [Plan 031](../plans/031-group-member-bounds.md) /
 [ADR 0033](0033-group-member-bounds.md) **D-AL** edits this same file by hand, taking `sizingConformanceKeys` from
@@ -727,6 +807,20 @@ and the gate move.** Spec 016 §2.1 (census line + arm table), §3.8, §6 AC-5's
 exactly the "stopped ONE FILE SHORT" failure Spec 016 revision 6 opened with** — seven twins survived a
 reclassification because the cross-file grep guard *"was written and not run."* Plan 032 **Task 1** carries that
 guard and **runs it**, pasting the output.
+
+🔴 **And the same edit OPENS a new `docs/HANDOVER.md` §7 row for the deferred follow-up (round-4 R4-10).**
+D-AS's structural fix — *derive the class gate's prose counts from `wantArms` at test time* — is recorded at
+[Spec 018 §8 item 5](../specs/018-byte-cap-ceilings.md) and §7 *Out*, **and nowhere a fresh session would look**.
+§7 is this project's discoverable backlog; it is where Spec 018's own origin (item 6) lived. The evidence that
+the distinction is not pedantry: §8 item 5's revision-4 text closed *"so a fourth round does not find a
+seventeenth site"*, and round 4 found it (R4-4). The next thing to touch this file is Plan 031's hand-edit, which
+would meet the same duplication with no backlog entry pointing at the fix. **Closing item 6 without opening that
+row is an incomplete fold-back**, and the file is being edited in this commit either way:
+
+> *"Derive the class gate's prose counts from `wantArms` at test time"* — `sizing_option_class_gate_test.go`
+> restates the arm partition in ~10 prose locations with no mechanical link to the map the test computes; four
+> audit rounds have each patched the instances (7 → 12 → 14 → 16 → 17 sites). Designed at Spec 018 §8 item 5;
+> **unscheduled**.
 
 > 🔴 **Revision 2 said "the same commit" and scheduled them one commit later — m-14's defect RELOCATED, not
 > removed (round-2 N-6).** Merging Tasks 1-3 closed the window in which six *godoc* sentences were false, and then
