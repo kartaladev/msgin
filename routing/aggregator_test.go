@@ -358,6 +358,42 @@ func releaseAt(n int) routing.ReleaseStrategy {
 // correlation header on an id-less fixture.
 func fixedKey(msgin.Message[any]) (string, error) { return "k", nil }
 
+// cappedStore builds a memory.GroupStore whose per-group member cap is
+// maxMembers.
+func cappedStore(t *testing.T, maxMembers int) *memory.GroupStore {
+	t.Helper()
+	s, err := memory.NewGroupStore(memory.WithMaxGroupMembers(maxMembers))
+	require.NoError(t, err)
+	return s
+}
+
+// cappedAggOpts is the Aggregator fixture Spec 017 §6 AC-1 pins, and its shape
+// is MEASURED rather than assumed: NewAggregator needs store, fn,
+// WithOutputChannel AND WithCorrelationStrategy — a bare NewAggregator(store,
+// fn) returns "msgin: aggregator output channel is nil", and the default
+// correlator returns Permanent(msgin.ErrNoCorrelation) for a message carrying
+// no correlation header.
+//
+// opts is applied ON TOP, so passing NO release option deliberately leaves
+// routing's own default (HeaderSequenceSize-driven) strategy in place. That is
+// the fourth release path, and it is the one no ceiling can constrain, because
+// its threshold arrives as DATA.
+func cappedAggOpts(
+	t *testing.T,
+	store msgin.MessageGroupStore,
+	out msgin.MessageChannel,
+	opts ...routing.AggregatorOption,
+) *routing.Aggregator {
+	t.Helper()
+	agg, err := routing.NewAggregator[int, int](store, sumFn,
+		append([]routing.AggregatorOption{
+			routing.WithOutputChannel(out),
+			routing.WithCorrelationStrategy(fixedKey),
+		}, opts...)...)
+	require.NoError(t, err)
+	return agg
+}
+
 // cappedAgg builds an Aggregator over a memory.GroupStore capped at
 // maxMembers, correlating everything to one key and releasing per fn.
 func cappedAgg(
@@ -368,18 +404,11 @@ func cappedAgg(
 	wrap func(msgin.MessageGroupStore) msgin.MessageGroupStore,
 ) *routing.Aggregator {
 	t.Helper()
-	base, err := memory.NewGroupStore(memory.WithMaxGroupMembers(maxMembers))
-	require.NoError(t, err)
-	var store msgin.MessageGroupStore = base
+	var store msgin.MessageGroupStore = cappedStore(t, maxMembers)
 	if wrap != nil {
 		store = wrap(store)
 	}
-	agg, err := routing.NewAggregator[int, int](store, sumFn,
-		routing.WithOutputChannel(out),
-		routing.WithCorrelationStrategy(fixedKey),
-		routing.WithReleaseStrategy(fn))
-	require.NoError(t, err)
-	return agg
+	return cappedAggOpts(t, store, out, routing.WithReleaseStrategy(fn))
 }
 
 func newIntStore(t *testing.T) *memory.GroupStore {
@@ -1893,4 +1922,303 @@ func TestNewAggregator_NilOptionElement_ValidateFirst(t *testing.T) {
 
 	require.ErrorIs(t, err, msgin.ErrNilStore)
 	assert.NotErrorIs(t, err, msgin.ErrNilFunc)
+}
+
+// ---------------------------------------------------------------------------
+// Spec 017 §6 AC-1 / AC-3 — Plan 031 Task 2. The store's member cap bounds
+// EVERY release path, not merely the one routing already had a ceiling on.
+// ---------------------------------------------------------------------------
+
+// memberCapFixture is the cap every case below builds its store with. It is
+// deliberately tiny: Spec 017 §6 AC-6 forbids growing a group toward any
+// ceiling, because memory.GroupStore.Add clones the live member slice per call
+// and reaching 65,536 costs a measured 8.6s and 48.3 GiB of churn (Spec 016
+// §1.4).
+const memberCapFixture = 4
+
+// requireOverCapPermanent asserts the FULL over-cap render of the memory store
+// at memberCapFixture (Spec 017 §6 AC-2c) together with its Permanent
+// classification.
+//
+// The render doubles as the fixture's OWN proof, which is why these cases
+// assert the string rather than settling for errors.Is: "holds 4 members,
+// limit 4" can only be produced by a group that actually reached exactly the
+// cap, and the "msgin: permanent: " prefix only by an UNLEASED one. A case
+// that quietly released early, or that was still under lease when the cap+1-th
+// member arrived, cannot reach this assertion — so a fixture that fails to
+// arrive at the state its name claims fails here rather than passing vacuously.
+func requireOverCapPermanent(t *testing.T, err error) {
+	t.Helper()
+	require.ErrorIs(t, err, msgin.ErrOverflowDropped)
+	assert.True(t, msgin.IsPermanent(err),
+		"an unleased full group cannot drain itself, so a transient rejection would hot-spin under the shipped zero-value RetryPolicy")
+	assert.EqualError(t, err,
+		`msgin: permanent: msgin: message dropped by overflow policy: memory.GroupStore.Add: group "k" holds 4 members, limit 4`)
+}
+
+// TestAggregator_MemberCapHoldsForEveryReleasePath is Spec 017 §6 AC-1, and it
+// is the reason Plan 031 exists.
+//
+// routing.WithCompletionSize's ceiling bounded exactly ONE of the Aggregator's
+// four release paths, because it is gated on a config field only that option
+// writes. The other three bypass it entirely: WithReleaseStrategy and
+// WithReleaseWhen install caller-supplied closures the library never inspects,
+// and the default strategy reads its threshold from the HeaderSequenceSize
+// HEADER — i.e. from DATA, which no compile-time ceiling can constrain. A test
+// that exercised only WithCompletionSize would therefore pass against an
+// implementation that bounds nothing new.
+//
+// Each path contributes TWO rows, and the second is not padding. A "never
+// releases" row cannot, on its own, distinguish the path it names from a
+// fixture in which that path was never installed at all: an option that
+// silently failed to apply, or a HeaderSequenceSize stamped under the wrong
+// key, leaves routing's default strategy reading a header that is not there,
+// which also never fires — and the row passes for entirely the wrong reason.
+// The paired CONTROL row configures the same path to fire WITHIN the cap and
+// asserts it does, which is what makes its partner a test of that path rather
+// than of a typo.
+//
+// The IsPermanent half inside requireOverCapPermanent is not decoration
+// either: without the Permanent wrap every over-cap row still passes against a
+// store that rejects the member and then hot-spins forever on redelivery.
+func TestAggregator_MemberCapHoldsForEveryReleasePath(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		opts []routing.AggregatorOption
+		// firstHeaders is stamped on the group's FIRST member only, because
+		// routing's default release strategy reads HeaderSequenceSize from
+		// msgs[0] and nowhere else.
+		firstHeaders map[string]any
+		assert       func(t *testing.T, err error, released int)
+	}
+
+	neverReleases := func(t *testing.T, err error, released int) {
+		t.Helper()
+		requireOverCapPermanent(t, err)
+		assert.Equal(t, 0, released,
+			"this release path never fires, so the group can only grow — which is precisely why the bound must live at the store")
+	}
+
+	// firesWithinTheCap is the control assertion: the 4th member satisfies the
+	// path, so the group releases and drains, and the 5th member starts a
+	// fresh group instead of being refused.
+	firesWithinTheCap := func(t *testing.T, err error, released int) {
+		t.Helper()
+		require.NoError(t, err,
+			"the group released at the cap and drained, so the next member starts a fresh group")
+		assert.Equal(t, 1, released,
+			"this release path IS installed and IS read — which is what makes its over-cap twin meaningful")
+	}
+
+	tests := []testCase{
+		{
+			name:   "WithCompletionSize above the cap: the cap+1-th member is refused",
+			opts:   []routing.AggregatorOption{routing.WithCompletionSize(1000)},
+			assert: neverReleases,
+		},
+		{
+			name:   "WithCompletionSize within the cap: it fires (fixture control)",
+			opts:   []routing.AggregatorOption{routing.WithCompletionSize(memberCapFixture)},
+			assert: firesWithinTheCap,
+		},
+		{
+			name: "WithReleaseStrategy that never releases: the cap+1-th member is refused",
+			opts: []routing.AggregatorOption{
+				routing.WithReleaseStrategy(func(msgin.MessageGroup) (bool, error) { return false, nil }),
+			},
+			assert: neverReleases,
+		},
+		{
+			name:   "WithReleaseStrategy that releases within the cap: it fires (fixture control)",
+			opts:   []routing.AggregatorOption{routing.WithReleaseStrategy(releaseAt(memberCapFixture))},
+			assert: firesWithinTheCap,
+		},
+		{
+			name: "WithReleaseWhen that never releases: the cap+1-th member is refused",
+			opts: []routing.AggregatorOption{
+				routing.WithReleaseWhen(func(msgin.MessageGroup) bool { return false }),
+			},
+			assert: neverReleases,
+		},
+		{
+			name: "WithReleaseWhen that releases within the cap: it fires (fixture control)",
+			opts: []routing.AggregatorOption{
+				routing.WithReleaseWhen(func(g msgin.MessageGroup) bool { return len(g.Messages()) >= memberCapFixture }),
+			},
+			assert: firesWithinTheCap,
+		},
+		{
+			// No release option at all: routing's default strategy, whose
+			// threshold is a header value. This is the path whose bound cannot
+			// be expressed as a constructor ceiling under any design, because
+			// the threshold is DATA that arrives at runtime.
+			name:         "the default header-driven path above the cap: the cap+1-th member is refused",
+			firstHeaders: map[string]any{msgin.HeaderSequenceSize: 1000},
+			assert:       neverReleases,
+		},
+		{
+			name:         "the default header-driven path within the cap: it fires (fixture control)",
+			firstHeaders: map[string]any{msgin.HeaderSequenceSize: memberCapFixture},
+			assert:       firesWithinTheCap,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			out := &fakeAggChannel{}
+			agg := cappedAggOpts(t, cappedStore(t, memberCapFixture), out, tc.opts...)
+
+			mk := func(i int) msgin.Message[any] {
+				h := map[string]any{}
+				if i == 0 {
+					for k, v := range tc.firstHeaders {
+						h[k] = v
+					}
+				}
+				return msgin.New[any](i, msgin.WithID("m"+strconv.Itoa(i)), msgin.WithHeaders(h))
+			}
+
+			for i := range memberCapFixture {
+				require.NoError(t, agg.Handle(t.Context(), mk(i)),
+					"member %d sits below the cap and must be admitted", i)
+			}
+			tc.assert(t, agg.Handle(t.Context(), mk(memberCapFixture)), out.count())
+		})
+	}
+}
+
+// TestAggregator_MemberCapCompletionSizeBoundary is Spec 017 §6 AC-3.1: the
+// off-by-one between the store's member cap and the Aggregator's completion
+// size, pinned in BOTH directions at small n.
+//
+// The two rows are the two sides of one boundary. At completionSize == cap the
+// completing member is the LAST one the store admits, so the release fires and
+// the group drains; at completionSize == cap+1 the completing member is the
+// first one the store refuses, so the group can never complete and the
+// rejection is permanent. Together they fix the arithmetic — an implementation
+// off by one in either direction fails exactly one row.
+func TestAggregator_MemberCapCompletionSizeBoundary(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name           string
+		completionSize int
+		assert         func(t *testing.T, errs []error, out *fakeAggChannel)
+	}
+
+	tests := []testCase{
+		{
+			name:           "completion size EQUAL to the cap releases at the cap",
+			completionSize: memberCapFixture,
+			assert: func(t *testing.T, errs []error, out *fakeAggChannel) {
+				for i, err := range errs {
+					require.NoError(t, err, "message %d", i)
+				}
+				require.Equal(t, 1, out.count(), "the 4th member completes the group")
+				assert.Equal(t, 0+1+2+3, out.last().Payload(),
+					"the released aggregate is the first four payloads, so the group released at exactly the cap")
+				// The 5th message returning NIL is itself the proof that a
+				// FRESH group was started: had the release not fired, the
+				// group would still hold 4 members at a cap of 4 and the 5th
+				// would have been refused at the door.
+			},
+		},
+		{
+			name:           "completion size ONE ABOVE the cap can never release",
+			completionSize: memberCapFixture + 1,
+			assert: func(t *testing.T, errs []error, out *fakeAggChannel) {
+				for i, err := range errs[:memberCapFixture] {
+					require.NoError(t, err, "message %d", i)
+				}
+				requireOverCapPermanent(t, errs[memberCapFixture])
+				assert.Equal(t, 0, out.count(),
+					"nothing may be released: the member that would have completed the group is the one the store refuses")
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			out := &fakeAggChannel{}
+			agg := cappedAggOpts(t, cappedStore(t, memberCapFixture), out,
+				routing.WithCompletionSize(tc.completionSize))
+
+			errs := make([]error, memberCapFixture+1)
+			for i := range errs {
+				errs[i] = agg.Handle(t.Context(), msgin.New[any](i, msgin.WithID("m"+strconv.Itoa(i))))
+			}
+			tc.assert(t, errs, out)
+		})
+	}
+}
+
+// TestAggregator_CeilingLevelCompletionSizeConstructs is Spec 017 §6 AC-3.2:
+// the two endpoints of the "default member cap >= completionSizeCeiling"
+// invariant, exercised as CONSTRUCTION ONLY.
+//
+// A caller may legally set routing.WithCompletionSize to its ceiling (65,536),
+// and the store's member cap must not then refuse that group's completing
+// member — a smaller cap would turn a documented configuration into a silent
+// deadlock. Both the store's DEFAULT cap and an explicit cap at that same
+// value must therefore pair with a ceiling-level completion size.
+//
+// No members are added: growing one group to 65,536 costs a measured 8.6s and
+// 48.3 GiB of allocation churn (Spec 016 §1.4), and Spec 017 §6 AC-6 forbids
+// it outright. The invariant ITSELF is enforced mechanically over the
+// declarations, by Plan 031 Task 3's AST test; this pins the pairings that
+// invariant exists to protect.
+func TestAggregator_CeilingLevelCompletionSizeConstructs(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		store  func(t *testing.T) *memory.GroupStore
+		assert func(t *testing.T, agg *routing.Aggregator, err error)
+	}
+
+	constructs := func(t *testing.T, agg *routing.Aggregator, err error) {
+		t.Helper()
+		require.NoError(t, err)
+		assert.NotNil(t, agg)
+	}
+
+	tests := []testCase{
+		{
+			name: "the DEFAULT member cap pairs with a ceiling-level completion size",
+			store: func(t *testing.T) *memory.GroupStore {
+				t.Helper()
+				s, err := memory.NewGroupStore()
+				require.NoError(t, err)
+				return s
+			},
+			assert: constructs,
+		},
+		{
+			name: "an EXPLICIT member cap at the completion-size ceiling constructs",
+			store: func(t *testing.T) *memory.GroupStore {
+				t.Helper()
+				s, err := memory.NewGroupStore(memory.WithMaxGroupMembers(1 << 16))
+				require.NoError(t, err)
+				return s
+			},
+			assert: constructs,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			agg, err := routing.NewAggregator[int, int](tc.store(t), sumFn,
+				routing.WithOutputChannel(&fakeAggChannel{}),
+				routing.WithCompletionSize(1<<16))
+			tc.assert(t, agg, err)
+		})
+	}
 }
