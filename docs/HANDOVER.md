@@ -2,165 +2,169 @@
 
 > **READ FIRST.** Read `CLAUDE.md`, then this file, then the governing spec/plan/ADR named in §3 — and **trust
 > those files and `git log` over this document.** Every count below was measured when written; **re-derive before
-> relying on one.** This session produced the sharpest evidence yet for why: a **comment-only** commit (`de38a95`)
-> silently invalidated **41** `file:line` citations in an in-flight design bundle that had just passed a dedicated
-> mechanical sweep — and the citation *of the finding about stale citations* was itself off by eleven.
+> relying on one.** The sharpest evidence for why: a **comment-only** commit (`de38a95`) silently invalidated
+> **41** `file:line` citations in an in-flight design bundle that had just passed a dedicated mechanical sweep —
+> and the citation *of the finding about stale citations* was itself off by eleven.
 >
-> ### ✅ SEVEN OF EIGHT BACKLOG ITEMS SETTLED. NOTHING MERGED OR PUSHED.
-> ### Next: **ratify or reverse D-AC…D-AT** (§6.1) — the only thing blocking the last item.
+> ### ✅ BACKLOG SWEEP COMPLETE. ADR 0033 ACCEPTED. Plan 031 is 4 of 10 tasks in. NOTHING MERGED OR PUSHED.
+> ### Next: **Plan 031 Task 3** — the AST invariant. Its parse set is complete for the first time.
 >
 > | | State |
 > |---|---|
-> | Branch | **`chore/backlog-sweep-post-029`**, clean — `git rev-list --count main..HEAD` (was 21 at handover; **this file's own commit moved it**, which is §8's first gotcha demonstrated on the handover itself) |
-> | `main` / `origin/main` | **`2b2dec1`**, untouched — verified with `git ls-remote origin main` |
-> | Working tree | **clean** |
-> | Suite | **11/11 root packages green**, `-race -shuffle=on`, at `7abc9f8` |
+> | Branch | **`chore/backlog-sweep-post-029`**, clean. Count: `git rev-list --count main..HEAD` — do not quote a number here, this file's own commit moves it |
+> | `main` / `origin/main` | **`2b2dec1`**, untouched — verify with `git ls-remote origin main`, never `git rev-parse origin/…` |
+> | Working tree | **clean** at `355504e` |
+> | Suite | **11/11 root packages green** `-race -shuffle=on`; all 6 touched modules green standalone (`GOWORK=off`) |
 > | `GOARCH=386` | **vet clean** (was 24 compile errors at the branch point) |
-> | Other gates | `govulncheck` clean · `golangci-lint` 0 issues · `apidiff` 0/0 |
+> | Other gates | `govulncheck` clean · `golangci-lint` 0 issues · `apidiff` 0/0 · docs-link gate at its 2 known false positives |
 > | Tags | **zero, as always.** Do NOT propose tagging |
 
-## 1. What this session did
+## 1. Where things stand
 
-It worked the backlog in the previous handover's §6 — all of it, continuously, while the user was away.
+**The eight-item backlog is settled.** Four delivered, one closed WONTFIX, one adjudicated, one delivered, and the
+last — the group-member bound — is **in flight as Plan 031**.
 
 | # | Item | Outcome |
 |---|---|---|
 | 2 | Dedup the 7 delegator pre-check loops | **CLOSED-WONTFIX** — not a defect (§2) |
 | 3 | Guard gate is syntactic | **Adjudicated**; rejection stands, folded into Plan 031 Task 9 |
 | 4 | gin plan number + ADR 0024 | **DELIVERED** `7ab91cd` |
-| 5 | False "first statement" godoc | **DELIVERED** `1a1c135`, corrected again by `de38a95` (§2) |
+| 5 | False "first statement" godoc | **DELIVERED** `1a1c135` + `de38a95` |
 | 6 | The byte-ceiling class | **DELIVERED** `f39725d` + `a306241` — 4 audit rounds |
-| 7 | Aggregator group growth | **HALF DELIVERED** `7abc9f8` — 5 audit rounds; SQL half awaits §6.1 |
-| 8 | 32-bit test overflow | **DELIVERED** `d2c69fe` — 24 → 0 |
+| 7 | Aggregator group growth | **IN PROGRESS** — Plan 031, see §4 |
+| 8 | 32-bit test overflow | **DELIVERED** `d2c69fe` — 24 errors → 0 |
 
-**Two increments shipped runtime behaviour:** the three `msghttp` byte caps now carry `byteCapCeiling =
-math.MaxInt32`, and `memory.GroupStore` now bounds members per group. Both cleared adversarial design audits
-before a line of code was written — **four rounds and five rounds** respectively.
-
-## 2. The three results worth reading even if you read nothing else
+## 2. Two results worth reading even if you read nothing else
 
 **Backlog item 2 was never a defect.** Collapsing the seven duplicated delegator pre-check loops turns the
 **Spec 015 AC-7 guard gate red at all seven sites** — `hasNilElementGuard` clears a parameter only on an
 `*ast.RangeStmt` over it *inside the constructor's own body*, and a helper call is invisible (the helper is
 non-variadic, so it is never scanned). The gate ships a committed probe asserting exactly the post-refactor shape
-is unguarded. The duplication is the ratified consequence of **ADR 0031 D-R** (per-package duplication over
-exporting an internal from root) **and** that gate, acting together. Repairing it means amending a shipped spec
-*and* ADR to net ~14 lines — not the ~35 the backlog claimed, which was gross. **The gate is working as designed.**
-Full chain: Plan 030 decision **D1**.
+is unguarded. The duplication is the ratified consequence of **ADR 0031 D-R** and that gate acting together.
+Repairing it means amending a shipped spec *and* ADR to net ~14 lines. **The gate is working as designed.** Full
+chain: Plan 030 decision **D1**. Do not re-propose without first deciding to amend AC-7.
 
-**A fix for a false statement introduced a false statement.** `1a1c135` replaced *"the loop is the first
-statement"* with *"preceded only by the **zero-value** config initializer"* — true only of `msghttp.NewConfig`,
-**false at the ten other sites it was applied to**. `memory.NewGroupStore` opens with `maxGroups: 1024`, the
-default for *the very option the same sentence goes on to discuss*. Fixed in `de38a95`. That commit also
-overcounted its own class: it claims twelve sites; the wrap-tolerant sweep finds eleven, one already correct.
-
-**Selectors must match the property, not the string.** The same defect appeared four ways this session:
-`grep "first statement"` misses ~5 sites because the phrase **wraps across comment lines**; `grep 'must be > 0'`
-missed six sites spelling the same contract as `n<=0`; the class-gate site inventory was declared complete and
-wrong in **three consecutive rounds**; and the fix for that inventory was itself a wider token list that missed
-three more. The durable remedy now sits in Plan 031 Task 9 — **a script whose output *is* the table** — and round
-5 verified it by extracting and re-running it.
+**Selectors must match the property, not the string.** The same defect appeared four ways: `grep "first
+statement"` misses ~5 sites because the phrase **wraps across comment lines**; `grep 'must be > 0'` missed six
+sites spelling the same contract as `n<=0`; the class-gate site inventory was declared complete and wrong in
+**three consecutive audit rounds**; and the fix for that inventory was a *wider token list* that missed three
+more. The durable remedy is in Plan 031 Task 9 — **a script whose output IS the table**, verified by an auditor
+extracting and re-running it.
 
 ## 3. Traceability — read before acting
 
-- `CLAUDE.md` (binding). **Its project-status counts were self-falsifying and are now command-derived** — the
-  command is the authority, never the number beside it.
-- **Item 7 (the live one):** [`docs/specs/017-group-member-bounds.md`](specs/017-group-member-bounds.md) ·
-  [`docs/adrs/0033-group-member-bounds.md`](adrs/0033-group-member-bounds.md) ·
+- `CLAUDE.md` (binding). Its project-status counts are **command-derived** — the command is the authority, never
+  the number beside it.
+- **Plan 031 (live):** [`docs/specs/017-group-member-bounds.md`](specs/017-group-member-bounds.md) ·
+  [`docs/adrs/0033-group-member-bounds.md`](adrs/0033-group-member-bounds.md) **(ACCEPTED)** ·
   [`docs/plans/031-group-member-bounds.md`](plans/031-group-member-bounds.md) rev 5 · audit rounds
   [1](plans/031-audit-round-1.md) [2](plans/031-audit-round-2.md) [3](plans/031-audit-round-3.md)
   [4](plans/031-audit-round-4.md) — **immutable**
-- **Item 6 (delivered):** [`docs/specs/018-byte-cap-ceilings.md`](specs/018-byte-cap-ceilings.md) ·
+- **Plan 032 (delivered):** [`docs/specs/018-byte-cap-ceilings.md`](specs/018-byte-cap-ceilings.md) ·
   [`docs/adrs/0034-byte-cap-ceilings.md`](adrs/0034-byte-cap-ceilings.md) ·
   [`docs/plans/032-byte-cap-ceilings.md`](plans/032-byte-cap-ceilings.md) · audit rounds
   [1](plans/032-audit-round-1.md) [2](plans/032-audit-round-2.md) [3](plans/032-audit-round-3.md)
   [4](plans/032-audit-round-4.md)
-- **Items 4/5/8 (delivered):** [`docs/plans/030-post-029-maintenance.md`](plans/030-post-029-maintenance.md) ·
+- **Plan 030 (delivered):** [`docs/plans/030-post-029-maintenance.md`](plans/030-post-029-maintenance.md) ·
   [`docs/plans/030-audit-round-1.md`](plans/030-audit-round-1.md)
 
-## 4. Where Plan 031 stands — half delivered, half held
+## 4. Plan 031 — 4 of 10 tasks delivered, Task 3 next
 
-**Delivered (`7abc9f8`), needing no ratification:** `memory.WithMaxGroupMembers` (default `1<<16`, ceiling
-`1<<20`), the cap check, the classification split, `Handle`'s six-exit snapshot branch, and the class-gate rows.
-**21 mutants, 21 killed.** Three details are load-bearing, each proven by a killing mutant:
+**ADR 0033 is ACCEPTED.** The user ratified **D-AC…D-AT** on 2026-08-23 with *"go with best practices"*, having
+been shown the four load-bearing choices rather than all eighteen. **Execution order is
+`1 → 2 → 4 → 5+6 → 3 → 7 → 8 → 9 → 9b → 10`** — it is not task-number order, and Task 3 sits after 5+6
+deliberately (**D-AT**).
 
-1. **The cap check sits BETWEEN the dedup `seen` lookup and the `g.ids` insert.** After the insert, a rejected
-   member is recorded as seen, so on redelivery the dedup branch reports success, `Handle` returns `nil`, and the
-   source **Acks a message that was never appended**.
-2. **`Add` returns the live snapshot ALONGSIDE the error**, so `Handle` re-evaluates the release. Without it an
-   id-less message arriving at a full group after a failed release deadlocks permanently — a case that **worked
-   before the change**.
-3. **Classification is by cause, on `g.leased`.** Not-leased ⇒ `Permanent` (settles terminally, never consults
-   `MaxAttempts`, so it is correct on the shipped zero-value `RetryPolicy`); leased ⇒ transient. Without the
-   split, the default configuration hot-spins with no log and no dead-letter.
+| Task | State | Commit |
+|---|---|---|
+| 1 — the `memory` bound, classification, `Handle`'s branch | ✅ | `7abc9f8` — 21 mutants, 21 killed |
+| 2 — the bound holds for **all four** release paths | ✅ | `18e5dc0` — 10 mutants, 10 killed |
+| 4 — godoc cross-references (D-AI) | ✅ | `12cec15` — comment-only, AST-proven, 3 probes |
+| 5+6 — `sql` + the three dialects + `harness` | ✅ | `355504e` — 6 modules, real Docker run |
+| **3 — the `default ≥ completionSizeCeiling` AST invariant (D-AQ)** | **⏭️ NEXT** | — |
+| 7, 8, 9, 9b, 10 | pending | — |
 
-> **One mutant survived its first pass and the FIXTURE was rewritten, not the count.** The obvious way to drain a
-> group is to claim and settle all of it — but `SettleGroup` deletes the whole group when the residual is empty,
-> taking `g.ids` with it, so the dedup set vanished regardless of where the cap check sat and the case passed
-> against the mutant it exists to kill. It now leaves a residual.
+**Why Task 3 is next and could not have run earlier:** it parses **three** files by name and asserts
+`defaultMaxGroupMembers ≥ completionSizeCeiling`. `sql`'s constant only came into existence at `355504e`, so this
+is the first commit at which its parse set is complete. Its non-vacuity guard fires on a missing declaration, so
+running it earlier would have failed for the wrong reason.
 
-**Held for ratification — Tasks 4–8.** They change `GroupDialect.AddMember`'s signature across **four modules**
-and alter runtime behaviour in three dialect modules. Execution order is `1 → 2 → 4 → 5+6 → 3 → 7 → 8 → 9 → 9b →
-10`. Task 1 is done, so **Task 2 is next** and is `routing`-only.
+### 🔴 Task 7 carries two defects found by RUNNING mutants — both are blocking, both are in the task list
 
-## 5. Gates run, and what they found
+Neither was findable by reading; five adversarial rounds approved both.
 
-- **`/code-review` over `main..HEAD`** — safe to merge; 0 blockers, 0 majors, 3 documentation minors, **all
-  fixed** in `de38a95`. It mutation-tested the byte-cap gate on a scratch copy: three mutants, all killed.
-- **`/security-review`** — **no HIGH or MEDIUM findings.** Verified no `int64`→`int` narrowing exists on any
-  remote-driven path; on 32-bit `byteCapCeiling == math.MaxInt`, so the accepted range is exactly the
-  representable range.
-- **8 modules × 8 CI-parity steps** — all green, nothing skipped; Docker was up, so `dbtest` and `crontest` ran
-  real containers rather than being waived.
-- Coverage: `adapter/http` **100%**, `routing` **100%**, `adapter/memory` **74% → 88%**, root **95.6%**.
+1. **The plan's own B6-7 mutant is arithmetically incapable of killing.** It pairs *"fill a group to exactly
+   `cap`, then `ClaimGroup`"* with *"pass `maxMembers+1`"* — but **`LIMIT cap+1` cannot truncate `cap` rows**. It
+   was run and **SURVIVED**. A limit that actually bites (`3` at cap `4`) and baking the `LIMIT` into the
+   helper's SQL both **killed** it. Task 7 must use one of those, or D-AS's `ClaimGroup` arm ships an assertion
+   that proves nothing. (The literal instruction is also unimplementable — `ClaimGroup` has no `maxMembers` in
+   scope, which is D-AS's own point.)
+2. **`ExpiredGroups`' half of D-AS is uncovered by the SHIPPED conformance suite.** Mutating its call site from
+   `0` to `1` — the reaper silently dropping every member of an expired group past the first — **passes all 14
+   subtests on sqlite**. No case asserts an expired group returns more than one member. Task 7 needs the
+   `ExpiredGroups` twin of B6-7.
+
+Also stale, owned by **Task 9 Step 3 arm E**: the class gate's ordinal comment *"burst is the 17th key"* is false
+(19 keys; `resilience.NewTokenBucket` is 19th). It went stale at Task 1.
+
+And for **Task 10 Step 6**: `errors.go`'s `ErrInvalidCapacity` godoc makes two claims Task 1 falsified — that the
+sentinel covers options that are *"the sole bound"* on a growing structure (`WithCompletionSize` no longer is),
+and that *"all FOUR producers have landed"* (it is six now). Step 6 already requires reconciling the producers
+**by name**; that sentence is the prose which must move with them.
+
+## 5. The standing constraint added at ratification
+
+> *"this library must be flexible with sensible default but with opt-in available."*
+
+It sharpens CLAUDE.md's "Sensible defaults (opinionated, but overridable)" and **governs every knob from here**.
+Cite that section rather than duplicating it.
+
+Both group-member options comply: a sensible default (`1<<16`), overridable to `1<<20`, both documented. **No
+off-state**, deliberately — unlike a byte cap, the safe value here is *not* unknowable to the library (the cost
+curve is quadratic and measured), so a caller above the ceiling is already pathological and the bound protects
+them. Adding one later is **purely additive**. At the **SPI** level `maxMembers <= 0` *does* mean unbounded, for a
+direct dialect caller who never opted in — unreachable from `sql.GroupStore`, where validation guarantees ≥ 1.
+Compare `endpoint.WithMaxPayloadBytes`, which *is* opt-in (`n <= 0 disables`) precisely because a caller's
+legitimate payload size **is** unknowable.
 
 ## 6. Pending approvals — nothing here was decided for you
 
-1. **🔴 Ratify or reverse D-AC…D-AT.** Eighteen decisions taken while you were away, each carrying a written
-   **REVERSIBILITY** line. This is the only thing blocking Plan 031's SQL half. The two with real operational
-   weight, both in Spec 017 §8:
-   - **A `COUNT(*)` on every `AddMember`, not only on overflow.** Forced, not chosen: the `LIMIT maxMembers+1`
-     SELECT is live-only and cannot see claimed members under any limit. It reuses the already-shipped
-     `pgCountMembers`/`mysqlCountMembers`/`sqliteCountMembers`, so it is zero new SQL. On **sqlite** it extends a
-     database-wide write lock, so the cost is global rather than per-key.
-   - **A crashed releaser holds the lease for up to `2 × WithGroupLeaseTTL` ≈ 10 minutes** (eligibility at
-     `t₀ + leaseTTL`, discovery at the first reaper tick after it), during which rejection is a retry loop paying a
-     full rolled-back transaction plus a `SchemaExists` probe per iteration. Kept **transient** deliberately —
-     classifying it permanent would dead-letter messages the default configuration is about to admit.
-2. **Adopting `github.com/gin-gonic/gin`.** Untouched. Plan 030 Task 3 fixed the *false citations* around ADR 0024
-   and deliberately did **not** write the ADR, because writing it decides the dependency by side effect.
-3. **Merge, push, tag, branch deletion.** None taken. Nothing left this machine.
+1. **Adopting `github.com/gin-gonic/gin`.** Untouched. Plan 030 Task 3 fixed the *false citations* around ADR
+   0024 and deliberately did **not** write the ADR, because writing it decides the dependency by side effect.
+2. **Merge, push, tag, branch deletion.** None taken. Nothing has left this machine.
 
-## 7. Carry-forward — still open
+## 7. Carry-forward — open, unscheduled
 
-| # | Item | State |
-|---|---|---|
-| 2 | Dedup the delegator loops | **CLOSED-WONTFIX** (§2; Plan 030 **D1**). Do not re-propose without first deciding to amend Spec 015 AC-7. |
-| 7 | Group-member bound, **SQL half** | Designed, audited ×5, **SAFE TO IMPLEMENT**, blocked on §6.1 alone. Next task: **Task 2** (`routing`-only). |
-| — | gin increment | Unnumbered until written; ADR 0024 reserved but unwritten. Dependency decision open (§6.2). |
-| — | **AST checker → permanent gate** | Plan 030 Task 1's throwaway checker pairs each "first statement" comment against its function's `fd.Body.List[0]`. The class grew **4 → 11 → 16** sites across three counts, each time because the detection method was weaker than the defect. A committed AST invariant ends it; another grep will not. |
-| — | **`WithPollMaxBatch`'s safe-arm gate row is magnitude-insensitive** | **Pre-existing, verified not a regression** — it survives an `int32(n)` truncation mutant at *both* `1<<62` and `math.MaxInt`, because polling one message at a time still delivers both. Fix: assert on batch **size**, not eventual arrival. |
-| — | **Derive the class gate's prose counts from `wantArms` at test time** | `sizing_option_class_gate_test.go` restates the arm partition in ~10 prose locations — including **two live assertion messages** — with **no mechanical link** to the map the test already computes. Nothing fails when one drifts: four rounds each patched the instances they were shown and were overtaken (7 → 12 → 14 → 16 → **17** sites), and the seventeenth (`:22`) carries no arm name, no literal and no digit, so **no selector can find it**. Designed at [Spec 018 §8 item 5](specs/018-byte-cap-ceilings.md). |
+| Item | State |
+|---|---|
+| **AST checker → permanent gate** | Plan 030 Task 1's throwaway checker pairs each "first statement" comment against its function's `fd.Body.List[0]`. The class grew **4 → 11 → 16** sites across three counts, each time because the detection method was weaker than the defect. An AST invariant ends it; another grep will not. |
+| **`WithPollMaxBatch`'s safe-arm gate row is magnitude-insensitive** | **Pre-existing, verified not a regression** — survives an `int32(n)` truncation mutant at *both* `1<<62` and `math.MaxInt`, because polling one message at a time still delivers both. Fix: assert on batch **size**, not eventual arrival. |
+| **Derive the class gate's prose counts from `wantArms` at test time** | The partition is restated in ~10 prose locations — including two *live assertion messages* — with no mechanical link to the map the test already computes. Four rounds patched instances and were overtaken (7 → 12 → 14 → 16 → **17**); the 17th carries no arm name, literal or digit, so **no selector can find it**. Designed at [Spec 018 §8 item 5](specs/018-byte-cap-ceilings.md). |
 
 ## 8. Gotchas — these will bite
 
-- **Any artifact citing `file:line` is stale from the moment it is written.** Two instances one commit apart this
-  session. Cite the **symbol and the grep that locates it**, not a coordinate.
-- **`git log --oneline | grep -i <plan>` misses commits** whose subject lacks the number. Derive delivery from the
-  trailer: `git log --format='%h %s' --grep='Plan: 030'`. Plan 030's unticked checkboxes are a **bookkeeping
-  artefact** — a delivery banner at the top of that file now says so, after an audit was misled by them.
+- **Any artifact citing `file:line` is stale from the moment it is written.** Cite the **symbol and the grep that
+  locates it**, not a coordinate.
+- **A mutant can be wrong.** Check its arithmetic against the fixture's magnitudes before trusting a kill *or* a
+  survival, and **run it against the whole suite**, not just the case you wrote. §4 has two instances.
+- **A "never fires" negative row needs a paired positive control** — it cannot otherwise distinguish *the guard
+  worked* from *the path was never installed*.
+- **`gopls` / the `LSP` tool is NOT available in this environment.** Plans mandate it; substitute `go doc` plus
+  targeted greps and say so.
+- **`git log --oneline | grep -i <plan>` misses commits** whose subject lacks the number. Use the trailer:
+  `git log --format='%h %s' --grep='Plan: 031'`.
 - **`apidiff` exits 0 even when it reports changes** — the OUTPUT is the signal, never `$?`. It is also blind
   outside the root package.
 - **`go vet` aborts after the first error per package.** For the full 386 list use
   `GOARCH=386 GOOS=linux go test -gcflags=all=-e -run=NONE ./...`.
-- **Two modules give false passes in opposite directions:** `harness` has no test files (`go test` passes
+- **Two modules give false passes in OPPOSITE directions:** `harness` has no test files (`go test` passes
   vacuously — use `go vet`); `dbtest` has **only** `_test.go` files (`go build` compiles nothing — use `go vet`).
-- **`govulncheck` lives in `$(go env GOPATH)/bin`**, not on `PATH` — `which` reports it missing while it exists.
-- **The docs-link gate has exactly two known false positives** (`docs/plans/m`, `docs/specs/factory(fireTime` —
-  Go identifiers in wrapped code spans). Verified at `7abc9f8`, both arms, vacuity-probed.
+  `dbtest` and `crontest` are Docker-backed; the real run takes ~2 minutes.
+- **`govulncheck` lives in `$(go env GOPATH)/bin`**, not on `PATH`.
+- **The docs-link gate has exactly two known false positives** (`docs/plans/m`,
+  `docs/specs/factory(fireTime` — Go identifiers in wrapped code spans).
 - **`*-audit-round-*.md` and `*-derivation-findings.md` are IMMUTABLE.** Delivered plans are **not** — Plans 020,
-  029 and 030 all carry in-place supersession notes.
-- **An auditor's summary can disagree with its own table.** It happened in two consecutive rounds, both by one row
-  in the same direction. Fixed by instructing round 4 to *generate the score by counting the table*; recorded
-  unreconciled where it occurred, per the `43 ≠ 43` rule.
+  029, 030 and 032 all carry in-place supersession notes.
+- **An auditor's summary can disagree with its own table.** It happened twice, both by one row in the same
+  direction. Instruct the auditor to **generate the score by counting the table** and to say that it did.
 - `GOTOOLCHAIN=go1.25.13`. `.superpowers/` is git-ignored. Never commit `.claude/settings.json`.
