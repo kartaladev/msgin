@@ -107,23 +107,70 @@ type ClaimedGroup struct {
 type GroupDialect interface {
 	// AddMember durably, idempotently appends one member to the group table,
 	// in ONE transaction: it upserts the group row (created_at set once, via
-	// the DB server clock — never a caller-supplied now), takes the GROUP
-	// ROW LOCK (SELECT ... FOR UPDATE or equivalent) BEFORE reading or
-	// writing any member row — so concurrent same-key AddMember calls, even
-	// from different processes, SERIALIZE on this lock (audit R1 H1: under
-	// READ COMMITTED, two processes each adding one member of a size-N group
-	// would otherwise each snapshot only their own uncommitted-elsewhere
-	// member and neither would observe completion) — then upserts the member
-	// row (ON CONFLICT(group_key,msg_id) DO NOTHING / INSERT IGNORE, so a
-	// redelivered member is a no-op), and finally SELECTs the group's
-	// current CreatedAt plus its LIVE members (claimed_epoch IS NULL),
-	// ordered by seq then msg_id. Commits atomically. An empty msgID is
-	// rejected with a typed error (ErrMissingMsgID) BEFORE any statement
-	// runs — audit R1 H3, durable aggregation requires message ids. seq is
-	// msgin.HeaderSequenceNumber (0 if the member's headers carried none);
-	// headers/payload are the already-framed bytes (EncodeHeaders output /
-	// runtime-codec wire body) to persist verbatim.
-	AddMember(ctx context.Context, q Querier, table, groupKey, msgID string, seq int64, headers, payload []byte) (GroupRows, error)
+	// the DB server clock — never a caller-supplied now) with a statement
+	// that SERIALIZES concurrent same-key adds BEFORE any member row is read
+	// or written — by a group-row lock on postgres and mysql, by BEGIN
+	// IMMEDIATE's database-wide write lock on sqlite (ADR 0033 D-AP; there
+	// is no one mechanism, and an implementer for a new engine must supply
+	// one of their own). Serialization is required, not stylistic (audit R1
+	// H1: under READ COMMITTED, two processes each adding one member of a
+	// size-N group would otherwise each snapshot only their own
+	// uncommitted-elsewhere member and neither would observe completion). It
+	// then upserts the member row (ON CONFLICT(group_key,msg_id) DO NOTHING
+	// / INSERT IGNORE, so a redelivered member is a no-op), and finally
+	// SELECTs the group's current CreatedAt plus its LIVE members
+	// (claimed_epoch IS NULL), ordered by seq then msg_id. Commits
+	// atomically. An empty msgID is rejected with a typed error
+	// (ErrMissingMsgID) BEFORE any statement runs — audit R1 H3, durable
+	// aggregation requires message ids. seq is msgin.HeaderSequenceNumber (0
+	// if the member's headers carried none); headers/payload are the
+	// already-framed bytes (EncodeHeaders output / runtime-codec wire body)
+	// to persist verbatim.
+	//
+	// # The member cap is enforced IN THIS TRANSACTION (Spec 017 §3.6)
+	//
+	// maxMembers is the bound on how many members ONE group may hold —
+	// sql.GroupStore threads its WithMaxGroupMembers here. AFTER the member
+	// upsert (so an idempotent re-add of an existing id at exactly the cap
+	// stays a no-op), the implementation MUST count EVERY member row for the
+	// key — LIVE AND CLAIMED, i.e. SELECT count(*) with no claimed_epoch
+	// predicate — and, if that count exceeds maxMembers, MUST abort the
+	// transaction and return msgin.ErrOverflowDropped wrapped as
+	// "%w: msgin/sql/<engine>: AddMember: group %q holds %d members, limit %d".
+	// Counting only the live set does not bound anything: ClaimGroup stamps
+	// every live member, so the next maxMembers arrivals see an empty live
+	// set and the table grows by maxMembers per claim cycle, forever.
+	//
+	// The rejection is classified by the group row's locked_by: NULL (not
+	// leased — nothing will drain the group on its own) MUST be wrapped in
+	// msgin.Permanent, so the runtime settles it terminally instead of
+	// hot-spinning on the shipped zero-value msgin.RetryPolicy; non-NULL (a
+	// claim is in flight, which will drain it) stays a bare, transient error.
+	// The group's remaining LIVE members SHOULD be returned in the GroupRows
+	// ALONGSIDE that error, with the just-upserted member filtered out, so
+	// the Aggregator can re-evaluate its release strategy against a group
+	// that is full but complete (Spec 017 §3.3a).
+	//
+	// A maxMembers of 0 or less means UNBOUNDED — no count is taken. It
+	// cannot arrive from sql.GroupStore, whose constructor rejects anything
+	// outside [1, 1048576]; it exists so a direct dialect caller that has
+	// not opted into a bound keeps the pre-Spec-017 behavior rather than
+	// having every add rejected.
+	//
+	// # PRECONDITION: the rollback is only ours when the transaction is
+	//
+	// The cap is enforced BY ROLLBACK, and a dialect only rolls back a
+	// transaction it OWNS — the one it begins when q is a *sql.DB. When a
+	// DIRECT caller passes its own *sql.Tx as q, the dialect runs on that
+	// transaction and neither commits nor rolls it back: the over-cap member
+	// row is already inserted into the caller's open transaction when the
+	// error is returned. Such a caller MUST treat msgin.ErrOverflowDropped as
+	// a rollback trigger; committing anyway exceeds the cap durably. A
+	// library must not roll back a transaction it cannot see the rest of, so
+	// this is stated rather than engineered away. It does not apply to
+	// sql.GroupStore, which always owns its transaction (see
+	// WithMaxGroupMembers).
+	AddMember(ctx context.Context, q Querier, table, groupKey, msgID string, seq int64, headers, payload []byte, maxMembers int) (GroupRows, error)
 
 	// ClaimGroup atomically leases the group's current members, in ONE
 	// transaction: it bumps the group row's epoch and stamps

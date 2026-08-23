@@ -16,6 +16,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// groupMemberCap is the member cap every harness group case that drives
+// kit.Group.AddMember directly runs under (Spec 017 §3.6 / Plan 031 Task 5):
+// small enough for Spec 017 §6 AC-6 (no test grows a group past 16 members),
+// large enough for the largest member count any harness case adds. It is
+// UNEXPORTED on purpose — an exported harness function with an int parameter
+// would be a conformance key the root class gate can discover but, being in a
+// leaf module, cannot import to satisfy; a TestKit field would be a
+// public-surface change to a leaf module. An unexported package constant is
+// neither.
+//
+// Cases that go through msginsql.NewGroupStore do NOT use it: they run under
+// the store's own 65,536 default, which no harness case approaches.
+const groupMemberCap = 4
+
 // mustSubscribe registers h on ch and fails the test if Subscribe errors. Since
 // ADR 0028 Subscribe returns (Subscription, error); these call sites do not need
 // the handle, and this keeps the original require.NoError assertion intact.
@@ -342,7 +356,7 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 			headers, err := msginsql.EncodeHeaders(
 				msgin.NewHeaders(map[string]any{msgin.HeaderMessageID: id, msgin.HeaderSequenceNumber: int(seq)}))
 			require.NoError(t, err)
-			_, err = kit.Group.AddMember(ctx, db, table, key, id, seq, headers, []byte(`"p"`))
+			_, err = kit.Group.AddMember(ctx, db, table, key, id, seq, headers, []byte(`"p"`), groupMemberCap)
 			require.NoError(t, err)
 		}
 		addRaw("k", "a", 0)

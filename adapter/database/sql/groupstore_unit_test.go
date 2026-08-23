@@ -12,6 +12,7 @@ package sql_test
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -622,4 +623,213 @@ func TestNewGroupStore_NilOptionElement(t *testing.T) {
 			tc.assert(t, err)
 		})
 	}
+}
+
+// TestNewGroupStore_MaxGroupMembersRange covers WithMaxGroupMembers' checkRange
+// arms (Spec 017 §6 AC-2 / AC-2b; Plan 031 Task 5 branches B5-1..B5-3): both
+// ends of [1, 1<<20] asserted with the FULL render, not merely errors.Is, so a
+// message that lies at either end ("0 exceeds 1048576") cannot pass.
+//
+// The ceiling is exercised by the CONSTRUCTOR only — no group is ever grown to
+// it (Spec 017 §6 AC-6: 65,536 members costs 8.6 s and 48.3 GiB of churn).
+func TestNewGroupStore_MaxGroupMembersRange(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		n      int
+		assert func(t *testing.T, store *msginsql.GroupStore, err error)
+	}{
+		{
+			name: "zero is rejected at the lower arm",
+			n:    0,
+			assert: func(t *testing.T, store *msginsql.GroupStore, err error) {
+				require.ErrorIs(t, err, msgin.ErrInvalidCapacity)
+				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
+				assert.EqualError(t, err,
+					"msgin: capacity out of range: sql.WithMaxGroupMembers: 0 not in [1, 1048576]")
+				assert.Nil(t, store)
+			},
+		},
+		{
+			name: "the ceiling itself is accepted",
+			n:    1 << 20,
+			assert: func(t *testing.T, store *msginsql.GroupStore, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, store)
+			},
+		},
+		{
+			name: "ceiling+1 is rejected at the upper arm",
+			n:    1<<20 + 1,
+			assert: func(t *testing.T, store *msginsql.GroupStore, err error) {
+				require.ErrorIs(t, err, msgin.ErrInvalidCapacity)
+				assert.EqualError(t, err,
+					"msgin: capacity out of range: sql.WithMaxGroupMembers: 1048577 not in [1, 1048576]")
+				assert.Nil(t, store)
+			},
+		},
+		{
+			name: "one is accepted at the lower boundary",
+			n:    1,
+			assert: func(t *testing.T, store *msginsql.GroupStore, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, store)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			store, err := msginsql.NewGroupStore(openDB(t, fakeDriverName), "groups", newFakeGroupDialect(),
+				msginsql.WithMaxGroupMembers(tc.n))
+			tc.assert(t, store, err)
+		})
+	}
+}
+
+// TestGroupStore_AddThreadsAndPropagatesTheMemberCap covers the store's half of
+// the in-transaction bound (Spec 017 §3.6 / §3.6.3; Plan 031 Task 5 branches
+// B5-4..B5-7): Add threads the CONFIGURED cap into GroupDialect.AddMember, and
+// propagates the dialect's rejection — sentinel, Permanent marker AND the live
+// snapshot that rides out with it (D-AN) — through classifyQueryErr unchanged.
+//
+// The dialect's own enforcement is proven against real engines in the harness
+// conformance suite; a render assertion through this fake would be vacuous,
+// since the fake mints whatever the test hands it (Spec 017 §6 AC-2c).
+func TestGroupStore_AddThreadsAndPropagatesTheMemberCap(t *testing.T) {
+	t.Parallel()
+
+	// overflow renders what a real dialect renders, so the propagation
+	// assertions below are about the STORE, not about this string.
+	overflow := func(key string, n, max int) error {
+		return fmt.Errorf("%w: msgin/sql/fake: AddMember: group %q holds %d members, limit %d",
+			msgin.ErrOverflowDropped, key, n, max)
+	}
+
+	t.Run("Add threads the configured cap into AddMember", func(t *testing.T) {
+		t.Parallel()
+		fd := newFakeGroupDialect()
+		store, err := msginsql.NewGroupStore(openDB(t, fakeDriverName), "groups", fd,
+			msginsql.WithMaxGroupMembers(7))
+		require.NoError(t, err)
+
+		_, err = store.Add(t.Context(), "corr-1", msgin.New[any]([]byte("p"), msgin.WithID("m-1")))
+		require.NoError(t, err)
+		assert.Equal(t, 7, fd.lastAddMaxMembers,
+			"the store must pass its CONFIGURED cap, not a literal")
+	})
+
+	t.Run("Add threads the 65,536 default when the option is unset", func(t *testing.T) {
+		t.Parallel()
+		fd := newFakeGroupDialect()
+		store, err := msginsql.NewGroupStore(openDB(t, fakeDriverName), "groups", fd)
+		require.NoError(t, err)
+
+		_, err = store.Add(t.Context(), "corr-1", msgin.New[any]([]byte("p"), msgin.WithID("m-1")))
+		require.NoError(t, err)
+		assert.Equal(t, 1<<16, fd.lastAddMaxMembers)
+	})
+
+	t.Run("a permanent dialect overflow propagates with its marker and sentinel intact", func(t *testing.T) {
+		t.Parallel()
+		fd := newFakeGroupDialect()
+		fd.markGroupReady("groups")
+		fd.addMemberErr = msgin.Permanent(overflow("corr-1", 5, 4))
+		store, err := msginsql.NewGroupStore(openDB(t, fakeDriverName), "groups", fd,
+			msginsql.WithMaxGroupMembers(4))
+		require.NoError(t, err)
+
+		_, err = store.Add(t.Context(), "corr-1", msgin.New[any]([]byte("p"), msgin.WithID("m-5")))
+		require.ErrorIs(t, err, msgin.ErrOverflowDropped)
+		assert.True(t, msgin.IsPermanent(err),
+			"the dialect's not-leased classification must survive the store (D-AM)")
+		assert.NotErrorIs(t, err, msginsql.ErrSchemaNotReady)
+	})
+
+	t.Run("a leased (transient) dialect overflow stays transient", func(t *testing.T) {
+		t.Parallel()
+		fd := newFakeGroupDialect()
+		fd.markGroupReady("groups")
+		fd.addMemberErr = overflow("corr-1", 5, 4)
+		store, err := msginsql.NewGroupStore(openDB(t, fakeDriverName), "groups", fd,
+			msginsql.WithMaxGroupMembers(4))
+		require.NoError(t, err)
+
+		_, err = store.Add(t.Context(), "corr-1", msgin.New[any]([]byte("p"), msgin.WithID("m-5")))
+		require.ErrorIs(t, err, msgin.ErrOverflowDropped)
+		assert.False(t, msgin.IsPermanent(err),
+			"a claim is in flight; the store must not upgrade the classification")
+	})
+
+	t.Run("the dialect's live snapshot rides out ALONGSIDE the overflow error", func(t *testing.T) {
+		t.Parallel()
+		headers, err := msginsql.EncodeHeaders(
+			msgin.NewHeaders(map[string]any{msgin.HeaderMessageID: "m-1"}))
+		require.NoError(t, err)
+
+		fd := newFakeGroupDialect()
+		fd.markGroupReady("groups")
+		fd.addMemberErr = msgin.Permanent(overflow("corr-1", 2, 1))
+		fd.addMemberRows = msginsql.GroupRows{
+			GroupKey: "corr-1",
+			Members:  []msginsql.MemberRow{{MsgID: "m-1", Headers: headers, Payload: []byte("p1")}},
+		}
+		store, err := msginsql.NewGroupStore(openDB(t, fakeDriverName), "groups", fd,
+			msginsql.WithMaxGroupMembers(1))
+		require.NoError(t, err)
+
+		group, err := store.Add(t.Context(), "corr-1", msgin.New[any]([]byte("p2"), msgin.WithID("m-2")))
+		require.ErrorIs(t, err, msgin.ErrOverflowDropped)
+		require.NotNil(t, group,
+			"Add must propagate the dialect's snapshot, or routing.Aggregator.Handle's "+
+				"release re-evaluation is unreachable for sql (Spec 017 §3.3a)")
+		assert.Equal(t, "corr-1", group.Key())
+		require.Len(t, group.Messages(), 1)
+		assert.Equal(t, "m-1", group.Messages()[0].ID())
+	})
+
+	t.Run("a NON-overflow dialect error still returns a nil group", func(t *testing.T) {
+		t.Parallel()
+		fd := newFakeGroupDialect()
+		fd.markGroupReady("groups")
+		fd.addMemberErr = errors.New("add boom")
+		fd.addMemberRows = msginsql.GroupRows{GroupKey: "corr-1"}
+		store, err := msginsql.NewGroupStore(openDB(t, fakeDriverName), "groups", fd)
+		require.NoError(t, err)
+
+		group, err := store.Add(t.Context(), "corr-1", msgin.New[any]([]byte("p"), msgin.WithID("m-1")))
+		require.Error(t, err)
+		assert.Nil(t, group, "only an overflow rejection carries a snapshot (Spec 017 §3.7)")
+	})
+
+	t.Run("the overflow marker and sentinel survive classifyQueryErr's schema probe", func(t *testing.T) {
+		t.Parallel()
+		fd := newFakeGroupDialect()
+		fd.markGroupReady("groups") // the table EXISTS, so the probe passes the error through
+		fd.addMemberErr = msgin.Permanent(overflow("corr-1", 5, 4))
+		store, err := msginsql.NewGroupStore(openDB(t, fakeDriverName), "groups", fd,
+			msginsql.WithMaxGroupMembers(4))
+		require.NoError(t, err)
+
+		_, err = store.Add(t.Context(), "corr-1", msgin.New[any]([]byte("p"), msgin.WithID("m-5")))
+		require.ErrorIs(t, err, msgin.ErrOverflowDropped)
+		assert.True(t, msgin.IsPermanent(err))
+		assert.NotErrorIs(t, err, msginsql.ErrSchemaNotReady,
+			"Spec 017 §6 AC-4c: with the table present the error passes through unchanged")
+	})
+
+	t.Run("a MISSING table still reclassifies the overflow as ErrSchemaNotReady", func(t *testing.T) {
+		t.Parallel()
+		fd := newFakeGroupDialect() // markGroupReady NOT called: the probe reports the table absent
+		fd.addMemberErr = msgin.Permanent(overflow("corr-1", 5, 4))
+		store, err := msginsql.NewGroupStore(openDB(t, fakeDriverName), "groups", fd,
+			msginsql.WithMaxGroupMembers(4))
+		require.NoError(t, err)
+
+		_, err = store.Add(t.Context(), "corr-1", msgin.New[any]([]byte("p"), msgin.WithID("m-5")))
+		require.ErrorIs(t, err, msginsql.ErrSchemaNotReady,
+			"classifyQueryErr's diagnosis wins when the table is genuinely gone")
+	})
 }

@@ -3,6 +3,7 @@ package sql
 import (
 	"context"
 	stdsql "database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -28,6 +29,36 @@ const defaultGroupLeaseTTL = 5 * time.Minute
 // backlog beyond this cap is simply picked up over subsequent ticks — nothing
 // is skipped, only spread across more sweeps.
 const defaultExpiredGroupsLimit = 100
+
+// defaultMaxGroupMembers is the number of members WithMaxGroupMembers admits
+// into ONE correlation group when the option is not set: 65,536 (Spec 017
+// §3.2). The value is not a fresh judgement — it REUSES routing's
+// completionSizeCeiling (Spec 016 §3.4, ADR 0032 D-Z), which fixed 65,536 as
+// "far beyond any plausible aggregation" over the identical unit, members of
+// one correlation group, and it matches memory.defaultMaxGroupMembers so the
+// two first-party stores bound the same quantity at the same number.
+//
+// The cost basis is TIME and I/O, not bytes: GroupDialect.AddMember round-trips
+// and decodes the group's whole live member set on EVERY add (Spec 017 §1.3),
+// so a group of m members costs Θ(m²) rows fetched over its lifetime. That is
+// why no test grows a group to this value.
+//
+// INVARIANT: this default must stay >= routing's completionSizeCeiling. A
+// caller may legally configure routing.WithCompletionSize up to that ceiling,
+// and a smaller default cap here would make such a group reject its own
+// completing member before the release predicate could ever fire — a silent
+// deadlock in place of a bound (Spec 017 §3.5).
+const defaultMaxGroupMembers = 1 << 16
+
+// maxGroupMembersCeiling is the upper bound WithMaxGroupMembers accepts
+// (Spec 017 §3.2). It matches memory.maxGroupMembersCeiling and
+// memory.maxGroupsCeiling, so one number reads as "the largest in-flight
+// aggregation quantity this library will accept" across both stores. The
+// ceiling matters even though the check itself is a scalar comparison: it is
+// what stops a caller from configuring a cap so large that the bound is
+// nominal, and — per defaultMaxGroupMembers' cost note — the quadratic fetch
+// cost makes even the ceiling unreachable in practice.
+const maxGroupMembersCeiling = 1 << 20
 
 // groupBase holds the fields and operations shared by GroupStore's methods:
 // the db handle, target table, the caller-supplied GroupDialect, and the
@@ -104,10 +135,11 @@ func (b groupBase) schemaNotReady() error {
 // groupStoreConfig accumulates GroupStoreOption settings before NewGroupStore
 // builds a GroupStore.
 type groupStoreConfig struct {
-	leaseTTL    time.Duration
-	leaseTTLSet bool // distinguishes explicit WithGroupLeaseTTL(0) (rejected) from unset (default)
-	lockedBy    string
-	logger      *slog.Logger
+	leaseTTL        time.Duration
+	leaseTTLSet     bool // distinguishes explicit WithGroupLeaseTTL(0) (rejected) from unset (default)
+	lockedBy        string
+	maxGroupMembers int
+	logger          *slog.Logger
 }
 
 // GroupStoreOption configures a GroupStore built by NewGroupStore.
@@ -156,6 +188,87 @@ func WithGroupLockedBy(id string) GroupStoreOption {
 	return func(c *groupStoreConfig) { c.lockedBy = id }
 }
 
+// WithMaxGroupMembers bounds the number of members ONE correlation group may
+// hold to n, which must be in [1, maxGroupMembersCeiling] (1,048,576);
+// default 65,536 (see defaultMaxGroupMembers for why that number). n outside
+// the range is a construction-time error (msgin.ErrInvalidCapacity), not a
+// silent clamp. It is the durable twin of memory.WithMaxGroupMembers and
+// carries the same name deliberately — one SPI concept, one name.
+//
+// WHAT IT COUNTS: every member ROW the database still holds for the key —
+// LIVE plus CLAIMED. ClaimGroup stamps claimed_epoch on every live member
+// without deleting anything, so claimed members keep counting until
+// SettleGroup deletes them; a group at exactly n therefore rejects new
+// arrivals for the duration of a claim, even though its live set is empty.
+// That is what makes the bound a bound: counting live members only would let
+// every claim cycle admit n more rows, forever (Spec 017 §3.4). The count
+// rendered in the error is "members retained at the moment of the check", and
+// this store checks AFTER the idempotent member upsert — required, so that a
+// re-add of an existing id at exactly the cap stays a no-op — so at n = 4 it
+// renders "holds 5 members, limit 4", one more than memory's twin, which
+// checks before its append.
+//
+// WHERE IT IS ENFORCED: inside the dialect's own transaction, before the
+// commit, so the over-cap row is rolled back rather than merely reported
+// (Spec 017 §3.6). For a store built by NewGroupStore this bound is
+// UNCONDITIONALLY DURABLE — the store always owns the transaction the dialect
+// runs in, because NewGroupStore takes a concrete *sql.DB and Add always
+// passes it. (A DIRECT caller of GroupDialect.AddMember may supply its own
+// *sql.Tx; that caller owns the rollback. See GroupDialect.AddMember's godoc
+// — the caveat cannot apply to a caller of this option.) The check costs one
+// extra SELECT count(*) per Add, on every add rather than only on overflow;
+// on sqlite that scan runs inside BEGIN IMMEDIATE's database-wide write lock.
+//
+// AT THE BOUNDARY: an Add that would take the group past n returns
+// msgin.ErrOverflowDropped, wrapped with the engine-naming site, the group
+// key, the count and the limit — e.g. "msgin/sql/postgres: AddMember: group
+// \"k\" holds 5 members, limit 4". The member row is NOT committed. The live
+// snapshot is returned ALONGSIDE the error so routing.Aggregator.Handle can
+// still re-evaluate the release: the member is rejected, the release is not.
+//
+// CLASSIFICATION — the rejection is classified by CAUSE, from the group row's
+// locked_by (Spec 017 §3.3.1):
+//
+//   - locked_by IS NULL, the group is NOT leased: nothing drains an unleased
+//     group without an expiry cutoff (with no routing.WithGroupTimeout the
+//     reaper's cutoff is zero and ExpiredGroups returns crashed-lease groups
+//     only). The error is msgin.Permanent-wrapped, which the runtime settles
+//     TERMINALLY — one attempt at the invalid-message sink, or the dead-letter
+//     sink as a fallback, never a Nack. This is deliberate: a plain transient
+//     rejection on the SHIPPED zero-value msgin.RetryPolicy (no MaxAttempts,
+//     no Backoff) is an unlogged, zero-delay redelivery loop, and here each
+//     iteration is a full rolled-back write transaction taking the group-row
+//     lock plus a SchemaExists probe, multiplied by endpoint.WithConcurrency
+//     — all contending on the very row a recovery would have to lock. With
+//     NEITHER sink configured the runtime WARNs, naming both missing options,
+//     and then ACKs — so the source DROPS the message. Configure
+//     endpoint.WithInvalidMessageSink (or RetryPolicy.DeadLetter) to turn that
+//     loss into a capture; the library cannot supply one.
+//   - locked_by IS NOT NULL, the group IS leased: a claim is in flight and
+//     Settle/Abandon runs on every release path, so the retry genuinely
+//     succeeds afterwards. The error stays transient (unwrapped). Under the
+//     zero-value RetryPolicy that retry is a busy-wait for the width of the
+//     claim window; set RetryPolicy.Backoff if that matters.
+//
+// HOW LONG THE TRANSIENT ARM CAN LAST: normally one release round-trip. Its
+// tail is a CRASHED releaser's lease, and that tail is UP TO 2 x leaseTTL —
+// about 10 minutes at the shipped defaults, not 5. Two terms compose:
+// ELIGIBILITY, at t0 + leaseTTL, when ExpiredGroups' locked_at <= now -
+// leaseTTL arm first matches; and DISCOVERY, at the first reaper tick AT OR
+// AFTER that moment. Aggregator.Run builds its ticker at Run's own start time
+// on an interval that, with no WithGroupTimeout, equals RecoverInterval() —
+// this store's lease TTL — so eligibility landing just after a tick waits a
+// further full interval. Both terms presume go agg.Run(ctx) is running at
+// all; without it the window has no upper bound (see GroupStore's "go
+// agg.Run(ctx) is REQUIRED" section).
+//
+// A group that is full and unreleasable stays full: this option bounds
+// growth, it does not provide liveness. Set routing.WithGroupTimeout to have
+// the reaper expire such a group.
+func WithMaxGroupMembers(n int) GroupStoreOption {
+	return func(c *groupStoreConfig) { c.maxGroupMembers = n }
+}
+
 // GroupStore is a durable, multi-process-safe msgin.MessageGroupStore backed
 // by a database/sql table pair (ADR 0021): correlation-keyed groups of held
 // messages, with a store-level atomic lease-claim (GroupDialect.ClaimGroup)
@@ -184,8 +297,9 @@ func WithGroupLockedBy(id string) GroupStoreOption {
 // even with no WithGroupTimeout configured.
 type GroupStore struct {
 	groupBase
-	leaseTTL time.Duration
-	lockedBy string
+	leaseTTL        time.Duration
+	lockedBy        string
+	maxGroupMembers int
 }
 
 var _ msgin.MessageGroupStore = (*GroupStore)(nil)
@@ -197,7 +311,8 @@ var _ msgin.MessageGroupStore = (*GroupStore)(nil)
 // GroupDialect derives its two-table schema from (see GroupDialect's doc). A
 // nil db is msgin.ErrNilAdapter; a bad table identifier is
 // ErrInvalidTableName; a nil dialect is ErrNilDialect; an explicit non-positive
-// WithGroupLeaseTTL is ErrInvalidLeaseTTL. Call Ready/EnsureSchema once at
+// WithGroupLeaseTTL is ErrInvalidLeaseTTL; a WithMaxGroupMembers outside
+// [1, 1048576] is msgin.ErrInvalidCapacity. Call Ready/EnsureSchema once at
 // boot, exactly like the Source (ADR 0010 D2) — msgin never runs DDL
 // implicitly on the production path.
 //
@@ -207,10 +322,10 @@ var _ msgin.MessageGroupStore = (*GroupStore)(nil)
 // check comes FIRST: the apply loop is this constructor's first
 // statement that can fail, preceded only by the config-defaults
 // initializer, which cannot fail, so it runs before the nil-db,
-// table-identifier, nil-dialect and
-// WithGroupLeaseTTL checks, every one of which loses to it.
+// table-identifier, nil-dialect, WithGroupLeaseTTL and
+// WithMaxGroupMembers checks, every one of which loses to it.
 func NewGroupStore(db *stdsql.DB, table string, dialect GroupDialect, opts ...GroupStoreOption) (*GroupStore, error) {
-	cfg := groupStoreConfig{logger: discardLogger()}
+	cfg := groupStoreConfig{logger: discardLogger(), maxGroupMembers: defaultMaxGroupMembers}
 	for i, o := range opts {
 		if o == nil {
 			return nil, nilOptionAt("sql.NewGroupStore", i)
@@ -231,12 +346,22 @@ func NewGroupStore(db *stdsql.DB, table string, dialect GroupDialect, opts ...Gr
 		leaseTTL = cfg.leaseTTL
 	}
 
+	if err := checkRange(msgin.ErrInvalidCapacity, "sql.WithMaxGroupMembers",
+		cfg.maxGroupMembers, 1, maxGroupMembersCeiling); err != nil {
+		return nil, err
+	}
+
 	lockedBy := cfg.lockedBy
 	if lockedBy == "" {
 		lockedBy = randomLockedBy()
 	}
 
-	return &GroupStore{groupBase: base, leaseTTL: leaseTTL, lockedBy: lockedBy}, nil
+	return &GroupStore{
+		groupBase:       base,
+		leaseTTL:        leaseTTL,
+		lockedBy:        lockedBy,
+		maxGroupMembers: cfg.maxGroupMembers,
+	}, nil
 }
 
 // Add durably appends msg to group key: it frames msg's headers
@@ -245,9 +370,25 @@ func NewGroupStore(db *stdsql.DB, table string, dialect GroupDialect, opts ...Gr
 // runtime always encodes T to []byte before Add is reached), rejects an empty
 // msgin.message-id with ErrMissingMsgID BEFORE any query runs (H3, belt-and-suspenders
 // with GroupDialect.AddMember's own check), and delegates to
-// GroupDialect.AddMember on the pool. It returns the resulting group snapshot
-// of the LIVE (unclaimed) members, decoded from the dialect's raw framed
-// bytes.
+// GroupDialect.AddMember on the pool, threading the configured
+// WithMaxGroupMembers cap. It returns the resulting group snapshot of the LIVE
+// (unclaimed) members, decoded from the dialect's raw framed bytes.
+//
+// # The member-cap rejection carries a snapshot
+//
+// When the dialect refuses the member because the group is at its cap it
+// returns msgin.ErrOverflowDropped — msgin.Permanent-wrapped when the group is
+// not leased, bare while a claim is in flight (WithMaxGroupMembers) — TOGETHER
+// with the group's post-rollback live members. Add propagates BOTH, so
+// routing.Aggregator.Handle can re-evaluate the release strategy against a
+// group that is complete but was never re-triggered (Spec 017 §3.3a). Only the
+// overflow rejection carries a snapshot; every other dialect failure keeps the
+// (nil, err) shape, as does an overflow whose members cannot be decoded.
+//
+// The error still routes through classifyQueryErr, which costs one extra
+// SchemaExists round-trip. Both the sentinel and the Permanent marker survive
+// it while the table exists; a genuinely dropped table wins and surfaces as
+// ErrSchemaNotReady, which is the correct diagnosis.
 func (s *GroupStore) Add(ctx context.Context, key string, msg msgin.Message[any]) (msgin.MessageGroup, error) {
 	msgID := msg.ID()
 	if msgID == "" {
@@ -269,9 +410,17 @@ func (s *GroupStore) Add(ctx context.Context, key string, msg msgin.Message[any]
 		seq = int64(n)
 	}
 
-	rows, err := s.dialect.AddMember(ctx, s.db, s.table, key, msgID, seq, headers, payload)
+	rows, err := s.dialect.AddMember(ctx, s.db, s.table, key, msgID, seq, headers, payload, s.maxGroupMembers)
 	if err != nil {
-		return nil, s.classifyQueryErr(ctx, err)
+		classified := s.classifyQueryErr(ctx, err)
+		if !errors.Is(err, msgin.ErrOverflowDropped) {
+			return nil, classified
+		}
+		snap, decodeErr := s.decodeGroupRows(rows)
+		if decodeErr != nil {
+			return nil, classified // a corrupt stored header must not mask the rejection
+		}
+		return snap, classified
 	}
 	return s.decodeGroupRows(rows)
 }

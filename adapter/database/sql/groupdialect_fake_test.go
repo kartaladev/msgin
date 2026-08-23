@@ -52,6 +52,17 @@ type fakeGroupDialect struct {
 	// deterministic CreatedAt assertions.
 	now func() time.Time
 
+	// addMemberRows is returned ALONGSIDE addMemberErr, so the store's
+	// snapshot-with-error propagation (Spec 017 §3.3a / §3.6.3 — the live
+	// snapshot rides out with an overflow rejection) is provable without
+	// Docker. It is ignored when addMemberErr is nil.
+	addMemberRows msginsql.GroupRows
+
+	// lastAddMaxMembers records the maxMembers the store threaded into
+	// AddMember (Spec 017 §3.6.3 — D-AG's signature change), so a test can
+	// prove the CONFIGURED cap travels rather than a literal.
+	lastAddMaxMembers int
+
 	// Error injection, so GroupStore's classifyQueryErr wrap-vs-passthrough
 	// branch is directly testable without a real DB.
 	addMemberErr    error
@@ -134,12 +145,14 @@ func liveMembersLocked(g *fakeGroupState) []msginsql.MemberRow {
 
 // ---- GroupDialect -----------------------------------------------------
 
-func (f *fakeGroupDialect) AddMember(_ context.Context, _ msginsql.Querier, _, groupKey, msgID string, seq int64, headers, payload []byte) (msginsql.GroupRows, error) {
+func (f *fakeGroupDialect) AddMember(_ context.Context, _ msginsql.Querier, _, groupKey, msgID string, seq int64, headers, payload []byte, maxMembers int) (msginsql.GroupRows, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	f.lastAddMaxMembers = maxMembers
+
 	if f.addMemberErr != nil {
-		return msginsql.GroupRows{}, f.addMemberErr
+		return f.addMemberRows, f.addMemberErr
 	}
 	if msgID == "" {
 		return msginsql.GroupRows{}, msginsql.ErrMissingMsgID

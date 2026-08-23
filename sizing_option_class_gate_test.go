@@ -159,6 +159,9 @@ package msgin_test
 
 import (
 	"context"
+	stdsql "database/sql"
+	"database/sql/driver"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -177,6 +180,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/msgin"
+	msginsql "github.com/kartaladev/msgin/adapter/database/sql"
 	msghttp "github.com/kartaladev/msgin/adapter/http"
 	"github.com/kartaladev/msgin/adapter/memory"
 	"github.com/kartaladev/msgin/channel"
@@ -214,6 +218,7 @@ var sizingConformanceKeys = []string{
 	"memory.WithCapacity",
 	"memory.WithMaxGroups",
 	"memory.WithMaxGroupMembers",
+	"sql.WithMaxGroupMembers",
 	"msghttp.WithConnectionBuffer",
 	"msghttp.WithMaxConnections",
 	"msghttp.WithReplayBuffer",
@@ -402,6 +407,69 @@ func (s *onceByteSource) Poll(context.Context, int) ([]msgin.Delivery, error) {
 	return out, nil
 }
 
+// ---------------------------------------------------------------------------
+// sql.WithMaxGroupMembers fixtures (Spec 017 §6 AC-8, Plan 031 Task 5)
+// ---------------------------------------------------------------------------
+//
+// msginsql.NewGroupStore takes THREE required positional arguments (a non-nil
+// *sql.DB, a valid table identifier and a non-nil GroupDialect) and validates
+// them BEFORE it range-checks any option value, so — unlike every other row in
+// this file — the sql row cannot be driven with zero-value arguments. The two
+// stubs below supply the minimum that reaches the checkRange arm under test.
+// Neither is ever used: the constructor never opens a connection and never
+// calls a dialect method.
+//
+// Deliberately NOT reordered in production to spare this file the stubs: a row
+// that passed a nil db and still expected ErrInvalidCapacity would silently
+// pin "the member-cap check beats the nil-db check" as a contract.
+
+// nullConnector is a database/sql driver.Connector (and driver.Driver) that
+// never connects, so stdsql.OpenDB yields a non-nil *sql.DB with no registered
+// driver and no I/O. Close() stops the connectionOpener goroutine, which is
+// why every use below defers it (main_test.go's goleak).
+type nullConnector struct{}
+
+func (nullConnector) Connect(context.Context) (driver.Conn, error) {
+	return nil, errors.New("nullConnector: never connects")
+}
+func (c nullConnector) Driver() driver.Driver            { return c }
+func (c nullConnector) Open(string) (driver.Conn, error) { return c.Connect(context.Background()) }
+
+// nullGroupDialect is a msginsql.GroupDialect whose methods are never called:
+// NewGroupStore only checks it for nil. It exists because GroupDialect is an
+// exported SPI with no first-party implementation inside the root module — the
+// three shipped dialects are separate modules that IMPORT root, so this
+// (root-module, blackbox) file cannot reach them.
+type nullGroupDialect struct{}
+
+func (nullGroupDialect) AddMember(context.Context, msginsql.Querier, string, string, string, int64, []byte, []byte, int) (msginsql.GroupRows, error) {
+	return msginsql.GroupRows{}, nil
+}
+
+func (nullGroupDialect) ClaimGroup(context.Context, msginsql.Querier, string, string, string, time.Duration) (*msginsql.ClaimedGroup, error) {
+	return nil, nil
+}
+
+func (nullGroupDialect) SettleGroup(context.Context, msginsql.Querier, string, string, string, int64) (bool, error) {
+	return false, nil
+}
+
+func (nullGroupDialect) AbandonGroup(context.Context, msginsql.Querier, string, string, string, int64) (bool, error) {
+	return false, nil
+}
+
+func (nullGroupDialect) ExpiredGroups(context.Context, msginsql.Querier, string, time.Time, time.Duration, int) ([]msginsql.GroupRows, error) {
+	return nil, nil
+}
+
+func (nullGroupDialect) EnsureGroupSchema(context.Context, msginsql.Querier, string) error {
+	return nil
+}
+
+func (nullGroupDialect) SchemaExists(context.Context, msginsql.Querier, string) (bool, error) {
+	return false, nil
+}
+
 // runAndStop starts c.Run(ctx) in its own goroutine and returns a stop func
 // that cancels ctx and joins Run, so every row that starts a Consumer leaves
 // no goroutine behind for main_test.go's goleak.VerifyTestMain to catch.
@@ -521,6 +589,20 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
 				assert.EqualError(t, err,
 					"msgin: capacity out of range: memory.WithMaxGroupMembers: 1073741824 not in [1, 1048576]")
+			},
+		},
+		{
+			key: "sql.WithMaxGroupMembers",
+			arm: "fixed",
+			assert: func(t *testing.T) {
+				db := stdsql.OpenDB(nullConnector{})
+				defer db.Close()
+				_, err := msginsql.NewGroupStore(db, "groups", nullGroupDialect{},
+					msginsql.WithMaxGroupMembers(1<<30))
+				require.ErrorIs(t, err, msgin.ErrInvalidCapacity)
+				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
+				assert.EqualError(t, err,
+					"msgin: capacity out of range: sql.WithMaxGroupMembers: 1073741824 not in [1, 1048576]")
 			},
 		},
 		{
@@ -818,8 +900,8 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 	require.Equal(t, want, astKeys,
 		"every key in sizingConformanceKeys must have exactly one conformance row — half 2 must be executable "+
 			"for every key half 1 discovers, never a declaration string (Spec 016 §6 AC-5)")
-	require.Len(t, tests, 20,
-		"18 AST rows + 2 manual rows (memory.QueueStore.Claim, channel.QueueChannel.Poll — Spec 016 §2.0)")
+	require.Len(t, tests, 21,
+		"19 AST rows + 2 manual rows (memory.QueueStore.Claim, channel.QueueChannel.Poll — Spec 016 §2.0)")
 
 	// The ARM PARTITION is normative, so assert it rather than merely naming it
 	// in a subtest prefix. Spec 016 §2.1's arm table and §6 AC-5 both fix the
@@ -846,6 +928,7 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 		"memory.WithCapacity":                "fixed",
 		"memory.WithMaxGroups":               "fixed",
 		"memory.WithMaxGroupMembers":         "fixed",
+		"sql.WithMaxGroupMembers":            "fixed",
 		"msghttp.WithMaxConnections":         "fixed",
 		"routing.WithCompletionSize":         "fixed",
 		"msghttp.WithReplayBuffer":           "fixed",
@@ -867,15 +950,15 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 		byArm[tc.arm]++
 	}
 	require.Equal(t, wantArms, gotArms,
-		"Spec 016 §2.1's arm table and §6 AC-5 fix EVERY key's arm, not just the per-arm counts: 13 class "+
-			"members fixed here (9 by Spec 016/Plan 029, 1 by Spec 017/Plan 031, 3 by Spec 018/Plan 032), "+
+		"Spec 016 §2.1's arm table and §6 AC-5 fix EVERY key's arm, not just the per-arm counts: 14 class "+
+			"members fixed here (9 by Spec 016/Plan 029, 2 by Spec 017/Plan 031, 3 by Spec 018/Plan 032), "+
 			"1 that rejects without "+
 			"being a class member (msghttp.WithSuccessStatus), 0 deferred (the arm is a tombstone since "+
 			"Spec 018), 6 safe (4 AST + 2 manual). Moving a row between arms is a "+
 			"SPEC change — update §2.1 and §6 AC-5, do not just edit this map")
-	require.Equal(t, map[string]int{"fixed": 13, "rejects": 1, "safe": 6}, byArm,
+	require.Equal(t, map[string]int{"fixed": 14, "rejects": 1, "safe": 6}, byArm,
 		"the per-arm counts follow from wantArms above; a mismatch here means wantArms itself drifted "+
-			"from Spec 016 §2.1's split, now 13/1/0/6. NOTE: byArm is built by COUNTING, so the empty "+
+			"from Spec 016 §2.1's split, now 14/1/0/6. NOTE: byArm is built by COUNTING, so the empty "+
 			"\"deferred\" arm has NO KEY here — do not add \"deferred\": 0, it would fail")
 
 	for _, tc := range tests {
