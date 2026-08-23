@@ -1,7 +1,23 @@
 # ADR 0033 — A message group's member bound lives at the store, not at the release decision
 
-- **Status:** **PROPOSED — revision 5, post-audit-round-4, NOT accepted.** Written before any code, per
+- **Status:** **ACCEPTED — 2026-08-23. Decisions D-AC…D-AT ratified by the user.** Revision 5, after five
+  adversarial audit rounds (round 5: **SAFE TO IMPLEMENT**, 0 findings). Written before any code, per
   [CLAUDE.md](../../CLAUDE.md)'s design-time gate.
+  - **How it was ratified.** The decisions were taken while the user was away, which is why each carries a
+    `REVERSIBILITY:` line. Presented back as four load-bearing choices rather than eighteen — **D-AC** (the bound
+    lives at the store), **D-AG** (the expensive one: in-transaction SQL enforcement, six modules), **D-AF**
+    (count live + claimed, which forces the per-add `COUNT(*)`) and **D-AM** (classify by cause) — the user
+    ratified all eighteen with *"go with best practices"*, stating no strong preference.
+  - **🔴 One standing constraint was added at ratification and governs every knob from here:** *"this library
+    must be flexible with sensible default but with opt-in available."* It sharpens
+    [CLAUDE.md](../../CLAUDE.md)'s "Sensible defaults (opinionated, but overridable)" section. **This ADR
+    complies:** `WithMaxGroupMembers` ships a sensible default (`1<<16`), is overridable up to `1<<20`, and its
+    godoc states the default and its rationale. It has **no off-state**, which is deliberate and defensible here
+    — unlike a byte cap, the safe value is *not* unknowable to the library: the cost curve is quadratic and
+    measured (65,536 members ≈ 48 GiB of allocation churn), so a caller above 1,048,576 is already pathological
+    and the bound protects them. Should a real caller ever need one, adding it is **purely additive** — one
+    constant and one branch, no breaking change. Compare `endpoint.WithMaxPayloadBytes`, which *is* opt-in
+    (`n <= 0 disables`) precisely because a caller's legitimate payload size **is** unknowable.
   - **Round 1 verdict: NOT SAFE TO IMPLEMENT** — 3 BLOCKERs, 8 MAJORs, 10 MINORs, recorded immutably in
     [`docs/plans/031-audit-round-1.md`](../plans/031-audit-round-1.md). Revision 2 folded every finding back in.
     The two that reshaped the design are **B-1** (the overflow error hot-spins forever on the shipped zero-value
