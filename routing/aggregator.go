@@ -110,6 +110,23 @@ func WithCorrelationStrategy(fn CorrelationStrategy) AggregatorOption {
 // slightly different member set than the one it decided on. Prefer a
 // monotonic strategy (e.g. >=, never <) for this reason.
 //
+// NO SIZE BOUND APPLIES HERE — completionSizeCeiling is not in this path.
+// That ceiling is a construction-time check on [WithCompletionSize]'s own n;
+// this option installs an opaque closure instead, so nothing in routing
+// constrains how large a group may grow. A strategy that never returns true
+// grows its group until the STORE refuses the next member: the
+// msgin.MessageGroupStore passed to [NewAggregator] is what bounds a group,
+// whatever strategy is in force. In adapter/memory that bound is
+// WithMaxGroupMembers — 65,536 members by DEFAULT, raisable to 1,048,576, and
+// with no "unlimited" setting, because the cost of growing one group is
+// quadratic in its member count (see completionSizeCeiling's godoc). Past it,
+// Add returns msgin.ErrOverflowDropped for the refused member rather than
+// growing the group further.
+//
+// That is a bound, not a remedy: a group whose strategy can never be satisfied
+// stays full. Pair [WithGroupTimeout] with [WithExpiredGroupChannel] to have
+// the reaper expire it and route its partial members somewhere observable.
+//
 // A nil fn is REJECTED BY [NewAggregator] (a bare ErrNilFunc naming its
 // position) for the same reason as [WithCorrelationStrategy]: Handle calls the
 // strategy unconditionally.
@@ -119,7 +136,12 @@ func WithReleaseStrategy(fn ReleaseStrategy) AggregatorOption {
 
 // WithReleaseWhen overrides when a group is complete, for a decision that
 // cannot fail — sugar over [WithReleaseStrategy] wrapping fn to return a nil
-// error. The monotonicity guidance on WithReleaseStrategy applies unchanged.
+// error. The monotonicity guidance on WithReleaseStrategy applies unchanged,
+// and so does its bypass of completionSizeCeiling: an fn that never returns
+// true is bounded only by the store's member cap (adapter/memory's
+// WithMaxGroupMembers, default 65,536, raisable to 1,048,576), which refuses
+// the next member with msgin.ErrOverflowDropped. See WithReleaseStrategy's
+// godoc for the full note.
 //
 // A nil fn leaves the release strategy UNSET rather than wrapping the nil, so
 // [NewAggregator] rejects it exactly as it rejects WithReleaseStrategy(nil).
@@ -151,6 +173,15 @@ func WithReleaseWhen(fn func(msgin.MessageGroup) bool) AggregatorOption {
 // later option (WithReleaseStrategy or WithReleaseWhen) goes on to overwrite
 // the release strategy this option installs — an oversized n is rejected
 // even though it would otherwise have no effect.
+//
+// completionSizeCeiling BOUNDS THIS OPTION'S n, NOT THE GROUP. What bounds a
+// group — whatever release strategy is in force, including the three that
+// never see this check — is the msgin.MessageGroupStore's own member cap:
+// adapter/memory's WithMaxGroupMembers, 65,536 members by default and raisable
+// to 1,048,576. That default is deliberately not smaller than
+// completionSizeCeiling, so an n this option accepts can always reach its own
+// release; a smaller store cap would refuse the completing member before the
+// predicate could fire.
 func WithCompletionSize(n int) AggregatorOption {
 	return func(c *aggregatorConfig) {
 		c.completionSize, c.completionSizeSet = n, true
@@ -317,6 +348,18 @@ var _ msgin.MessageHandler = (*Aggregator)(nil)
 // first message, and inside a Consumer that panic is recovered and classified
 // ErrHandlerPanic — TRANSIENT — so the flow would retry the same doomed
 // configuration forever rather than failing fast here.
+//
+// NO OPTION HERE BOUNDS A GROUP'S SIZE — only the store does. With none of
+// [WithCompletionSize], [WithReleaseStrategy] and [WithReleaseWhen] set, the
+// default strategy releases at len(group) >= the group's first member's
+// msgin.HeaderSequenceSize, a header nothing in this constructor validates; a
+// group whose release condition is never met, on that path or any of the other
+// three, grows until the store refuses the next member. That refusal is the
+// store's contract, not this constructor's: adapter/memory's GroupStore returns
+// msgin.ErrOverflowDropped past WithMaxGroupMembers — 65,536 members by
+// DEFAULT, raisable to 1,048,576, with no "unlimited" setting. Pair
+// [WithGroupTimeout] with [WithExpiredGroupChannel] to have the reaper expire
+// such a group rather than hold it at the cap.
 //
 // These are CONSTRUCTION-time errors and are returned BARE, deliberately: they
 // are handed to the caller here and never carried through Handle, so they never

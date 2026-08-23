@@ -2,6 +2,7 @@ package routing_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/kartaladev/msgin"
@@ -65,4 +66,56 @@ func ExampleAggregator() {
 
 	// Output:
 	// order total: 50
+}
+
+// ExampleWithReleaseWhen shows what bounds a group when the release decision
+// never fires. WithReleaseWhen bypasses routing's completionSizeCeiling
+// entirely — that ceiling only validates WithCompletionSize's own n — so the
+// group is bounded by the STORE's member cap instead. The cap is 65,536 by
+// default; this example lowers it with memory.WithMaxGroupMembers so the
+// boundary is reachable in a doc example, and the third member is refused with
+// msgin.ErrOverflowDropped rather than growing the group.
+func ExampleWithReleaseWhen() {
+	store, err := memory.NewGroupStore(memory.WithMaxGroupMembers(2))
+	if err != nil {
+		panic(err)
+	}
+
+	out := channel.NewDirectChannel()
+	if _, err := out.Subscribe(msgin.HandlerFunc(func(_ context.Context, m msgin.Message[any]) error {
+		fmt.Println("released:", m.Payload())
+		return nil
+	})); err != nil {
+		panic(err)
+	}
+
+	agg, err := routing.NewAggregator[int, int](store,
+		func(_ context.Context, group []msgin.Message[int]) (msgin.Message[int], error) {
+			return msgin.New(len(group)), nil
+		},
+		routing.WithOutputChannel(out),
+		// A predicate that can never be satisfied: nothing here bounds the group.
+		routing.WithReleaseWhen(func(msgin.MessageGroup) bool { return false }),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	for i := range 3 {
+		msg := msgin.New[any](i, msgin.WithID(fmt.Sprintf("m-%d", i)), msgin.WithHeaders(map[string]any{
+			msgin.HeaderCorrelationID: "never-releases",
+		}))
+		err := agg.Handle(context.Background(), msg)
+		fmt.Printf("member %d: overflow=%t permanent=%t\n",
+			i, errors.Is(err, msgin.ErrOverflowDropped), msgin.IsPermanent(err))
+		if err != nil {
+			fmt.Printf("  %v\n", err)
+		}
+	}
+
+	// Output:
+	// member 0: overflow=false permanent=false
+	// member 1: overflow=false permanent=false
+	// member 2: overflow=true permanent=true
+	//   msgin: permanent: msgin: message dropped by overflow policy: memory.GroupStore.Add: group "never-releases" holds 2 members, limit 2
 }

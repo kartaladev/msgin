@@ -20,6 +20,18 @@ const (
 	// HeaderSequenceNumber is the 1-based position of a child within a Splitter's
 	// output (int). HeaderSequenceSize is the total number of children (int). A
 	// Splitter stamps both so a downstream Aggregator can reassemble the group.
+	//
+	// HeaderSequenceSize IS AN UNVALIDATED GROUP SIZE. routing's DEFAULT release
+	// strategy — the one in force until WithCompletionSize, WithReleaseStrategy
+	// or WithReleaseWhen overrides it — holds a group until it has at least
+	// HeaderSequenceSize members, and neither this header nor that strategy is
+	// checked against routing.WithCompletionSize's ceiling. A message carrying an
+	// implausible size (a hand-set header, or one framed in from an external
+	// system) therefore holds its group open until the MessageGroupStore refuses
+	// the next member with ErrOverflowDropped. That store cap is the bound:
+	// adapter/memory's WithMaxGroupMembers, 65,536 members by DEFAULT, raisable
+	// to 1,048,576, with no "unlimited" setting. A first member carrying no
+	// HeaderSequenceSize at all never releases on this path.
 	HeaderSequenceNumber = "msgin.sequence-number"
 	HeaderSequenceSize   = "msgin.sequence-size"
 )
