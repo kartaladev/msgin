@@ -1811,8 +1811,26 @@ SPI** with two silent fail-open modes:
    with a typed error wrapping `msgin.ErrInvalidCapacity`, **before any statement runs** — the same
    validate-before-I/O placement `ErrMissingMsgID` already has. **`0` is now an error**, not a synonym for
    unbounded.
-3. **`selectLimit` becomes total.** With `maxMembers` provably in `[1, 1<<20]` by the time it is reached, `+1`
-   cannot overflow. The `<= 0 → 0` arm stays, now reachable only via `UnboundedGroupMembers`.
+3. ~~**`selectLimit` becomes total.**~~ **🔴 SUPERSEDED IN THE SAME INCREMENT — `selectLimit` NO LONGER EXISTS.**
+   As ratified this read: *"With `maxMembers` provably in `[1, 1<<20]` by the time it is reached, `+1` cannot
+   overflow. The `<= 0 → 0` arm stays, now reachable only via `UnboundedGroupMembers`."* Finding **R-1**, fixed
+   two steps later in the same task, showed the `LIMIT` was **itself the defect** — it truncated the snapshot
+   whenever a group held more rows than the *current* cap — so `AddMember`'s live fetch is now **unlimited**,
+   joining `ClaimGroup` and `ExpiredGroups` under **D-AS**'s rule, and `selectLimit` was deleted. **There is no
+   sum left to overflow.**
+
+   **This does NOT weaken D-AV; it halves what D-AV has to guard, and the surviving half is the load-bearing
+   one.** R-15 had *two* independent fail-open routes at `math.MaxInt`. The LIMIT-suppression route is now
+   structurally impossible. The **cap comparison** route is not: `n > int64(maxMembers)` can never fire at
+   `math.MaxInt`, because no group can hold that many rows, and **nothing structural prevents that — only this
+   validator does.** A reader who concludes "R-1 removed the overflow, so the validation is redundant" would
+   reopen the delivery blocker.
+
+   > **The sequencing is the lesson, not the outcome.** D-AV was ratified as a *repair* to `selectLimit` and the
+   > correct answer turned out to be *deleting* it — decided two steps later, by an implementer who reproduced
+   > R-1 against a live engine and found the truncation reached the **success path** too, not just the overflow
+   > path a scoped fix would have covered. **Neither five design-audit rounds nor the delivery-gate reviewer saw
+   > that the LIMIT was the defect rather than the thing to make safe.**
 
 **Validate in ONE place, not three.** The check lives in a shared helper in the parent `adapter/database/sql`
 package, which all three dialects already import, rather than being copy-pasted into `postgres`/`mysql`/`sqlite`.
@@ -1952,6 +1970,17 @@ fault in front of the operator.
 - **🔴 REVISION 6 — a release-strategy fault is no longer reported as a cap rejection** (D-AW). `errors.Join`
   keeps both causes, transparent to `errors.Is`/`As`, aligning the overflow branch with the success path 25 lines
   below it.
+- **🔴 REVISION 6 — D-AQ's completeness gate NO LONGER KEYS ON A CONSTANT'S SPELLING** (whole-branch finding
+  **R-14**, Task 11 Step 4). A new **half 3** reads `msgin.MessageGroupStore`'s method set **out of the AST** and
+  asserts that the set of packages declaring a covering type equals the known-sites list, in both directions — so
+  a future `pgx`/`redis`/`nats` `GroupStore` is caught by **what it is**, not by whether it happens to spell its
+  default `defaultMaxGroupMembers`. **This is the project's *"assert the property, not the string"* lesson applied
+  to the gate that most needed it**, and it converts the residual D-AQ and Spec 017 §6 AC-3.3 merely *disclosed*
+  into two much narrower ones (embedding; generated methods), both verified rather than assumed.
+  **The discriminator's margin was measured before it was trusted:** exactly 2 types match repo-wide and the
+  nearest non-match — the `GroupDialect` family — reaches only 3 of 7 methods, so the gate cannot false-red, which
+  is the failure mode that gets a gate deleted rather than fixed. **D-AQ and §6 AC-3.3 still describe the older,
+  wider residual; neither is wrong, but both now understate the gate.**
 
 **Negative / accepted costs.**
 

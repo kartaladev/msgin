@@ -85,7 +85,9 @@ func (postgresGroupDialect) AddMember(ctx context.Context, q msginsql.Querier, t
 	// D-AV: the bound itself is validated BEFORE any statement runs, in the
 	// one shared helper all three dialects call, so maxMembers is provably
 	// UnboundedGroupMembers or in [1, 1<<20] everywhere below — which is what
-	// makes selectLimit's maxMembers+1 total.
+	// keeps the `n > int64(maxMembers)` comparison meaningful. At math.MaxInt
+	// no count can ever exceed it, so the largest expressible bound would
+	// silently be NO bound (review finding R-15).
 	if err := msginsql.ValidateMaxMembers(groupOverflowSite, maxMembers); err != nil {
 		return msginsql.GroupRows{}, err
 	}
@@ -145,18 +147,46 @@ RETURNING created_at, (locked_by IS NOT NULL AND locked_at > %s - $2)`, gt, pgNo
 		out.CreatedAt = time.UnixMicro(createdMicros)
 		// Idempotent member upsert by (group_key, msg_id): a redelivered member
 		// is a no-op. claimed_epoch NULL = live.
-		if _, err := tx.ExecContext(ctx,
+		//
+		// RETURNING 1 reports whether THIS statement stored the row: ON CONFLICT
+		// (group_key, msg_id) DO NOTHING names ONE conflict target and suppresses
+		// nothing else, so stdsql.ErrNoRows here proves the member row was
+		// already present, never that the write failed — any other fault is a
+		// real error on the line below.
+		//
+		// The mechanism is derived PER ENGINE (ADR 0033 D-AP — "one mechanism
+		// asserted for three engines" is this bundle's recorded, repeated
+		// defect): postgres reads it back with RETURNING because RETURNING is
+		// what its own ClaimGroup in this file already relies on and it needs no
+		// RowsAffected contract from the driver; mysql has no RETURNING on
+		// INSERT and sqlite's ClaimGroup already reads RowsAffected, so both of
+		// those read sqlite3_changes()/affected-rows instead.
+		var inserted bool
+		var one int
+		switch err := tx.QueryRowContext(ctx,
 			fmt.Sprintf(`INSERT INTO %s (group_key, msg_id, seq, headers, payload, claimed_epoch)
-VALUES ($1, $2, $3, $4, $5, NULL) ON CONFLICT (group_key, msg_id) DO NOTHING`, mt),
-			groupKey, msgID, seq, headers, payload); err != nil {
+VALUES ($1, $2, $3, $4, $5, NULL) ON CONFLICT (group_key, msg_id) DO NOTHING RETURNING 1`, mt),
+			groupKey, msgID, seq, headers, payload).Scan(&one); {
+		case errors.Is(err, stdsql.ErrNoRows):
+			inserted = false // the member was already stored: this add is an idempotent no-op
+		case err != nil:
 			return err
+		default:
+			inserted = true
 		}
-		// The member cap, enforced AFTER the upsert so a re-add of an existing
-		// id at exactly the cap stays a no-op (Spec 017 §3.6.1). The count is
-		// EVERY row for the key — live AND claimed — via the shipped
-		// pgCountMembers: ClaimGroup stamps every live member, so a live-only
-		// count would readmit maxMembers more rows per claim cycle, forever.
-		if maxMembers != msginsql.UnboundedGroupMembers {
+		// The member cap, enforced AFTER the upsert AND only against a member
+		// this statement actually INSERTED, so a re-add of an existing id is a
+		// no-op at the cap and equally above it (Spec 017 §3.6.1, review finding
+		// R-11). A no-op stores nothing, so it cannot grow the group past any
+		// bound; refusing it would terminally discard a redelivery the SPI
+		// guarantees is idempotent, and which adapter/memory's GroupStore
+		// answers from its dedup branch with (full snapshot, nil).
+		//
+		// The count is EVERY row for the key — live AND claimed — via the
+		// shipped pgCountMembers: ClaimGroup stamps every live member, so a
+		// live-only count would readmit maxMembers more rows per claim cycle,
+		// forever.
+		if inserted && maxMembers != msginsql.UnboundedGroupMembers {
 			n, err := pgCountMembers(ctx, tx, mt, groupKey)
 			if err != nil {
 				return err
@@ -165,16 +195,28 @@ VALUES ($1, $2, $3, $4, $5, NULL) ON CONFLICT (group_key, msg_id) DO NOTHING`, m
 				overflowErr = groupOverflow(groupKey, n, maxMembers, leaseLive.Bool)
 			}
 		}
-		// The live fetch is bounded only here — the helper's limit is 0
-		// (unlimited) for ClaimGroup and ExpiredGroups, whose sets must never
-		// be truncated (ADR 0033 D-AS).
-		members, err := pgSelectMembers(ctx, tx, mt, groupKey, "claimed_epoch IS NULL", selectLimit(maxMembers))
+		// UNLIMITED, exactly like ClaimGroup's and ExpiredGroups' fetches: a
+		// member set the caller ACTS ON must never be truncated (ADR 0033 D-AS).
+		// This call used to pass maxMembers+1, which is sound only while the
+		// group holds at most that many rows — false the moment the cap is
+		// LOWERED beneath a group's existing size, by a rolling deploy or by two
+		// instances configured differently. It then returned a truncated
+		// snapshot that the release predicate reads as an incomplete group, so
+		// the member is dead-lettered AND the complete group never releases —
+		// the deadlock this snapshot exists to prevent (review finding R-1).
+		//
+		// It costs no new ceiling: ClaimGroup already pulls this same group's
+		// full member set with no LIMIT from this same table, and
+		// UnboundedGroupMembers already made this very fetch unlimited.
+		members, err := pgSelectMembers(ctx, tx, mt, groupKey, "claimed_epoch IS NULL", 0)
 		if err != nil {
 			return err
 		}
 		if overflowErr != nil {
 			// The post-rollback live set: everything except the member just
-			// refused. No extra query (Spec 017 §3.6.3).
+			// refused. No extra query (Spec 017 §3.6.3). Reachable only when
+			// inserted is true, which is what makes removing msgID correct: a
+			// member this statement did NOT store was never refused.
 			out.Members = withoutMember(members, msgID)
 			return overflowErr
 		}
@@ -468,33 +510,6 @@ func groupOverflow(groupKey string, n int64, maxMembers int, leaseLive bool) err
 		return err
 	}
 	return msgin.Permanent(err)
-}
-
-// selectLimit maps AddMember's maxMembers onto pgSelectMembers' limit:
-// maxMembers+1 rows are enough to serve the post-rollback snapshot at the cap,
-// and msginsql.UnboundedGroupMembers keeps the unlimited fetch.
-//
-// It is TOTAL because of its PRECONDITION, not because of a clamp:
-// msginsql.ValidateMaxMembers has already refused everything outside
-// {UnboundedGroupMembers} u [1, 1<<20] before AddMember reaches this, so
-// maxMembers+1 cannot overflow. Without that check, selectLimit(math.MaxInt)
-// returned math.MinInt, the `limit > 0` guard then emitted no LIMIT, and
-// `n > int64(maxMembers)` could never fire — the largest expressible bound
-// silently meant NO bound (ADR 0033 D-AV, review finding R-15). The <= 0 arm
-// stays, now reachable only via UnboundedGroupMembers.
-//
-// 🔴 THAT ARM IS NOW ARITHMETICALLY REDUNDANT, AND IT IS KEPT ANYWAY. Since
-// UnboundedGroupMembers is -1, the fallthrough would compute -1+1 = 0, which is
-// already this function's "no LIMIT" value — so deleting the guard is a mutant
-// that SURVIVES the whole conformance suite, correctly. It is retained as
-// executable documentation of the mapping and as insurance against the sentinel
-// ever being renumbered; do not delete it because a coverage tool calls it
-// unreached.
-func selectLimit(maxMembers int) int {
-	if maxMembers <= 0 {
-		return 0
-	}
-	return maxMembers + 1
 }
 
 // withoutMember returns members with msgID removed — the post-rollback live

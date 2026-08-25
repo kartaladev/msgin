@@ -226,6 +226,17 @@ func NewGroupStore(opts ...GroupStoreOption) (*GroupStore, error) {
 // group that is complete but was never re-triggered. The group-count arm has
 // no group to report and returns (nil, err).
 //
+// THAT SNAPSHOT IS NOT DEAD WEIGHT WHILE THE GROUP IS LEASED, though it reads
+// that way: claimedLen == len(msgs) holds only at the instant ClaimGroup
+// returns. Add appends beyond claimedLen for the width of the lease, so a
+// group claimed BEFORE it filled reports a real, non-empty live residual here
+// — the members that arrived during the claim — and that is exactly the group
+// Handle re-evaluates. Only the wholly-claimed shape (the claim froze every
+// member) yields an empty residual, and Handle gates on that explicitly: an
+// empty live snapshot means the claim holder is already draining the group, so
+// Handle returns this arm's transient error unchanged instead of running a
+// release strategy against zero members.
+//
 // The member check sits BETWEEN the dedup lookup and the dedup insert, and
 // the id is hoisted out of the dedup branch so the check also runs for
 // id-less messages. Both positions are load-bearing: above the lookup, an

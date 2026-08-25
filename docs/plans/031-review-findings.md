@@ -1,13 +1,15 @@
 # Plan 031 — whole-branch review findings (Task 10 Steps 1–2)
 
-> ## 🔴 LIVE STATUS — 8 of 15 FIXED (2026-08-26). BOTH DELIVERY BLOCKERS ARE CLOSED.
+> ## 🔴 LIVE STATUS — 13 of 15 FIXED (2026-08-26). BOTH DELIVERY BLOCKERS ARE CLOSED.
+>
+> **Remaining: R-2 and R-13 only**, plus §6's capped items. Nothing merged, nothing pushed.
 >
 > | Finding | State |
 > |---|---|
 > | **R-7**, **R-15**, **R-10** | ✅ **DECIDED + FIXED** — [ADR 0033](../adrs/0033-group-member-bounds.md) D-AU / D-AV / D-AW, delivered by [Plan 031](031-group-member-bounds.md) Task 11 Step 2 |
 > | **R-3**, **R-4** | ✅ **FIXED** with R-10 — the same twelve lines of `Handle`; repairing that branch three times would have been three rewrites of one contract block |
 > | **R-6**, **R-9**, **R-12** | ✅ **FIXED** — Task 11 Step 3. R-9's hit count re-derived from the coverage profile as **0 → 1**, independently by implementer and coordinator |
-> | **R-1**, **R-5**, **R-8**, **R-11**, **R-14** | ⏭️ Task 11 Step 4 |
+> | **R-1**, **R-5**, **R-8**, **R-11**, **R-14** | ✅ **FIXED** — Task 11 Step 4, run as two agents on disjoint modules. R-1 and R-11 both **reproduced against live engines** before being fixed and are proven on all four runners; R-5's premise was **refuted** (see §5a) |
 > | **R-2**, **R-13** | ⏭️ **RECOVERED** — the coordinator's first decomposition covered only 13 of the 15; both were re-surfaced by the agent repairing the branch they sit in |
 > | §6's five capped items | ⏭️ Task 11 Step 5. **Item 3 (Spec 017's stale status line) is DONE** |
 >
@@ -115,6 +117,40 @@ Several of these contradict godoc shipped **in this same branch**.
 |---|---|---|
 | **R-12** | `harness/groupstore.go:765` | `dialectEngine` uses `reflect.TypeOf(d).PkgPath()`, which returns **`""` for a pointer-typed dialect** — the exact form `GroupDialect`'s own godoc tells implementers to use (`var _ msginsql.GroupDialect = (*yourDialect)(nil)`). **Measured**: value type → `"main"`, pointer type → `""`. A contributor on pointer receivers gets the whole member-cap conformance suite asserting against `msgin/sql/: AddMember`, failing with a diff blaming *their* error text rather than the harness's derivation. All three shipped dialects use value receivers, so nothing in-repo exercises it. **This is the helper Task 7 added to fix the MariaDB gap.** Fix: `reflect.Indirect(reflect.ValueOf(d)).Type().PkgPath()`, or an explicit `TestKit` field. |
 | **R-14** | `group_member_bound_invariant_test.go:452` | The completeness walk keys on the **literal identifier** `defaultMaxGroupMembers`, so a new first-party store spelling its default any other way is invisible to **both** halves. **Probed both directions**: planting `defaultMaxGroupMembers` in a leaf module correctly turns the gate red; planting `defaultMaxMembersPerGroup` leaves the root package **green**. Renaming an *existing* constant IS caught; adding a *new* one under a new name is not. **This residual was documented in Spec 017 §6 AC-3.3 and ADR 0033 D-AQ at Task 3, but NOT in the file itself**, which otherwise records every limitation exhaustively. The planned `pgx`/`redis`/`nats` adapters each grow a GroupStore. |
+
+## 5a. 🔴 ANNOTATIONS to §4 — what was true when fixed (2026-08-26)
+
+**Per this file's convention the rows above are left as written; corrections are recorded here.** Every item below
+was established by **running** something, not by re-reading.
+
+- **R-5's central premise is REFUTED.** The row says the leased over-cap snapshot is *"always empty
+  (`msgs[claimedLen:]` with `claimedLen == len(msgs)`)"*. **That equality holds only at the instant `ClaimGroup`
+  returns.** `Add` appends beyond `claimedLen` for the width of the lease, so a group claimed *before* it filled
+  reports a real residual — claim at 3 of cap 4, admit a 4th in-lease, and the 5th arrival's over-cap snapshot
+  carries one live member. **The mechanism is live exactly where the row calls it dead.**
+- **R-5's second claim is refuted AT HEAD but was true in the owning package.** *"Replacing `return live, err`
+  with `return nil, err` leaves all 11 root packages green"* — no longer, because Step 2's D-AW join tests in
+  `routing` now kill it. It **still survived `go test ./adapter/memory/`**, and *a cross-package accident is not a
+  contract*, so **the missing assertion was the real defect** and is now added in the owning package. §6 item 5's
+  group-**count** twin reproduced fully and is also asserted now.
+- **R-8 reproduced, and had two details the review did not report.** Row 1 was a **verbatim duplicate** of
+  `TestNewAggregator_CompletionSizeCeilingAccepts` — it could never fail because another test already owned that
+  ground. Row 2 was **not entirely dead**: its `require.NoError` inside the store closure accidentally pinned
+  `memory.maxGroupMembersCeiling >= routing.completionSizeCeiling`, a relation nothing else checks. The test was
+  **kept and rewritten**, not deleted: row 1 dropped, the accidental assertion promoted to a deliberate one, and
+  all rows now cross-check through **one shared constant** so it cannot drift onto an arbitrary passing value —
+  which is how the predecessor went vacuous. **It is renamed `TestAggregator_CeilingLevelCompletionSizePairing`;
+  the name in §4 no longer exists.**
+- **R-14 is CLOSED STRUCTURALLY, not merely documented.** A new **half 3** reads `msgin.MessageGroupStore`'s
+  method set **out of the AST** and asserts that the set of packages declaring a covering type equals the
+  known-sites list, both directions. **A new store is caught by what it IS, not by what it names a constant** —
+  the project's *"assert the property, not the string"* lesson. The discriminator's margin was **measured, not
+  assumed**: exactly 2 types match repo-wide and the nearest non-match reaches 3 of 7, so it cannot false-red,
+  which is the failure mode that gets a gate deleted. Probed all three ways — a new package under
+  `defaultMaxMembersPerGroup` is **green on halves 1+2 and RED on half 3**; a 6-of-7 near-miss is correctly **not**
+  flagged. **Two residuals survive and are stated on the test after being verified: embedding, and generated
+  methods.** Spec 017 §6 AC-3.3 and ADR 0033 D-AQ still describe the *old, wider* residual — they are not wrong,
+  but they now understate the gate.
 
 ## 5b. Raised WHILE FIXING, not by the review — recorded so they are not lost
 

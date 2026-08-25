@@ -27,9 +27,13 @@ func TestUnboundedGroupMembers(t *testing.T) {
 // The accepted set is {UnboundedGroupMembers} u [1, 1048576]; every other int
 // is a typed msgin.ErrInvalidCapacity. The two rows that matter most are `0`
 // (previously a silent synonym for UNBOUNDED — the zero value was the
-// dangerous value) and math.MaxInt (previously accepted, and then wrapped
-// selectLimit to math.MinInt, suppressing BOTH the LIMIT clause and the cap
-// comparison, so the largest expressible bound silently meant *no* bound).
+// dangerous value) and math.MaxInt (previously accepted, and then silently
+// meaning *no* bound: the cap comparison `n > int64(maxMembers)` cannot fire
+// there, since no group holds that many rows). math.MaxInt also used to
+// overflow a maxMembers+1 fetch limit to math.MinInt and suppress the LIMIT
+// clause — that half is now structurally impossible, because finding R-1
+// removed the LIMIT from AddMember's live fetch altogether. The cap
+// comparison is the half this validator still guards.
 func TestValidateMaxMembers(t *testing.T) {
 	t.Parallel()
 
@@ -98,7 +102,7 @@ func TestValidateMaxMembers(t *testing.T) {
 			// R-15's second half. No render assertion: math.MaxInt's decimal
 			// is GOARCH-dependent, and the class gate's header records why a
 			// decimal string must never ride on an arch-dependent literal.
-			name:       "math.MaxInt is REJECTED — the selectLimit overflow (R-15)",
+			name:       "math.MaxInt is REJECTED — the unreachable cap comparison (R-15)",
 			maxMembers: math.MaxInt,
 			assert: func(t *testing.T, err error) {
 				require.ErrorIs(t, err, msgin.ErrInvalidCapacity)

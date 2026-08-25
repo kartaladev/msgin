@@ -2466,56 +2466,105 @@ func TestAggregator_MemberCapCompletionSizeBoundary(t *testing.T) {
 	}
 }
 
-// TestAggregator_CeilingLevelCompletionSizeConstructs is Spec 017 §6 AC-3.2:
-// the two endpoints of the "default member cap >= completionSizeCeiling"
-// invariant, exercised as CONSTRUCTION ONLY.
+// ceilingLevelCompletionSize is the largest n routing.WithCompletionSize
+// accepts, and the ONE number the three cases below share. It is deliberately
+// a single symbol rather than three literals: case 1 PROVES this is the real
+// ceiling (n+1 is refused), and cases 2 and 3 CONSUME it. Retune it and case 1
+// goes red, so no case can quietly drift onto an arbitrary value that happens
+// to pass — which is how the test this replaced became vacuous.
+const ceilingLevelCompletionSize = 1 << 16
+
+// TestAggregator_CeilingLevelCompletionSizePairing is Spec 017 §6 AC-3.2: the
+// store's member cap and routing's completion size must be CO-CONFIGURABLE at
+// routing's ceiling.
 //
-// A caller may legally set routing.WithCompletionSize to its ceiling (65,536),
-// and the store's member cap must not then refuse that group's completing
-// member — a smaller cap would turn a documented configuration into a silent
-// deadlock. Both the store's DEFAULT cap and an explicit cap at that same
-// value must therefore pair with a ceiling-level completion size.
+// A caller may legally set routing.WithCompletionSize to its ceiling (65,536).
+// For that to be more than a nominal permission the store must be cappable at
+// the same value — otherwise the documented configuration is unreachable, and
+// the pairing degrades into a silent deadlock at the first over-cap member.
+// The two ceilings therefore stand in a relation
+// (memory.maxGroupMembersCeiling >= routing.completionSizeCeiling) that no
+// single package can check, because both constants are unexported. What CAN be
+// checked from outside both is its observable consequence: the largest
+// completion size routing accepts is also an accepted store cap.
 //
-// No members are added: growing one group to 65,536 costs a measured 8.6s and
-// 48.3 GiB of allocation churn (Spec 016 §1.4), and Spec 017 §6 AC-6 forbids
-// it outright. The invariant ITSELF is enforced mechanically over the
-// declarations, by Plan 031 Task 3's AST test; this pins the pairings that
-// invariant exists to protect.
-func TestAggregator_CeilingLevelCompletionSizeConstructs(t *testing.T) {
+// # What this test does NOT cover, and what does
+//
+//   - The DEFAULT-cap invariant (defaultMaxGroupMembers >= completionSizeCeiling)
+//     is NOT here. It is unobservable through the public API without growing a
+//     group to 65,536 members — a measured 8.6s and 48.3 GiB of allocation
+//     churn (Spec 016 §1.4) that Spec 017 §6 AC-6 forbids outright. It is
+//     enforced mechanically over the declarations by the root AST gate,
+//     group_member_bound_invariant_test.go (Plan 031 Task 3, ADR 0033 D-AQ).
+//     The test this replaced silently claimed that ground: mutating
+//     memory.defaultMaxGroupMembers to 1<<2 left it green while the AST gate
+//     correctly went red.
+//   - The cap-versus-completion-size DEADLOCK, in both directions, is proven
+//     behaviourally at small n by TestAggregator_MemberCapCompletionSizeBoundary
+//     (AC-3.1). Repeating it at ceiling values would buy nothing and cost 8.6s.
+//   - Bare acceptance of WithCompletionSize(ceiling) against a DEFAULT store is
+//     TestNewAggregator_CompletionSizeCeilingAccepts. The test this replaced
+//     duplicated it verbatim, which is why that row could not fail.
+//
+// Plan 031 review R-8: the predecessor asserted only that NewAggregator
+// returned no error, and NewAggregator never consults the store's member cap —
+// so its two rows differed by a store argument that was never read, and both
+// mutations the review filed against it survived. Every case below is pinned
+// by a mutant recorded in Plan 031 Task 11 Step 4.
+func TestAggregator_CeilingLevelCompletionSizePairing(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
 		name   string
-		store  func(t *testing.T) *memory.GroupStore
-		assert func(t *testing.T, agg *routing.Aggregator, err error)
-	}
-
-	constructs := func(t *testing.T, agg *routing.Aggregator, err error) {
-		t.Helper()
-		require.NoError(t, err)
-		assert.NotNil(t, agg)
+		assert func(t *testing.T)
 	}
 
 	tests := []testCase{
 		{
-			name: "the DEFAULT member cap pairs with a ceiling-level completion size",
-			store: func(t *testing.T) *memory.GroupStore {
-				t.Helper()
-				s, err := memory.NewGroupStore()
-				require.NoError(t, err)
-				return s
+			// This is what stops the other two from testing an arbitrary
+			// number. Without it, ceilingLevelCompletionSize could be lowered
+			// to any value both packages accept and every case would stay
+			// green while the relation they assert evaporated.
+			name: "one above the shared value is refused, so the value IS routing's ceiling",
+			assert: func(t *testing.T) {
+				_, err := routing.NewAggregator[int, int](newIntStore(t), sumFn,
+					routing.WithOutputChannel(&fakeAggChannel{}),
+					routing.WithCompletionSize(ceilingLevelCompletionSize+1))
+				require.ErrorIs(t, err, msgin.ErrInvalidCapacity,
+					"ceilingLevelCompletionSize must be the LARGEST n WithCompletionSize accepts")
 			},
-			assert: constructs,
 		},
 		{
-			name: "an EXPLICIT member cap at the completion-size ceiling constructs",
-			store: func(t *testing.T) *memory.GroupStore {
-				t.Helper()
-				s, err := memory.NewGroupStore(memory.WithMaxGroupMembers(1 << 16))
-				require.NoError(t, err)
-				return s
+			// The relation itself: memory's own ceiling must not sit below
+			// routing's. Mutant: memory.maxGroupMembersCeiling 1<<20 -> 1<<12
+			// fails here, and nowhere else outside memory's own render tests.
+			name: "the memory store is cappable AT routing's ceiling",
+			assert: func(t *testing.T) {
+				s, err := memory.NewGroupStore(memory.WithMaxGroupMembers(ceilingLevelCompletionSize))
+				require.NoError(t, err,
+					"a cap at routing's completion-size ceiling must be configurable, or the pairing "+
+						"routing documents cannot be expressed at all")
+				require.NotNil(t, s)
 			},
-			assert: constructs,
+		},
+		{
+			// The pairing COMPOSES and stays inert: an Aggregator wired to a
+			// store capped at the ceiling admits a member and releases
+			// nothing, because completion is 65,535 members away. ONE Handle
+			// call, so AC-6 is respected.
+			name: "the pairing admits a member and releases nothing",
+			assert: func(t *testing.T) {
+				s, err := memory.NewGroupStore(memory.WithMaxGroupMembers(ceilingLevelCompletionSize))
+				require.NoError(t, err)
+
+				out := &fakeAggChannel{}
+				agg := cappedAggOpts(t, s, out, routing.WithCompletionSize(ceilingLevelCompletionSize))
+
+				require.NoError(t, agg.Handle(t.Context(), msgin.New[any](1, msgin.WithID("m1"))),
+					"the first member of a group capped at the ceiling must be admitted")
+				assert.Equal(t, 0, out.count(),
+					"one member cannot complete a group whose completion size is the ceiling")
+			},
 		},
 	}
 
@@ -2523,10 +2572,7 @@ func TestAggregator_CeilingLevelCompletionSizeConstructs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			agg, err := routing.NewAggregator[int, int](tc.store(t), sumFn,
-				routing.WithOutputChannel(&fakeAggChannel{}),
-				routing.WithCompletionSize(1<<16))
-			tc.assert(t, agg, err)
+			tc.assert(t)
 		})
 	}
 }

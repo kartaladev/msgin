@@ -60,15 +60,24 @@ const UnboundedGroupMembers = -1
 // UnboundedGroupMembers. This is a behavioral break for a direct dialect caller
 // that passed 0 — loud, one line to fix, and free at pre-v1.
 //
-// # It also makes selectLimit total
+// # It keeps the cap comparison reachable at every accepted value
 //
-// The three dialects derive their live-member fetch limit as maxMembers+1.
-// Before this check, AddMember(…, math.MaxInt, …) overflowed that sum to
-// math.MinInt: the `limit > 0` guard then emitted no LIMIT clause AND
-// `n > int64(maxMembers)` could never fire, so the largest expressible bound
-// silently delivered NO bound (whole-branch review finding R-15). With
-// maxMembers provably in [1, 1048576] by the time a dialect reaches the sum,
-// +1 cannot overflow.
+// Before this check, AddMember(…, math.MaxInt, …) delivered NO bound at all,
+// by two independent routes (whole-branch review finding R-15). Only ONE of
+// them still exists, so this section says which:
+//
+//   - SURVIVING, and the reason this check is still load-bearing: the cap
+//     comparison `n > int64(maxMembers)` can never fire at math.MaxInt, since
+//     no group can hold more rows than that. Nothing structural prevents it —
+//     only this validator does, by keeping maxMembers in [1, 1048576].
+//   - GONE, structurally: the dialects used to derive a live-member fetch
+//     limit as maxMembers+1, which overflowed to math.MinInt so the
+//     `limit > 0` guard emitted no LIMIT clause. That derivation no longer
+//     exists. Finding R-1 showed the LIMIT truncated the snapshot whenever a
+//     group held more rows than the CURRENT cap (a lowered cap, or two
+//     instances disagreeing), so AddMember's live fetch is now unlimited,
+//     joining ClaimGroup and ExpiredGroups (ADR 0033 D-AS). There is no sum
+//     left to overflow.
 //
 // # The rejection is msgin.Permanent, unlike checkRange's constructor arms
 //

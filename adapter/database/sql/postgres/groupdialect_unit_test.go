@@ -80,7 +80,7 @@ func TestGroupDialectAddMemberValidatesMaxMembers(t *testing.T) {
 		{"zero is rejected - no longer a synonym for unbounded", 0, rejected},
 		{"a non-sentinel negative is rejected", -2, rejected},
 		{"one past the ceiling is rejected", (1 << 20) + 1, rejected},
-		{"math.MaxInt is rejected - selectLimit would wrap to math.MinInt (R-15)", math.MaxInt, rejected},
+		{"math.MaxInt is rejected - no count can exceed it, so the cap never fires (R-15)", math.MaxInt, rejected},
 		{"math.MinInt is rejected", math.MinInt, rejected},
 	}
 

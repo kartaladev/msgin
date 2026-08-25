@@ -52,12 +52,22 @@ func TestGroupStore(t *testing.T) {
 				_, err = s.Add(t.Context(), "k1", msgin.New[any]("a", msgin.WithID("a")))
 				require.NoError(t, err)
 
-				_, err = s.Add(t.Context(), "k2", msgin.New[any]("b", msgin.WithID("b")))
+				g, err := s.Add(t.Context(), "k2", msgin.New[any]("b", msgin.WithID("b")))
 				require.ErrorIs(t, err, msgin.ErrOverflowDropped)
 				assert.False(t, msgin.IsPermanent(err),
 					"the group-count arm keeps its TRANSIENT classification (Spec 017 §5)")
 				assert.EqualError(t, err,
 					`msgin: message dropped by overflow policy: memory.GroupStore.Add: new group "k2" rejected: store holds 1 groups, limit 1`)
+				// Plan 031 review §6 item 5: the group-COUNT arm is the one
+				// place Add MUST NOT hand back a snapshot. The key was never
+				// admitted, so there is no group to report and any snapshot
+				// would be a fabrication — Add's godoc promises (nil, err)
+				// here, and the member-cap arm below is the only arm that
+				// pairs a group with an error. Left unasserted, a mutant
+				// returning `snapshot{key: key}` beside the error survived
+				// every package in the workspace.
+				assert.Nil(t, g,
+					"the group-count arm has no group to report and must return (nil, err) — see Add's godoc")
 			},
 		},
 		{
@@ -169,6 +179,13 @@ func TestGroupStore(t *testing.T) {
 			// B1-9: a LEASED group has a claim in flight, so Settle/Abandon
 			// will drain it — the rejection stays transient and must NOT be
 			// Permanent-wrapped.
+			//
+			// This is the WHOLLY-CLAIMED shape: the claim froze all 4 members,
+			// so the live residual is EMPTY. That is legitimate, not the inert
+			// mechanism it looks like — see the case below, which is the same
+			// arm with a non-empty residual, and Aggregator.Handle's
+			// zero-member gate, which returns the store's transient error
+			// unchanged rather than running a release strategy on 0 members.
 			name: "an over-cap rejection while leased is transient",
 			assert: func(t *testing.T) {
 				s := filledGroup(t, 4, "k", "a", "b", "c", "d")
@@ -177,12 +194,60 @@ func TestGroupStore(t *testing.T) {
 				require.NoError(t, err)
 				require.NotNil(t, claim)
 
-				_, err = s.Add(t.Context(), "k", msgin.New[any]("e", msgin.WithID("e")))
+				g, err := s.Add(t.Context(), "k", msgin.New[any]("e", msgin.WithID("e")))
 				require.ErrorIs(t, err, msgin.ErrOverflowDropped)
 				assert.False(t, msgin.IsPermanent(err),
 					"a claim is in flight; Settle/Abandon drains the group, so the retry genuinely succeeds")
 				assert.EqualError(t, err,
 					`msgin: message dropped by overflow policy: memory.GroupStore.Add: group "k" holds 4 members, limit 4`)
+				require.NotNil(t, g,
+					"the member-cap arm ALWAYS pairs a snapshot with the error, even when the residual is empty")
+				assert.Empty(t, g.Messages(),
+					"the claim froze all 4 members, so nothing is live — Handle's zero-member gate takes it from here")
+			},
+		},
+		{
+			// Plan 031 review R-5. The finding held that this arm's snapshot
+			// is "always empty (msgs[claimedLen:] with claimedLen ==
+			// len(msgs))", making the snapshot-alongside-error mechanism inert
+			// exactly where a concurrent claim makes it matter. It is NOT:
+			// claimedLen == len(msgs) holds only at the instant ClaimGroup
+			// returns. Add appends BEYOND claimedLen for the width of the
+			// lease, so a group claimed before it filled reports a real,
+			// non-empty live residual on the over-cap arm — and that residual
+			// is precisely what Aggregator.Handle re-evaluates the release
+			// against.
+			//
+			// Nothing in this package asserted the arm: `return live, err` →
+			// `return nil, err` survived `go test ./adapter/memory/...`. (It
+			// was caught at repo scope, by two routing cases added for D-AW —
+			// but a cross-package accident is not a contract, and the store
+			// that makes the promise is the one that must pin it.)
+			name: "an over-cap rejection while leased returns the residual added DURING the lease",
+			assert: func(t *testing.T) {
+				// Claim at 3 of a cap of 4, so claimedLen (3) < len(msgs).
+				s := filledGroup(t, 4, "k", "a", "b", "c")
+
+				claim, err := s.ClaimGroup(t.Context(), "k")
+				require.NoError(t, err)
+				require.NotNil(t, claim)
+				require.Len(t, claim.Messages(), 3, "the claim froze exactly the 3 members present")
+
+				// Admitted during the lease: it lands beyond claimedLen and is
+				// LIVE, taking the group to the cap.
+				g, err := s.Add(t.Context(), "k", msgin.New[any]("d", msgin.WithID("d")))
+				require.NoError(t, err)
+				require.Len(t, g.Messages(), 1, "the in-lease arrival is the whole live residual")
+
+				g, err = s.Add(t.Context(), "k", msgin.New[any]("e", msgin.WithID("e")))
+				require.ErrorIs(t, err, msgin.ErrOverflowDropped)
+				assert.False(t, msgin.IsPermanent(err), "a claim is in flight, so the rejection stays transient")
+				require.NotNil(t, g, "the live snapshot must travel with the error on the LEASED arm too (§3.3a)")
+				require.Len(t, g.Messages(), 1,
+					"the residual is NOT empty: 'd' arrived after the claim froze msgs[:3], so it is live")
+				assert.Equal(t, "d", g.Messages()[0].ID(),
+					"the snapshot is the live residual — the claimed prefix is excluded and the refused member is absent")
+				assert.Equal(t, "k", g.Key())
 			},
 		},
 		{

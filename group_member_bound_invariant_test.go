@@ -26,23 +26,42 @@ package msgin_test
 // constant is a FAILURE, not a shorter run, because a not-found constant must
 // never reach the comparison as a zero value where 0 >= 0 passes.
 //
-// TWO HALVES, and the second exists because the first is not enough:
+// THREE HALVES, each existing because the one before it is not enough:
 //
 //  1. INVARIANT (TestGroupMemberBoundInvariant). Read the ceiling and each
 //     store's default out of the AST and assert default >= ceiling per store.
 //     The cases are GENERATED from groupBoundStoreSites, so a store cannot be
 //     dropped from the run without being dropped from that slice.
-//  2. COMPLETENESS (TestGroupMemberBoundStoreSitesAreComplete). Walk every
-//     non-test .go file in the repository and assert that the set of files
-//     declaring `const defaultMaxGroupMembers` equals groupBoundStoreSites
-//     EXACTLY, in both directions. Without this, deleting a store from the
-//     slice leaves a vet-clean, lint-clean test that PASSES with one subtest —
-//     the gate silently shrinking to one store while the other carries the
-//     identical risk. That is this increment's own "fix the class, not the
-//     instance" lesson reappearing one level up, inside the gate's structure.
+//  2. LEXICAL COMPLETENESS (TestGroupMemberBoundStoreSitesAreComplete). Walk
+//     every non-test .go file in the repository and assert that the set of
+//     files declaring `const defaultMaxGroupMembers` equals
+//     groupBoundStoreSites EXACTLY, in both directions. Without this, deleting
+//     a store from the slice leaves a vet-clean, lint-clean test that PASSES
+//     with one subtest — the gate silently shrinking to one store while the
+//     other carries the identical risk. That is this increment's own "fix the
+//     class, not the instance" lesson reappearing one level up, inside the
+//     gate's structure.
+//  3. STRUCTURAL COMPLETENESS (TestGroupMemberBoundStoreImplementationsAreComplete).
+//     Half 2 keys on a LITERAL IDENTIFIER, so it can only see a store that
+//     already spells its default `defaultMaxGroupMembers`. Half 3 keys on the
+//     property instead: discover every first-party type whose METHOD SET
+//     covers msgin.MessageGroupStore, and assert the set of packages declaring
+//     one equals the packages in groupBoundStoreSites. A new store is then
+//     caught by what it IS, not by what it happens to name a constant.
 //
 // Discovery is a check ON the asserted list, not a replacement FOR it. Half 1
 // never reads a discovered file.
+//
+// WHY HALF 3 EXISTS — Plan 031 review R-14, measured in both directions before
+// it was written. Planting `const defaultMaxGroupMembers` in a leaf module
+// correctly turned half 2 red; planting the SAME constant under the name
+// `defaultMaxMembersPerGroup` left the whole root package GREEN. Renaming an
+// EXISTING constant was caught; adding a NEW store under a new spelling was
+// not — and the planned pgx, redis and nats adapters each grow a GroupStore.
+// The residual was recorded in Spec 017 §6 AC-3.3 and ADR 0033 D-AQ but not in
+// this file, which otherwise records every limitation it has. It is now closed
+// rather than merely disclosed; what half 3 does NOT reach is stated on the
+// test itself.
 //
 // The cross-reference comments on the constants themselves (routing's
 // completionSizeCeiling and each store's defaultMaxGroupMembers) are
@@ -56,6 +75,7 @@ import (
 	"go/types"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -242,6 +262,257 @@ func TestGroupMemberBoundStoreSitesAreComplete(t *testing.T) {
 			"because TestGroupMemberBoundInvariant generates its cases from that slice and would "+
 			"otherwise pass with one subtest. Add the store back; do not edit the slice to match.",
 		groupBoundStoreConstName)
+}
+
+// groupBoundSPISite names the interface half 3 derives its discriminator from.
+// The method set is READ, never transcribed: when MessageGroupStore gains a
+// method, the discriminator tightens with it and no list here goes stale.
+var groupBoundSPISite = groupBoundSite{file: "groupstore.go", name: "MessageGroupStore"}
+
+// TestGroupMemberBoundStoreImplementationsAreComplete is half 3: every
+// first-party package that implements msgin.MessageGroupStore must be one of
+// the packages in groupBoundStoreSites, and every package in
+// groupBoundStoreSites must implement it — in BOTH directions.
+//
+// This is R-14's narrowing. Half 2 asks "which files declare the constant?",
+// which a new store can answer with silence simply by choosing another
+// spelling. Half 3 asks "which types ARE a MessageGroupStore?", which a new
+// store cannot answer with silence at all: implementing the SPI is the whole
+// point of writing one. Failing here tells the author to declare the canonical
+// constant and add the store to groupBoundStoreSites, which then subjects it
+// to half 1's invariant.
+//
+// THE DISCRIMINATOR IS WIDE-MARGINED, not a coincidence of naming. It requires
+// ALL SEVEN method names of the SPI on ONE receiver type. Measured over the
+// whole repository: exactly two types match, and the nearest non-match reaches
+// 3 of 7 — the sql GroupDialect family, which shares ClaimGroup/SettleGroup/
+// AbandonGroup but has AddMember, ExpiredGroups and no RecoverInterval or
+// EmitsLiveValue. There is no near-miss anywhere in the tree, so this cannot
+// false-red on an unrelated type, which is the failure mode that gets a gate
+// deleted (this plan's own R4-4 lesson).
+//
+// RESIDUALS, measured and stated rather than papered over (ADR 0033 D-AL):
+//
+//   - EMBEDDING. The walk sees `func (T) Add(...)` declarations, so a store
+//     that acquires part of its method set by embedding another type declares
+//     fewer than seven and is invisible. Verified. Closing it needs a full
+//     type-check of eight modules, which this gate deliberately does not do —
+//     it parses, exactly as sizing_option_class_gate_test.go does.
+//   - GENERATED METHODS. A store whose methods are produced by `go:generate`
+//     into a file that is not committed is invisible until it is committed.
+//   - OUT-OF-TREE STORES. A third-party MessageGroupStore in someone else's
+//     module is not this gate's business; the SPI godoc carries the bound's
+//     contract for them.
+//
+// Both remaining in-tree holes need a store assembled indirectly. The hole
+// R-14 reported — a store written the ordinary way under a different constant
+// name — is closed.
+func TestGroupMemberBoundStoreImplementationsAreComplete(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.Getwd()
+	require.NoError(t, err, "a root-package test's working directory is the repository root")
+
+	spi := mustGroupBoundSPIMethods(t, root)
+	t.Logf("=== msgin.%s method set, read from %s: %d methods\n\t%s",
+		groupBoundSPISite.name, groupBoundSPISite.file, len(spi), strings.Join(spi, ", "))
+
+	// Non-vacuity: an empty or truncated method set would make EVERY type a
+	// match (a set trivially covers the empty set), turning this gate into
+	// noise rather than silence — the opposite failure, but a failure. The
+	// floor is deliberately loose: it asserts the SPI is substantial, not that
+	// it has exactly seven methods, so adding one does not red this line.
+	require.GreaterOrEqual(t, len(spi), 5,
+		"the discriminator read only %d method(s) from msgin.%s. A short method set matches types that "+
+			"are not GroupStores at all; a set of zero matches everything. Either the interface moved or "+
+			"the parse is broken — do not lower this floor.", len(spi), groupBoundSPISite.name)
+
+	found := scanGroupBoundStoreImpls(t, root, spi)
+	sort.Strings(found)
+
+	want := make([]string, 0, len(groupBoundStoreSites))
+	for _, site := range groupBoundStoreSites {
+		want = append(want, path.Dir(site.file))
+	}
+	sort.Strings(want)
+
+	t.Logf("=== packages declaring a type whose method set covers the SPI: %d\n\t%s",
+		len(found), strings.Join(found, "\n\t"))
+
+	require.NotEmpty(t, found,
+		"the structural walk found NO type implementing msgin.%s anywhere under %s. Both first-party "+
+			"GroupStores do — that is a broken traversal, not a clean tree.",
+		groupBoundSPISite.name, root)
+
+	assert.Equal(t, want, found,
+		"the set of PACKAGES implementing msgin.%s must match the packages in groupBoundStoreSites in "+
+			"BOTH directions (Spec 017 §3.5; ADR 0033 D-AQ).\n"+
+			"A package in the found set but NOT in groupBoundStoreSites is a first-party GroupStore that "+
+			"escaped this gate — most likely a NEW store that spells its member-cap default something "+
+			"other than %q, which half 2 cannot see by construction (Plan 031 review R-14). Give it a "+
+			"`const %s`, wire the constructor from it, and add its file to groupBoundStoreSites so half 1 "+
+			"checks its value against routing's completion-size ceiling.\n"+
+			"A package in groupBoundStoreSites but NOT in the found set means the store stopped "+
+			"implementing the SPI, or was moved — update the slice deliberately, do not delete the entry "+
+			"to make this pass.",
+		groupBoundSPISite.name, groupBoundStoreConstName, groupBoundStoreConstName)
+}
+
+// mustGroupBoundSPIMethods reads the method names msgin.MessageGroupStore
+// declares, failing loudly rather than returning an empty set — an empty
+// discriminator would match every type in the repository.
+func mustGroupBoundSPIMethods(t *testing.T, root string) []string {
+	t.Helper()
+
+	methods, err := groupBoundInterfaceMethods(root, groupBoundSPISite.file, groupBoundSPISite.name)
+	require.NoErrorf(t, err,
+		"THE GROUP-MEMBER BOUND GATE COULD NOT READ the %s interface from %s, so it cannot tell a "+
+			"GroupStore from any other type. Restore the declaration, or point groupBoundSPISite at "+
+			"wherever the SPI moved to.",
+		groupBoundSPISite.name, groupBoundSPISite.file)
+
+	return methods
+}
+
+// groupBoundInterfaceMethods returns the explicitly-declared method names of
+// the named interface in root/rel. Embedded interfaces contribute no names —
+// they are *ast.Field entries with no Names — which only ever makes the
+// discriminator narrower, never wider, so it cannot cause a false positive.
+func groupBoundInterfaceMethods(root, rel, name string) ([]string, error) {
+	file, err := groupBoundParseFile(root, rel)
+	if err != nil {
+		return nil, err
+	}
+
+	var methods []string
+	var found bool
+	ast.Inspect(file, func(n ast.Node) bool {
+		spec, ok := n.(*ast.TypeSpec)
+		if !ok || spec.Name.Name != name {
+			return true
+		}
+		iface, ok := spec.Type.(*ast.InterfaceType)
+		if !ok {
+			return true
+		}
+		found = true
+		for _, field := range iface.Methods.List {
+			for _, ident := range field.Names {
+				methods = append(methods, ident.Name)
+			}
+		}
+		return false
+	})
+
+	if !found {
+		return nil, fmt.Errorf("interface %s is not declared in %s", name, rel)
+	}
+	sort.Strings(methods)
+	return methods, nil
+}
+
+// scanGroupBoundStoreImpls walks root — the same traversal half 2 uses — and
+// returns the repository-relative directory of every package declaring a type
+// whose METHOD SET covers spi. Directories are deduplicated, so a store split
+// across several files in one package is reported once.
+//
+// Methods are keyed by (package directory, receiver type name) because Go
+// requires a method to live in its receiver's package: accumulating across the
+// directory is exactly the language's own rule, not an approximation.
+func scanGroupBoundStoreImpls(t *testing.T, root string, spi []string) []string {
+	t.Helper()
+
+	// dir -> receiver type -> declared method names
+	methods := make(map[string]map[string]map[string]bool)
+	fset := token.NewFileSet()
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			base := d.Name()
+			if path != root && (strings.HasPrefix(base, ".") || base == "vendor") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		rel, rerr := filepath.Rel(root, path)
+		if rerr != nil {
+			rel = path
+		}
+		rel = filepath.ToSlash(rel)
+		src, rderr := os.ReadFile(path)
+		if rderr != nil {
+			return rderr
+		}
+		file, perr := parser.ParseFile(fset, rel, src, parser.SkipObjectResolution)
+		if perr != nil {
+			return fmt.Errorf("parse %s: %w", rel, perr)
+		}
+		dir := filepath.ToSlash(filepath.Dir(rel))
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 {
+				continue
+			}
+			recv := groupBoundReceiverName(fn.Recv.List[0].Type)
+			if recv == "" {
+				continue
+			}
+			if methods[dir] == nil {
+				methods[dir] = make(map[string]map[string]bool)
+			}
+			if methods[dir][recv] == nil {
+				methods[dir][recv] = make(map[string]bool)
+			}
+			methods[dir][recv][fn.Name.Name] = true
+		}
+		return nil
+	})
+	require.NoError(t, err, "walking %s", root)
+
+	seen := make(map[string]bool)
+	var found []string
+	for dir, types := range methods {
+		for _, declared := range types {
+			if !groupBoundCoversSPI(declared, spi) || seen[dir] {
+				continue
+			}
+			seen[dir] = true
+			found = append(found, dir)
+		}
+	}
+	return found
+}
+
+// groupBoundCoversSPI reports whether declared contains every name in spi.
+func groupBoundCoversSPI(declared map[string]bool, spi []string) bool {
+	for _, name := range spi {
+		if !declared[name] {
+			return false
+		}
+	}
+	return true
+}
+
+// groupBoundReceiverName unwraps a receiver expression to the bare type name,
+// through the pointer and generic-instantiation forms Go allows: T, *T, T[P]
+// and *T[P, Q]. Anything else yields "" and is skipped rather than guessed at.
+func groupBoundReceiverName(expr ast.Expr) string {
+	switch e := expr.(type) {
+	case *ast.StarExpr:
+		return groupBoundReceiverName(e.X)
+	case *ast.IndexExpr:
+		return groupBoundReceiverName(e.X)
+	case *ast.IndexListExpr:
+		return groupBoundReceiverName(e.X)
+	case *ast.Ident:
+		return e.Name
+	}
+	return ""
 }
 
 // mustGroupBoundConst reads one asserted site, failing the test loudly and BY

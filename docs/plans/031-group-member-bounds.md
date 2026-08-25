@@ -1828,10 +1828,33 @@ reviewer subagent reviews before delivery. Per-task commits are pre-authorized b
       >    The implementer unwrapped on the **type** instead, and the RED run proved the adjacent hazard was real
       >    too: `reflect.TypeOf(nil).PkgPath()` **segfaulted** on the nil-dialect case. **A seventh ratified/
       >    recommended instruction defeated by running it** — see §2 of `docs/HANDOVER.md`.
-- [ ] **Step 4 — the fixes needing new fixtures.** R-1 (the truncated over-cap snapshot), R-11 (`withoutMember`
-      applied unconditionally to an idempotent re-add), R-4 (a zero-member group reaching the release strategy),
-      R-5 (`memory`'s inert leased arm, with the assertion it never had), R-8 (the vacuous ceiling-level test),
-      R-14 (the class gate's literal-identifier blind spot).
+- [x] **Step 4 — the fixes needing new fixtures. DONE.** R-1, R-11, R-5, R-8, R-14. **R-4 landed in Step 2** with
+      R-10. Run as **two agents in parallel on disjoint modules** — leaf (`postgres`/`mysql`/`sqlite`/`harness`)
+      and root (`adapter/memory`/`routing`/root gates) — safe here only because the dialects import neither
+      `adapter/memory` nor `routing`, so neither agent compiles the other's half-edited files.
+
+      > **Outcomes differed by finding, which is the point of verifying before fixing:**
+      >
+      > | Finding | Reproduced? | Disposition |
+      > |---|---|---|
+      > | **R-1** | ✅ live SQLite: *"over-cap snapshot carried **5 of 10** stored live members"* | live fetch now **unlimited**; **`selectLimit` DELETED** (§3.6a.3a) |
+      > | **R-11** | ✅ and **worse than filed** — the re-add returned `msgin: permanent:`, a *terminal discard* of a redelivery the SPI guarantees is a no-op | cap check gated on an **actual insert**, per-engine discriminator (§3.6a.3b) |
+      > | **R-5** | 🔴 **PREMISE REFUTED** — the leased snapshot is not "always empty"; `claimedLen == len(msgs)` holds only at the instant `ClaimGroup` returns | the *missing assertion* was real and is added, in the owning package |
+      > | **R-8** | ✅ 2 of 2 mutants survived | **kept and rewritten** — row 1 was a verbatim duplicate of another test; row 2 carried a real accidental assertion, now deliberate |
+      > | **R-14** | ✅ proven live | **closed structurally** — a new **half 3** reads `MessageGroupStore`'s method set from the AST, so a store is caught by *what it is*, not what it names a constant |
+      >
+      > 🔴 **R-1 SUPERSEDED D-AV's OWN PART 3 INSIDE THE SAME TASK.** D-AV was ratified as *"`selectLimit` becomes
+      > total"*; the right answer was **deleting it**, because the `LIMIT` **was** the defect rather than the thing
+      > to make safe — and the truncation reached the **success path** too, so any overflow-path-only fix would
+      > have been insufficient. **Neither five design-audit rounds nor the delivery-gate reviewer saw this.**
+      > D-AV is *not* weakened: R-15 had two independent fail-open routes at `math.MaxInt`, and the **cap
+      > comparison** route has no structural backstop — only the validator. Both artifacts now say so explicitly,
+      > because *"R-1 removed the overflow, so the validation is redundant"* would reopen a delivery blocker.
+      >
+      > **R-14 is the one to copy.** The finding asked for the blind spot to be *documented*; it was **narrowed**
+      > instead, and the discriminator's margin was **measured before it was trusted** — exactly 2 types match
+      > repo-wide, nearest non-match 3 of 7, probed in three directions including a deliberate near-miss that
+      > correctly did **not** fire. A gate that false-reds gets deleted rather than fixed.
 - [ ] **Step 5 — triage the five capped findings** (§6 of the findings file), each fixed or triaged **with a
       written rationale**: the ~120 lines of triplicated dialect logic; `ErrOverflowDropped`'s godoc naming 2 of 5
       producers; Spec 017's stale status line (**done in revision 6**); `ExampleWithReleaseWhen`'s dead channel

@@ -37,6 +37,24 @@ import (
 // default, which no harness case approaches.
 const groupMemberCap = 4
 
+// grownMemberCount is how far the CAP-LOWERED cases below grow a group before
+// pointing a groupMemberCap-sized store at the same table — the rolling-deploy
+// / two-instances-with-different-caps topology CLAUDE.md requires every
+// component to reason about, expressed entirely through the public API by
+// building two msginsql.GroupStore values on one table.
+//
+// Its value is load-bearing twice over, and both bounds are tight:
+//
+//   - It must EXCEED groupMemberCap+1, the fetch bound AddMember used to apply.
+//     Every pre-existing member-cap case fills to EXACTLY the cap, which that
+//     bound never truncated, so none of them could observe the truncation at
+//     all (review finding R-1). At 10 against a cap of 4 the old bound returned
+//     5 of 10 live rows — a mutant that restores it is arithmetically capable
+//     of failing these cases, which the finding's own first attempt was not.
+//   - It must stay at or under 16, so Spec 017 §6 AC-6 ("no test grows a group
+//     past 16 members") still holds.
+const grownMemberCount = 10
+
 // directAddLeaseTTL is the leaseTTL every harness case that drives
 // kit.Group.AddMember DIRECTLY passes (ADR 0033 D-AU / Spec 017 §3.6a.1).
 //
@@ -144,6 +162,38 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 			require.NoErrorf(t, err, "member %d of %d must be admitted", i+1, groupMemberCap)
 			require.Len(t, g.Messages(), i+1)
 		}
+	}
+	// grownMemberID is the id of the i-th member the cap-lowered fixture stores.
+	// Zero-padded so the lexical msg_id tiebreak in the members' ORDER BY can
+	// never reorder them relative to their seq.
+	grownMemberID := func(i int) string { return fmt.Sprintf("g%02d", i) }
+	// growThenLowerTheCap stores grownMemberCount live members under a HIGH cap
+	// and returns a SECOND store on the SAME table running at groupMemberCap —
+	// a group holding strictly more rows than the cap now in force. That is the
+	// state a rolling deploy that lowers WithMaxGroupMembers reaches, and the
+	// state two concurrently-deployed instances configured differently are
+	// permanently in; nothing about it is exotic, and no pre-existing case
+	// reaches it (review findings R-1 and R-11).
+	growThenLowerTheCap := func(t *testing.T, ctx context.Context, table, key string) *msginsql.GroupStore {
+		t.Helper()
+		grown := newStore(t, table, msginsql.WithMaxGroupMembers(grownMemberCount))
+		for i := 0; i < grownMemberCount; i++ {
+			g, err := add(t, ctx, grown, key, grownMemberID(i), i)
+			require.NoErrorf(t, err, "member %d of %d must be admitted under the HIGHER cap", i+1, grownMemberCount)
+			require.Len(t, g.Messages(), i+1)
+		}
+		require.Equal(t, grownMemberCount, memberCount(t, ctx, table, key),
+			"the fixture must actually reach the over-cap-with-more-rows-than-cap state")
+		return newStore(t, table, msginsql.WithMaxGroupMembers(groupMemberCap))
+	}
+	// memberIDs renders a group snapshot's member ids in order, for assertions
+	// that must name WHICH members are missing rather than only how many.
+	memberIDs := func(g msgin.MessageGroup) []string {
+		out := make([]string, 0, len(g.Messages()))
+		for _, m := range g.Messages() {
+			out = append(out, m.ID())
+		}
+		return out
 	}
 
 	t.Run("ReadyAndEnsureGroupSchema", func(t *testing.T) {
@@ -396,6 +446,79 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 		require.Equal(t, groupMemberCap, memberCount(t, ctx, table, "k"), "nothing was committed")
 	})
 
+	// Spec 017 §3.3a/§3.6.3 — whole-branch review finding R-1. The over-cap
+	// snapshot exists so a group that is COMPLETE but full is not deadlocked by
+	// its own bound: routing.Aggregator.Handle re-evaluates the release
+	// predicate against it. A TRUNCATED snapshot inverts that — the predicate
+	// (WithCompletionSize(grownMemberCount), say) sees fewer members than the
+	// group holds, declines, and the group never releases while the refused
+	// member is dead-lettered. It is the exact deadlock the branch was added to
+	// prevent, delivered by the branch itself.
+	//
+	// 🔴 THE MUTANT THIS CASE KILLS: restore the old bound by passing
+	// maxMembers+1 — 5 here — to the live-member SELECT instead of 0. Every
+	// OTHER member-cap case stays green, because every other one fills to
+	// exactly the cap and a LIMIT of 5 cannot truncate 4 rows.
+	t.Run("MemberCapLoweredBelowTheStoredCount_SnapshotIsNotTruncated", func(t *testing.T) {
+		ctx := t.Context()
+		table := fresh(ctx)
+		lowered := growThenLowerTheCap(t, ctx, table, "k")
+
+		over, err := add(t, ctx, lowered, "k", "overflow", grownMemberCount)
+		require.ErrorIs(t, err, msgin.ErrOverflowDropped)
+		require.True(t, msgin.IsPermanent(err), "no lease is draining this group (D-AM/D-AU)")
+		require.Equal(t, overflowRender("k", grownMemberCount+1, groupMemberCap, true), err.Error(),
+			"the count is the one the transaction observed: every stored row plus the refused one")
+
+		require.NotNil(t, over)
+		// Logged so a vacuous run is visible: if the fixture ever stops
+		// reaching the over-cap state, this line says so before the assertion
+		// below does.
+		t.Logf("R-1: over-cap snapshot carried %d of %d stored live members "+
+			"(cap in force %d; the old maxMembers+1 bound would have carried %d)",
+			len(over.Messages()), grownMemberCount, groupMemberCap, groupMemberCap+1)
+		require.Len(t, over.Messages(), grownMemberCount,
+			"the rejection must carry EVERY live member, not the first maxMembers+1 of them (R-1)")
+		ids := memberIDs(over)
+		require.NotContains(t, ids, "overflow", "the refused member must not appear in its own rejection snapshot")
+		for i := 0; i < grownMemberCount; i++ {
+			require.Containsf(t, ids, grownMemberID(i), "member %d is missing from the over-cap snapshot", i)
+		}
+		require.Equal(t, grownMemberCount, memberCount(t, ctx, table, "k"), "the over-cap transaction committed nothing")
+	})
+
+	// Spec 017 §3.6.1 / ADR 0033 D-AP — whole-branch review finding R-11. The
+	// cap check runs AFTER the member upsert precisely so an idempotent re-add
+	// is a no-op; that reasoning holds for a group ABOVE the cap exactly as it
+	// does for one AT it, because a re-add stores nothing and so cannot grow
+	// the group past any bound. adapter/memory's GroupStore takes its dedup
+	// branch FIRST and returns (full snapshot, nil) for this input — the two
+	// first-party stores implement ONE SPI contract, so a redelivery that one
+	// Acks must not be terminally discarded by the other.
+	//
+	// 🔴 THE MUTANT THIS CASE KILLS: drop the `inserted &&` guard on the cap
+	// check (or apply withoutMember unconditionally). Either one refuses, or
+	// strips from its own snapshot, a member that is durably present and was
+	// never refused.
+	t.Run("MemberCapIdempotentReAddAboveTheCapIsNotRefused", func(t *testing.T) {
+		ctx := t.Context()
+		table := fresh(ctx)
+		lowered := growThenLowerTheCap(t, ctx, table, "k")
+
+		// A REDELIVERY of a member stored long before the cap was lowered. The
+		// upsert is a no-op, so nothing is dropped and nothing is refused.
+		readd, err := add(t, ctx, lowered, "k", grownMemberID(0), 0)
+		require.NoError(t, err,
+			"re-adding an already-stored id cannot overflow a cap it does not grow (R-11)")
+		require.NotNil(t, readd)
+		t.Logf("R-11: idempotent re-add above the cap returned %d of %d stored live members",
+			len(readd.Messages()), grownMemberCount)
+		require.Len(t, readd.Messages(), grownMemberCount, "the unchanged snapshot, in full")
+		require.Contains(t, memberIDs(readd), grownMemberID(0),
+			"the re-added member is durably present and must not be stripped from its own snapshot (R-11)")
+		require.Equal(t, grownMemberCount, memberCount(t, ctx, table, "k"), "the re-add wrote nothing")
+	})
+
 	// D-AV / Spec 017 §3.6a.2 — whole-branch review finding R-15, a CLAUDE.md
 	// delivery blocker. The bound is validated at the SPI boundary, against a
 	// REAL engine, so "before any statement runs" is asserted by observing that
@@ -413,9 +536,11 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 		}
 
 		// 0 is the value that used to mean UNBOUNDED — the ZERO VALUE was the
-		// dangerous one. math.MaxInt is the other half of R-15: selectLimit's
-		// maxMembers+1 wrapped to math.MinInt, suppressing BOTH the LIMIT and
-		// the cap comparison, so the largest expressible bound meant NO bound.
+		// dangerous one. math.MaxInt is the other half of R-15: no count can
+		// ever exceed it, so `n > int64(maxMembers)` never fires and the largest
+		// expressible bound means NO bound. (It also used to wrap the
+		// maxMembers+1 fetch LIMIT to math.MinInt; that half is now structurally
+		// gone — AddMember's live fetch carries no LIMIT at all since R-1.)
 		for _, bad := range []int{0, -2, (1 << 20) + 1, math.MaxInt} {
 			err := addRaw(bad)
 			require.ErrorIsf(t, err, msgin.ErrInvalidCapacity, "maxMembers %d must be refused", bad)

@@ -1427,11 +1427,17 @@ package, not copy-pasted into the three dialects.
 made the **zero value** the dangerous value, so a direct dialect caller who omitted the argument or threaded an
 unset config field through got no bound and no diagnostic.
 
-**And `math.MaxInt` WRAPPED.** `selectLimit` returns `maxMembers + 1`, so `selectLimit(math.MaxInt)` was
-`math.MinInt`; the `limit > 0` guard then suppressed the `LIMIT` **and** `n > int64(maxMembers)` could never fire.
-A caller opting into the largest expressible bound silently received **unbounded** — this spec's own failure mode,
-delivered through its own escape hatch. With `maxMembers` provably in `[1, 1<<20]` before `selectLimit` is
-reached, `+1` cannot overflow.
+**And `math.MaxInt` DELIVERED NO BOUND, by TWO independent routes.** A caller opting into the largest expressible
+bound silently received **unbounded** — this spec's own failure mode, delivered through its own escape hatch.
+**Only one route still exists, and the distinction decides whether this validation is still needed:**
+
+| Route | State |
+|---|---|
+| The **cap comparison** `n > int64(maxMembers)` can never fire at `math.MaxInt`, because no group can hold that many rows | 🔴 **SURVIVES.** Nothing structural prevents it — **only this validator does**, by keeping `maxMembers` in `[1, 1<<20]` |
+| `selectLimit` returned `maxMembers + 1`, so `selectLimit(math.MaxInt)` was `math.MinInt` and the `limit > 0` guard suppressed the `LIMIT` clause | ✅ **STRUCTURALLY IMPOSSIBLE.** Finding **R-1** removed the `LIMIT` from `AddMember`'s live fetch entirely (§3.6a.3) and `selectLimit` was deleted — **there is no sum left to overflow** |
+
+**Do not read the second row as making this section redundant.** It halves what the validator guards; the half
+that remains is the one with no structural backstop.
 
 **`sql.GroupStore` was never exposed** — `NewGroupStore` already range-checks `[1, maxGroupMembersCeiling]`
 against `msgin.ErrInvalidCapacity`. This is a defect of the **exported SPI boundary** only, which is why the fix
@@ -1440,6 +1446,50 @@ belongs there.
 > **This makes `msgin.ErrInvalidCapacity`'s SEVENTH producer** — the threshold
 > [ADR 0033 D-AD](../adrs/0033-group-member-bounds.md)'s own consequence bullet named as requiring an ADR. That
 > ADR is D-AV. The next producer should not be added without revisiting whether a per-unit error type is due.
+
+#### 3.6a.3 🔴 The live fetch is UNLIMITED, and the cap check is gated on an ACTUAL insert (findings R-1 / R-11)
+
+**Normative, and both rules apply to every dialect.**
+
+**(a) `AddMember`'s live-member `SELECT` carries NO `LIMIT`** — it passes `0`, joining `ClaimGroup` and
+`ExpiredGroups` under **[ADR 0033 D-AS](../adrs/0033-group-member-bounds.md)**'s existing rule that *a member set
+the caller acts on is never truncated*. The over-cap snapshot **is** such a set.
+
+*Why the `maxMembers+1` bound had to go rather than be made safe:* a group holding **more rows than the current
+cap** returned a **silently truncated** snapshot. Reproduced against real SQLite before the fix — *"over-cap
+snapshot carried **5 of 10** stored live members"* — landing exactly on `maxMembers+1`. The release predicate then
+evaluates `WithCompletionSize(10)` against 5, returns false, and the member is dead-lettered **while a genuinely
+complete group never releases**: the exact deadlock §3.3a exists to prevent. Reachable by a **rolling deploy that
+lowers the cap** or **two instances configured with different caps** — the multi-instance topology CLAUDE.md
+mandates reasoning about.
+
+🔴 **The truncation was NOT confined to the overflow path.** An idempotent re-add to an over-cap group returns a
+`nil` error and was truncated by the same `LIMIT`. **Any fix scoped to "the overflow path only" is insufficient** —
+which is why the bound is removed rather than special-cased. It costs no new memory ceiling: `ClaimGroup` already
+pulls the same group's full member set from the same table with no `LIMIT`. And it restores one SPI contract:
+`memory.GroupStore` never truncated.
+
+**(b) The cap check fires only when THIS statement actually inserted a row.** The member upsert is
+`ON CONFLICT DO NOTHING` / `INSERT IGNORE`, so an **idempotent re-add of an already-stored member** stored nothing
+and cannot have grown the group past any bound. Before this rule it was rejected — and, worse than the finding
+described, rejected as **`msgin.Permanent`**: a *terminal discard* of a redelivery the SPI guarantees is a no-op,
+where `memory` returns `(full snapshot, nil)`. One store Acked it; the other threw it away.
+
+Gating the cap check on `inserted` fixes both halves at once: no insert ⇒ no overflow, and `withoutMember` becomes
+reachable only when the member genuinely **was** refused.
+
+**🔴 The insert discriminator is PER-ENGINE, and each must be verified on its own engine** — the recurring
+*"one mechanism asserted for three engines"* defect in this bundle (audit **M-3**, **N-3**, **N-5**, **N-9**;
+[ADR 0033 D-AP](../adrs/0033-group-member-bounds.md)):
+
+| Engine | Mechanism | Why not the others |
+|---|---|---|
+| postgres | `ON CONFLICT (…) DO NOTHING RETURNING 1` + `sql.ErrNoRows` | `DO NOTHING` names one conflict target and suppresses nothing else, so `ErrNoRows` proves *presence*, never failure. Needs no `RowsAffected` contract from the driver, and `RETURNING` is what this dialect's `ClaimGroup` already uses |
+| mysql / **mariadb** | `INSERT IGNORE` + `RowsAffected()` | MySQL has no `RETURNING` on `INSERT` (MariaDB does; one dialect serves both). `INSERT IGNORE` suppresses more than a targeted `DO NOTHING`, so the shipped DDL was checked: the member table declares exactly one key, `PRIMARY KEY (group_key, msg_id)` — no FK, no secondary `UNIQUE` — therefore `0` ⟺ duplicate PK. **A future migration adding a `UNIQUE` constraint must revisit this line** |
+| sqlite | `ON CONFLICT (…) DO NOTHING` + `RowsAffected()` (`sqlite3_changes`) | Targeted conflict arm; `RowsAffected` is already load-bearing in this dialect's `ClaimGroup` |
+
+**Both polarities must be asserted per engine, not assumed:** a conformance case fails if the discriminator ever
+reports *inserted* for a duplicate, and another fails if it ever reports *not inserted* for a genuine insert.
 
 ### 3.7 The SPI states the bound as a contract requirement
 
