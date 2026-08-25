@@ -1280,10 +1280,31 @@ groupstore_unit_test.go}`, `sizing_option_class_gate_test.go`, **`adapter/databa
       > `TestKit`"*, which has no referent: `TestKit` has no integer field, and `testkit.go` is in no Files list
       > (audit **NEW-3**). **Re-run that grep before committing.**
 - [ ] **Step 5b (D-AS's guard — audit N-5).** Add the `limit = 0` conformance case: fill a group to exactly `cap`,
-      `ClaimGroup`, and assert **all `cap`** members come back. Mutation-prove it by passing `maxMembers+1` from
-      `ClaimGroup` ⇒ truncation ⇒ the case fails. Without this, nothing in the increment notices a `LIMIT` leaking
-      into `ClaimGroup` or `ExpiredGroups`. *(Step 2 item 7 shares this fixture — fill to cap, then claim — and
-      asserts the complementary half: the claimed members still count against the bound.)*
+      `ClaimGroup`, and assert **all `cap`** members come back. Without this, nothing in the increment notices a
+      `LIMIT` leaking into `ClaimGroup` or `ExpiredGroups`. *(Step 2 item 7 shares this fixture — fill to cap, then
+      claim — and asserts the complementary half: the claimed members still count against the bound.)*
+
+      > 🔴 **THIS STEP'S RATIFIED MUTANT WAS UNIMPLEMENTABLE *AND* INCAPABLE, AND IT COVERED ONLY ONE OF THE TWO
+      > CALLERS. Corrected at execution time; both variants were RUN, not reasoned.** It read *"mutation-prove it
+      > by passing `maxMembers+1` from `ClaimGroup` ⇒ truncation ⇒ the case fails."*
+      >
+      > 1. **`ClaimGroup` has no `maxMembers` in scope** —
+      >    `ClaimGroup(ctx, q, table, groupKey, lockedBy string, leaseTTL time.Duration)`. That is **D-AS's own
+      >    point**. No executable reading.
+      > 2. **`LIMIT maxMembers+1` cannot truncate `maxMembers` rows.** At `groupMemberCap = 4`, `LIMIT 5` returns
+      >    all 4. **Run: SURVIVED**, whole sqlite suite `ok`.
+      >
+      > **Use a limit that BITES** — `ClaimGroup`'s fetch `0` → **`3`** at cap 4 ⇒ **KILLED**.
+      >
+      > **AND ADD THE `ExpiredGroups` TWIN — new scope, not in the ratified text.** `ExpiredGroups` is D-AS's other
+      > `limit = 0` caller and had **no mutant at all**. Measured on the pre-Task-7 tree: dropping its fetch to
+      > `LIMIT 1` — the reaper silently discarding every member of an expired group past the first — **passed all
+      > 14 GroupStore subtests**. Case: `ExpiredReturnsEveryLiveMember`; the mutant now KILLS.
+      >
+      > **A fourth runner exists that the Files list and every anchor omitted:** `TestMariaDBConformance`
+      > (`dbtest/conformance_mysql_test.go`) sets `kit.Name = "mariadb"` while running the **mysql** dialect. An
+      > engine-render assertion keyed on `kit.Name` fails there. Derive the engine from the dialect
+      > implementation's package path — the site names the package that minted the error, not the runner's label.
 - [ ] **Step 6.** Mutation-prove **B6-1 … B6-10** from Task 6 against this harness (that is what makes them
       real) — **ten rows, counted off Task 6's table; do not transcribe this number**.
 - [ ] **Step 7.** Commit: `test(sql): add the group member-cap dialect conformance case`.

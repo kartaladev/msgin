@@ -1261,8 +1261,18 @@ editing the shared helper's SQL**:
 pass **`0`** and keep their current, unbounded behavior exactly. The parameter is unexported, so it adds no
 class-gate key (§6 AC-8.7's reasoning, applied to a helper rather than a method).
 
-**This is a constraint, not a convention, and §6 AC-9 row 15 mutation-proves it:** pass `maxMembers+1` from
-`ClaimGroup` ⇒ an over-cap claimed group is truncated ⇒ a `harness` case fails.
+**This is a constraint, not a convention, and §6 AC-9 rows 15 and 15b mutation-prove it** — one row per
+`limit = 0` caller.
+
+> 🔴 **THE ORIGINAL ROW 15 MUTANT COULD NOT KILL, AND THERE WAS NO ROW FOR THE SECOND CALLER.** Corrected at
+> execution time (Plan 031 Task 7), with both variants **run**:
+>
+> - *"Pass `maxMembers+1` from `ClaimGroup`"* is **unimplementable** — `ClaimGroup` has no `maxMembers` parameter,
+>   which is §3.6.3's own point — and **arithmetically incapable**: at the harness cap of 4, `LIMIT 5` cannot
+>   truncate 4 rows. Run anyway: it **SURVIVED**, whole suite `ok`. Use a limit that **bites** (`3` at cap 4).
+> - **`ExpiredGroups` had no mutant at all.** Measured on the pre-Task-7 tree, dropping its fetch to `LIMIT 1` —
+>   the reaper silently discarding every member of an expired group past the first — **passed all 14 GroupStore
+>   subtests**. A rule with one of its two callers unmutated was half a constraint.
 
 On overflow the just-upserted member is filtered out of the materialized `[]MemberRow` in Go, and the remaining rows
 are returned **with** the error. **That equals the post-rollback live set whenever the live count was ≤ cap before
@@ -2050,7 +2060,8 @@ gate, each of these is a hot-path or typed-error branch needing a named covering
 | **12d** | **`relErr != nil` — the release failed ⇒ return the RELEASE error** | same, exit 5 | return the overflow error ⇒ the case's message assertion fails (an operator would be pointed at the cap, not the output channel) |
 | **13** | **`Handle` returns a TRANSIENT error after a successful drain** | same | return the store's permanent error ⇒ AC-1b step 4 never runs; return `nil` ⇒ AC-1b's silent-loss assertion fails |
 | **14** | **the `default ≥ completionSizeCeiling` AST invariant, BOTH stores** | root blackbox test, AC-3.3 | change any of the three literals ⇒ fails; rename a constant ⇒ the not-found guard fires; drop the `sql` file from the parse set ⇒ fails |
-| **15** | **`ClaimGroup` / `ExpiredGroups` pass `limit = 0` to `*SelectMembers`** | `harness` conformance (AC-5), on all three dialects | pass `maxMembers+1` from `ClaimGroup` ⇒ an over-cap claimed group is **truncated** and the harness case fails (§3.6.3, audit **N-5**) |
+| **15** | **`ClaimGroup` passes `limit = 0` to `*SelectMembers`** | `MemberCapCountsClaimedMembers_ClaimSetIsComplete` | `ClaimGroup`'s fetch `0` → **`3`** at cap 4 ⇒ the claimed set is truncated ⇒ fails. **NOT `maxMembers+1`** — see the box below (§3.6.3, audit **N-5**) |
+| **15b** | **`ExpiredGroups` passes `limit = 0` to `*SelectMembers`** | `ExpiredReturnsEveryLiveMember` | `ExpiredGroups`' fetch `0` → **`1`** ⇒ the reaper's recovery set is truncated ⇒ fails. **This row is NEW** — the shipped suite did not cover it |
 | **16** | **the `sql` count includes CLAIMED members** (§3.4, reversed in revision 4) | **AC-4 item 7**, on all three dialects | count `claimed_epoch IS NULL` instead of `count(*)` ⇒ the `cap+1`-th add after a claim is **admitted**, and `cap` more durable rows land per claim cycle, without limit (§3.4's cycle table). **This is the mutant that proves the durable table is bounded at all** (audit **NEW-7**) |
 | **17** | **a LEASED `sql` rejection is TRANSIENT** (`locked_by IS NOT NULL`) | **AC-4 item 7 (ii)** + AC-2c's `sql` leased twin | wrap unconditionally ⇒ a routine claim window dead-letters healthy traffic and both cases fail |
 | **18** | **the `sql` render names the ENGINE, not the store** | **AC-4 item 6**, on all three dialects | render `sql.GroupStore.Add` ⇒ all three fail — and on AC-4b's direct-dialect path that render names a store never involved (audit **NEW-5**) |

@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -26,8 +28,12 @@ import (
 // public-surface change to a leaf module. An unexported package constant is
 // neither.
 //
-// Cases that go through msginsql.NewGroupStore do NOT use it: they run under
-// the store's own 65,536 default, which no harness case approaches.
+// The member-cap cases (Plan 031 Task 7) pass it BOTH ways: to
+// kit.Group.AddMember directly, and to msginsql.NewGroupStore via
+// msginsql.WithMaxGroupMembers, so the same bound is asserted at the dialect
+// and through the shipped store. Every OTHER case that goes through
+// NewGroupStore leaves the option unset and runs under the store's own 65,536
+// default, which no harness case approaches.
 const groupMemberCap = 4
 
 // mustSubscribe registers h on ch and fails the test if Subscribe errors. Since
@@ -82,9 +88,47 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 	memberCount := func(t *testing.T, ctx context.Context, table, key string) int {
 		t.Helper()
 		var n int
-		q := fmt.Sprintf("SELECT count(*) FROM %s WHERE group_key = %s", kit.Quote(table+"_member"), kit.Placeholder(1))
-		require.NoError(t, db.QueryRowContext(ctx, q, key).Scan(&n))
+		require.NoError(t, db.QueryRowContext(ctx, memberCountSQL(kit, table), key).Scan(&n))
 		return n
+	}
+	// overflowRender builds Spec 017 AC-2c's EXACT member-cap render for this
+	// engine: the msgin.ErrOverflowDropped sentinel text, the site
+	// "msgin/sql/<engine>: AddMember" (which names the ENGINE, never the store
+	// — the error is minted inside the dialect, which cannot know whether it
+	// was reached through GroupStore.Add or through a direct
+	// kit.Group.AddMember caller; ADR 0033 D-AG/D-AE, audit NEW-5), the key,
+	// the count AT THE MOMENT OF THE CHECK (cap+1 — the dialects check AFTER
+	// the member upsert) and the limit. permanent adds the shipped
+	// permanentError prefix, which D-AM attaches iff the group is NOT leased.
+	//
+	// The engine token is the DIALECT IMPLEMENTATION's package name, NOT
+	// kit.Name: kit.Name is a display label the runner is free to override,
+	// and the shipped MariaDB kit does exactly that — it runs the mysql
+	// dialect under Name "mariadb", so the site reads "msgin/sql/mysql" while
+	// kit.Name reads "mariadb". Deriving it from the dialect's own package is
+	// what "the site names the engine that MINTED the error" actually means.
+	// A dialect outside this module prefixes its own module path instead of
+	// "msgin/sql/", and must reconcile that before running this suite.
+	engine := dialectEngine(kit.Group)
+	overflowRender := func(key string, n, limit int, permanent bool) string {
+		s := fmt.Sprintf("%s: msgin/sql/%s: AddMember: group %q holds %d members, limit %d",
+			msgin.ErrOverflowDropped.Error(), engine, key, n, limit)
+		if permanent {
+			return "msgin: permanent: " + s
+		}
+		return s
+	}
+	// fillToCap adds exactly groupMemberCap distinct live members to key
+	// through s, asserting each one is admitted — the shared fixture of every
+	// member-cap case below, and the assertion that the bound admits everything
+	// UP TO the cap (Plan 031 Task 6 B6-2).
+	fillToCap := func(t *testing.T, ctx context.Context, s *msginsql.GroupStore, key string) {
+		t.Helper()
+		for i := 0; i < groupMemberCap; i++ {
+			g, err := add(t, ctx, s, key, fmt.Sprintf("m%d", i), i)
+			require.NoErrorf(t, err, "member %d of %d must be admitted", i+1, groupMemberCap)
+			require.Len(t, g.Messages(), i+1)
+		}
 	}
 
 	t.Run("ReadyAndEnsureGroupSchema", func(t *testing.T) {
@@ -206,6 +250,159 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 		require.Len(t, g.Messages(), 2, "abandoned members are live again, plus the new one")
 	})
 
+	// ---- the member cap (Spec 017 §6 AC-4/AC-4b/AC-4c/AC-5; ADR 0033
+	// D-AG/D-AM/D-AN/D-AP/D-AS). A dialect's in-transaction bound is only
+	// observable against a real engine, so these four cases are what make Plan
+	// 031 Task 6's branches real. They assert BEHAVIOR, never statement order:
+	// the three dialects enforce at three different points (Spec 017 §3.6.1).
+
+	t.Run("MemberCapRejectsAndRollsBack", func(t *testing.T) {
+		ctx := t.Context()
+		table := fresh(ctx)
+		s := newStore(t, table, msginsql.WithMaxGroupMembers(groupMemberCap))
+		fillToCap(t, ctx, s, "k")
+
+		// AC-4.1/.5/.6 + AC-4c: the cap+1-th LIVE member is refused with the
+		// shared sentinel, PERMANENTLY (the group row's locked_by IS NULL, so
+		// nothing will drain it — D-AM), rendered exactly as AC-2c pins it, and
+		// both the sentinel and the Permanent marker survive GroupStore.Add's
+		// classifyQueryErr pass-through with the table present.
+		over, err := add(t, ctx, s, "k", "overflow", groupMemberCap)
+		require.ErrorIs(t, err, msgin.ErrOverflowDropped)
+		require.True(t, msgin.IsPermanent(err), "an UNLEASED over-cap rejection is permanent (D-AM)")
+		require.NotErrorIs(t, err, msginsql.ErrSchemaNotReady,
+			"classifyQueryErr must pass the rejection through untouched while the table exists (AC-4c)")
+		require.Equal(t, overflowRender("k", groupMemberCap+1, groupMemberCap, true), err.Error())
+
+		// AC-4.4: the post-rollback LIVE snapshot rides out WITH the error, the
+		// refused member filtered out of it (D-AN) — and classifyQueryErr's
+		// call site did not discard it.
+		require.NotNil(t, over)
+		require.Len(t, over.Messages(), groupMemberCap, "the rejection carries the live set, not an empty one")
+		for _, m := range over.Messages() {
+			require.NotEqual(t, "overflow", m.ID(), "the refused member must not appear in its own rejection snapshot")
+		}
+
+		// AC-4.2: the rollback ASSERTED, not assumed. Without this half,
+		// enforcement (C) is indistinguishable from enforcement (A).
+		require.Equal(t, groupMemberCap, memberCount(t, ctx, table, "k"), "the over-cap transaction committed nothing")
+
+		// AC-4.3: an idempotent re-add of an EXISTING id while the group sits
+		// at exactly the cap is a no-op returning the unchanged snapshot, not
+		// an overflow — which is why the check runs AFTER the member upsert.
+		readd, err := add(t, ctx, s, "k", "m0", 0)
+		require.NoError(t, err, "re-adding an existing id at exactly the cap is a no-op, not an overflow")
+		require.Len(t, readd.Messages(), groupMemberCap, "the unchanged snapshot")
+		require.Equal(t, groupMemberCap, memberCount(t, ctx, table, "k"))
+
+		// AC-4.2, second half: the group a later claimer sees is exactly the cap.
+		claim, err := s.ClaimGroup(ctx, "k")
+		require.NoError(t, err)
+		require.NotNil(t, claim)
+		require.Len(t, claim.Messages(), groupMemberCap)
+	})
+
+	t.Run("MemberCapCountsClaimedMembers_ClaimSetIsComplete", func(t *testing.T) {
+		ctx := t.Context()
+		table := fresh(ctx)
+		s := newStore(t, table, msginsql.WithMaxGroupMembers(groupMemberCap))
+		fillToCap(t, ctx, s, "k")
+
+		// D-AS: ClaimGroup passes limit = 0 to the dialect's member SELECT, so
+		// the claimed set is COMPLETE. A LIMIT leaking into that call site
+		// releases a partial aggregate — silent data corruption no other case
+		// notices, because every other group here is smaller than the cap.
+		claim, err := s.ClaimGroup(ctx, "k")
+		require.NoError(t, err)
+		require.NotNil(t, claim)
+		require.Len(t, claim.Messages(), groupMemberCap, "ClaimGroup must return EVERY claimed member (limit = 0, D-AS)")
+
+		// AC-4.7: the claim stamped its epoch on every live member, so the LIVE
+		// count is now 0 — and the add is STILL refused, because the bound
+		// counts the durable table (live + claimed). This is the case that
+		// proves the table is bounded at all: a live-only count would readmit
+		// groupMemberCap more rows per claim cycle, forever.
+		over, err := add(t, ctx, s, "k", "overflow", groupMemberCap)
+		require.ErrorIs(t, err, msgin.ErrOverflowDropped, "the CLAIMED set still counts against the cap")
+		// ...and because a claim IS in flight (locked_by IS NOT NULL), the
+		// rejection is TRANSIENT: the in-flight release will drain the group,
+		// so dead-lettering here would discard healthy traffic in a routine
+		// claim window (D-AM).
+		require.False(t, msgin.IsPermanent(err), "a LEASED over-cap rejection is transient (D-AM)")
+		require.Equal(t, overflowRender("k", groupMemberCap+1, groupMemberCap, false), err.Error())
+		require.NotNil(t, over)
+		require.Empty(t, over.Messages(), "the post-rollback LIVE set is empty here: every other member is claimed")
+		require.Equal(t, groupMemberCap, memberCount(t, ctx, table, "k"), "nothing was committed")
+	})
+
+	t.Run("MemberCapUnderCallerOwnedTx", func(t *testing.T) {
+		ctx := t.Context()
+		table := fresh(ctx)
+		addRaw := func(q msginsql.Querier, key, id string, seq int64) (msginsql.GroupRows, error) {
+			t.Helper()
+			headers, err := msginsql.EncodeHeaders(
+				msgin.NewHeaders(map[string]any{msgin.HeaderMessageID: id, msgin.HeaderSequenceNumber: int(seq)}))
+			require.NoError(t, err)
+			return kit.Group.AddMember(ctx, q, table, key, id, seq, headers, []byte(`"p"`), groupMemberCap)
+		}
+		for i := 0; i < groupMemberCap; i++ {
+			_, err := addRaw(db, "k", fmt.Sprintf("m%d", i), int64(i))
+			require.NoError(t, err)
+		}
+
+		// AC-4b: the cap+1-th member goes through kit.Group.AddMember on a
+		// CALLER-OWNED *sql.Tx — the DIALECT, directly. GroupStore cannot reach
+		// this branch: NewGroupStore takes a concrete *sql.DB and Add always
+		// passes it, so the *sql.Tx Querier is a GroupDialect-level contract and
+		// the harness is the direct dialect caller that exercises it.
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+
+		_, err = addRaw(tx, "k", "overflow", groupMemberCap)
+		require.Error(t, err, "the cap+1-th member is refused on a caller-owned transaction too")
+
+		if kit.SingleWriter {
+			// ASYMMETRY, RECORDED RATHER THAN FORCED AWAY: a single-writer
+			// engine serializes group ops on a dedicated connection running a
+			// raw BEGIN IMMEDIATE (SQLite), which needs the pool's Conn — a
+			// *sql.DB capability. Such a dialect rejects a *sql.Tx Querier
+			// OUTRIGHT, before any SQL runs, so there is no in-transaction
+			// state to observe and the D-AP precondition is moot for it.
+			require.NotErrorIs(t, err, msgin.ErrOverflowDropped,
+				"a single-writer dialect refuses the Querier itself, so no cap check is ever reached")
+			require.ErrorContains(t, err, "*sql.DB", "the error must name the Querier the dialect requires")
+			require.NoError(t, tx.Rollback())
+		} else {
+			require.ErrorIs(t, err, msgin.ErrOverflowDropped)
+			require.Equal(t, overflowRender("k", groupMemberCap+1, groupMemberCap, true), err.Error(),
+				"the render names the ENGINE; naming a store would name one this path never touched")
+
+			// D-AP, as tested behavior rather than as a hope: the dialect did
+			// NOT roll back a transaction it does not own, so the refused
+			// member row IS still visible inside it...
+			var n int
+			require.NoError(t, tx.QueryRowContext(ctx, memberCountSQL(kit, table), "k").Scan(&n))
+			require.Equal(t, groupMemberCap+1, n, "the caller's transaction is untouched: the dialect only returns the error")
+
+			// ...and is gone once the CALLER rolls back, which is the caller's
+			// responsibility on this path.
+			require.NoError(t, tx.Rollback())
+		}
+		require.Equal(t, groupMemberCap, memberCount(t, ctx, table, "k"))
+
+		// AC-4b.4 — the contrapositive for the SHIPPED store: driven to the
+		// same overflow through a real GroupStore, the bound is unconditionally
+		// durable, because that path owns its transaction and rolls it back.
+		stTable := fresh(ctx)
+		st := newStore(t, stTable, msginsql.WithMaxGroupMembers(groupMemberCap))
+		fillToCap(t, ctx, st, "k")
+		_, err = add(t, ctx, st, "k", "overflow", groupMemberCap)
+		require.ErrorIs(t, err, msgin.ErrOverflowDropped)
+		require.Equal(t, groupMemberCap, memberCount(t, ctx, stTable, "k"),
+			"through GroupStore the rollback is the store's own, never the caller's")
+	})
+
 	t.Run("ExpiredCrashedLeaseRegardlessOfAge_ExcludesLiveLeased", func(t *testing.T) {
 		ctx := t.Context()
 		table := fresh(ctx)
@@ -260,6 +457,46 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 		}
 		require.True(t, keys["old"], "an unleased group older than the cutoff is returned")
 		require.False(t, keys["new"], "an unleased group at/after the cutoff is excluded")
+	})
+
+	t.Run("ExpiredReturnsEveryLiveMember", func(t *testing.T) {
+		ctx := t.Context()
+		table := fresh(ctx)
+		s := newStore(t, table)
+
+		// D-AS's OTHER half: ExpiredGroups passes limit = 0 to the dialect's
+		// member SELECT, so the reaper's recovery set is COMPLETE. A LIMIT
+		// leaking into THAT call site makes the reaper silently drop every
+		// member of an expired group past the first — and no other case here
+		// notices, because no other Expired case asserts a group with more than
+		// one member. The group is UNLEASED and aged past the cutoff, so its
+		// members are live (claimed_epoch IS NULL) and must all come back.
+		const members = 3
+		var old msgin.MessageGroup
+		for i := 0; i < members; i++ {
+			g, err := add(t, ctx, s, "old", fmt.Sprintf("m%d", i), i)
+			require.NoError(t, err)
+			old = g
+		}
+		require.Len(t, old.Messages(), members)
+
+		time.Sleep(10 * time.Millisecond)
+		newG, err := add(t, ctx, s, "new", "n0", 0)
+		require.NoError(t, err)
+		require.True(t, newG.CreatedAt().After(old.CreatedAt()))
+
+		// The DB-clock-derived created_at of "new" is the cutoff, so there is no
+		// app<->DB skew: old < cutoff (included), new == cutoff (excluded).
+		exp, err := s.Expired(ctx, newG.CreatedAt())
+		require.NoError(t, err)
+		var got msgin.MessageGroup
+		for _, g := range exp {
+			if g.Key() == "old" {
+				got = g
+			}
+		}
+		require.NotNil(t, got, "the aged-out unleased group must be returned")
+		require.Len(t, got.Messages(), members, "the reaper's recovery set must hold EVERY member (limit = 0, D-AS)")
 	})
 
 	t.Run("ConcurrentFirstAddCompletionDetection_H1", func(t *testing.T) {
@@ -514,4 +751,29 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 			require.NoError(t, err, "the uniform group->member lock order must keep the concurrent add/settle loop deadlock-free")
 		}
 	})
+}
+
+// dialectEngine returns the last element of the GroupDialect implementation's
+// package path — "postgres", "mysql" or "sqlite" for the built-ins — which is
+// the engine token each dialect substitutes into the member-cap rejection's
+// site string ("msgin/sql/<engine>: AddMember"). It is derived from the
+// dialect rather than from TestKit.Name because Name is a display label a
+// runner may override (the shipped MariaDB runner sets Name "mariadb" while
+// running the mysql dialect), and the site names the package that minted the
+// error.
+func dialectEngine(d msginsql.GroupDialect) string {
+	p := reflect.TypeOf(d).PkgPath()
+	if i := strings.LastIndex(p, "/"); i >= 0 {
+		return p[i+1:]
+	}
+	return p
+}
+
+// memberCountSQL renders the harness's own raw member-row count for table's
+// derived member table, bound on group_key. It is shared by the pool-scoped
+// count and the transaction-scoped one AC-4b issues on the caller's own
+// *sql.Tx, so both observe the same rows through the same statement.
+func memberCountSQL(kit TestKit, table string) string {
+	return fmt.Sprintf("SELECT count(*) FROM %s WHERE group_key = %s",
+		kit.Quote(table+"_member"), kit.Placeholder(1))
 }

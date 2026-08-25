@@ -1550,9 +1550,28 @@ which is what the finding is actually about: the limit belongs to the **caller's
 **Why private.** An unexported helper parameter adds no class-gate key (the gate's `Recv == nil` **exported**
 boundary, ADR 0032 **D-AA**), so this costs nothing at the gate.
 
-**This is a constraint, not a convention, and it is mutation-proven.** Spec 017 §6 AC-9 row 15: pass `maxMembers+1`
-from `ClaimGroup` ⇒ an over-cap claimed group is truncated ⇒ a `harness` conformance case fails. Without that
-mutant the "0 means unlimited" rule is a comment.
+**This is a constraint, not a convention, and it is mutation-proven.** Without a mutant the *"0 means unlimited"*
+rule is a comment.
+
+> 🔴 **THE MUTANT AS RATIFIED WAS UNIMPLEMENTABLE *AND* ARITHMETICALLY INCAPABLE — corrected at execution time
+> (Plan 031 Task 7), and RUN both ways.** It read: *"pass `maxMembers+1` from `ClaimGroup` ⇒ an over-cap claimed
+> group is truncated ⇒ a `harness` conformance case fails."* Two independent defects:
+>
+> 1. **`ClaimGroup` has no `maxMembers` in scope** — its signature is
+>    `ClaimGroup(ctx, q, table, groupKey, lockedBy string, leaseTTL time.Duration)`. Which is **D-AS's own point**:
+>    the cap is `AddMember`'s alone. The instruction had no executable reading.
+> 2. **`LIMIT maxMembers+1` cannot truncate `maxMembers` rows.** At the harness cap of 4, `LIMIT 5` returns all 4.
+>    **Run: it SURVIVED**, whole sqlite conformance suite `ok`.
+>
+> **The mutant that works is a limit that BITES**: `ClaimGroup`'s fetch `0` → **`3`** at cap 4 ⇒ **KILLED**, on
+> *"ClaimGroup must return EVERY claimed member"*. (Baking the `LIMIT` into the shared helper's SQL also kills, but
+> REVERSIBILITY below rightly warns that shape re-introduces the truncation.)
+>
+> **And `ExpiredGroups` — D-AS's other `limit = 0` caller — was NOT COVERED AT ALL.** Measured against the tree
+> *before* Task 7: mutating its fetch `0` → `1`, i.e. the reaper silently dropping every member of an expired
+> group past the first, **passed all 14 GroupStore subtests**. No shipped case asserted an expired group returns
+> more than one member. Task 7 adds the twin (`ExpiredReturnsEveryLiveMember`); the same mutant now **KILLS**.
+> **A rule with one of its two callers unmutated was half a constraint.**
 
 **REVERSIBILITY:** one parameter per dialect. Reversing it degrades enforcement (C)'s *"bounds the raw fetch"* claim
 from exact to approximate — and reversing it by baking the `LIMIT` into the helper re-introduces the truncation.
