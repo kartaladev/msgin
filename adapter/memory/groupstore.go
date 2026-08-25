@@ -92,7 +92,11 @@ func WithMaxGroups(n int) GroupStoreOption {
 // caller may legally configure routing.WithCompletionSize up to that ceiling,
 // and a smaller default cap here would make such a group reject its own
 // completing member before the release predicate could ever fire — a silent
-// deadlock in place of a bound (Spec 017 §3.5).
+// deadlock in place of a bound (Spec 017 §3.5). The same invariant binds this
+// default's twin, sql.defaultMaxGroupMembers, and the root blackbox test
+// group_member_bound_invariant_test.go enforces it for both stores by reading
+// all three constants out of the AST — this comment explains the relation,
+// that test is what defends it.
 const defaultMaxGroupMembers = 1 << 16
 
 // maxGroupMembersCeiling is the upper bound WithMaxGroupMembers accepts

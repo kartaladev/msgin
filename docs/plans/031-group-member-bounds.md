@@ -794,6 +794,19 @@ commit and *"the wrapped group-count class fix"* (Step 6) as a follow-up; **do n
       found**, never pass on a zero value. Prove it: rename one constant locally, confirm the not-found guard fires
       (not a `0 >= 0` pass), and revert. *(The project's stored lesson: "measurement is only as good as its
       fixture".)* **The file list is asserted, not discovered** — a missing file is a failure, not a shorter run.
+
+      > **Refined at execution time (B3-3, below).** "Asserted, not discovered" governs **which files the invariant
+      > is read from** — that set stays named in the source. It does **not** forbid a *separate* completeness check
+      > that discovers every `const defaultMaxGroupMembers` in the repo and asserts set equality against the named
+      > store sites. Without one, dropping a store from the table shrinks the gate to one store and still passes.
+      > The rename probe here and that completeness check are **distinct**: this one proves a named site cannot go
+      > unread; that one proves a store **declaring `defaultMaxGroupMembers`** cannot go uncovered.
+      >
+      > **Scoped honestly (reviewer finding F-3).** An earlier draft of this note claimed it *"proves an unnamed
+      > store cannot go uncovered."* It does not. The walk matches that **exact identifier**, so a third store
+      > declaring, say, `defaultMaxMembers` passes both halves while violating the invariant — reproduced. What
+      > covers that case is **D-AR's naming requirement**, which is prose, not a gate. A future adapter author
+      > reading "cannot go uncovered" would have trusted a guarantee that is not there.
 - [ ] **Step 5.** Add the cross-reference comment to **each `defaultMaxGroupMembers`** (naming
       `routing.completionSizeCeiling`, the other store's twin, and this test) and to `completionSizeCeiling`
       (naming both defaults and this test). 🔴 **Not on the CEILING constants** — `maxGroupMembersCeiling` is not a
@@ -804,9 +817,38 @@ commit and *"the wrapped group-count class fix"* (Step 6) as a follow-up; **do n
 
 | # | Branch | Covering case | Killing mutant |
 |---|---|---|---|
-| B3-1 | the relation holds, per store | the two assertions | change any of the three literals ⇒ fails |
-| B3-2 | a constant is missing/renamed | the not-found guard | delete the guard ⇒ a renamed constant yields a vacuous `0 >= 0` pass |
-| **B3-3** | **the parse set is complete** | the file-list assertion | drop `adapter/database/sql/groupstore.go` from the set ⇒ **must fail**, not shrink to one assertion |
+| B3-1 | the relation holds, per store | the two assertions | **lower** either store's `defaultMaxGroupMembers`, or **raise** `completionSizeCeiling` ⇒ fails |
+| B3-2 | a constant is missing/renamed | the not-found guard | delete the guard, then rename **`completionSizeCeiling`** ⇒ a vacuous `65536 >= 0` pass |
+| **B3-3** | **the parse set is complete** | the file-list assertion **and the store-site completeness check** | (a) point a site's file at a nonexistent path ⇒ **must fail**; (b) drop a store from `groupBoundStoreSites` ⇒ **must fail**, not shrink to one assertion |
+
+> 🔴 **B3-1 AND B3-2 WERE ARITHMETICALLY WRONG AS FIRST WRITTEN, AND B3-3 WAS HALF-PROVEN. All three were
+> corrected against MEASURED runs at execution time, not by reading.** Five design rounds approved the originals.
+> This is the third instance in Plan 031 of the project's stored lesson **"a mutant can be wrong"** — check the
+> mutant's arithmetic against the fixture's real magnitudes before trusting a kill *or* a survival.
+>
+> - **B3-1 said *"change any of the three literals ⇒ fails."* False in half the directions.** All three constants
+>   are `1 << 16`, so the invariant holds as **equality**, and three of the six directional variants *strengthen*
+>   it and must therefore **pass**: raising either default, or lowering the ceiling. Measured: the three violating
+>   directions killed, the three strengthening directions survived — correctly. A mutant table that calls a
+>   legal change a required failure would have sent an implementer to "fix" a working gate.
+> - **B3-2 said the renamed constant *"yields a vacuous `0 >= 0` pass."* Wrong constant.** With the guard deleted,
+>   renaming a **store default** still *fails* (`0 >= 65536`), so that variant proves nothing about the guard. Only
+>   renaming the **ceiling** exposes it: `65536 >= 0` **survived** with the guard deleted and was **killed** with it
+>   intact. The literal `0 >= 0` shape requires **all three** renamed at once (also run: survives). The guard is
+>   load-bearing — but only the ceiling variant proves it.
+> - **B3-3's two readings are not the same mutant, and only one was proven.** Dropping the *file path* from a site
+>   fails by name. Dropping the *table case* left a `vet`-clean, `golangci-lint`-clean test **passing with one
+>   subtest** — the gate silently shrinking to one store, which is **audit finding N-4's own failure mode
+>   reappearing one level up, inside the test written to fix it.** Closed by generating the table from
+>   `groupBoundStoreSites` and asserting that slice equals — **in both directions**, like
+>   `sizing_option_class_gate_test.go`'s `TestSizingOptionClass_Completeness` — the set of non-test files in the
+>   repo declaring `const defaultMaxGroupMembers`. **This does not weaken *"asserted, never discovered"***: the
+>   named sites remain the parse set the invariant is read from; discovery is a completeness check layered on top.
+>
+> **A false kill is as dangerous as a false survival, and is easy to produce here.** The first B3-2 run yielded
+> three "kills" that were all false: renaming only the `const` declaration broke compilation, so the test never
+> ran. It was caught because the AST-values log line came back **empty**. Rename the identifier **file-globally**
+> and require `go build ./...` to pass **before** recording any kill or survival.
 
 ---
 

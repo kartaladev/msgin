@@ -30,6 +30,15 @@ type aggregatorConfig struct {
 // 48.3 GiB of allocation churn and 8.6s (Plan 029 Task 4); a 400,000-member
 // probe did not finish inside a 4m20s timeout. That churn is why the ceiling
 // is where it is, and why no test grows a group to it.
+//
+// Both first-party GroupStores reuse this number as their per-group member
+// default, and both must stay >= it: memory.defaultMaxGroupMembers and
+// sql.defaultMaxGroupMembers admitting fewer members than a caller may legally
+// pass to WithCompletionSize would make such a group reject its own completing
+// member before the release predicate could fire (Spec 017 §3.5). The root
+// blackbox test group_member_bound_invariant_test.go enforces that by reading
+// all three constants out of the AST — this comment explains the relation,
+// that test is what defends it.
 const completionSizeCeiling = 1 << 16
 
 // CorrelationStrategy derives a message's group key. It is one of the two named

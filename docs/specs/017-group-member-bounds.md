@@ -1706,7 +1706,46 @@ ceiling.** §3.5's arithmetic, made executable:
      pass vacuously on a zero value);
    - evaluates the `1 << N` `*ast.BinaryExpr` values;
    - asserts `defaultMaxGroupMembers >= completionSizeCeiling` **for both stores**, with a failure message naming
-     the constants, their files and their values.
+     the constants, their files and their values;
+   - **asserts each store's constructor is WIRED to the constant it just read** — the `groupStoreConfig{…}`
+     composite literal's `maxGroupMembers:` value must be the `*ast.Ident` `defaultMaxGroupMembers`, not a literal
+     and not another identifier;
+   - **asserts the store set is COMPLETE** — the set of non-test files in the repository declaring
+     `const defaultMaxGroupMembers`, discovered by a repo walk, must equal the asserted store list **exactly, in
+     both directions**.
+
+   > 🔴 **THE LAST TWO BULLETS WERE ADDED AT EXECUTION TIME, EACH CLOSING A REPRODUCED WRONG-PASS** (Plan 031
+   > Task 3). Neither was findable by reading; both were found by running mutants against the gate that five
+   > design rounds had approved.
+   >
+   > - **Without the wiring assertion the gate is green over the very deadlock it exists to prevent.** It compares
+   >   three *literals in source*, and nothing tied `const defaultMaxGroupMembers` to the value a constructor
+   >   installs. Measured: editing `adapter/memory/groupstore.go`'s config literal to `maxGroupMembers: 1024` —
+   >   one token — leaves the real default at 1,024 against a ceiling of 65,536, and the gate **passes**, the
+   >   whole 11-package root suite **passes**, and `golangci-lint` reports **0 issues** (`unused` is not in
+   >   `.golangci.yml`'s enabled set). This is **D-AR's own forbidden pattern** — a bare literal in a composite
+   >   literal — reintroduced one field over, with the constant kept alive purely to satisfy the gate. The wiring
+   >   assertion re-asserts D-AR mechanically instead of by prose.
+   > - **Without the completeness assertion the gate silently shrinks.** Deleting one store from the asserted list
+   >   left a `go vet`-clean, `golangci-lint`-clean test **passing with one subtest**, covering `memory` while
+   >   `sql` carried the identical risk — audit **N-4**'s failure mode reappearing one level up, inside the gate
+   >   written to fix it.
+   >
+   > **Discovery does NOT weaken *"the parse set is asserted"***: the named files remain the only source the
+   > invariant is read from. Discovery is a completeness check layered on top.
+   >
+   > **Two residuals, stated rather than left as gaps — both measured:**
+   >
+   > 1. The completeness walk matches the exact identifier `defaultMaxGroupMembers`, so a future store naming its
+   >    constant differently is not covered by it. §3.2 / **D-AR**'s naming requirement is what closes that, and
+   >    it is prose, not a gate.
+   > 2. The wiring assertion is **file-scoped, not reachability-scoped**: it requires *some* site in the store's
+   >    file to install the field from the constant. A **dead** function doing so, while the live constructor
+   >    installs a bare literal, passes — verified. Accepted deliberately: the tighter alternative (anchor on the
+   >    constructor's own composite literal) was measured to **false-red** on the legitimate refactor
+   >    `cfg := groupStoreConfig{…}` / `cfg.maxGroupMembers = defaultMaxGroupMembers`, and **R4-4**'s ruling is
+   >    that a gate whose failure mode is a false positive is worse than no gate. The residual needs someone to
+   >    write a dead helper installing the constant; the hole it closes was a **one-token** edit.
 
    > 🔴 **Two repairs, both from audit N-4.** (a) **There must be a constant to parse.** `adapter/memory`'s shipped
    > precedent declares its *ceiling* as a `const` (`:62`) and its *default* as a bare literal
@@ -1723,10 +1762,29 @@ ceiling.** §3.5's arithmetic, made executable:
    > natural place an implementer would put them. **Revision 3 fixed the declaration's FORM and left its
    > LOCATION unstated — N-4 one attribute over.**
 
-   **Killing mutants:** (a) change any of the three literals so a relation is violated ⇒ fails; (b) rename one
-   constant without updating the test ⇒ the not-found guard fires rather than the test silently passing;
-   (c) **delete the `sql` file from the parse set ⇒ the test must fail, not shrink to two assertions** (the
-   file list is asserted, not iterated over whatever happens to exist).
+   **Killing mutants — CORRECTED AGAINST MEASURED RUNS at execution time; (a) and (b) as first written were
+   arithmetically wrong, and (c) was half of the mutant it needed to be:**
+
+   (a) **lower** either store's `defaultMaxGroupMembers`, or **raise** `completionSizeCeiling` ⇒ fails. *Not*
+   "change any of the three literals": all three are `1 << 16`, so the invariant holds as **equality** and the
+   three opposite edits — raising a default, lowering the ceiling — **strengthen** it and must PASS. Measured:
+   3 violating directions killed, 3 strengthening directions correctly survived.
+
+   (b) delete the not-found guard, then rename **`completionSizeCeiling`** ⇒ a vacuous **`65536 >= 0`** pass.
+   *Not* `0 >= 0`, and *not* a store default: with the guard deleted, renaming a store default still fails
+   (`0 >= 65536`), so that variant proves nothing about the guard. Only the ceiling rename exposes it.
+
+   (c) **two mutants, not one** — (c1) point a site's file at a nonexistent path ⇒ must fail (the parse set is
+   asserted, not iterated over whatever happens to exist); (c2) **drop a store from the asserted store list ⇒ the
+   completeness check must fail**, rather than the invariant test shrinking to one subtest and passing.
+
+   (d) **NEW** — unwire a constructor from the constant (`maxGroupMembers: 1024`), delete the `maxGroupMembers`
+   key, or point it at a different identifier ⇒ the wiring assertion must fail in each case.
+
+   > **A false kill is as dangerous as a false survival here, and is easy to produce.** Renaming only a `const`
+   > declaration breaks compilation, so the test never runs and the failure reads as a kill — it happened three
+   > times in one run during execution. Rename **file-globally** and require `go build ./...` to pass **before**
+   > recording any kill or survival.
 
 > **What AC-3 does NOT do, stated rather than left as a gap.** It does **not** execute a 65,536-member group.
 > Spec 016 §1.4 measured that at **8.6 s and 48.3 GiB of allocation churn**, and `completionSizeCeiling`'s shipped

@@ -1409,15 +1409,69 @@ number.
 >    *"fix the class, not the instance"* lesson violated inside the fix for M-5.
 
 The cross-reference comments stay — they explain *why* to a human — but they are no longer the defence, **and they
-go on the DEFAULT constant, not the ceiling**: the ceiling is not a term of the invariant. **Delete every "not
+go on the two DEFAULT constants and on `completionSizeCeiling`, but NOT on `maxGroupMembersCeiling`**: the
+*group-member* ceiling is not a term of the invariant. *(Revision 4 wrote "not the ceiling", which read literally
+names `completionSizeCeiling` — a constant that **is** a term of the invariant and **does** carry the comment.
+Disambiguated at execution time; Plan 031 Task 3 Step 5's 🔴 note already said `maxGroupMembersCeiling`.)* **Delete every "not
 mechanically enforced" / "no blackbox test can compare them" claim** from Spec 017 §3.5, §6 AC-3 and §8 item 4, and
 from this ADR's Consequences.
 
-**Killing mutants** (the project's standing rule — a killed mutant is the evidence, not a green run): (a) change any
-of the three literals so a relation is violated ⇒ the test fails naming the constants, their files and their values;
-(b) rename a constant without updating the test ⇒ the **not-found guard** fires rather than a vacuous `0 >= 0` pass;
-(c) drop the `sql` file from the parse set ⇒ the test **fails**, because the file list is asserted rather than
-iterated over whatever happens to exist.
+> 🔴 **AMENDED AT EXECUTION TIME (Plan 031 Task 3). THE DECISION ABOVE, AS RATIFIED, SHIPPED A GATE THAT PASSED
+> OVER THE DEADLOCK IT EXISTS TO PREVENT.** *"Unlike them it fails when someone edits one number"* was **not true
+> of the number that matters.** The test read three *literals in source*; nothing tied `const
+> defaultMaxGroupMembers` to the value a constructor installs. Measured during execution: editing
+> `adapter/memory/groupstore.go`'s config literal to `maxGroupMembers: 1024` — **one token** — leaves the real
+> default at 1,024 under a 65,536 ceiling, and the gate **passes**, the whole 11-package root suite **passes**,
+> and `golangci-lint` reports **0 issues** (`unused` is not enabled in `.golangci.yml`). That is **D-AR's own
+> forbidden pattern one field over**, with the constant kept alive purely to satisfy D-AQ.
+>
+> **The decision therefore gains two assertions**, both in the same test, no new dependency:
+>
+> 1. **Wiring** — each store's `groupStoreConfig{…}` composite literal must set `maxGroupMembers:` to the
+>    `*ast.Ident` `defaultMaxGroupMembers`, not a literal and not another identifier. This makes **D-AR
+>    mechanically enforced** rather than prose; D-AQ and D-AR now defend each other.
+> 2. **Store-set completeness** — the set of non-test files in the repository declaring `const
+>    defaultMaxGroupMembers` must equal the asserted store list **exactly, in both directions**. Without it,
+>    deleting one store from the list left a `vet`-clean, `golangci-lint`-clean test **passing with one subtest**
+>    — audit **N-4** reappearing one level up, inside the gate written to fix N-4.
+>
+> **Residuals, stated not hidden — both measured at execution time:**
+>
+> - Completeness matches the exact identifier `defaultMaxGroupMembers`, so a store naming its constant
+>   differently is covered by D-AR's naming requirement alone, which is prose.
+> - Wiring is **file-scoped, not reachability-scoped** — a *dead* function installing the field from the constant,
+>   while the live constructor installs a bare literal, passes. Accepted: the tighter shape (anchor on the
+>   constructor's own composite literal) was measured to **false-red** on the legitimate refactor
+>   `cfg := groupStoreConfig{…}` / `cfg.maxGroupMembers = defaultMaxGroupMembers`, and **R4-4** rules that a gate
+>   whose only failure mode is a false positive is worse than no gate. The wiring check therefore collects
+>   **both** Go shapes — composite-literal key and field assignment — and asserts at least one installs the
+>   constant. The residual needs a dead helper; the hole it closes was one token.
+
+**Killing mutants** (the project's standing rule — a killed mutant is the evidence, not a green run) — **(a) and
+(b) as ratified were arithmetically wrong, and (c) was half a mutant; all three are corrected here against
+MEASURED runs:**
+
+(a) **lower** either store's `defaultMaxGroupMembers`, or **raise** `completionSizeCeiling` ⇒ fails, naming the
+constants, their files and their values. **Not "change any of the three literals"** — all three are `1 << 16`, so
+the invariant holds as **equality**, and the three opposite edits *strengthen* it and must PASS. Measured: 3
+violating directions killed, 3 strengthening directions correctly survived.
+
+(b) delete the not-found guard, then rename **`completionSizeCeiling`** ⇒ a vacuous **`65536 >= 0`** pass. **Not
+`0 >= 0`, and not a store default** — with the guard deleted, renaming a store default still fails (`0 >= 65536`),
+so that variant proves nothing about the guard. Only the ceiling rename exposes it. (`0 >= 0` needs all three
+renamed at once.)
+
+(c) **two mutants** — (c1) point a site's file at a nonexistent path ⇒ fails, the file list being asserted rather
+than iterated over whatever happens to exist; (c2) drop a store from the asserted store list ⇒ the **completeness
+check** fails, rather than the invariant test shrinking to one subtest and passing.
+
+(d) **NEW** — unwire a constructor (`maxGroupMembers: 1024`), delete the `maxGroupMembers` key, or point it at a
+different identifier ⇒ the wiring assertion fails in each case.
+
+> **A false kill is as dangerous as a false survival, and is easy to produce here.** Renaming only a `const`
+> declaration breaks compilation, the test never runs, and the failure reads as a kill — this happened three times
+> in a single run during execution. Rename **file-globally**, and require `go build ./...` to pass **before**
+> recording any kill or survival.
 
 **REVERSIBILITY:** free; it is one test — but reversing **D-AR** with it costs the enforcement.
 
