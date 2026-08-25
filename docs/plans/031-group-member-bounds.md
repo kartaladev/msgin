@@ -1595,9 +1595,23 @@ green from Tasks 1, 5 and 9, plus the docs-link gate.
       > in §8's backlog carried the identical sentence. Two-of-three in the other direction from NEW-8: **both**
       > artifacts stale, for **one** reason. **Revision 5 ran this step for real, finding-by-finding, across all
       > three artifacts** — and that is what caught R4-6's twin. **Do not close a future revision without it.**
-- [ ] **Step 1.** `/code-review` over the **whole-branch** diff `main..HEAD` — not the last commit. Fix or
-      explicitly triage every finding with a written rationale.
-- [ ] **Step 2.** `/security-review` over the same range. Same rule.
+- [x] **Step 1. RUN.** `/code-review max` over the **whole-branch** diff `main..HEAD` — not the last commit.
+      **15 findings**, recorded in [`031-review-findings.md`](031-review-findings.md); **two are CLAUDE.md
+      delivery blockers** (R-9, an uncovered typed-error branch; R-15, `selectLimit`'s `math.MaxInt` wrap), both
+      re-verified independently by the coordinator. Five more were dropped at the reviewer's 15-finding cap and
+      are recorded there in §6, **un-triaged, not dismissed**. Fixing/triaging them is **Task 11**.
+- [x] **Step 2. RUN.** `/security-review` over the same range. **0 findings** — 5 candidates raised, 4 refuted at
+      confidence 9, 1 at confidence 2. It examined the same `selectLimit` overflow and `Handle` overflow branch
+      the code review flags and correctly found them not *exploitable*; they remain **correctness** defects.
+      **The two gates corroborate; they do not conflict.**
+
+      > 🔴 **BOTH SLASH COMMANDS ARE USER-INVOCABLE ONLY** — the `Skill` tool refuses them with
+      > `disable-model-invocation`. The model cannot run them and must never claim the gate passed when it did
+      > not. **Task 11 Step 5's re-run must be requested from the user.**
+      >
+      > **Every per-task adversarial review on this branch came back clean.** All 15 surfaced only at branch
+      > level — the project's *"whole-branch review catches what per-task misses"* lesson holding for the second
+      > time, and the reason Step 1 is scoped to `main..HEAD` rather than to the last commit.
 - [ ] **Step 3.** **Library quality gates, per touched module** — the eight CI steps, not the two the local loop
       runs: `go build ./...`, `go vet ./...`, `gofmt -l .`, `CGO_ENABLED=0 go build ./...`,
       `go mod tidy` + `git diff --exit-code -- go.mod go.sum`, `govulncheck ./...`, `golangci-lint run ./...`,
@@ -1656,6 +1670,81 @@ green from Tasks 1, 5 and 9, plus the docs-link gate.
 
 ---
 
+## Task 11 — work the whole-branch review findings (NEW in revision 6)
+
+**Governing document:** [`031-review-findings.md`](031-review-findings.md) — 15 findings plus 5 recorded at the
+reviewer's cap. **Every row must be fixed or explicitly triaged with a written rationale before the branch
+merges.** This task did not exist when the plan was written; Task 10 Steps 1–2 produced it.
+
+**Execution mode: SDD** (`superpowers:subagent-driven-development`), approved by the user 2026-08-25 — a fresh
+implementer subagent per fix writes code + tests TDD, the coordinator verifies green and commits, an adversarial
+reviewer subagent reviews before delivery. Per-task commits are pre-authorized by the plan-execution exception;
+**`git push`, the merge and the branch deletion are not** (Global constraint 9).
+
+- [x] **Step 0 — RATIFY THE THREE DESIGN DECISIONS, BEFORE ANY CODE.** Three findings needed a decision rather
+      than a patch. Presented with options and recommendations; the user ratified all three on **2026-08-25**, and
+      they are recorded as **D-AU, D-AV and D-AW** in [ADR 0033](../adrs/0033-group-member-bounds.md) revision 6,
+      with spec twins at [Spec 017](../specs/017-group-member-bounds.md) **§3.6a.1**, **§3.6a.2** and **§3.3b**.
+
+      | Finding | Decision | ADR | Spec |
+      |---|---|---|---|
+      | **R-7** — the overflow split tests a stamped column, not liveness | `AddMember` gains `leaseTTL`; classify on `locked_by IS NULL OR locked_at <= now() - leaseTTL`. **`sql` only — `memory` is correct as shipped** | D-AU | §3.6a.1 |
+      | **R-15** — `maxMembers <= 0` fails open, `math.MaxInt` wraps | Export `UnboundedGroupMembers = -1`; reject anything outside `{-1} ∪ [1, 1<<20]` with `msgin.ErrInvalidCapacity`, in **one shared helper** | D-AV | §3.6a.2 |
+      | **R-10** — a release-strategy fault is reported as a cap rejection | `errors.Join(err, rerr)` on **failure**; bare `err` on **decline**. The `IsPermanent` **escalation is intended and must be asserted** | D-AW | §3.3b |
+
+      > 🔴 **D-AU AND D-AV BREAK `GroupDialect.AddMember` A SECOND TIME**, on a godoc block Task 5 had just
+      > rewritten for the first break. Free at pre-v1; the blast radius is the seven sites in six modules D-AG
+      > already priced. **D-AW REVERSES A SHIPPED, DELIBERATE TEST ASSERTION**
+      > (`NotErrorIs(t, err, strategyErr)` → `ErrorIs`) — recorded so no future reader restores it as a
+      > regression.
+
+- [x] **Step 1 — THREE-ARTIFACT RECONCILIATION on Step 0's three decisions. RUN 2026-08-25, CLEAN.** Task 10
+      Step 0's rule applied to revision 6. This is the project's named failure mode and it has recurred in three
+      separate revisions of this very bundle, so it was run **by label AND by substance** — a decision code can be
+      present while the thing it decides is missing:
+
+      ```
+      $ for c in D-AU D-AV D-AW; do  # counts: ADR / Spec 017 / Plan 031 / findings
+      D-AU   ADR=5 SPEC=4 PLAN=4 FINDINGS=4
+      D-AV   ADR=6 SPEC=4 PLAN=4 FINDINGS=2
+      D-AW   ADR=6 SPEC=4 PLAN=3 FINDINGS=2
+      $ for p in leaseTTL UnboundedGroupMembers errors.Join; do   # the SUBSTANCE, not the label
+      UnboundedGroupMembers    ADR=4 SPEC=2 PLAN=1
+      errors.Join              ADR=3 SPEC=1 PLAN=2
+      ```
+
+      (`leaseTTL` is not a useful selector — it pre-dates this revision on `ClaimGroup`/`ExpiredGroups`, so its
+      ADR=16 / SPEC=19 / PLAN=13 counts say nothing about D-AU. **The project's *"a selector must match the
+      property, not the string"* lesson**; D-AU's presence is established by its label count and by §3.6a.1
+      existing.) **Non-zero in all three artifacts for all three decisions.** Docs-link gate re-run over every
+      tracked Markdown file: arm 1 at exactly its **2 known false positives**, arm 2 **zero**.
+- [ ] **Step 2 — implement the three decided changes.** R-7 (`leaseTTL` through the SPI, the three dialects, the
+      harness and every fake dialect), R-15 (sentinel, shared validator, total `selectLimit`), R-10 (`errors.Join`
+      plus the flipped assertion **and** a new row asserting the `Permanent`-escalation arm).
+- [ ] **Step 3 — the mechanical fixes.** R-6 (discriminate on `classified`, not the raw `err`), R-3 (gate on
+      `errors.Is(err, msgin.ErrOverflowDropped)` rather than `group == nil`, and handle a typed-nil snapshot),
+      R-12 (`reflect.Indirect` in the harness's `dialectEngine`), R-9 (cover the uncovered `decodeErr` branch —
+      **a delivery blocker**, currently hit count `0` in every module).
+- [ ] **Step 4 — the fixes needing new fixtures.** R-1 (the truncated over-cap snapshot), R-11 (`withoutMember`
+      applied unconditionally to an idempotent re-add), R-4 (a zero-member group reaching the release strategy),
+      R-5 (`memory`'s inert leased arm, with the assertion it never had), R-8 (the vacuous ceiling-level test),
+      R-14 (the class gate's literal-identifier blind spot).
+- [ ] **Step 5 — triage the five capped findings** (§6 of the findings file), each fixed or triaged **with a
+      written rationale**: the ~120 lines of triplicated dialect logic; `ErrOverflowDropped`'s godoc naming 2 of 5
+      producers; Spec 017's stale status line (**done in revision 6**); `ExampleWithReleaseWhen`'s dead channel
+      wiring; the `memory` group-**count** arm carrying R-5's asymmetry.
+- [ ] **Step 6 — re-run the gate.** Task 10 Steps 3/3b/4 again (they were green at `a2cc568`, and **Step 2 lands
+      the first code commit since**, so those results expire the moment it does), then **ask the user to re-invoke
+      `/code-review` and `/security-review`** over `main..HEAD`. The model cannot run them.
+
+> **MUTATION DISCIPLINE APPLIES TO EVERY FIX HERE.** A mutant that does not compile reports as a **KILL**; one
+> that fails to apply reports as a **SURVIVAL**. Both happened repeatedly on this branch. **Require the mutation
+> to APPLY (assert the needle was present and the file changed) AND `go build ./...` to pass BEFORE recording
+> either outcome**, and check the mutant's arithmetic against the fixture's real magnitudes — three ratified
+> mutants on this branch were arithmetically incapable of killing.
+
+---
+
 ## Sizing
 
 🔴 **THIS TABLE IS ORDERED BY EXECUTION, NOT BY TASK NUMBER** (audit **NEW-1**; **D-AT**). **Task 3 runs after
@@ -1676,8 +1765,13 @@ executor follows.
 | 8 | 9 | root | no | medium — **27 count sites in one file, GENERATED by Step 3's script** (audit **R4-2**), three vacuity probes |
 | 9 | **9b** | none (docs) | no | **small — NEW in revision 5** (audit **R4-1**): fold the two new rows into Spec 016 §2.1 + §6 AC-5, **re-derived from the tree**, with two-way traceability |
 | 10 | 10 | all 8 | yes | medium |
+| 11 | **11** | **root, postgres, mysql, sqlite, `harness`, `dbtest`** | Steps 2–4 | **large — NEW in revision 6.** 15 findings + 5 capped, across the same six modules Tasks 5+6 touched. Step 2 alone is a **second** breaking `AddMember` signature change (D-AU, D-AV) |
 
 **Six modules touched** (root, postgres, mysql, sqlite, harness, dbtest); the delivery gate is all **eight**.
+
+🔴 **TASK 11 IS NOT A CLEANUP PASS — IT IS COMPARABLE IN SIZE TO TASKS 5+6.** Two of its findings are CLAUDE.md
+delivery blockers, three needed ratified design decisions, and its Step 2 re-breaks the SPI signature the
+increment had already broken once. **Do not schedule it as a tail.**
 
 **If D-AF's revision-4 reversal is itself reversed** (Spec 017 §8 item 1 — back to `sql` counting live only), Task
 6 loses the `COUNT(*)`, the `locked_by` read and the leased arm, and Task 7 loses two assertions — **and the

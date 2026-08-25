@@ -1,8 +1,19 @@
 # ADR 0033 — A message group's member bound lives at the store, not at the release decision
 
 - **Status:** **ACCEPTED — 2026-08-23. Decisions D-AC…D-AT ratified by the user.** Revision 5, after five
-  adversarial audit rounds (round 5: **SAFE TO IMPLEMENT**, 0 findings). Written before any code, per
-  [CLAUDE.md](../../CLAUDE.md)'s design-time gate.
+  adversarial audit rounds (round 5: **SAFE TO IMPLEMENT**, 0 findings). D-AC…D-AT were written before any code,
+  per [CLAUDE.md](../../CLAUDE.md)'s design-time gate.
+  - **🔴 REVISION 6 — D-AU, D-AV and D-AW, ratified 2026-08-25, are the FIRST decisions in this ADR taken AFTER
+    the code shipped.** They are the dispositions of three whole-branch delivery-gate findings (**R-7**, **R-15**,
+    **R-10**) recorded in [`docs/plans/031-review-findings.md`](../plans/031-review-findings.md), which
+    `/code-review max` produced over `main..HEAD` once Plan 031 was 9 of 10 tasks in. **The design-time gate did
+    not catch them and neither did any per-task adversarial review** — every one of those came back clean. This
+    is the project's *"whole-branch review catches what per-task misses"* lesson holding for the second time, and
+    the honest reading is that three ratified decisions (D-AM's `sql` discriminator, D-AG's `maxMembers`
+    parameter, and `Handle`'s merged decline/fail exit) shipped with defects that five audit rounds read past.
+    **D-AU and D-AV change an exported SPI signature and contract after the fact; D-AW reverses a shipped test
+    assertion.** All three are free at pre-v1 — no tags, no consumers — which is the only reason this is a
+    revision rather than a migration.
   - **How it was ratified.** The decisions were taken while the user was away, which is why each carries a
     `REVERSIBILITY:` line. Presented back as four load-bearing choices rather than eighteen — **D-AC** (the bound
     lives at the store), **D-AG** (the expensive one: in-transaction SQL enforcement, six modules), **D-AF**
@@ -1648,6 +1659,166 @@ preference:
 mistake this decision exists to record. *A gate that already runs constrains the commit; a gate you are about to
 write constrains only the order.*
 
+### D-AU — `AddMember` gains `leaseTTL`; the overflow split tests lease EXPIRY, not merely `locked_by`
+
+**NEW in revision 6. This is the disposition of whole-branch review finding R-7
+([`031-review-findings.md`](../plans/031-review-findings.md) §3), and it AMENDS D-AM's `sql` arm and D-AG's
+signature. Ratified by the user 2026-08-25.**
+
+**The defect.** D-AM classifies an over-cap rejection by whether anything will drain the group, and the `sql` arm
+implements that test as `lockedBy.Valid` — NULL ⇒ `Permanent`, non-NULL ⇒ transient. **A non-NULL `locked_by`
+does not mean a holder is alive.** It means a row was stamped. A crashed or stranded releaser leaves the group
+leased with nothing draining it, so every subsequent over-cap add is classified **transient — forever**. Under the
+shipped zero-value `RetryPolicy` that is B-1's infinite zero-delay hot spin, each iteration a full rolled-back
+`AddMember` transaction plus a `SchemaExists` probe. **D-AM exists to prevent exactly this, and its own `sql`
+discriminator reintroduces it.**
+
+**The dialect structurally cannot make the correct test.** Every other lease-sensitive `GroupDialect` method is
+handed the TTL — `ClaimGroup(…, leaseTTL time.Duration)` and `ExpiredGroups(…, leaseTTL time.Duration, limit int)`
+— and `ClaimGroup` **in the same file** already steals on `locked_by IS NULL OR locked_at <= now() - leaseTTL`.
+`AddMember` is the one method not given it. This is not a coding slip that a better implementation could route
+around: the information is absent from the signature.
+
+**Decision.** `AddMember` takes `leaseTTL time.Duration` as a final parameter, and its overflow discriminator
+becomes the **same predicate `ClaimGroup` already uses in the same file**:
+
+```
+locked_by IS NULL OR locked_at <= now() - leaseTTL   ⇒  msgin.Permanent(ErrOverflowDropped-wrapped)
+otherwise (a LIVE lease)                             ⇒  bare, transient
+```
+
+`sql.GroupStore` threads its `WithGroupLeaseTTL` value through, exactly as it already does for `ClaimGroup`. The
+clock is the **DB server clock**, never the app clock — the constraint D-AG already states for `created_at`.
+
+**Scope: `sql` ONLY. `memory` is CORRECT AS SHIPPED and must not be changed.** `memory.GroupStore` has no lease
+TTL by construction — its `leased` field is documented *"UNCONDITIONAL — no wall-clock TTL"* (locate with
+`grep -n 'no wall-clock' adapter/memory/groupstore.go`), and `ClaimGroup` documents *"no wall-clock steal"*. Its
+holder is an in-process goroutine, and the one way that holder could vanish mid-release, a panic, is already
+covered: `releaseOnce` **defers** an abandon-unless-settled precisely so a recovered panic frees the lease. The
+only remaining way to strand a `memory` lease is a hard process exit, which destroys the store with it. **So
+`!g.leased` is a sound liveness test in `memory` and an unsound one in `sql`, for a reason that is a property of
+the store, not an inconsistency between them.** R-7's finding text lists `memory/groupstore.go:258` as a twin; it
+is not one, and this paragraph is why.
+
+**Rejected — "always mark over-cap `Permanent`, no signature change."** It removes the hot spin by dead-lettering
+the **healthy** case: a live claim genuinely is draining the group, and those members would have succeeded on
+redelivery. It trades a rare stranded-lease spin for routine, correct-path loss.
+
+**Rejected — "leave it, record the window."** The spin is against the zero-value `RetryPolicy`, so it is unbounded.
+A known-unbounded spin is not a limitation, it is the defect.
+
+**REVERSIBILITY:** the signature change is free at pre-v1 (no tags, no consumers) but touches the same seven sites
+in six modules D-AG already priced. The `GroupDialect` godoc reserves the right: *"a pre-1.0 (v0) contract that may
+still evolve."*
+
+### D-AV — `maxMembers` is VALIDATED at the SPI; `UnboundedGroupMembers = -1` is the only non-positive value accepted
+
+**NEW in revision 6. This is the disposition of whole-branch review finding R-15
+([`031-review-findings.md`](../plans/031-review-findings.md) §1, a CLAUDE.md delivery blocker). It AMENDS D-AG and
+D-AS. Ratified by the user 2026-08-25.**
+
+**The defect, in two halves.** `GroupDialect.AddMember`'s `maxMembers` is an unvalidated `int` on an **exported
+SPI** with two silent fail-open modes:
+
+1. **`<= 0` means UNBOUNDED by design** — so the dangerous value is the **zero value**. A direct dialect caller who
+   forgets the argument, or threads a zero through from an unset config field, gets *no bound at all* and no
+   diagnostic. This is precisely the shape CLAUDE.md's "Sensible defaults" section forbids: *"if no value can be
+   safe for an unknown caller, make it explicit/opt-in with a clear typed error or documented off state rather
+   than guessing a default that lulls the caller into a false guarantee."*
+2. **`math.MaxInt` WRAPS.** `selectLimit` returns `maxMembers + 1`, so `selectLimit(math.MaxInt)` is
+   `math.MinInt`. The subsequent `limit > 0` guard is then false — **no `LIMIT` is emitted** — and
+   `n > int64(maxMembers)` can never be true, so **the cap check is dead too**. A caller opting into the largest
+   expressible bound silently receives *unbounded*: the exact failure this increment exists to close, delivered by
+   its own escape hatch. Verified by the reviewer and re-verified independently by the coordinator.
+
+`sql.GroupStore` is not exposed — its constructor already range-checks `[1, maxGroupMembersCeiling]` against
+`msgin.ErrInvalidCapacity` (locate with `grep -n 'maxGroupMembersCeiling)' adapter/database/sql/groupstore.go`).
+**This is a defect of the SPI boundary only** — which is why the fix belongs there and not in the store.
+
+**Decision, three parts.**
+
+1. **Export a named sentinel** in `adapter/database/sql`: `const UnboundedGroupMembers = -1`, godoc'd as the *only*
+   way to request an unbounded group, with the reason a caller would want one (a direct dialect caller that has
+   not adopted Spec 017's bound) and the risk they are accepting.
+2. **`AddMember` MUST reject** any `maxMembers` outside `{UnboundedGroupMembers} ∪ [1, maxGroupMembersCeiling]`
+   with a typed error wrapping `msgin.ErrInvalidCapacity`, **before any statement runs** — the same
+   validate-before-I/O placement `ErrMissingMsgID` already has. **`0` is now an error**, not a synonym for
+   unbounded.
+3. **`selectLimit` becomes total.** With `maxMembers` provably in `[1, 1<<20]` by the time it is reached, `+1`
+   cannot overflow. The `<= 0 → 0` arm stays, now reachable only via `UnboundedGroupMembers`.
+
+**Validate in ONE place, not three.** The check lives in a shared helper in the parent `adapter/database/sql`
+package, which all three dialects already import, rather than being copy-pasted into `postgres`/`mysql`/`sqlite`.
+This is a deliberate down-payment on the ~120 lines of triplicated dialect logic recorded as
+[`031-review-findings.md`](../plans/031-review-findings.md) §6 item 1: the *contract* for this parameter stops
+being prose-only.
+
+**Why `-1` and not `0` as the sentinel.** Both were offered; the user chose `-1`. The argument that decides it:
+**the zero value must not be the dangerous value.** With `0` as the sentinel, a forgotten or unset argument still
+fails open silently and only the *documentation* improves. With `-1`, the caller has to type something that means
+"I know, and I want that" — which is the standing ratification constraint on this ADR (*"flexible with sensible
+default but with opt-in available"*) applied to the one knob in this increment that had an off-state at all.
+Compare `endpoint.WithMaxPayloadBytes`, whose `n <= 0 disables` is defensible because it is reached through an
+**option**, where omission means "unset"; a positional SPI parameter has no such signal.
+
+**Accepted cost — a behavioral break for a direct dialect caller passing `0`.** It previously got unbounded
+behavior; it now gets `msgin.ErrInvalidCapacity`. That is the point: the break is loud, one line to fix, and free
+at pre-v1. `sql.GroupStore` callers — i.e. all real consumers — are unaffected, because the store never passes a
+non-positive value.
+
+**REVERSIBILITY:** the sentinel and the ceiling check are free to relax later (widening an accepted set is
+additive); re-admitting `0` as "unbounded" after callers exist would be breaking.
+
+### D-AW — the overflow branch JOINS the release-strategy error, and the resulting classification ESCALATION is intended
+
+**NEW in revision 6. This is the disposition of whole-branch review finding R-10
+([`031-review-findings.md`](../plans/031-review-findings.md) §3). It REVERSES a shipped, deliberately-asserted
+behavior. Ratified by the user 2026-08-25.**
+
+**What is being reversed, stated plainly so this is not later read as a regression.** `Handle`'s overflow branch
+reads `if rerr != nil || !ok { return err }` — it merges *"the strategy DECLINED"* with *"the strategy FAILED"*
+and **discards `rerr` entirely**, so a release-strategy fault reaches the operator as the store's cap rejection.
+`routing/aggregator_test.go` asserts this on purpose (locate with
+`grep -n 'NotErrorIs(t, err, strategyErr)' routing/aggregator_test.go`). **This decision changes that assertion.**
+
+**Why it changes.** The success path 25 lines below already propagates the strategy error; the overflow path
+swallowing it is an inconsistency, not a contract. Reporting a strategy fault as `ErrOverflowDropped` points the
+operator's investigation at the member cap — a knob that is working correctly — while the actual fault, in the
+caller's own code, appears nowhere. That is a direct hit on CLAUDE.md's debuggability gate, which makes the typed,
+cause-naming error surface a first-class design constraint.
+
+**Decision.** When the release strategy **fails**, return `errors.Join(err, rerr)`; when it merely **declines**
+(`!ok` with `rerr == nil`), return `err` unchanged. Written as two statements rather than one unconditional
+`errors.Join(err, rerr)`, so the decline path returns the store's error with its original identity rather than a
+single-element join. `errors.Is`/`errors.As` traverse join trees, so `errors.Is(err, ErrOverflowDropped)` keeps
+matching and every existing assertion on the store's classification survives.
+
+> 🔴 **THE SUB-DECISION THAT IS NOT OBVIOUS FROM THE FINDING: joining ESCALATES classification, and that is
+> INTENDED.** `msgin.IsPermanent` tests `errors.As(err, &pe)` (locate with
+> `grep -n 'func IsPermanent' -A 12 reliability.go`), and `errors.As` traverses `Unwrap() []error`. So a
+> **`Permanent`-marked `rerr` makes the joined error permanent even when the store's overflow arm was
+> transient** — a live-lease rejection paired with a permanently-failing strategy now settles terminally instead
+> of retrying.
+>
+> **This was verified before ratification, not discovered afterwards, and it is the correct outcome.** A release
+> strategy that fails permanently fails **identically on every redelivery** of this member against this group, so
+> the transient classification buys nothing and costs B-1's unbounded zero-delay spin. Terminal settlement puts
+> both causes in front of the operator, in one error, at the invalid-message sink.
+>
+> **The accepted cost, stated:** the member was never stored, so a terminal settle loses it. The alternative loses
+> it too — silently, and at unbounded retry cost. **It must be ASSERTED, not merely tolerated:** a test row pairing
+> a live-lease (transient) overflow with a `Permanent`-marked strategy error and asserting `IsPermanent(err)` is
+> **true**. An escalation nobody asserts is an accident waiting to be "fixed" by the next reader.
+
+**Rejected — "uphold the discard, document why."** Zero code change and the shipped test stays valid, but it
+leaves the debuggability complaint unanswered while the success path keeps doing the opposite 25 lines away.
+
+**Rejected — "split the two conditions into separate exits."** Semantically the most precise (declining is not a
+fault) but it adds a seventh exit to a branch whose six exits already cost this bundle an audit finding for being
+uncounted (**N-7**). The join achieves the same reporting with the existing control flow.
+
+**REVERSIBILITY:** free — one statement and one test assertion, no signature or storage change.
+
 ## Consequences
 
 **Positive.**
@@ -1687,6 +1858,17 @@ write constrains only the order.*
 - **Both stores now count the same set** (D-AF), so `MessageGroupStore.Add`'s contract paragraph carries **one**
   sentence about the counted set instead of two, and `memory`'s claim-window rejection stops reading as an
   idiosyncrasy: it is the mechanism that bounds the group across a claim boundary in **both** stores.
+
+- **🔴 REVISION 6 — the overflow classification finally tests LIVENESS rather than a stamped column** (D-AU). The
+  stranded-lease hot spin that D-AM was written to close, and that D-AM's own `sql` discriminator reopened, is
+  closed by giving `AddMember` the one input it was missing. `sql` now uses the identical predicate `ClaimGroup`
+  uses in the same file, so the two cannot drift again.
+- **🔴 REVISION 6 — the SPI's `maxMembers` stops having two silent fail-open modes** (D-AV). The zero value is now
+  an error rather than "unbounded", `math.MaxInt` can no longer wrap the cap check and the fetch bound dead
+  together, and the contract is enforced in **one** shared helper instead of three prose paragraphs.
+- **🔴 REVISION 6 — a release-strategy fault is no longer reported as a cap rejection** (D-AW). `errors.Join`
+  keeps both causes, transparent to `errors.Is`/`As`, aligning the overflow branch with the success path 25 lines
+  below it.
 
 **Negative / accepted costs.**
 
@@ -1777,6 +1959,25 @@ write constrains only the order.*
 
 > **REMOVED in revision 2:** the entry claiming *"The invariant default `maxGroupMembers` ≥ `completionSizeCeiling`
 > is NOT mechanically enforced."* It is enforced, by D-AQ's AST test. Audit **M-5**.
+
+- **🔴 REVISION 6 — `GroupDialect.AddMember`'s signature is broken A SECOND TIME, in the same increment**
+  (D-AU adds `leaseTTL`, D-AV constrains `maxMembers`). D-AG already priced one break across seven sites in six
+  modules; this repeats that blast radius weeks later, on a contract whose godoc had just been rewritten to
+  describe the first one. Free at pre-v1, but the cost is real and it is a **second** rewrite of the same godoc
+  block. **The lesson is not "we should have foreseen `leaseTTL`" — it is that `AddMember` was given every input
+  its transaction needs EXCEPT the one every sibling method already had**, and no round compared the four
+  signatures against each other.
+- **🔴 REVISION 6 — `msgin.ErrInvalidCapacity` reaches a SEVENTH producer** (D-AV), the threshold D-AD's own
+  consequence bullet named as requiring an ADR: *"a seventh needs an ADR."* **This is that ADR.** The sentinel
+  stays right for the job — it is a capacity argument outside its accepted range — but the count is now a
+  standing argument for a per-unit error type, and the next producer should not be added without revisiting D-X.
+- **🔴 REVISION 6 — a `Permanent` release-strategy error now ESCALATES a transient overflow to terminal**
+  (D-AW's sub-decision). Intended and asserted, but it means a caller's strategy bug can convert a
+  would-have-succeeded redelivery into a dead-letter. The mitigation is that the joined error names **both**
+  causes, so the operator is pointed at the strategy rather than at the cap.
+- **🔴 REVISION 6 — a shipped test assertion is REVERSED** (D-AW): `NotErrorIs(err, strategyErr)` becomes
+  `ErrorIs`. The original was deliberate and defensible; it is being re-litigated against CLAUDE.md's
+  debuggability gate and losing. **Recorded here so a future reader does not "restore" it as a regression.**
 
 **Neutral / to watch.**
 

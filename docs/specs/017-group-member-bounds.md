@@ -1,7 +1,18 @@
 # Spec 017 — A message group's member count is bounded at the store, not at the release decision
 
-- **Status:** **DRAFT — revision 5, post-audit-round-4, NOT approved for implementation.** Written before any code,
-  per [CLAUDE.md](../../CLAUDE.md)'s design-time gate.
+- **Status:** **APPROVED AND SUBSTANTIALLY DELIVERED — revision 6.** Revisions 1–5 were written before any code,
+  per [CLAUDE.md](../../CLAUDE.md)'s design-time gate; revision 5 was approved and
+  [Plan 031](../plans/031-group-member-bounds.md) delivered **9 of its 10 tasks** on branch
+  `chore/backlog-sweep-post-029` (nothing merged, nothing tagged).
+  - **🔴 REVISION 6 FOLDS IN THREE POST-DELIVERY DECISIONS — D-AU, D-AV, D-AW — ratified 2026-08-25.** They are
+    the dispositions of whole-branch delivery-gate findings **R-7**, **R-15** and **R-10**, recorded in
+    [`docs/plans/031-review-findings.md`](../plans/031-review-findings.md). `/code-review max` over `main..HEAD`
+    returned **15** findings; `/security-review` returned **0**. Two of the fifteen are CLAUDE.md delivery
+    blockers. **The branch must not merge while any of them is un-dispositioned.** See §3.3b, §3.6a and §8.
+  - **The revision-5 status line read *"DRAFT … NOT approved for implementation"* while its `feat` commits had
+    already shipped.** That contradiction was itself recorded as [`031-review-findings.md`](../plans/031-review-findings.md)
+    §6 item 3 and is corrected here — an instance of the project's *"docs can contradict the code they describe"*
+    lesson, inside the spec that governs the code.
   - **Round 1 verdict: NOT SAFE TO IMPLEMENT** — 3 BLOCKERs, 8 MAJORs, 10 MINORs, recorded immutably in
     [`docs/plans/031-audit-round-1.md`](../plans/031-audit-round-1.md). Revision 2 folded every finding back in.
   - **Round 2 verdict: NOT SAFE TO IMPLEMENT** — 1 BLOCKER, 6 MAJORs, 7 MINORs, recorded immutably in
@@ -816,6 +827,32 @@ materialized `[]MemberRow` in Go before the rows are returned with the error (§
 **The SPI change is additive.** §3.7's contract gains a **MAY**; a store returning `(nil, err)` keeps working
 through `Handle`'s `group == nil` arm, and the existing `(nil, nil)` guard at `aggregator.go:416-424` is untouched.
 
+### 3.3b 🔴 REVISION 6 — a release-strategy FAILURE is joined, not swallowed (D-AW, finding R-10)
+
+**Normative.** In §3.3a.1's overflow branch, `Handle` must distinguish the two conditions its single exit
+currently merges:
+
+| The release strategy… | `Handle` returns | Why |
+|---|---|---|
+| **declined** (`ok == false`, no error) | the store's error, **unchanged** | Declining is not a fault. Nothing is drained; the store's classification is the whole story. |
+| **failed** (`rerr != nil`) | `errors.Join(err, rerr)` | Both causes reach the operator. The success path 25 lines below already propagates `rerr`; the overflow path swallowing it was an inconsistency, not a contract. |
+
+`errors.Is`/`errors.As` traverse join trees, so `errors.Is(err, msgin.ErrOverflowDropped)` continues to match and
+every existing assertion on the store's classification survives.
+
+> 🔴 **CLASSIFICATION ESCALATES ON THE JOINED ARM, AND THAT IS THE DECISION — NOT A SIDE EFFECT.**
+> `msgin.IsPermanent` uses `errors.As`, which walks `Unwrap() []error`. A `Permanent`-marked `rerr` therefore makes
+> the joined error permanent **even when the store's overflow arm was transient**. This is intended: a release
+> strategy that fails permanently fails identically on every redelivery against the same group, so the transient
+> classification buys nothing and costs the unbounded zero-delay spin §3.3.1 exists to prevent. **It must be
+> asserted** — a live-lease (transient) overflow paired with a `Permanent` strategy error, asserting
+> `IsPermanent(err) == true`. See [ADR 0033 D-AW](../adrs/0033-group-member-bounds.md).
+
+**This REVERSES a shipped assertion.** `routing/aggregator_test.go` deliberately asserts
+`NotErrorIs(t, err, strategyErr)` today (locate with `grep -n 'NotErrorIs(t, err, strategyErr)'
+routing/aggregator_test.go`). Flipping it to `ErrorIs` is a considered change under CLAUDE.md's debuggability
+gate, **not** a regression, and is recorded as such so no future reader restores it.
+
 ### 3.4 What the cap counts — 🔴 REVISED in revision 4: BOTH stores count live + claimed
 
 **Both first-party stores bound every member row they retain for one key — live PLUS claimed** (ADR 0033
@@ -1286,6 +1323,61 @@ before returning. The sentinel and the `Permanent` marker both survive (the erro
 table exists — §6 AC-4c asserts it), but the query is real. Under revision 1's transient classification it was paid
 **on every iteration of an infinite spin**; under §3.3.1 it is paid once. `Add` must also **propagate §3.3a's
 snapshot past this call site** rather than discarding it with the current `return nil, …`.
+
+### 3.6a 🔴 REVISION 6 — two corrections to the `AddMember` contract (D-AU / D-AV, findings R-7 / R-15)
+
+#### 3.6a.1 The `Permanent`/transient split must test lease EXPIRY (D-AU, finding R-7)
+
+**Normative.** `GroupDialect.AddMember` gains a final `leaseTTL time.Duration` parameter, and classifies an
+over-cap rejection by the **same predicate `ClaimGroup` already uses in the same file**:
+
+```
+locked_by IS NULL OR locked_at <= now() - leaseTTL   ⇒  msgin.Permanent(…)   -- nothing will drain this group
+otherwise (a LIVE lease)                             ⇒  bare, transient      -- a claim is in flight
+```
+
+`sql.GroupStore` threads its `WithGroupLeaseTTL` value through, exactly as it already does for `ClaimGroup` and
+`ExpiredGroups`. The clock is the **DB server clock**, never the app clock.
+
+**What was wrong.** §3.3.1's `sql` arm tested `lockedBy.Valid` alone. A non-NULL `locked_by` proves a row was
+stamped, not that a holder is alive: a **crashed releaser** keeps every subsequent over-cap add classified
+transient **forever**, which under the shipped zero-value `RetryPolicy` is precisely the infinite zero-delay hot
+spin §3.3.1 was written to close. `AddMember` was the one lease-sensitive `GroupDialect` method never given
+`leaseTTL`, so the dialect **structurally could not** make the correct test.
+
+**`memory` is CORRECT AS SHIPPED and is NOT changed.** It has no lease TTL by construction (`leased` is documented
+*"UNCONDITIONAL — no wall-clock TTL"*; `ClaimGroup` documents *"no wall-clock steal"*), its holder is an
+in-process goroutine, and the one way that holder vanishes mid-release — a panic — is already covered by
+`releaseOnce`'s deferred abandon-unless-settled. A hard process exit destroys the store with the lease. **`!g.leased`
+is therefore a sound liveness test in `memory` and an unsound one in `sql`**, for a reason that is a property of
+each store rather than a divergence between them. Finding R-7 lists `adapter/memory/groupstore.go` as a twin; it
+is not one.
+
+#### 3.6a.2 `maxMembers` is validated at the SPI boundary (D-AV, finding R-15 — a delivery blocker)
+
+**Normative.** `adapter/database/sql` exports `const UnboundedGroupMembers = -1`. `AddMember` MUST reject any
+`maxMembers` outside `{UnboundedGroupMembers} ∪ [1, maxGroupMembersCeiling]` with a typed error wrapping
+`msgin.ErrInvalidCapacity`, **before any statement runs** — the same validate-before-I/O placement
+`ErrMissingMsgID` already has. The check lives in **one shared helper** in the parent `adapter/database/sql`
+package, not copy-pasted into the three dialects.
+
+**`0` is now an ERROR, not a synonym for unbounded.** This is the substance of the change: the previous contract
+made the **zero value** the dangerous value, so a direct dialect caller who omitted the argument or threaded an
+unset config field through got no bound and no diagnostic.
+
+**And `math.MaxInt` WRAPPED.** `selectLimit` returns `maxMembers + 1`, so `selectLimit(math.MaxInt)` was
+`math.MinInt`; the `limit > 0` guard then suppressed the `LIMIT` **and** `n > int64(maxMembers)` could never fire.
+A caller opting into the largest expressible bound silently received **unbounded** — this spec's own failure mode,
+delivered through its own escape hatch. With `maxMembers` provably in `[1, 1<<20]` before `selectLimit` is
+reached, `+1` cannot overflow.
+
+**`sql.GroupStore` was never exposed** — `NewGroupStore` already range-checks `[1, maxGroupMembersCeiling]`
+against `msgin.ErrInvalidCapacity`. This is a defect of the **exported SPI boundary** only, which is why the fix
+belongs there.
+
+> **This makes `msgin.ErrInvalidCapacity`'s SEVENTH producer** — the threshold
+> [ADR 0033 D-AD](../adrs/0033-group-member-bounds.md)'s own consequence bullet named as requiring an ADR. That
+> ADR is D-AV. The next producer should not be added without revisiting whether a per-unit error type is due.
 
 ### 3.7 The SPI states the bound as a contract requirement
 
@@ -2198,6 +2290,19 @@ database CHECK constraint, a partition-level quota, or a broker-side limit, and 
 inherits the requirement without `routing` or the core being touched.
 
 ## 8. Open items — flagged for the user and for the audit
+
+> 🔴 **REVISION 6 — THIS SECTION'S PREAMBLE IS STALE AND IS SUPERSEDED BY THE NEXT PARAGRAPH.** It was written
+> before ratification and before Plan 031 ran; **D-AC…D-AT were ratified 2026-08-23** and **D-AU…D-AW on
+> 2026-08-25**. The numbered items below are still the right list of *where a reasonable person could land
+> elsewhere*; only the "nothing is ratified, nothing has started" framing is wrong. Read them as a live backlog,
+> not as pre-implementation open questions.
+>
+> **The authoritative open list for this increment is now
+> [`docs/plans/031-review-findings.md`](../plans/031-review-findings.md)** — 15 whole-branch `/code-review`
+> findings plus 5 recorded at the reviewer's cap, of which **three are dispositioned in revision 6** (R-7 → §3.6a.1,
+> R-15 → §3.6a.2, R-10 → §3.3b) and **the remainder are open**. Two of the open ones are CLAUDE.md delivery
+> blockers. `/security-review` returned **0** findings. **The branch must not merge while any row there is
+> un-dispositioned.**
 
 **None of the decisions in [ADR 0033](../adrs/0033-group-member-bounds.md) has been ratified by the user.** These
 are the ones where a reasonable person could land elsewhere, and where reversal is cheapest **before** Plan 031

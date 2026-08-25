@@ -1,8 +1,27 @@
 # Plan 031 — whole-branch review findings (Task 10 Steps 1–2)
 
-> **Status: OPEN. Nothing here is fixed.** This is the disposition list the delivery gate produced; CLAUDE.md
+> **Status: OPEN — 3 of 20 DECIDED, 0 fixed.** This is the disposition list the delivery gate produced; CLAUDE.md
 > requires every entry to be **fixed** or **explicitly triaged with a written rationale** before the branch merges.
 > **Do not merge `chore/backlog-sweep-post-029` while any row is un-dispositioned.**
+>
+> **🔴 2026-08-25 — the three findings that needed a DESIGN DECISION have been decided and recorded.** §7's
+> sequencing step 1 is complete; **no code has been written yet.** The decisions are
+> [ADR 0033](../adrs/0033-group-member-bounds.md) **D-AU / D-AV / D-AW** (revision 6), with spec twins at
+> [Spec 017](../specs/017-group-member-bounds.md) §3.6a.1 / §3.6a.2 / §3.3b, and the execution steps are
+> [Plan 031](031-group-member-bounds.md) **Task 11**.
+>
+> | Finding | Decided | Where |
+> |---|---|---|
+> | **R-7** | `AddMember` gains `leaseTTL`; classify on lease **expiry**, not on `locked_by` being non-NULL. **`sql` only** | D-AU · §3.6a.1 |
+> | **R-15** | `UnboundedGroupMembers = -1`; reject anything outside `{-1} ∪ [1, 1<<20]` with `msgin.ErrInvalidCapacity`, in one shared helper | D-AV · §3.6a.2 |
+> | **R-10** | **REVERSED** — `errors.Join(err, rerr)` on failure, bare `err` on decline; the `IsPermanent` escalation is intended and must be asserted | D-AW · §3.3b |
+>
+> **One correction to this document, made while deciding.** R-7's site column lists
+> `adapter/memory/groupstore.go` as a twin of the three dialects. **It is not one.** `memory` has no lease TTL by
+> construction (`leased` is documented *"UNCONDITIONAL — no wall-clock TTL"*), its holder is an in-process
+> goroutine, and a panicking release is already covered by `releaseOnce`'s deferred abandon. `!g.leased` is a
+> sound liveness test there and an unsound one in `sql`. **D-AU is scoped to `sql` and `memory` must not be
+> changed** — see D-AU's scope paragraph.
 >
 > Governing artifacts: [`docs/specs/017-group-member-bounds.md`](../specs/017-group-member-bounds.md) ·
 > [`docs/adrs/0033-group-member-bounds.md`](../adrs/0033-group-member-bounds.md) ·
