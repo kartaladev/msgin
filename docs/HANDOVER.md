@@ -6,9 +6,10 @@
 > **41** `file:line` citations in an in-flight design bundle that had just passed a dedicated mechanical sweep —
 > and the citation *of the finding about stale citations* was itself off by eleven.
 >
-> ### ✅ Plan 031 is 9 of 10 tasks in. ONLY TASK 10 REMAINS. NOTHING MERGED OR PUSHED.
-> ### Next: **Task 10 Steps 1–2 — `/code-review` and `/security-review` over `main..HEAD`.**
-> ### 🔴 **THE MODEL CANNOT RUN THOSE TWO COMMANDS. THE USER MUST INVOKE THEM.** See §5.
+> ### ✅ Plan 031 is 9 of 10 tasks in. BOTH TASK 10 REVIEWS HAVE NOW RUN. NOTHING MERGED OR PUSHED.
+> ### 🔴 Next: **work the 15 open findings in [`docs/plans/031-review-findings.md`](plans/031-review-findings.md).**
+> ### `/security-review`: **0 findings.** `/code-review max`: **15**, two of them CLAUDE.md delivery blockers.
+> ### **DO NOT MERGE while any finding is un-dispositioned.** Three need design decisions first — see that file §7.
 >
 > | | State |
 > |---|---|
@@ -67,6 +68,29 @@ the hand-maintained ordinal removed. Script arms C, D2 and E now return nothing,
 - **Amended by this increment:** [`docs/specs/016-sizing-option-bounds.md`](specs/016-sizing-option-bounds.md)
   (delivered by Plan 029; Task 9b folded in the two new rows and now carries an *"Amended by"* list).
 
+## 3b. 🔴 THE WHOLE-BRANCH GATE HAS RUN — 15 OPEN FINDINGS
+
+[`docs/plans/031-review-findings.md`](plans/031-review-findings.md) is the disposition list. **Read it before
+any other work.** Highlights:
+
+- **`/security-review`: 0 findings.** 5 candidates raised, 4 refuted at confidence 9, 1 at confidence 2. **No
+  security blockers on this branch.** It examined the same `selectLimit` overflow and `Handle` overflow branch
+  the code review flags and correctly found them not *exploitable* — they remain **correctness** defects. The
+  two gates corroborate; they do not conflict.
+- **Two CLAUDE.md delivery blockers**, both re-verified by the coordinator independently: an uncovered typed-error
+  branch (`sql/groupstore.go:424`, hit count `0`) and `selectLimit(math.MaxInt)` wrapping to `math.MinInt`, which
+  silently disables **both** the cap check and the fetch bound for a caller who opted into the largest bound.
+- **Every per-task adversarial review on this branch came back clean.** These surfaced only at branch level —
+  the *"whole-branch review catches what per-task misses"* lesson holding for the second time.
+- **Two findings are in code delivered THIS session**: `dialectEngine` (Task 7) returns `""` for a pointer-typed
+  dialect — the form the SPI godoc recommends — and Task 8's godoc claim *"unmarked, hence transient"* is false
+  when the aggregate error is itself `Permanent`.
+
+**Three design decisions must be made and recorded in ADR 0033 BEFORE any code is written** (findings file §7):
+does `AddMember` gain `leaseTTL`; does the SPI reject `maxMembers <= 0` with a typed error plus an explicit
+unbounded sentinel; is the *declined*-vs-*failed* merge upheld or reversed (a shipped test asserts the current
+behaviour, so reversing it is a deliberate change, not a fix).
+
 ## 4. What Task 10 still needs
 
 **Step 0 — THREE-ARTIFACT RECONCILIATION, before any review.** For every finding this bundle dispositions,
@@ -75,8 +99,9 @@ the project's named failure mode and it has recurred in *three separate revision
 the step was skipped and R4-6 survived because of it. Note that this session amended all three together each
 time a defect from §2 was found, so the delta should be small — **but verify, don't assume.**
 
-**Steps 1 and 2 — `/code-review` then `/security-review` over `main..HEAD`** (not the last commit). Fix or
-explicitly triage every finding with a written rationale, then re-run the affected review and the `-race` suite.
+**Steps 1 and 2 — ✅ BOTH HAVE RUN** (see §3b). What remains is **working the findings**: fix or explicitly
+triage each with a written rationale, then **re-run both reviews and the `-race` suite**. The reviews are
+user-invocable only (§5), so the fix session must ask the user to re-run them.
 
 **Steps 5+ — status lines.** `docs/specs/017-*` still reads **"DRAFT — revision 5 … NOT approved for
 implementation"** while its code has shipped. Plan 031's own status lines need the same pass.
