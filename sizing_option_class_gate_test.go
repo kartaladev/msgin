@@ -16,34 +16,55 @@ package msgin_test
 //     "func With..." parameter — resilience.NewTokenBucket's positional
 //     `burst` is why). Fail if that set differs from sizingConformanceKeys in
 //     EITHER direction.
-//  2. CONFORMANCE (behavioral). Every one of the 18 AST-discovered keys, plus
-//     2 MANUAL rows for the class members the Recv == nil boundary excludes
+//  2. CONFORMANCE (behavioral). Every AST-discovered key in
+//     sizingConformanceKeys, plus 2 MANUAL rows for the class members the
+//     Recv == nil boundary excludes
 //     but a root test can still construct, gets an executable row — never a
 //     declaration string — in one of FOUR arms. The arms are BEHAVIORAL and are
 //     NOT a relabelling of Spec 016 §2.1's three classification verdicts; §2.1's
 //     "classification arms ≠ AC-5 behavioral arms" note is normative for the
 //     split, and §6 AC-5 tabulates it:
-//       - "fixed"   (13) — the fault is reported through the surface Spec 016
-//                          §3 names for it: the constructor's return, or the
-//                          first use of the object it produced. 9 were bounded
-//                          by Spec 016 / Plan 029; memory.WithMaxGroupMembers
-//                          by Spec 017 / Plan 031; the 3 msghttp byte caps
-//                          joined them from "deferred" at Spec 018 / Plan 032.
-//       - "rejects"  (1) — msghttp.WithSuccessStatus. It is safe (a) by §2.1's
-//                          criterion and NOTHING HERE FIXES IT; it rejects
-//                          1<<30 only through its own pre-existing [100,599]
-//                          check. It gets an arm of its own because it belongs
-//                          in neither "fixed" (not a class member) nor "safe"
-//                          (which asserts ACCEPTS).
-//       - "deferred" (0) — no members as of Plan 032; see Spec 018. The arm is
-//                          retained so a future knob with a genuinely deferred
-//                          remedy has it, and so this file keeps documenting
-//                          four arms rather than silently dropping the
-//                          vocabulary. NOTE: byArm below is built by COUNTING,
-//                          so an empty arm has NO KEY there — it is absent,
-//                          not zero.
-//       - "safe"     (6) — accepts math.MaxInt AND its product is usable.
-//     13 + 1 + 6 = 20 rows = 18 AST keys + 2 manual rows.
+//       - "fixed"    — the fault is reported through the surface Spec 016 §3
+//                      names for it: the constructor's return, or the first use
+//                      of the object it produced. 9 were bounded by Spec 016 /
+//                      Plan 029; memory.WithMaxGroupMembers AND
+//                      sql.WithMaxGroupMembers by Spec 017 / Plan 031; the 3
+//                      msghttp byte caps joined them from "deferred" at
+//                      Spec 018 / Plan 032.
+//       - "rejects"  — msghttp.WithSuccessStatus. It is safe (a) by §2.1's
+//                      criterion and NOTHING HERE FIXES IT; it rejects 1<<30
+//                      only through its own pre-existing [100,599] check. It
+//                      gets an arm of its own because it belongs in neither
+//                      "fixed" (not a class member) nor "safe" (which asserts
+//                      ACCEPTS).
+//       - "deferred" — no members as of Plan 032; see Spec 018. The arm is
+//                      retained so a future knob with a genuinely deferred
+//                      remedy has it, and so this file keeps documenting four
+//                      arms rather than silently dropping the vocabulary.
+//                      NOTE: byArm below is built by COUNTING, so an empty arm
+//                      has NO KEY there — it is absent, not zero.
+//       - "safe"     — accepts math.MaxInt AND its product is usable.
+//
+// # THE PER-ARM COUNTS ARE NOT RESTATED HERE — ON PURPOSE (Plan 031 Task 9)
+//
+// Four successive rounds patched an ever-growing list of stale per-arm digits
+// in this header (7 -> 12 -> 14 -> 16 -> 17 sites), and each round was
+// overtaken, because a digit in a comment is a hand-maintained copy of
+// something the test already computes. The bullets above therefore carry NO
+// counts. The authority is executable and lives at the foot of
+// TestSizingOptionClass_Conformance:
+//
+//   - wantArms — the key->arm MAPPING, a require. Pairwise-swap-proof.
+//   - byArm    — the per-arm COUNTS, a require, derived by counting the rows.
+//   - require.Len(t, tests, ...) — the row total.
+//
+// Read those three literals for the split; do not re-copy them up here. As of
+// this increment they read 14 fixed + 1 rejects + 0 deferred + 6 safe = 21
+// rows = 19 AST keys + 2 manual rows (ADR 0033 D-AL) — stated ONCE, in prose
+// that names its own source, rather than spread across the arm bullets.
+// 🔴 Reconcile by NAME, never by total: 11+1+3+6 and 14+1+0+6 BOTH total 21,
+// and revisions 1-4 of ADR 0033 shipped the wrong partition for exactly that
+// reason.
 //
 // # THE OVERSIZED LITERAL IS TWO-DIMENSIONAL (Plan 030 Task 2; Plan 032)
 //
@@ -55,11 +76,11 @@ package msgin_test
 //
 // DIMENSION 1 — THE ARM FIXES THE REQUIRED PROPERTY.
 //
-//   - "safe" (6): the value must be ACCEPTED and must stay MAXIMALLY absurd ⇒
+//   - "safe": the value must be ACCEPTED and must stay MAXIMALLY absurd ⇒
 //     math.MaxInt, and nothing else. The parameter type does NOT get a vote
-//     here — all six of these rows are int-typed, and demoting them to a
+//     here — every row in this arm is int-typed, and demoting them to a
 //     reject-arm literal would silently disable the probe (see below).
-//   - "fixed" (13) and "rejects" (1): the value must be OUT OF RANGE and must
+//   - "fixed" and "rejects": the value must be OUT OF RANGE and must
 //     render an architecture-INDEPENDENT decimal, because these rows assert an
 //     EqualError against a rendered decimal. That fixed decimal is the whole
 //     point; math.MaxInt here would render differently on 386 and 64-bit and
@@ -87,7 +108,7 @@ package msgin_test
 //
 // AND THE WARNING DIMENSION 2 DOES NOT REACH — CARRIED FORWARD VERBATIM:
 //
-//   - "safe" (6) → math.MaxInt. These rows assert require.NoError plus a
+//   - "safe" → math.MaxInt. These rows assert require.NoError plus a
 //     product-usable check and carry NO decimal string, so architecture
 //     dependence is harmless — and the value must stay MAXIMALLY absurd,
 //     because that is the row's entire purpose (see the arm's comment at the
@@ -99,7 +120,7 @@ package msgin_test
 //     whereas 1<<30 quietly allocates ~1 GiB.
 //
 //     ACCEPTED, RECORDED LIMITATION: on GOARCH=386 no int value exceeds int32,
-//     so the int32-truncation probe these six rows exist to run is
+//     so the int32-truncation probe the "safe" rows exist to run is
 //     UNACHIEVABLE there by any choice of magnitude. math.MaxInt keeps the
 //     probe intact where it is meaningful (64-bit) and degrades to a tautology
 //     where it cannot be (32-bit). Do not "fix" that by picking a smaller
@@ -109,12 +130,20 @@ package msgin_test
 //
 // In go/ast a method is a *ast.FuncDecl with a non-nil Recv, so "every
 // exported function with an int/int64 parameter" reads two ways. Measured on
-// this tree: Recv == nil yields 18 keys, every one constructible from a root
-// blackbox test; ANY FuncDecl yields 45, of which 22 sit on UNEXPORTED
-// receivers (mysqlDialect.Claim, postgresGroupDialect.AddMember, ... — 21 in
-// leaf modules, plus msghttp's own responseTracker.WriteHeader) that a
-// root-module blackbox test cannot construct at all, which would make half 2
-// unsatisfiable for those keys. So: functions only.
+// this tree: Recv == nil yields exactly sizingConformanceKeys — half 1 LOGS
+// that count rather than this comment restating it — and every one of those is
+// constructible from a root blackbox test. ANY FuncDecl would additionally
+// admit the excluded METHODS, whose count half 1 both logs and hard-asserts
+// below (27 today), of which 22 sit on UNEXPORTED receivers
+// (mysqlDialect.Claim, postgresGroupDialect.AddMember, ... — 21 in leaf
+// modules, plus msghttp's own responseTracker.WriteHeader) that a root-module
+// blackbox test cannot construct at all, which would make half 2 unsatisfiable
+// for those keys. So: functions only.
+//
+// The 22/21 decomposition is hand-derived, but it CANNOT rot silently: it
+// partitions methodCount, and require.Equal(t, 27, methodCount, ...) below goes
+// red the moment that population moves, with a message telling its reader to
+// re-derive this paragraph rather than bump the number.
 //
 // The exclusion costs nothing once membership is derived from a stated
 // criterion (Spec 016 §2.1 / ADR 0032 D-AB: "n is the sole bound on an
@@ -133,12 +162,34 @@ package msgin_test
 //
 //   - ROOT-MODULE IMPORT BOUNDARY. Half 1 sees all 8 modules (a filesystem
 //     walk needs no go.mod); half 2 is a root-module test and can only import
-//     root-module packages. All 18 keys live in root-module packages today
-//     (endpoint, adapter/http, adapter/memory, channel, resilience, routing),
-//     so both halves cover all of them. A sizing option added to expr, one of
-//     the sql dialects, or another leaf module FAILS half 1 and cannot be
-//     added to half 2 — a deliberate gate failure demanding a spec revision,
-//     not a silent pass.
+//     root-module packages. Every key in sizingConformanceKeys — and both
+//     manual rows — lives in a root-module PACKAGE today: endpoint,
+//     adapter/database/sql, adapter/http, adapter/memory, channel, resilience,
+//     routing. So both halves cover all of them. 🔴 adapter/database/sql is a
+//     PACKAGE IN THE ROOT MODULE, not a module (`find . -name go.mod` lists
+//     eight and it is not among them); it was missing from this list until
+//     Plan 031 Task 9, which made the bullet a FALSE claim about the gate's own
+//     coverage from the moment sql.WithMaxGroupMembers landed. A sizing option
+//     added to expr, one of the sql DIALECT modules, or another leaf module
+//     FAILS half 1 and cannot be added to half 2 — a deliberate gate failure
+//     demanding a spec revision, not a silent pass. That failure is not
+//     hypothetical: Spec 017 AC-10 requires it to be PROBED, by planting a
+//     throwaway sizing option in adapter/database/sql/postgres (a real leaf
+//     module) and confirming half 1 reports exactly one extra key that half 2
+//     cannot adopt. Re-run that probe before trusting this bullet.
+//
+//     🔴 AND MIND WHICH BUILD YOU PROBE UNDER — measured, Plan 031 Task 9. The
+//     probe above shows half 1 going red with exactly one extra key
+//     ("postgres.WithProbeSizeA"). But "half 2 cannot import it" is only true
+//     of the MODULE build: under GOWORK=off — how CI builds each module, and
+//     how any consumer builds this one — the import fails with "no required
+//     module provides package …/adapter/database/sql/postgres", and adding the
+//     require would invert this repo's dependency direction (that module
+//     requires root, so root requiring it is a module cycle). Under the
+//     repo-root go.work the very same import RESOLVES and `go vet .` is silent.
+//     So a probe run only inside the workspace will conclude, wrongly, that
+//     half 2 could adopt a leaf-module key. The unsatisfiability is real; the
+//     workspace hides it.
 //   - The Recv == nil boundary above: two excluded class members, both
 //     covered by the manual rows — no uncovered residue.
 //   - A NAMED integer type is INVISIBLE. hasIntOrInt64Param looks through
@@ -156,6 +207,47 @@ package msgin_test
 //     whole class — clock.After(d) with a variable duration is a further,
 //     unaudited five sites (Spec 016 §3.7.4 / ADR 0032 D-AA). Do not read a
 //     green run of THIS file as saying anything about time.Duration.
+//   - A BOUND THAT DOES NOT ARRIVE AS AN INTEGER PARAMETER IS INVISIBLE to
+//     half 1 (ADR 0033 D-AL, the fifth limitation, added by Plan 031 Task 9):
+//     a func-typed option (*ast.FuncType), a named func type (*ast.Ident — the
+//     same path as `type Bytes int64` above), or a threshold read from a
+//     MESSAGE HEADER (no parameter at all). Spec 017 §1.4 enumerates the three
+//     that exist today — routing.WithReleaseWhen (*ast.FuncType),
+//     routing.WithReleaseStrategy (a named func type) and routing's
+//     header-driven defaultRelease (not a function at all) — and moves their
+//     enforcement to the STORE, which observes every member regardless of how
+//     the threshold arrived. The store is therefore their enforcement site;
+//     this gate is not, and cannot be made to be.
+//
+//     🔴 WHY THE SCAN IS NOT WIDENED. Catching *ast.FuncType would find
+//     WithReleaseWhen and MISS WithReleaseStrategy (a named type), and could
+//     never express defaultRelease (no parameter). It would also have to decide
+//     WHICH func-typed options are sizing knobs — a judgement go/ast cannot
+//     make without go/types and a loadable build of all 8 modules, the exact
+//     coupling the filesystem walk exists to avoid (ADR 0032 D-AA). A gate that
+//     covers one of three while READING as complete is worse than a stated
+//     limitation; that is the same inversion D-AB was written to stop.
+//
+// # methodCount STAYS 27 — GroupDialect.AddMember DOES NOT MOVE IT (D-AL/D-AB)
+//
+// Plan 031 gave GroupDialect.AddMember a new `int` parameter (the per-group
+// member cap). Two independent reasons that changes nothing here, both stated
+// so the next reader neither re-derives them nor bumps the assertion to make
+// the gate pass:
+//
+//  1. IT IS A METHOD, excluded by the ratified Recv == nil boundary above. And
+//     all three shipped dialect implementations ALREADY carry a `seq int64`
+//     parameter, so they were ALREADY inside methodCount before the new
+//     parameter existed — this header names one of them,
+//     postgresGroupDialect.AddMember, in the boundary section. Adding a
+//     parameter to an already-matching method is a no-op for the count.
+//     🔴 DO NOT bump require.Equal(t, 27, methodCount, ...). Re-derived by
+//     Plan 031 Task 9 on this tree: 19 functions / 27 methods.
+//  2. IT IS NOT A CLASS MEMBER under ADR 0032 D-AB's criterion ("n is the sole
+//     bound on an accumulation"): maxMembers IS the bound, not a quantity
+//     bounded by something else. So it needs no manual conformance row either —
+//     the Recv == nil boundary's "exactly two excluded class members"
+//     (memory.QueueStore.Claim, channel.QueueChannel.Poll) still holds.
 
 import (
 	"context"
@@ -193,20 +285,25 @@ import (
 // Half 1 — completeness (AST)
 // ---------------------------------------------------------------------------
 
-// sizingConformanceKeys is Spec 016 §2's conformance key set: the 17 exported
-// `With...` sizing options that take an int/int64 PLUS
+// sizingConformanceKeys is Spec 016 §2's conformance key set: EVERY exported
+// `With...` sizing option that takes an int/int64, PLUS
 // resilience.NewTokenBucket's positional `burst` (§2's note — the scan is
-// "any position", not "first", precisely so this one is not invisible).
+// "any position", not "first", precisely so this one is not invisible). Its
+// length is deliberately not restated in prose; len(sizingConformanceKeys) is
+// the number, and half 1 logs the AST-derived figure it must equal.
 //
 // RE-DERIVED, not copied, from a go/ast walk of all 8 modules — two prior
 // revisions of Spec 016 printed a stale count (16 under a 17-row table) that
 // would have made this gate fail on its first run (Spec 016 §2, revision-2
-// BLOCKER-1). Re-derive with:
+// BLOCKER-1). 🔴 Those two digits are a HISTORICAL fact about that spec's
+// revision history, NOT a count of this tree — a count sweep must leave them
+// alone, and every sweep so far has had to re-decide that. Re-derive the LIVE
+// figure with:
 //
 //	git ls-files '*.go' | grep -v _test | xargs grep -hnE \
-//	  '^func With[A-Za-z]+(\[[^]]*\])?\([a-z]+ (int|int64)\)' | wc -l   # → 17 `With...` options
+//	  '^func With[A-Za-z]+(\[[^]]*\])?\([a-z]+ (int|int64)\)' | wc -l   # → the `With...` options
 //
-// and cross-check the full 18 (including the positional burst) against
+// then add the positional burst and cross-check the total against
 // TestSizingOptionClass_Completeness's own output below, which is the
 // authoritative source — not this comment, not the spec.
 var sizingConformanceKeys = []string{
@@ -242,8 +339,9 @@ var sizingConformanceKeys = []string{
 // `WithSizes(ns ...int)` be silently invisible to half 1 while the file
 // header, Spec 016 §6 AC-5 and ADR 0032 D-AA all promise the scan fails in
 // EITHER direction for an int parameter in ANY position. No such declaration
-// exists in the tree today (the key set is unchanged at 17 with the unwrap in
-// place, which is itself the evidence), so this closes a latent hole rather
+// exists in the tree today (the key set is unchanged BY the unwrap — adding it
+// reclassified nothing, which is itself the evidence), so this closes a latent
+// hole rather
 // than reclassifying anything. A NAMED type — `type Bytes int64` — remains
 // invisible, and is stated as an accepted limitation in the header rather
 // than silently assumed away: resolving it needs go/types, not go/ast.
@@ -353,10 +451,14 @@ func TestSizingOptionClass_Completeness(t *testing.T) {
 	t.Logf("=== EXPORTED METHODS with int/int64 param: %d (excluded by the Recv==nil boundary, Spec 016 §2.0)",
 		methodCount)
 
+	// The key count in this message is FORMATTED FROM len(want), never typed:
+	// a hand-typed "18-key" here went stale the moment Plan 031 appended two
+	// keys, and an assertion message never fails, so nothing caught it
+	// (Plan 031 Task 9).
 	assert.Equal(t, want, found, "the AST-discovered set of exported sizing-shaped functions must match "+
-		"Spec 016 §2's 18-key conformance set in BOTH directions (ADR 0032 D-AA). A new sizing option must be "+
+		"Spec 016 §2's %d-key conformance set in BOTH directions (ADR 0032 D-AA). A new sizing option must be "+
 		"folded into sizingConformanceKeys AND given a row in TestSizingOptionClass_Conformance — this diff "+
-		"alone is not the gate, it is half of it.")
+		"alone is not the gate, it is half of it.", len(want))
 
 	// The Recv == nil boundary (Spec 016 §2.0) is a ratified, DO-NOT-RELITIGATE
 	// decision — this assertion does not move it. It exists so a change to the
@@ -488,9 +590,10 @@ func runAndStop(t *testing.T, run func(ctx context.Context) error) (stop func())
 	}
 }
 
-// sizingConformanceCase is one of the 20 rows Spec 016 §6 AC-5 half 2
-// requires: 18 AST-discovered keys (matching sizingConformanceKeys) plus 2
-// manual rows for the Recv == nil boundary's two excluded class members.
+// sizingConformanceCase is one of the rows Spec 016 §6 AC-5 half 2 requires:
+// one per AST-discovered key (the table's key set must equal
+// sizingConformanceKeys) plus 2 manual rows for the Recv == nil boundary's two
+// excluded class members. require.Len(t, tests, ...) below carries the total.
 // assert is a closure, never a want/wantErr field pair (project table-test
 // rule) — each row's construction differs too much (different packages,
 // different constructor shapes) to share one SUT call.
@@ -504,10 +607,12 @@ type sizingConformanceCase struct {
 // half 1 discovers is EXECUTABLE, never a declaration string (round-1 M-4).
 func TestSizingOptionClass_Conformance(t *testing.T) {
 	tests := []sizingConformanceCase{
-		// ---- arm: fixed — the 13 class members bounded here: 9 by Spec 016 /
-		// Plan 029, memory.WithMaxGroupMembers by Spec 017 / Plan 031, then the
-		// 3 msghttp byte caps that moved out of "deferred" at Spec 018 /
-		// Plan 032 (the three int64-typed rows at the end) ----
+		// ---- arm: fixed — the class members bounded here: 9 by Spec 016 /
+		// Plan 029, memory.WithMaxGroupMembers AND sql.WithMaxGroupMembers by
+		// Spec 017 / Plan 031, then the 3 msghttp byte caps that moved out of
+		// "deferred" at Spec 018 / Plan 032 (the three int64-typed rows at the
+		// end). The arm's SIZE is byArm's, asserted at the foot of this
+		// function — not restated here (Plan 031 Task 9) ----
 		{
 			key: "endpoint.WithMaxInFlight",
 			arm: "fixed",
@@ -746,7 +851,7 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 		//
 		// math.MaxInt, NOT any reject-arm literal (Plan 030 Task 2; Plan 032 —
 		// since the three int64-typed byte caps joined "fixed", the reject arms
-		// carry TWO literals, 1<<30 for their 10 int-typed rows and 1<<62 for
+		// carry TWO literals, 1<<30 for their int-typed rows and 1<<62 for
 		// their 3 int64-typed ones, so naming just one of them here would go
 		// stale): 1<<30 IS an int32 value, so it would leave every
 		// require.NoError below green while the int32-truncation probe stopped
@@ -838,7 +943,18 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 			key: "resilience.NewTokenBucket",
 			arm: "safe",
 			assert: func(t *testing.T) {
-				rl, err := resilience.NewTokenBucket(1, math.MaxInt) // burst is the 17th key, positional
+				// `burst` arrives POSITIONALLY, not through a With... option —
+				// sizingConformanceKeys' one non-`With...` key, and the reason
+				// half 1 scans "any position" rather than "the first parameter".
+				// (From 3569d16 until Plan 031 Task 9 this comment instead gave
+				// burst's ORDINAL POSITION in sizingConformanceKeys — a
+				// hand-maintained index, true only while nothing was inserted
+				// ahead of it. Tasks 1 and 5 inserted two keys and it silently
+				// became wrong; nothing could have caught it, since the index
+				// was asserted nowhere. The PROPERTY is stable, the ordinal
+				// never was, so state the property and keep the index out of
+				// the file entirely.)
+				rl, err := resilience.NewTokenBucket(1, math.MaxInt)
 				require.NoError(t, err, "accepts math.MaxInt — burst is a scalar comparison, safety cause (a)")
 				require.NoError(t, rl.Wait(t.Context()),
 					"product usable: a bucket that starts full at burst tokens must admit immediately")
@@ -900,12 +1016,18 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 	require.Equal(t, want, astKeys,
 		"every key in sizingConformanceKeys must have exactly one conformance row — half 2 must be executable "+
 			"for every key half 1 discovers, never a declaration string (Spec 016 §6 AC-5)")
+	// The literal 21 stays literal — ADR 0033 D-AL ratifies FOUR executable
+	// assertions a new sizing option must edit, and this is one of them; making
+	// it len(sizingConformanceKeys)+2 would silently drop it to three. Only the
+	// MESSAGE is derived, because a message never fails and so can rot unseen.
 	require.Len(t, tests, 21,
-		"19 AST rows + 2 manual rows (memory.QueueStore.Claim, channel.QueueChannel.Poll — Spec 016 §2.0)")
+		"%d AST rows + 2 manual rows (memory.QueueStore.Claim, channel.QueueChannel.Poll — Spec 016 §2.0)",
+		len(sizingConformanceKeys))
 
 	// The ARM PARTITION is normative, so assert it rather than merely naming it
 	// in a subtest prefix. Spec 016 §2.1's arm table and §6 AC-5 both fix the
-	// split — 13/1/0/6 since Spec 017 added memory.WithMaxGroupMembers and
+	// split — the one the byArm literal below states, moved most recently when
+	// Spec 017 added memory.WithMaxGroupMembers AND sql.WithMaxGroupMembers and
 	// Spec 018 moved the three msghttp byte caps out of
 	// "deferred"; without this, a contributor could move a row between
 	// arms — precisely the reclassification that round-4 BLOCKER-1
@@ -915,7 +1037,7 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 	// the subtest name. A verdict nothing asserts is a comment.
 	//
 	// Asserted as a key->arm MAPPING, not a per-arm COUNT (Task 8 review M-1):
-	// a count map (map[string]int{"fixed": 12, ...}) is blind to a PAIRWISE
+	// a count map (map[string]int{"fixed": N, ...}) is blind to a PAIRWISE
 	// swap — relabel two keys' arms in opposite directions and every count
 	// stays put, so the gate would stay green through exactly the
 	// reclassification this comment describes. Binding each key to its own

@@ -1430,6 +1430,26 @@ groupstore_unit_test.go}`, `sizing_option_class_gate_test.go`, **`adapter/databa
       *"burst is the 17th key, positional"*, valid only if the two new keys were appended **after**
       `resilience.NewTokenBucket`.
 
+      > 🔴 **THE SCRIPT ABOVE IS ITSELF DEFECTIVE — the remedy for hand-typed counts was built out of hand-typed
+      > counts. Found at execution time by sweeping exhaustively instead of trusting it.**
+      >
+      > Its number selector is a **hand-typed alternation**, `N='12|17|19|21|27|44|46'`, so it is structurally
+      > blind to **13, 18, 20 and 45** — and arm D's filter is `substr($0,1,2)=="//"`, which cannot see an
+      > **indented** comment. Measured on the pre-Task-9 tree, it **missed 9 stale sites**, including the file's
+      > **canonical partition statement**: `// 13 + 1 + 6 = 20 rows = 18 AST keys + 2 manual rows.` The single
+      > line most worth catching was invisible to the catcher.
+      >
+      > **This is the project's stored lesson *"a selector must match the property, not the string"*, committed
+      > into the plan as the fix for the previous instance of that same lesson.** A selector built from the digits
+      > that happened to be wrong last time finds last time's defect and nothing else. Four rounds patched
+      > instances (7 → 12 → 14 → 16 → 17 sites) and were overtaken each time; this script would have been the
+      > fifth.
+      >
+      > **Sweep by PROPERTY: every comment line at any indentation bearing any digit, judged individually.** The
+      > durable fix Task 9 actually shipped is not a better selector — it is **deleting the digits**: seven
+      > per-arm restatements collapsed to **one**, two assertion messages now formatted from `len(...)`, and the
+      > ordinal removed. **The classes the script scans for (C, D2, E) now return nothing, permanently.**
+      >
       > 🔴 **REVISION 4 SAID *"ten in all / two executable"*. Both halves were wrong** (audit **R4-2**, **R4-1**).
       > It is **27 sites, four executable — and THREE of the four move.** The two that revisions 1-4 never named
       > are `wantArms` and the `byArm` literal, and they are `require`, so **Tasks 1 and 5 abort without them**
