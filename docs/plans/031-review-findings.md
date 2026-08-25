@@ -1,6 +1,29 @@
 # Plan 031 — whole-branch review findings (Task 10 Steps 1–2)
 
-> **Status: OPEN — 3 of 20 DECIDED, 0 fixed.** This is the disposition list the delivery gate produced; CLAUDE.md
+> ## 🔴 LIVE STATUS — 5 of 15 FIXED (2026-08-26)
+>
+> | Finding | State |
+> |---|---|
+> | **R-7**, **R-15**, **R-10** | ✅ **DECIDED + FIXED** — [ADR 0033](../adrs/0033-group-member-bounds.md) D-AU / D-AV / D-AW, delivered by [Plan 031](031-group-member-bounds.md) Task 11 Step 2 |
+> | **R-3**, **R-4** | ✅ **FIXED** with R-10 — the same twelve lines of `Handle`; repairing that branch three times would have been three rewrites of one contract block |
+> | **R-6**, **R-9**, **R-12** | ⏭️ next (Task 11 Step 3) — R-9 is a **delivery blocker** |
+> | **R-1**, **R-5**, **R-8**, **R-11**, **R-14** | ⏭️ Task 11 Step 4 |
+> | **R-2**, **R-13** | ⏭️ **RECOVERED** — the coordinator's first decomposition covered only 13 of the 15; both were re-surfaced by the agent repairing the branch they sit in |
+> | §6's five capped items | ⏭️ Task 11 Step 5. **Item 3 (Spec 017's stale status line) is DONE** |
+>
+> **Two corrections to THIS document, both found while fixing it — the record is evidence, so they are annotated,
+> not rewritten:**
+>
+> 1. **R-7's site column wrongly lists `adapter/memory/groupstore.go` as a twin of the three dialects.** It is
+>    not. `memory` has no lease TTL by construction, so `!g.leased` is a sound liveness test there. D-AU is
+>    scoped to `sql`, and `memory` was deliberately left unchanged.
+> 2. **R-2's citation of `groupstore.go:78-86` for *"may rely on this unconditionally"* is wrong.** `git log -S`
+>    shows that phrase only ever lived in `routing/aggregator.go`'s DIRECTION RULE; the root SPI godoc never
+>    contained it. **The substantive complaint was still correct** — the root godoc did make an unqualified
+>    never-upgrades promise, in different words, and it has been qualified. *(The project's standing lesson that
+>    a citation is stale when written, holding inside the document that records the lessons.)*
+>
+> **Status: OPEN — 5 of 15 fixed.** This is the disposition list the delivery gate produced; CLAUDE.md
 > requires every entry to be **fixed** or **explicitly triaged with a written rationale** before the branch merges.
 > **Do not merge `chore/backlog-sweep-post-029` while any row is un-dispositioned.**
 >

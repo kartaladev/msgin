@@ -31,12 +31,27 @@ package msgin_test
 //                      sql.WithMaxGroupMembers by Spec 017 / Plan 031; the 3
 //                      msghttp byte caps joined them from "deferred" at
 //                      Spec 018 / Plan 032.
-//       - "rejects"  — msghttp.WithSuccessStatus. It is safe (a) by §2.1's
-//                      criterion and NOTHING HERE FIXES IT; it rejects 1<<30
-//                      only through its own pre-existing [100,599] check. It
-//                      gets an arm of its own because it belongs in neither
-//                      "fixed" (not a class member) nor "safe" (which asserts
-//                      ACCEPTS).
+//       - "rejects"  — an exported int-parameter function that is NOT a class
+//                      member yet still refuses an absurd value through a check
+//                      of its own. It belongs in neither "fixed" (which asserts
+//                      a class member's remedy) nor "safe" (which asserts
+//                      ACCEPTS). Two members:
+//                        * msghttp.WithSuccessStatus — safe (a) by §2.1's
+//                          criterion, and NOTHING HERE FIXES IT; it rejects
+//                          1<<30 only through its own pre-existing [100,599]
+//                          check.
+//                        * sql.ValidateMaxMembers — the SPI-boundary check
+//                          ADR 0033 D-AV adds to GroupDialect.AddMember's
+//                          maxMembers. Not a class member for the reason the
+//                          methodCount section below already states for
+//                          AddMember itself: under D-AB's criterion maxMembers
+//                          IS the bound, not a quantity bounded by something
+//                          else. It is nonetheless an exported, Recv == nil
+//                          function with an int parameter, so half 1 discovers
+//                          it and it needs a row. Its rejection is
+//                          msgin.Permanent — alone among the ErrInvalidCapacity
+//                          producers here — because it is returned from a
+//                          per-message hot path, not from a constructor.
 //       - "deferred" — no members as of Plan 032; see Spec 018. The arm is
 //                      retained so a future knob with a genuinely deferred
 //                      remedy has it, and so this file keeps documenting four
@@ -59,10 +74,10 @@ package msgin_test
 //   - require.Len(t, tests, ...) — the row total.
 //
 // Read those three literals for the split; do not re-copy them up here. As of
-// this increment they read 14 fixed + 1 rejects + 0 deferred + 6 safe = 21
-// rows = 19 AST keys + 2 manual rows (ADR 0033 D-AL) — stated ONCE, in prose
-// that names its own source, rather than spread across the arm bullets.
-// 🔴 Reconcile by NAME, never by total: 11+1+3+6 and 14+1+0+6 BOTH total 21,
+// this increment they read 14 fixed + 2 rejects + 0 deferred + 6 safe = 22
+// rows = 20 AST keys + 2 manual rows (ADR 0033 D-AL, D-AV) — stated ONCE, in
+// prose that names its own source, rather than spread across the arm bullets.
+// 🔴 Reconcile by NAME, never by total: 11+2+3+6 and 14+2+0+6 BOTH total 22,
 // and revisions 1-4 of ADR 0033 shipped the wrong partition for exactly that
 // reason.
 //
@@ -326,6 +341,10 @@ var sizingConformanceKeys = []string{
 	"routing.WithCompletionSize",
 	"resilience.WithBreakerThreshold",
 	"resilience.NewTokenBucket", // positional `burst`, not a `With...` option
+	// The SPI-boundary validator ADR 0033 D-AV adds — a positional
+	// `maxMembers int`, not an option, and in the "rejects" arm for the reason
+	// that arm's bullet gives.
+	"sql.ValidateMaxMembers",
 }
 
 // hasIntOrInt64Param reports whether ft declares an int or int64 typed
@@ -544,7 +563,7 @@ func (c nullConnector) Open(string) (driver.Conn, error) { return c.Connect(cont
 // (root-module, blackbox) file cannot reach them.
 type nullGroupDialect struct{}
 
-func (nullGroupDialect) AddMember(context.Context, msginsql.Querier, string, string, string, int64, []byte, []byte, int) (msginsql.GroupRows, error) {
+func (nullGroupDialect) AddMember(context.Context, msginsql.Querier, string, string, string, int64, []byte, []byte, int, time.Duration) (msginsql.GroupRows, error) {
 	return msginsql.GroupRows{}, nil
 }
 
@@ -796,7 +815,7 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 					"msghttp: max response bytes out of range: msghttp.WithMaxResponseBytes: 4611686018427387904 not in [1, 2147483647]")
 			},
 		},
-		// ---- arm: rejects — 1 row that is NOT a class member and is NOT fixed here ----
+		// ---- arm: rejects — rows that are NOT class members and are NOT fixed here ----
 		// M2 (Task 7 review): this row previously sat in the arm labelled "fixed",
 		// where a reader re-deriving Spec 016 §2.1 counted 10 class members against
 		// the spec's 9 — the exact count drift that spec fought through six
@@ -812,6 +831,35 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 				_, err := msghttp.NewConfig(msghttp.WithSuccessStatus(1 << 30))
 				require.ErrorIs(t, err, msghttp.ErrInvalidStatusCode)
 				assert.EqualError(t, err, "msghttp: status code must be in [100,599]")
+			},
+		},
+		// The second "rejects" row, added by ADR 0033 D-AV. Same shape as the
+		// one above and for the same reason: half 1 discovers it (exported,
+		// Recv == nil, `maxMembers int`), but it is not a Spec 016 class member
+		// — under ADR 0032 D-AB's criterion maxMembers IS the bound, not a
+		// quantity bounded by something else, which is exactly what the
+		// methodCount section of this header says about GroupDialect.AddMember,
+		// the method this function guards.
+		//
+		// 🔴 IT IS THE ONE ErrInvalidCapacity PRODUCER IN THIS FILE THAT IS
+		// msgin.Permanent, and the assertion below is deliberate, not a copy
+		// slip. Every other row here is an OPTION validated at construction, so
+		// ADR 0029 D-M keeps it bare. This one is returned from
+		// GroupDialect.AddMember, a per-message hot path: an invalid constant
+		// argument fails identically on every redelivery, so a transient
+		// classification is B-1's unlogged zero-delay Nack loop under the
+		// shipped zero-value msgin.RetryPolicy.
+		{
+			key: "sql.ValidateMaxMembers",
+			arm: "rejects",
+			assert: func(t *testing.T) {
+				err := msginsql.ValidateMaxMembers("msgin/sql/postgres: AddMember", 1<<30)
+				require.ErrorIs(t, err, msgin.ErrInvalidCapacity)
+				assert.True(t, msgin.IsPermanent(err),
+					"a hot-path sizing reject is Permanent, unlike the constructor arms (ADR 0031 D-V)")
+				assert.EqualError(t, err,
+					"msgin: permanent: msgin: capacity out of range: msgin/sql/postgres: AddMember: "+
+						"1073741824 not in [1, 1048576] and not UnboundedGroupMembers (-1)")
 			},
 		},
 
@@ -1020,7 +1068,7 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 	// assertions a new sizing option must edit, and this is one of them; making
 	// it len(sizingConformanceKeys)+2 would silently drop it to three. Only the
 	// MESSAGE is derived, because a message never fails and so can rot unseen.
-	require.Len(t, tests, 21,
+	require.Len(t, tests, 22,
 		"%d AST rows + 2 manual rows (memory.QueueStore.Claim, channel.QueueChannel.Poll — Spec 016 §2.0)",
 		len(sizingConformanceKeys))
 
@@ -1055,6 +1103,7 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 		"routing.WithCompletionSize":         "fixed",
 		"msghttp.WithReplayBuffer":           "fixed",
 		"msghttp.WithSuccessStatus":          "rejects",
+		"sql.ValidateMaxMembers":             "rejects",
 		"msghttp.WithMaxBodyBytes":           "fixed",
 		"msghttp.WithMaxEventBytes":          "fixed",
 		"msghttp.WithMaxResponseBytes":       "fixed",
@@ -1074,13 +1123,14 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 	require.Equal(t, wantArms, gotArms,
 		"Spec 016 §2.1's arm table and §6 AC-5 fix EVERY key's arm, not just the per-arm counts: 14 class "+
 			"members fixed here (9 by Spec 016/Plan 029, 2 by Spec 017/Plan 031, 3 by Spec 018/Plan 032), "+
-			"1 that rejects without "+
-			"being a class member (msghttp.WithSuccessStatus), 0 deferred (the arm is a tombstone since "+
+			"2 that reject without "+
+			"being class members (msghttp.WithSuccessStatus, sql.ValidateMaxMembers), 0 deferred (the arm "+
+			"is a tombstone since "+
 			"Spec 018), 6 safe (4 AST + 2 manual). Moving a row between arms is a "+
 			"SPEC change — update §2.1 and §6 AC-5, do not just edit this map")
-	require.Equal(t, map[string]int{"fixed": 14, "rejects": 1, "safe": 6}, byArm,
+	require.Equal(t, map[string]int{"fixed": 14, "rejects": 2, "safe": 6}, byArm,
 		"the per-arm counts follow from wantArms above; a mismatch here means wantArms itself drifted "+
-			"from Spec 016 §2.1's split, now 14/1/0/6. NOTE: byArm is built by COUNTING, so the empty "+
+			"from Spec 016 §2.1's split, now 14/2/0/6. NOTE: byArm is built by COUNTING, so the empty "+
 			"\"deferred\" arm has NO KEY here — do not add \"deferred\": 0, it would fail")
 
 	for _, tc := range tests {

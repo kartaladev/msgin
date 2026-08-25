@@ -724,14 +724,26 @@ error**, and `Aggregator.Handle` re-evaluates the release predicate against it. 
 release.**
 
 ```go
-// routing/aggregator.go — Handle, replacing the bare error return at :412-415
+// routing/aggregator.go — Handle, replacing the bare error return.
+// AS SHIPPED, after findings R-3, R-4 and R-10 (§3.3a.1, §3.3b).
+// Re-derive rather than trust this block:
+//   awk '/group, err := a.store.Add/,/^\tif isNilGroup/' routing/aggregator.go
 group, err := a.store.Add(ctx, key, msg)
 if err != nil {
-    if group == nil {
-        return err // unchanged for every store that returns (nil, err)
+    if !errors.Is(err, msgin.ErrOverflowDropped) {
+        return err // not the overflow contract — every other fault propagates unchanged
+    }
+    if isNilGroup(group) {
+        return err // unchanged for every store that returns (nil, err), typed or not
+    }
+    if len(group.Messages()) == 0 {
+        return err // an empty residual means the claim holder is already draining it
     }
     ok, rerr := a.cfg.release(group)
-    if rerr != nil || !ok {
+    if rerr != nil {
+        return errors.Join(err, rerr) // both causes reach the operator (§3.3b, D-AW)
+    }
+    if !ok {
         return err // nothing to drain — §3.3.1's classification stands
     }
     claim, cerr := a.store.ClaimGroup(ctx, key)
@@ -739,14 +751,23 @@ if err != nil {
         return cerr
     }
     if claim == nil {
-        return a.overflowRetryable(key, err) // another holder is releasing it
+        return overflowRetryable(key) // another holder is releasing it
     }
     if relErr := a.release(ctx, claim); relErr != nil {
         return relErr
     }
-    return a.overflowRetryable(key, err) // drained — the retry WILL be admitted
+    return overflowRetryable(key) // drained — the retry WILL be admitted
 }
 ```
+
+> 🔴 **THIS BLOCK WAS STALE IN TWO WAYS UNTIL THE POST-DELIVERY SWEEP, AND ONE OF THEM PREDATES THE R-3/R-4/R-10
+> FIXES.** It showed `if group == nil` (now the three gates above) — expected, since the fixes are newer than the
+> block — but it also showed **`a.overflowRetryable(key, err)`**, a method taking the store error, and the shipped
+> helper has **never** had that shape. It is a package-level `overflowRetryable(key string) error`
+> (locate it with `grep -n 'func overflowRetryable' routing/aggregator.go`) that mints a fresh error and
+> deliberately does **not** carry the store's marker forward. The spec asserted a signature the increment never
+> wrote. **The same block, with the same wrong call, is in
+> [ADR 0033 D-AN](../adrs/0033-group-member-bounds.md).**
 
 `overflowRetryable` mints a fresh **transient** error rather than unwrapping the permanent marker:
 
@@ -755,42 +776,78 @@ fmt.Errorf("%w: routing.Aggregator.Handle: group %q drained by this release; ret
     msgin.ErrOverflowDropped, key)
 ```
 
-#### 3.3a.1 🔴 The branch has SIX exits, and each one is a hot-path branch
+#### 3.3a.1 🔴 EVERY exit of the branch is a hot-path branch — and each one is named by its CONDITION, never by an ordinal
 
 > **Revision 2's coverage tables named four** — Plan 031's B1-11…B1-14 and §6 AC-9 rows 12-13 (audit **N-7**).
 > [CLAUDE.md](../../CLAUDE.md)'s test-coverage gate makes *every* early-return on the hot path a delivery blocker,
-> and two of the missing ones are not innocuous.
+> and two of the missing ones were not innocuous.
+>
+> 🔴 **REVISIONS 2-6 HEADED THIS SECTION *"The branch has SIX exits"*, AND THE POST-DELIVERY REVIEW FIXES MOVED
+> THE NUMBER.** Findings **R-3** and **R-4** turned the single `group == nil` entry test into three gates and
+> **R-10 / D-AW** split the merged strategy exit, so the count is no longer six.
+> **The number is deliberately not restated here** — this project has had four rounds of hand-patched counts
+> overtaken by the next commit. Derive it, at the commit you are reading, with:
+>
+> ```bash
+> # returns between Add's error test and the success path's nil guard — 9 at the time of writing
+> awk '/group, err := a.store.Add/{f=1; next} f && /^\tif isNilGroup/{exit} \
+>      f && /^\t\t+return /{n++} END{print n}' routing/aggregator.go
+> ```
+>
+> 🔴 **THE FIRST VERSION OF THAT COMMAND, WRITTEN IN THIS SAME SWEEP, PRINTED `14`.** It bounded the range at
+> `/^func isNilGroup/` — the helper's *declaration*, far below — so it swept the success path's returns in too.
+> A derivation command is only better than a transcribed digit if it is itself checked against a known answer.
+> **The table below has exactly one row per exit — count the rows, then check that the command agrees.** At the
+> commit that wrote this note both gave **9**; if they ever disagree, the command is what is wrong.
+> *(Project lesson: "vacuity-probe every gate" — the gate here is the command itself.)*
+>
+> 🔴 **AND THE EXITS ARE NO LONGER NUMBERED, ANYWHERE.** Every artifact that said *"exits 3 and 5"* or *"exits 4
+> and 6"* meant a row position in the table below, and the R-3/R-4 gates shifted all four of those positions at
+> once — an ordinal is a citation that rots on the next insertion, exactly like a `file:line`. Rows are keyed by
+> the **condition** instead; cite `cerr != nil`, not "exit 3".
 
-| # | Exit | Covered by | Why it needs its own case |
+| Exit (by condition) | Returns | Covered by | Why it needs its own case |
 |---|---|---|---|
-| 1 | `group == nil` ⇒ `return err` | AC-1's four cases via a `(nil, err)` stub store | the compatibility arm every pre-existing store takes |
-| 2a | `!ok` (the strategy declined) ⇒ `return err` | AC-1 | the store's D-AM classification stands |
-| **2b** | **`rerr != nil` (the strategy ERRORED) ⇒ `return err`** | **NEW** | a mutant dropping this half of the `||` **claim-and-releases a group the strategy rejected** — the strategy's error is not a "no" |
-| **3** | **`cerr != nil` (`ClaimGroup` failed) ⇒ `return cerr`** | **NEW** | returning `cerr` **discards the overflow classification**: the caller loses `ErrOverflowDropped` and sees a store error instead — **and, because `cerr` carries no `Permanent` marker, a TRANSIENT one.** Deliberate; assert it. **See the direction rule below: this is one of the two exits that do NOT downgrade on evidence of drainage** |
-| **4** | **`claim == nil` (another holder) ⇒ `return overflowRetryable(…)`** | **NEW** | **a deliberate divergence from the normal path**, which returns **`nil`** for the identical condition (`routing/aggregator.go:438-439`, *"another Handle/process is releasing this group; held"*). Here the member was never stored, so `nil` would Ack an unstored message — hence retryable. **Say so in the godoc**, or the next reader "fixes" it |
-| **5** | **`relErr != nil` (the release failed) ⇒ `return relErr`** | **NEW** | the Nack then names the **output channel**, not the cap. An operator debugging a full group is pointed at the wrong subsystem unless the error is asserted. **`relErr` is likewise unmarked, hence transient — the second exit that does not downgrade on evidence of drainage** |
-| 6 | drained ⇒ `return overflowRetryable(…)` | AC-1b steps 3-4 | the self-healing path |
+| `!errors.Is(err, msgin.ErrOverflowDropped)` | `err` | *"a NON-overflow store error with a POPULATED snapshot is returned verbatim"* and its zero-value-snapshot twin | **finding R-3.** The branch implements the OVERFLOW contract, so it is gated on the sentinel, not on the structural accident that a snapshot came back. `sql.GroupStore.Add` ends in `decodeGroupRows`, which returns a **non-nil** `msgin.MessageGroup` (a `sql.groupSnapshot` value) beside a header-decode fault; under the old `group == nil` test that fault got the group claimed, aggregated, emitted and settled |
+| `isNilGroup(group)` | `err` | AC-1's cases via a `(nil, err)` stub store, plus *"a TYPED-nil snapshot is caught by the same guard"* | the compatibility arm every pre-existing store takes — **widened by R-3's secondary hole** to TYPED nils. `group == nil` is an interface-nil test, and `(*yourGroup)(nil)` — the value this spec's own conformance idiom produces — passes it and then nil-derefs |
+| `len(group.Messages()) == 0` | `err` | *"over cap: a ZERO-MEMBER live snapshot skips the release attempt"* | **finding R-4.** An empty live residual means another holder's claim covers every member and is draining the group, so there is nothing to release and the store's transient classification is exactly right. It also keeps a zero-member group away from a release strategy that is not obliged to survive one (`g.Messages()[0]` panics, and inside a Consumer that panic is recovered as the *transient* `ErrHandlerPanic` and retried forever) |
+| `rerr != nil` (the strategy FAILED) | `errors.Join(err, rerr)` | *"a release-strategy failure is JOINED with the store's error, not swallowed"* + the two escalation rows | **§3.3b / D-AW.** A strategy's error is not a "no": the group must not be claimed and released, **and** the caller's own fault must not be reported as a cap rejection. See §3.3b for the intended `IsPermanent` escalation |
+| `!ok` (the strategy DECLINED) | `err`, unchanged | AC-1 | declining is not a fault; the store's D-AM classification is the whole story, and the error keeps its original identity rather than becoming a single-element join |
+| `cerr != nil` (`ClaimGroup` failed) | `cerr` | AC-9's `ClaimGroup`-failure case | returning `cerr` **discards the overflow classification**: the caller loses `ErrOverflowDropped` and sees a store error instead — **and, because `cerr` carries no `Permanent` marker, a TRANSIENT one.** Deliberate; assert it. **See the direction rule below: this is one of the two exits that do NOT downgrade on evidence of drainage** |
+| `claim == nil` (another holder) | `overflowRetryable(key)` | AC-9's another-holder case | **a deliberate divergence from the success path**, which returns **`nil`** for the identical condition (*"another Handle/process is releasing this group; held"*). Here the member was never stored, so `nil` would Ack an unstored message — hence retryable. **Say so in the godoc**, or the next reader "fixes" it |
+| `relErr != nil` (the release failed) | `relErr` | AC-9's release-failure case | the Nack then names the **output channel**, not the cap. An operator debugging a full group is pointed at the wrong subsystem unless the error is asserted. **`relErr` is likewise unmarked, hence transient — the second exit that does not downgrade on evidence of drainage** |
+| drained (fall-through) | `overflowRetryable(key)` | AC-1b steps 3-4 | the self-healing path |
 
-**Killing mutants** are in §6 AC-9 rows 12a-12d.
+**Killing mutants** are in §6 AC-9 rows 12a-12h, one per row above that is not already covered by row 12.
 
-#### 🔴 The direction rule that governs all six — RESTATED in revision 4, because the revision-3 form was false for two of them
+#### 🔴 The direction rule that governs every exit — RESTATED in revision 4, and QUALIFIED after delivery by D-AW
 
 > **Revision 3 wrote:** *"the Aggregator may only ever **DOWNGRADE** the store's classification (permanent →
 > transient), never upgrade it"*, and §3.7 promoted it into the SPI as *"on positive evidence that the group
-> drained."* **Exits 3 and 5 violate that** (audit **NEW-6**).
+> drained."* **The `cerr != nil` and `relErr != nil` exits violate that** (audit **NEW-6**).
 
 `cerr` and `relErr` carry **no `Permanent` marker**, and an unmarked error is **transient** by construction
-(`IsPermanent` matches `*permanentError` via `errors.As` — `reliability.go:86-97`). So both exits replace the
-store's *permanent* classification with a *transient* one — **and they do it because the drain FAILED**, which is
-evidence of the opposite of drainage. **The true rule, in two clauses:**
+(`IsPermanent` matches `*permanentError` via `errors.As` — locate it with `grep -n 'func IsPermanent' reliability.go`).
+So both exits replace the store's *permanent* classification with a *transient* one — **and they do it because the
+drain FAILED**, which is evidence of the opposite of drainage. **The true rule, in two clauses:**
 
-1. **The Aggregator NEVER UPGRADES.** A transient rejection is never turned permanent, on any of the six exits.
-   This is the half a store author can rely on, and it is unconditional.
-2. **It either DOWNGRADES on positive evidence of drainage** — exits **4** and **6**, which mint a fresh transient
-   `overflowRetryable` because the group provably just shrank or is provably being drained by another holder —
-   **or REPLACES the overflow error entirely with a distinct fault, carrying that fault's own classification** —
-   exits **3** and **5**, where the reported failure is no longer *"the group is full"* but *"the claim failed"* /
-   *"the release failed"*.
+1. **The Aggregator NEVER UPGRADES ON ITS OWN ACCOUNT.** No exit of its own re-marks a transient rejection
+   permanent; `Handle` adds no marker anywhere in this branch.
+
+   > 🔴 **THIS CLAUSE READ *"…never turned permanent, on any of the six exits. This is the half a store author can
+   > rely on, and it is unconditional"* UNTIL D-AW, AND *"unconditional" IS NOW FALSE.** The `rerr != nil` exit
+   > returns `errors.Join(err, rerr)`; `IsPermanent` uses `errors.As`, which traverses `Unwrap() []error`; so a
+   > `Permanent`-marked **release-strategy** error makes the reported error permanent even when the store's
+   > overflow arm was transient (§3.3b). The marker still does not originate in `Handle` — it comes from the
+   > **caller's own strategy** — but a store author who read the old sentence as *"my transient rejection always
+   > reaches the consumer as transient"* was reading a promise the Aggregator does not make. **State the
+   > qualification wherever the clause is stated**; §3.7 and `groupstore.go`'s SPI godoc both carry it.
+
+2. **It either DOWNGRADES on positive evidence of drainage** — the `claim == nil` and drained exits, which mint a
+   fresh transient `overflowRetryable` because the group provably just shrank or is provably being drained by
+   another holder — **or REPLACES the overflow error entirely with a distinct fault, carrying that fault's own
+   classification** — the `cerr != nil` and `relErr != nil` exits, where the reported failure is no longer *"the
+   group is full"* but *"the claim failed"* / *"the release failed"*.
 
 **The consequence, stated rather than left to be discovered: a persistently failing claim/release path RETRIES
 rather than terminating.** Under the zero-value `RetryPolicy` that is an unlogged, zero-delay Nack loop — B-1's
@@ -808,12 +865,13 @@ the source **Ack a message that was never aggregated** — the delivery-guarante
 the over-cap member silently."* Transient is right here and does not re-litigate §3.3.1: the group provably just
 shrank, so the retry provably succeeds.
 
-**Why the direction is safe, scoped to the exits it is true of.** For exits **4** and **6** the store's default is
-the conservative one (permanent, no spin) and only **positive evidence of drainability** downgrades it, so a bug in
-the *drain-detection* logic costs a dead-letter rather than a production-down spin. **That sentence does not extend
-to exits 3 and 5** (audit **NEW-6**): there the overflow error is replaced by a store or channel fault whose own
-classification governs, and a persistently failing claim/release path therefore retries. Revision 3's unqualified
-*"a bug in the drain path costs a dead-letter, not a production-down spin"* is deleted.
+**Why the direction is safe, scoped to the exits it is true of.** For the `claim == nil` and drained exits the
+store's default is the conservative one (permanent, no spin) and only **positive evidence of drainability**
+downgrades it, so a bug in the *drain-detection* logic costs a dead-letter rather than a production-down spin.
+**That sentence does not extend to the `cerr != nil` and `relErr != nil` exits** (audit **NEW-6**): there the
+overflow error is replaced by a store or channel fault whose own classification governs, and a persistently
+failing claim/release path therefore retries. Revision 3's unqualified *"a bug in the drain path costs a
+dead-letter, not a production-down spin"* is deleted.
 
 **Scope, measured — and why `sql` implements it anyway.** The deadlock is `memory`-only and id-less-only: with a
 non-empty id the dedup branch returns the snapshot with a **nil** error and `Handle` reaches the predicate anyway,
@@ -825,12 +883,16 @@ live-member `SELECT` already runs, gains a `LIMIT maxMembers+1`, and the rejecte
 materialized `[]MemberRow` in Go before the rows are returned with the error (§3.6).
 
 **The SPI change is additive.** §3.7's contract gains a **MAY**; a store returning `(nil, err)` keeps working
-through `Handle`'s `group == nil` arm, and the existing `(nil, nil)` guard at `aggregator.go:416-424` is untouched.
+through `Handle`'s nil-snapshot arm, and the pre-existing `(nil, nil)` SPI-violation guard on the success path is
+untouched. *(Post-delivery, finding **R-3** generalised BOTH of those guards from `group == nil` to the shared
+`isNilGroup` helper, so the typed-nil case is closed at the two snapshot entry points rather than at the one the
+finding named. Locate them with `grep -n 'isNilGroup' routing/aggregator.go`.)*
 
 ### 3.3b 🔴 REVISION 6 — a release-strategy FAILURE is joined, not swallowed (D-AW, finding R-10)
 
-**Normative.** In §3.3a.1's overflow branch, `Handle` must distinguish the two conditions its single exit
-currently merges:
+**Normative.** In §3.3a.1's overflow branch, `Handle` must distinguish the two conditions that were merged into a
+single `if rerr != nil || !ok { return err }` exit before this revision — they are now two separate exits, keyed
+in §3.3a.1's table as `rerr != nil` and `!ok`:
 
 | The release strategy… | `Handle` returns | Why |
 |---|---|---|
@@ -1406,17 +1468,32 @@ defect (ADR 0033 **D-AH**):
 > full-but-releasable group is not deadlocked by its own bound (§3.3a). Returning `(nil, err)` remains valid and is
 > what every pre-existing implementation does.
 >
-> When the Aggregator acts on that snapshot it **NEVER UPGRADES** the implementation's classification: a transient
-> rejection is never turned permanent. It either **downgrades** the rejection to a fresh transient overflow error
-> **on positive evidence that the group drained** (or that another holder is draining it), **or it replaces the
-> overflow error entirely with a distinct fault — a claim failure or a release failure — which carries that
-> fault's own classification, not the implementation's.** An implementation MUST NOT assume its `msgin.Permanent`
-> marker survives to the consumer on every path: when the Aggregator's claim or release fails, an unmarked (hence
-> transient) fault is reported instead, so a **persistently failing claim/release path retries rather than
-> terminating** (§3.3a.1).
+> **That re-evaluation is CONDITIONAL.** Three gates decide whether the Aggregator touches the snapshot at all, and
+> when any of them fails the error is returned unchanged and the snapshot is ignored entirely (§3.3a.1): the error
+> must carry `msgin.ErrOverflowDropped` — this clause is the *overflow* contract, so a snapshot handed back beside
+> any **other** fault is never acted on; the snapshot must be non-nil, **typed nils included** (a
+> `(*yourGroup)(nil)`, the value the conformance idiom produces, is rejected exactly like an untyped nil); and the
+> snapshot must hold **at least one member**, an empty live residual meaning another holder's claim already covers
+> the group and is draining it.
+>
+> When the Aggregator does act on that snapshot it **NEVER UPGRADES** the implementation's classification **on its
+> own account**: no path of its own re-marks a transient rejection permanent. It either **downgrades** the
+> rejection to a fresh transient overflow error **on positive evidence that the group drained** (or that another
+> holder is draining it), **or it replaces the overflow error entirely with a distinct fault — a claim failure or a
+> release failure — which carries that fault's own classification, not the implementation's.**
+>
+> **That is not an unconditional promise.** When the **caller's** release strategy FAILS, the Aggregator returns
+> `errors.Join(overflowErr, strategyErr)`; `msgin.IsPermanent` uses `errors.As`, which traverses the join, so a
+> `msgin.Permanent`-marked strategy error makes the reported error permanent even though the implementation
+> classified its own rejection transient. The marker is the caller's, not the Aggregator's — but it reaches the
+> consumer all the same (§3.3b).
+>
+> An implementation MUST NOT assume its `msgin.Permanent` marker survives to the consumer on every path either:
+> when the Aggregator's claim or release fails, an unmarked (hence transient) fault is reported instead, so a
+> **persistently failing claim/release path retries rather than terminating** (§3.3a.1).
 
 **The MAY is deliberate.** A store that cannot cheaply produce the live set on the rejection path must not be
-forced to; `Handle`'s `group == nil` arm keeps it working, it simply forgoes the self-healing.
+forced to; `Handle`'s nil-snapshot arm keeps it working, it simply forgoes the self-healing.
 
 **This is a contract addition to a shipped SPI, and it is not enforced by the compiler.** A third-party store that
 ignores it still compiles. §6 AC-7 states what the increment does instead: both first-party stores get a
@@ -1637,12 +1714,15 @@ Specifically required, each cross-referenced from the plan task that writes it s
      rollback only when the dialect owns the transaction; a **direct dialect caller** supplying a `*sql.Tx` owns the
      rollback and MUST treat `msgin.ErrOverflowDropped` as a rollback trigger.
 7. **`routing.Aggregator.Handle`** — §3.3a's snapshot-with-error branch: what a non-nil group beside a non-nil
-   error means, why the release is re-evaluated rather than the member re-admitted, the **direction rule in its
-   restated two-clause form** (§3.3a.1 — *never upgrade*; downgrade on evidence of drainage **or** replace the
-   overflow with a distinct fault carrying its own classification, so a persistently failing claim/release path
-   **retries**), and — explicitly — **why `claim == nil` returns a retryable error here where the success path
-   returns `nil` at `aggregator.go:438-439`** (the member was never stored, so `nil` would Ack an unstored message).
-   Without that sentence the divergence reads as a bug and gets "fixed."
+   error means, why the release is re-evaluated rather than the member re-admitted, **the three entry gates**
+   (§3.3a.1 — the `ErrOverflowDropped` sentinel, `isNilGroup`, and the zero-member residual, each returning the
+   store's error unchanged), the **direction rule in its restated two-clause form** (§3.3a.1 — *never upgrade
+   **on Handle's own account***; downgrade on evidence of drainage **or** replace the overflow with a distinct
+   fault carrying its own classification, so a persistently failing claim/release path **retries**), **the joined
+   release-strategy failure and its intended `IsPermanent` escalation** (§3.3b), and — explicitly — **why
+   `claim == nil` returns a retryable error here where the success path returns `nil`** (the member was never
+   stored, so `nil` would Ack an unstored message). Without that sentence the divergence reads as a bug and gets
+   "fixed."
 
 > **The recurring failure mode this list exists to prevent** — the project's stored lesson *"docs can contradict
 > the code they describe"*: all three fix rounds in Plan 028 were godoc, not logic, and **round 1 of this audit
@@ -2007,15 +2087,21 @@ to delete AC-7 and fold the requirement into AC-1 and AC-4 — not to restore a 
    `Recv == nil`, `int`-parameter functions in **root-module** packages, so the AST scan finds them: **17 → 19**.
    Half 1 is **exact set equality in both directions** (`grep -n 'assert.Equal(t, want, found'
    sizing_option_class_gate_test.go`), so `sizingConformanceKeys` must gain both **in the same commit as the
-   option itself** — see the ordering box below.
-2. **Half 2 gains two rows in the `fixed` arm, AND THE TWO EXACT-MAP ASSERTIONS THAT GUARD THE ARMS.** Arm totals
-   become **14 fixed + 1 rejects + 0 deferred + 6 safe = 21 rows = 19 AST keys + 2 manual rows.** **Re-derive from
-   the arm table; do not increment.**
+   option itself** — see the ordering box below. 🔴 **`17 → 19` is this item's own two keys, NOT the increment's
+   final key count** — item 2d adds a third. Re-derive the total from
+   [Spec 016 §2.1](016-sizing-option-bounds.md); never read it off this arrow.
+2. **Half 2 gains two rows in the `fixed` arm, AND THE TWO EXACT-MAP ASSERTIONS THAT GUARD THE ARMS.** 🔴 **The
+   resulting arm totals are DELIBERATELY NOT WRITTEN HERE.** Every prior revision of this item carried a spelled-out
+   partition and every one of them went stale inside a single increment — including this one's, which read
+   `14 fixed + 1 rejects + 0 deferred + 6 safe = 21 rows = 19 AST keys + 2 manual rows` until **D-AV** (item 2d)
+   added a third key. **Re-derive from [Spec 016 §2.1](016-sizing-option-bounds.md)'s derivation block — the single
+   canonical source for this partition — at the commit you are working on; do not increment, and do not copy the
+   result back into this file.**
 
    > 🔴 **REVISIONS 1-4 READ *"11 fixed + 1 rejects + 3 deferred + 6 safe = 21"*, AND THE COMPOSITION IS WRONG
    > EVEN THOUGH THE TOTAL IS RIGHT** (audit **R4-2**). [Plan 032](../plans/032-byte-cap-ceilings.md) moved the three
-   > `msghttp` byte caps out of `deferred` into `fixed` and **tombstoned the `deferred` arm empty**, so the file
-   > now reads `12 + 1 + 6 = 19`. `11+1+3+6` and `14+1+0+6` **both total 21** — *the total survived by
+   > `msghttp` byte caps out of `deferred` into `fixed` and **tombstoned the `deferred` arm empty**, so at
+   > `f39725d` the file read `12 + 1 + 6 = 19`. `11+1+3+6` and `14+1+0+6` **both total 21** — *the total survived by
    > coincidence, which is precisely why a total is not a partition.* **This is the project's `43 ≠ 43` lesson:
    > reconcile by NAME, never by count.**
    >
@@ -2073,6 +2159,17 @@ to delete AC-7 and fold the requirement into AC-1 and AC-4 — not to restore a 
    the arm table from the tree at fold-back time rather than transcribing a count written earlier** — the
    precedent [Plan 032](../plans/032-byte-cap-ceilings.md) set when its own audit reached this question. **A fold-back that
    carries a pre-computed number is R4-2 again, one artifact over.**
+
+2d. 🔴 **AND THE INCREMENT GAINED A THIRD KEY AFTER DELIVERY — `sql.ValidateMaxMembers`, in the `rejects` arm**
+   ([ADR 0033 **D-AV**](../adrs/0033-group-member-bounds.md); [Plan 031](../plans/031-group-member-bounds.md)
+   Task 11; §3.6a). The validator R-15 forced onto `GroupDialect.AddMember`'s `maxMembers` is an **exported,
+   `Recv == nil`, `int`-parameter function in a root-module package**, so half 1 discovers it and it must carry a
+   row — but it is **not a class member** (under [ADR 0032](../adrs/0032-sizing-option-bounds.md) **D-AB**,
+   `maxMembers` *is* the bound), so it joins `WithSuccessStatus` in `rejects`, the **first** row that arm has ever
+   gained. **This is why items 1 and 2 above deliberately no longer state the increment's totals**: half 1's key
+   set is no longer "the option census plus one", and this key arrived from a *review finding* after the plan's
+   own arithmetic had been settled and audited four times. **[Spec 016 §2.1](016-sizing-option-bounds.md) is the
+   one place the partition is stated, and it is re-derived there, not transcribed.**
 
 3. **A NEW accepted limitation is added to the gate's header**, alongside the four it already states: *"a bound
    that does not arrive as an integer parameter is invisible — a func-typed option (`*ast.FuncType`), a named
@@ -2146,10 +2243,22 @@ gate, each of these is a hot-path or typed-error branch needing a named covering
 | **10** | **`g.leased` ⇒ transient** | same | wrap unconditionally ⇒ AC-2c's leased twin fails |
 | **11** | **`Add` returns the live snapshot with the error** | `memory.GroupStore.Add` / each dialect | return `nil`/empty rows ⇒ **AC-1b** step 3 and **AC-4.4** fail |
 | **12** | **`Handle`'s snapshot-with-error branch re-fires the release** | `routing/aggregator.go`, §3.3a | delete the branch (`return err` unconditionally) ⇒ **AC-1b** fails |
-| **12a** | **`rerr != nil` — the release STRATEGY errored ⇒ the store's classification stands** | same, §3.3a.1 exit 2b | drop `rerr != nil` from the `||` ⇒ a strategy returning `(true, err)` gets its group **claimed and released** |
-| **12b** | **`cerr != nil` — `ClaimGroup` failed ⇒ return `cerr`** | same, exit 3 | return `err` instead ⇒ the case's assertion on the `ClaimGroup` error fails (the overflow classification would mask a store fault) |
-| **12c** | **`claim == nil` — another holder ⇒ TRANSIENT, diverging from the success path's `nil`** | same, exit 4 (cf. `aggregator.go:438-439`) | return `nil` ⇒ the member is silently lost and no other case notices |
-| **12d** | **`relErr != nil` — the release failed ⇒ return the RELEASE error** | same, exit 5 | return the overflow error ⇒ the case's message assertion fails (an operator would be pointed at the cap, not the output channel) |
+| **12a** | **`rerr != nil` — the release STRATEGY FAILED ⇒ `errors.Join(err, rerr)`** | same, §3.3a.1's `rerr != nil` exit; §3.3b | **(a)** restore the merged `if rerr != nil \|\| !ok { return err }` ⇒ the join case's `ErrorIs(err, strategyErr)` fails; **(b)** `return rerr` alone ⇒ the same case's `ErrorIs(err, msgin.ErrOverflowDropped)` fails. **Both were executed and both killed** |
+| **12b** | **`cerr != nil` — `ClaimGroup` failed ⇒ return `cerr`** | same, the `cerr != nil` exit | return `err` instead ⇒ the case's assertion on the `ClaimGroup` error fails (the overflow classification would mask a store fault) |
+| **12c** | **`claim == nil` — another holder ⇒ TRANSIENT, diverging from the success path's `nil`** | same, the `claim == nil` exit | return `nil` ⇒ the member is silently lost and no other case notices |
+| **12d** | **`relErr != nil` — the release failed ⇒ return the RELEASE error** | same, the `relErr != nil` exit | return the overflow error ⇒ the case's message assertion fails (an operator would be pointed at the cap, not the output channel) |
+| **12e** | **the branch is entered on the `msgin.ErrOverflowDropped` SENTINEL, not on `group != nil`** (finding **R-3**) | same, §3.3a.1's first gate | revert the gate to `if group == nil` ⇒ *"a NON-overflow store error with a POPULATED snapshot is returned verbatim"* fails: a header-decode fault gets its group claimed, aggregated, emitted and settled |
+| **12f** | **`isNilGroup` rejects a TYPED nil, at BOTH snapshot guards** (finding **R-3**, secondary) | same, the overflow-path guard **and** the success-path `(nil, nil)` guard | replace either call with `group == nil` ⇒ the matching typed-nil case nil-derefs. **Two mutants, one per call site, both executed and both killed** — a single-site mutant would have left the other guard's regression invisible |
+| **12g** | **the zero-member residual is refused BEFORE the release strategy runs** (finding **R-4**) | same, §3.3a.1's third gate | **(a)** delete the guard ⇒ *"a ZERO-MEMBER live snapshot skips the release attempt"* fails (an indexing strategy panics); **(b)** weaken `len(…) == 0` to `len(…) < 0` ⇒ the guard is dead code and the same case fails. **(b) exists because a deleted guard and a neutered one are different defects** |
+| **12h** | **a DECLINING strategy (`!ok`, no error) returns the store's error UNCHANGED** | same, the `!ok` exit | neutralise the exit (fall through to `ClaimGroup`) ⇒ a group the strategy declined is claimed and released |
+
+> 🔴 **ONE MUTANT SURVIVED, AND ITS SURVIVAL IS CORRECT — RECORDED SO NOBODY "FIXES" IT.** Reversing the join's
+> operands, `errors.Join(err, rerr)` → `errors.Join(rerr, err)`, leaves every case green. That is the right
+> outcome: operand order changes only the ORDER OF LINES IN `Error()`'s string, while `errors.Is` and `errors.As`
+> traverse the whole `Unwrap() []error` tree regardless of position — so nothing in the contract depends on it.
+> **Adding an assertion to kill this mutant would pin a formatting detail, not a behavior**, and would then have
+> to be maintained against every future change to the message. Under the project's standing rule (*"mutation-test
+> every new assertion"*) a survivor must be either killed or **justified in writing**; this is the justification.
 | **13** | **`Handle` returns a TRANSIENT error after a successful drain** | same | return the store's permanent error ⇒ AC-1b step 4 never runs; return `nil` ⇒ AC-1b's silent-loss assertion fails |
 | **14** | **the `default ≥ completionSizeCeiling` AST invariant, BOTH stores** | root blackbox test, AC-3.3 | change any of the three literals ⇒ fails; rename a constant ⇒ the not-found guard fires; drop the `sql` file from the parse set ⇒ fails |
 | **15** | **`ClaimGroup` passes `limit = 0` to `*SelectMembers`** | `MemberCapCountsClaimedMembers_ClaimSetIsComplete` | `ClaimGroup`'s fetch `0` → **`3`** at cap 4 ⇒ the claimed set is truncated ⇒ fails. **NOT `maxMembers+1`** — see the box below (§3.6.3, audit **N-5**) |
@@ -2171,6 +2280,12 @@ gate, each of these is a hot-path or typed-error branch needing a named covering
 > delivery blocker, and 12c is a **deliberate divergence** from the success path that nothing tested. **15 is the
 > sharpest of the five**: without it, a `LIMIT` that leaks into `ClaimGroup` silently releases incomplete
 > aggregates — the data corruption §5 rejects, arrived at through a shared helper rather than a design choice.
+>
+> **Branches 12e-12h are the WHOLE-BRANCH REVIEW's** (findings **R-3**, **R-4**, **R-10**) — added *after* the
+> increment shipped and *after* four audit rounds had signed off on 12a-12d. That is the point of them: every one
+> guards an entry condition the branch simply did not test, and 12e is the sharpest — under the old `group == nil`
+> gate a **header-decode fault** was sufficient to claim, aggregate, emit and settle a group, and the whole suite
+> was green. The lesson is the project's own: *whole-branch review catches what per-task review misses.*
 >
 > **Branch 16 is round 3's, and it is the sharpest row in the whole table** (audit **NEW-7**). Every other row
 > protects a behavior; 16 protects the increment's **reason to exist**. Without it, `sql`'s cap is a bound that
@@ -2357,13 +2472,18 @@ starts. **Item 5 is new in revision 2 and is now the most consequential of them.
    is mitigated by routing both through the same `a.release` helper and by AC-1b. *Recommendation: accept — the
    alternative is the M-6 deadlock, and no cheaper fix was found.* **Round 2 did not disagree and supplied no
    cheaper fix — but it measured the surface at SIX exits where the artifacts covered four** (§3.3a.1, audit
-   **N-7**), one of which (`claim == nil`) is a deliberate, previously undocumented divergence from
-   `aggregator.go:438-439`. Revision 3 covers all six. **Round 3 then found that the direction rule revision 3
-   promoted into the SPI is FALSE for two of them** (audit **NEW-6**): exits 3 and 5 replace the store's
-   permanent classification with an unmarked, hence transient, fault **because the drain failed**. §3.3a.1 and
-   §3.7 now state the true two-clause rule, and the consequence — *a persistently failing claim/release path
-   retries rather than terminating* — is accepted rather than engineered away, because marking a store or channel
-   fault `Permanent` merely for having been reached through an overflow would dead-letter on the wrong cause.
+   **N-7**), one of which (`claim == nil`) is a deliberate, previously undocumented divergence from the success
+   path. Revision 3 covers all six. **Round 3 then found that the direction rule revision 3
+   promoted into the SPI is FALSE for two of them** (audit **NEW-6**): the `cerr != nil` and `relErr != nil` exits
+   replace the store's permanent classification with an unmarked, hence transient, fault **because the drain
+   failed**. §3.3a.1 and §3.7 now state the true two-clause rule, and the consequence — *a persistently failing
+   claim/release path retries rather than terminating* — is accepted rather than engineered away, because marking
+   a store or channel fault `Permanent` merely for having been reached through an overflow would dead-letter on
+   the wrong cause. 🔴 **The WHOLE-BRANCH REVIEW then grew the surface again, and vindicated the concern this item
+   records**: findings **R-3** and **R-4** showed the branch was entered on the wrong condition entirely and could
+   hand a zero-member group to a caller's strategy, and **R-10 / D-AW** added a joined exit whose classification
+   *escalates* (§3.3b). *The exits are no longer numbered anywhere — §3.3a.1 keys them by condition, because the
+   three new gates shifted every ordinal these artifacts had cited.*
 7. **🔴 NEW in revision 3 — named `defaultMaxGroupMembers` constants deviate from a shipped precedent**
    (§3.2, ADR 0033 **D-AR**). `adapter/memory` declares its default as a bare `maxGroups: 1024` literal; this
    increment declares both new defaults as `const`s so §6 AC-3.3 has something to parse. *Recommendation: accept —

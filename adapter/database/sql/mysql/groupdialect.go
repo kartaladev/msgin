@@ -73,9 +73,16 @@ func groupTables(table string) (groupTable, memberTable string, err error) {
 	return mysqlQuote(table), mysqlQuote(table + "_member"), nil
 }
 
-func (mysqlGroupDialect) AddMember(ctx context.Context, q msginsql.Querier, table, groupKey, msgID string, seq int64, headers, payload []byte, maxMembers int) (msginsql.GroupRows, error) {
+func (mysqlGroupDialect) AddMember(ctx context.Context, q msginsql.Querier, table, groupKey, msgID string, seq int64, headers, payload []byte, maxMembers int, leaseTTL time.Duration) (msginsql.GroupRows, error) {
 	if msgID == "" {
 		return msginsql.GroupRows{}, msginsql.ErrMissingMsgID
+	}
+	// D-AV: the bound itself is validated BEFORE any statement runs, in the
+	// one shared helper all three dialects call, so maxMembers is provably
+	// UnboundedGroupMembers or in [1, 1<<20] everywhere below — which is what
+	// makes selectLimit's maxMembers+1 total.
+	if err := msginsql.ValidateMaxMembers(groupOverflowSite, maxMembers); err != nil {
+		return msginsql.GroupRows{}, err
 	}
 	gt, mt, err := groupTables(table)
 	if err != nil {
@@ -102,16 +109,33 @@ ON DUPLICATE KEY UPDATE group_key = group_key`, gt, mysqlNowMicros),
 			return err
 		}
 		// Read created_at (the group row is already X-locked by the upsert
-		// above). locked_by rides out of the SAME statement at zero extra
-		// cost: it is what discriminates the member-cap rejection's
-		// classification below (NULL = unleased = permanent; non-NULL = a
-		// claim is in flight = transient — Spec 017 §3.3.1). It is
-		// deliberately NOT added to GroupRows; it is local to this method.
+		// above). The LEASE-LIVENESS flag rides out of the SAME statement at
+		// zero extra cost: it is what discriminates the member-cap rejection's
+		// classification below (no live lease = nothing drains this group =
+		// permanent; a live lease = a claim is in flight = transient —
+		// Spec 017 §3.3.1 as corrected by §3.6a.1). It is deliberately NOT
+		// added to GroupRows; it is local to this method.
+		//
+		// The predicate is the NEGATION of the one ClaimGroup steals on, in
+		// the same file and on the same DB SERVER CLOCK: ClaimGroup takes the
+		// row when `locked_by IS NULL OR locked_at <= now - leaseTTL`, so a
+		// lease is LIVE exactly when neither holds. Testing locked_by alone
+		// would call a CRASHED holder's stranded lease "live" forever and
+		// classify every subsequent over-cap add transient — B-1's unlogged
+		// zero-delay Nack loop (ADR 0033 D-AU, review finding R-7).
+		//
+		// The leaseTTL placeholder sits in the SELECT LIST, so it binds BEFORE
+		// the WHERE clause's groupKey — hence the argument order below.
+		// Scanned as NullBool, not bool: SQL three-valued logic yields NULL if
+		// a row ever held locked_by non-NULL with locked_at NULL (no shipped
+		// statement writes that pair — both are set and cleared together), and
+		// NullBool's zero value maps that to "not live", the conservative arm.
 		var createdMicros int64
-		var lockedBy stdsql.NullString
+		var leaseLive stdsql.NullBool
 		if err := tx.QueryRowContext(ctx,
-			fmt.Sprintf("SELECT created_at, locked_by FROM %s WHERE group_key = ?", gt),
-			groupKey).Scan(&createdMicros, &lockedBy); err != nil {
+			fmt.Sprintf("SELECT created_at, (locked_by IS NOT NULL AND locked_at > %s - ?) FROM %s WHERE group_key = ?",
+				mysqlNowMicros, gt),
+			leaseTTL.Microseconds(), groupKey).Scan(&createdMicros, &leaseLive); err != nil {
 			return err
 		}
 		out.CreatedAt = time.UnixMicro(createdMicros)
@@ -127,13 +151,13 @@ VALUES (?, ?, ?, ?, ?, NULL)`, mt),
 		// mysqlCountMembers: ClaimGroup stamps every live member, so a
 		// live-only count would readmit maxMembers more rows per claim cycle,
 		// forever.
-		if maxMembers > 0 {
+		if maxMembers != msginsql.UnboundedGroupMembers {
 			n, err := mysqlCountMembers(ctx, tx, mt, groupKey)
 			if err != nil {
 				return err
 			}
 			if n > int64(maxMembers) {
-				overflowErr = groupOverflow(groupKey, n, maxMembers, lockedBy.Valid)
+				overflowErr = groupOverflow(groupKey, n, maxMembers, leaseLive.Bool)
 			}
 		}
 		// The live fetch is bounded only here — the helper's limit is 0
@@ -410,19 +434,25 @@ const groupOverflowSite = "msgin/sql/mysql: AddMember"
 
 // groupOverflow builds AddMember's member-cap rejection: the shared
 // msgin.ErrOverflowDropped shape (Spec 017 §3.3), msgin.Permanent-wrapped iff
-// the group is NOT leased. An unleased group at cap will not drain itself, so
-// a transient rejection would hot-spin under the shipped zero-value
-// msgin.RetryPolicy; a LEASED one is about to be drained by the in-flight
-// claim's Settle/Abandon, so its retry genuinely succeeds and it stays
-// transient (Spec 017 §3.3.1, ADR 0033 D-AM).
+// no LIVE lease is draining the group. A group with no lease — or with one that
+// has already aged past leaseTTL, i.e. a CRASHED holder's stranded stamp — will
+// not drain itself, so a transient rejection would hot-spin under the shipped
+// zero-value msgin.RetryPolicy; a group under a LIVE lease is about to be
+// drained by the in-flight claim's Settle/Abandon, so its retry genuinely
+// succeeds and it stays transient (Spec 017 §3.3.1/§3.6a.1, ADR 0033 D-AM as
+// amended by D-AU).
+//
+// leaseLive is computed IN SQL on the DB server clock by the caller, as the
+// negation of ClaimGroup's own steal predicate — never from the app clock, and
+// never from locked_by alone (review finding R-7).
 //
 // n is the count AT THE MOMENT OF THE CHECK — after the member upsert, so it
 // reads one above the limit. Do not "normalise" it to n-1: that renders a
 // count no statement in the transaction ever observed.
-func groupOverflow(groupKey string, n int64, maxMembers int, leased bool) error {
+func groupOverflow(groupKey string, n int64, maxMembers int, leaseLive bool) error {
 	err := fmt.Errorf("%w: %s: group %q holds %d members, limit %d",
 		msgin.ErrOverflowDropped, groupOverflowSite, groupKey, n, maxMembers)
-	if leased {
+	if leaseLive {
 		return err
 	}
 	return msgin.Permanent(err)
@@ -430,7 +460,24 @@ func groupOverflow(groupKey string, n int64, maxMembers int, leased bool) error 
 
 // selectLimit maps AddMember's maxMembers onto mysqlSelectMembers' limit:
 // maxMembers+1 rows are enough to serve the post-rollback snapshot at the cap,
-// and an unbounded (maxMembers <= 0) call keeps the unlimited fetch.
+// and msginsql.UnboundedGroupMembers keeps the unlimited fetch.
+//
+// It is TOTAL because of its PRECONDITION, not because of a clamp:
+// msginsql.ValidateMaxMembers has already refused everything outside
+// {UnboundedGroupMembers} u [1, 1<<20] before AddMember reaches this, so
+// maxMembers+1 cannot overflow. Without that check, selectLimit(math.MaxInt)
+// returned math.MinInt, the `limit > 0` guard then emitted no LIMIT, and
+// `n > int64(maxMembers)` could never fire — the largest expressible bound
+// silently meant NO bound (ADR 0033 D-AV, review finding R-15). The <= 0 arm
+// stays, now reachable only via UnboundedGroupMembers.
+//
+// 🔴 THAT ARM IS NOW ARITHMETICALLY REDUNDANT, AND IT IS KEPT ANYWAY. Since
+// UnboundedGroupMembers is -1, the fallthrough would compute -1+1 = 0, which is
+// already this function's "no LIMIT" value — so deleting the guard is a mutant
+// that SURVIVES the whole conformance suite, correctly. It is retained as
+// executable documentation of the mapping and as insurance against the sentinel
+// ever being renumbered; do not delete it because a coverage tool calls it
+// unreached.
 func selectLimit(maxMembers int) int {
 	if maxMembers <= 0 {
 		return 0

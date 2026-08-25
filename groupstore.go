@@ -71,18 +71,47 @@ type MessageGroupStore interface {
 	// §3.3a). Returning (nil, err) remains valid and is what every pre-existing
 	// implementation does.
 	//
-	// When the Aggregator acts on that snapshot it NEVER UPGRADES the
-	// implementation's classification: a transient rejection is never turned
-	// permanent. It either DOWNGRADES the rejection to a fresh transient
-	// overflow error on positive evidence that the group drained (or that
-	// another holder is draining it), OR IT REPLACES the overflow error
-	// entirely with a distinct fault — a claim failure or a release failure —
-	// which carries that fault's own classification, not the implementation's.
+	// THE RE-EVALUATION IS CONDITIONAL. Three gates decide whether the
+	// Aggregator touches the snapshot at all, and when any of them fails the
+	// error is returned unchanged and the snapshot is ignored entirely
+	// (Spec 017 §3.3a.1):
+	//
+	//   - The error must carry ErrOverflowDropped. This clause is the OVERFLOW
+	//     contract, so a snapshot handed back beside any OTHER fault is never
+	//     acted on: an implementation must not have a group claimed,
+	//     aggregated, emitted and settled because an unrelated error path
+	//     happened to return its zero-value snapshot.
+	//   - The snapshot must be non-nil, TYPED NILS INCLUDED. A
+	//     (*yourGroup)(nil) — the value the conformance idiom
+	//     "var _ MessageGroup = (*yourGroup)(nil)" produces — is rejected
+	//     exactly like an untyped nil, because its methods would panic.
+	//   - The snapshot must hold at least one member. An empty live residual
+	//     means another holder's claim already covers every member and is
+	//     draining the group, so there is nothing to release.
+	//
+	// When the Aggregator does act on that snapshot it NEVER UPGRADES the
+	// implementation's classification ON ITS OWN ACCOUNT: no path of its own
+	// re-marks a transient rejection permanent. It either DOWNGRADES the
+	// rejection to a fresh transient overflow error on positive evidence that
+	// the group drained (or that another holder is draining it), OR IT REPLACES
+	// the overflow error entirely with a distinct fault — a claim failure or a
+	// release failure — which carries that fault's own classification, not the
+	// implementation's.
+	//
+	// THAT IS NOT AN UNCONDITIONAL PROMISE, and an implementation must not
+	// design against it as one. When the CALLER's release strategy FAILS, the
+	// Aggregator returns errors.Join(overflowErr, strategyErr); IsPermanent
+	// uses errors.As, which traverses the join, so a Permanent-marked strategy
+	// error makes the reported error permanent even though the implementation
+	// classified its own rejection transient. The marker is the caller's, not
+	// the Aggregator's — but it reaches the consumer all the same (Spec 017
+	// §3.3b; ADR 0033 D-AW).
+	//
 	// An implementation MUST NOT assume its Permanent marker survives to the
-	// consumer on every path: when the Aggregator's claim or release fails, an
-	// unmarked (hence transient) fault is reported instead, so a persistently
-	// failing claim/release path RETRIES rather than terminating (Spec 017
-	// §3.3a.1).
+	// consumer on every path either: when the Aggregator's claim or release
+	// fails, an unmarked (hence transient) fault is reported instead, so a
+	// persistently failing claim/release path RETRIES rather than terminating
+	// (Spec 017 §3.3a.1).
 	Add(ctx context.Context, key string, msg Message[any]) (MessageGroup, error)
 	// ClaimGroup atomically leases the members present now for key and returns
 	// them plus a fence epoch. It returns (nil, nil) when key is absent or is

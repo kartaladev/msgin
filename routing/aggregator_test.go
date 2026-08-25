@@ -3,6 +3,7 @@ package routing_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"sync"
 	"testing"
@@ -76,6 +77,59 @@ func (s *failingAddStore) Add(context.Context, string, msgin.Message[any]) (msgi
 
 var _ msgin.MessageGroupStore = (*failingAddStore)(nil)
 
+// snapshotErrStore is a MessageGroupStore whose Add returns a scripted
+// (group, err) PAIR — the shape Spec 017 §3.3a made legal — while delegating
+// every other method to the embedded store. It exists to drive the two
+// snapshot-with-error cases a first-party store cannot produce on demand: a
+// NON-overflow error carrying a live snapshot (finding R-3's primary hole, the
+// shape sql.GroupStore.Add takes on a corrupt stored header) and a TYPED-NIL
+// snapshot (R-3's secondary hole).
+type snapshotErrStore struct {
+	msgin.MessageGroupStore
+	group msgin.MessageGroup
+	err   error
+}
+
+func (s *snapshotErrStore) Add(context.Context, string, msgin.Message[any]) (msgin.MessageGroup, error) {
+	return s.group, s.err
+}
+
+var _ msgin.MessageGroupStore = (*snapshotErrStore)(nil)
+
+// valueGroup is a minimal VALUE-typed msgin.MessageGroup a scripted store can
+// hand back beside an error — the shape sql.groupSnapshot takes when
+// decodeGroupRows fails: a zero value, implicitly converted to a NON-nil
+// interface (R-3).
+type valueGroup struct {
+	key  string
+	msgs []msgin.Message[any]
+	at   time.Time
+}
+
+func (g valueGroup) Key() string                    { return g.key }
+func (g valueGroup) Messages() []msgin.Message[any] { return g.msgs }
+func (g valueGroup) CreatedAt() time.Time           { return g.at }
+
+var _ msgin.MessageGroup = valueGroup{}
+
+// ptrGroup is a POINTER-typed msgin.MessageGroup whose every method
+// dereferences the receiver, so a typed-nil (*ptrGroup)(nil) placed in the
+// interface is `!= nil` yet panics on first use. That is R-3's secondary hole
+// and it is not hypothetical: msgin.MessageGroupStore's own godoc tells
+// implementers to assert conformance as `var _ msgin.MessageGroup =
+// (*yourGroup)(nil)`, so pointer-typed snapshots are the invited shape.
+type ptrGroup struct {
+	key  string
+	msgs []msgin.Message[any]
+	at   time.Time
+}
+
+func (g *ptrGroup) Key() string                    { return g.key }
+func (g *ptrGroup) Messages() []msgin.Message[any] { return g.msgs }
+func (g *ptrGroup) CreatedAt() time.Time           { return g.at }
+
+var _ msgin.MessageGroup = (*ptrGroup)(nil)
+
 // nilAddStore is a MessageGroupStore whose Add returns a NIL group snapshot
 // together with a NIL error, breaking the SPI's Add contract. It exists because
 // MessageGroupStore is the PUBLIC adapter SPI: the store is caller-injected, so
@@ -91,6 +145,21 @@ func (s *nilAddStore) Add(context.Context, string, msgin.Message[any]) (msgin.Me
 
 var _ msgin.MessageGroupStore = (*nilAddStore)(nil)
 
+// typedNilAddStore is nilAddStore's twin for the TYPED-nil case: its Add
+// returns a (*ptrGroup)(nil) — an interface that is `!= nil` and panics on
+// first use — together with a nil error. The interface-nil test that catches
+// nilAddStore does not catch this one (Plan 031 finding R-3, whose secondary
+// hole is the same defect on Handle's OTHER snapshot guard).
+type typedNilAddStore struct {
+	msgin.MessageGroupStore
+}
+
+func (s *typedNilAddStore) Add(context.Context, string, msgin.Message[any]) (msgin.MessageGroup, error) {
+	return (*ptrGroup)(nil), nil
+}
+
+var _ msgin.MessageGroupStore = (*typedNilAddStore)(nil)
+
 // TestAggregator_NilGroupFromStoreIsPermanentTypedError covers the choke-point
 // guard in Handle, across EVERY release strategy the Aggregator can be built
 // with.
@@ -103,6 +172,11 @@ var _ msgin.MessageGroupStore = (*nilAddStore)(nil)
 // covers the set. Three of these four cases panicked before the choke-point
 // guard existed.
 //
+// The fifth row adds the OTHER half of "nil": a typed nil. The store dimension
+// does not need crossing with the strategy dimension, because the guard is one
+// choke point — the first four rows prove it precedes all four strategies, and
+// the fifth proves it catches both spellings of nil.
+//
 // It asserts a typed error rather than a silent hold: on a hold Handle returns
 // nil and the source Acks, for a message the store just said it cannot read
 // back — which risks a message that is durable nowhere. The Permanent wrap is
@@ -110,8 +184,9 @@ var _ msgin.MessageGroupStore = (*nilAddStore)(nil)
 // redelivery, so retrying it only burns MaxAttempts).
 func TestAggregator_NilGroupFromStoreIsPermanentTypedError(t *testing.T) {
 	tests := []struct {
-		name string
-		opt  routing.AggregatorOption
+		name  string
+		opt   routing.AggregatorOption
+		store msgin.MessageGroupStore // nil means &nilAddStore{}
 	}{
 		{name: "default release strategy"},
 		{name: "WithCompletionSize", opt: routing.WithCompletionSize(2)},
@@ -125,6 +200,13 @@ func TestAggregator_NilGroupFromStoreIsPermanentTypedError(t *testing.T) {
 				return len(g.Messages()) >= 1, nil
 			}),
 		},
+		{
+			name:  "a TYPED-nil snapshot is caught by the same guard",
+			store: &typedNilAddStore{},
+			opt: routing.WithReleaseStrategy(func(g msgin.MessageGroup) (bool, error) {
+				return len(g.Messages()) >= 1, nil // panics on a typed nil that reaches it
+			}),
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -133,7 +215,11 @@ func TestAggregator_NilGroupFromStoreIsPermanentTypedError(t *testing.T) {
 			if tc.opt != nil {
 				opts = append(opts, tc.opt)
 			}
-			agg, err := routing.NewAggregator[int, int](&nilAddStore{}, sumFn, opts...)
+			var store msgin.MessageGroupStore = &nilAddStore{}
+			if tc.store != nil {
+				store = tc.store
+			}
+			agg, err := routing.NewAggregator[int, int](store, sumFn, opts...)
 			require.NoError(t, err)
 
 			msg := msgin.New[any](1, msgin.WithHeaders(map[string]any{msgin.HeaderCorrelationID: "g"}))
@@ -409,6 +495,67 @@ func cappedAgg(
 		store = wrap(store)
 	}
 	return cappedAggOpts(t, store, out, routing.WithReleaseStrategy(fn))
+}
+
+// handleScriptedAdd drives ONE Handle call against a store whose Add returns
+// the scripted (group, addErr) pair, and reports Handle's error, how many
+// times the release strategy was reached, and the output channel.
+//
+// The strategy is the greediest one possible — it always RELEASES — so any
+// gate that fails to stop an ineligible snapshot is visible twice over: as a
+// non-zero call count, and as an error that is no longer addErr (the embedded
+// store holds no group for the key, so a release attempt returns Handle's own
+// overflowRetryable instead). The embedded store is real, not nil, so a gate
+// failure surfaces as a wrong ERROR rather than as a nil-interface panic.
+func handleScriptedAdd(t *testing.T, group msgin.MessageGroup, addErr error) (int, *fakeAggChannel, error) {
+	t.Helper()
+
+	out := &fakeAggChannel{}
+	calls := 0
+	store := &snapshotErrStore{MessageGroupStore: newIntStore(t), group: group, err: addErr}
+	agg, err := routing.NewAggregator[int, int](store, sumFn,
+		routing.WithOutputChannel(out),
+		routing.WithCorrelationStrategy(fixedKey),
+		routing.WithReleaseStrategy(func(msgin.MessageGroup) (bool, error) {
+			calls++
+			return true, nil
+		}))
+	require.NoError(t, err)
+
+	return calls, out, agg.Handle(t.Context(), msgin.New[any](1))
+}
+
+// driveToLeasedOverflow fills store (cap 4, key "k") to its member cap with a
+// lease held over the FIRST claimedBeforeCap members, then offers one more
+// member and returns Handle's error for it.
+//
+// The lease is what selects the arm under test. memory.GroupStore.Add
+// classifies an over-cap rejection BY CAUSE: Permanent when the group is
+// unleased (nothing will drain it), plain/TRANSIENT while a claim is in
+// flight. Only the transient arm can show that a Permanent release-strategy
+// error ESCALATES the joined classification (D-AW) rather than merely agreeing
+// with a store error that was permanent anyway.
+//
+// claimedBeforeCap also sets how many members are LIVE in the snapshot that
+// rides out with the error: memory returns msgs[claimedLen:], so claiming 2 of
+// 4 leaves a 2-member residual, and claiming all 4 leaves an EMPTY one — the
+// zero-member snapshot finding R-4 is about. The claim is deliberately never
+// settled; the test ends with it still held.
+func driveToLeasedOverflow(t *testing.T, store *memory.GroupStore, agg *routing.Aggregator, claimedBeforeCap int) error {
+	t.Helper()
+
+	for i := range claimedBeforeCap {
+		require.NoError(t, agg.Handle(t.Context(), corrMsg(i, "m"+strconv.Itoa(i), "k", nil)))
+	}
+	claim, err := store.ClaimGroup(t.Context(), "k")
+	require.NoError(t, err)
+	require.NotNil(t, claim, "the lease must be taken, or the overflow arm below is the unleased/Permanent one")
+	require.Len(t, claim.Messages(), claimedBeforeCap)
+
+	for i := claimedBeforeCap; i < memberCapFixture; i++ {
+		require.NoError(t, agg.Handle(t.Context(), corrMsg(i, "m"+strconv.Itoa(i), "k", nil)))
+	}
+	return agg.Handle(t.Context(), corrMsg(9, "m9", "k", nil))
 }
 
 func newIntStore(t *testing.T) *memory.GroupStore {
@@ -1050,10 +1197,23 @@ func TestAggregator_Handle(t *testing.T) {
 			},
 		},
 		{
-			// B1-13b / exit 2b — the strategy ERRORED. A strategy's error is
-			// not a "yes": a mutant dropping `rerr != nil` from the || would
-			// claim and release a group the strategy just rejected.
-			name: "over cap: a release-strategy error keeps the store's classification and releases nothing",
+			// B1-13b / exit 2b — the strategy FAILED. Two things are asserted
+			// here and they are independent:
+			//
+			//  1. A strategy's error is still not a "yes": a mutant dropping
+			//     `rerr != nil` claim-and-releases a group the strategy just
+			//     rejected, so out.count() must stay 0.
+			//  2. 🔴 The error is JOINED, not swallowed (D-AW / Spec 017 §3.3b,
+			//     finding R-10). This line asserted NotErrorIs until
+			//     2026-08-25: the branch merged "declined" with "failed" and
+			//     discarded rerr, so a fault in the CALLER's own strategy
+			//     reached the operator as the store's cap rejection while the
+			//     success path 25 lines below propagated it. That is a
+			//     debuggability defect, not a contract; the assertion was
+			//     REVERSED deliberately and must not be restored. errors.Is
+			//     traverses join trees, so the store's ErrOverflowDropped
+			//     classification (asserted above) survives the join unchanged.
+			name: "over cap: a release-strategy failure is JOINED with the store's error, not swallowed",
 			assert: func(t *testing.T) {
 				out := &fakeAggChannel{}
 				strategyErr := errors.New("strategy boom")
@@ -1065,8 +1225,55 @@ func TestAggregator_Handle(t *testing.T) {
 				err := agg.Handle(t.Context(), corrMsg(9, "m9", "k", nil))
 				require.ErrorIs(t, err, msgin.ErrOverflowDropped)
 				assert.True(t, msgin.IsPermanent(err))
-				assert.NotErrorIs(t, err, strategyErr)
+				assert.ErrorIs(t, err, strategyErr,
+					"D-AW: both causes must reach the operator — see Spec 017 §3.3b before flipping this back")
 				assert.Equal(t, 0, out.count(), "a strategy error must NOT claim-and-release the group")
+			},
+		},
+		{
+			// 🔴 D-AW's sub-decision, asserted rather than merely tolerated:
+			// joining ESCALATES classification. msgin.IsPermanent uses
+			// errors.As, which walks Unwrap() []error, so a Permanent-marked
+			// rerr makes the JOINED error permanent even though the store's
+			// arm here is the LIVE-LEASE one, which is deliberately transient.
+			//
+			// An escalation nobody asserts is an accident waiting to be
+			// "fixed" by the next reader (Spec 017 §3.3b; ADR 0033 D-AW).
+			name: "over cap: a Permanent strategy error escalates a TRANSIENT live-lease overflow",
+			assert: func(t *testing.T) {
+				store := cappedStore(t, memberCapFixture)
+				out := &fakeAggChannel{}
+				strategyErr := errors.New("strategy boom")
+				agg := cappedAggOpts(t, store, out,
+					routing.WithReleaseStrategy(declineThenRelease(memberCapFixture, msgin.Permanent(strategyErr))))
+
+				err := driveToLeasedOverflow(t, store, agg, 2)
+				require.ErrorIs(t, err, msgin.ErrOverflowDropped)
+				require.ErrorIs(t, err, strategyErr)
+				assert.True(t, msgin.IsPermanent(err),
+					"the Permanent rerr must reach IsPermanent THROUGH the join")
+				assert.Equal(t, 0, out.count())
+			},
+		},
+		{
+			// The control for the row above: the SAME fixture with an unmarked
+			// strategy error stays transient. Without this pair the escalation
+			// row proves nothing — the store's own arm could have been the
+			// permanent one all along.
+			name: "over cap: an unmarked strategy error leaves a transient live-lease overflow transient",
+			assert: func(t *testing.T) {
+				store := cappedStore(t, memberCapFixture)
+				out := &fakeAggChannel{}
+				strategyErr := errors.New("strategy boom")
+				agg := cappedAggOpts(t, store, out,
+					routing.WithReleaseStrategy(declineThenRelease(memberCapFixture, strategyErr)))
+
+				err := driveToLeasedOverflow(t, store, agg, 2)
+				require.ErrorIs(t, err, msgin.ErrOverflowDropped)
+				require.ErrorIs(t, err, strategyErr)
+				assert.False(t, msgin.IsPermanent(err),
+					"a claim is in flight, so the store's arm is transient and nothing escalates it")
+				assert.Equal(t, 0, out.count())
 			},
 		},
 		{
@@ -1149,6 +1356,107 @@ func TestAggregator_Handle(t *testing.T) {
 
 				err = agg.Handle(t.Context(), msgin.New[any](1))
 				require.ErrorIs(t, err, addErr)
+				assert.Equal(t, 0, out.count())
+			},
+		},
+
+		// ---- Plan 031 review findings R-3 / R-4: what may ENTER the branch
+		// above, and what the release strategy may be handed once inside. ----
+		{
+			// R-3, primary — and the row that pins the SENTINEL gate on its
+			// own. The snapshot here holds a member, so gates 2 and 3
+			// (typed-nil, zero-member) both pass it through; only the
+			// errors.Is(ErrOverflowDropped) gate can stop it. A mutant
+			// reverting that gate to `group == nil` claims, aggregates, emits
+			// and settles a group over an unrelated store fault, and this row
+			// is what catches it.
+			name: "a NON-overflow store error with a POPULATED snapshot is returned verbatim, never released",
+			assert: func(t *testing.T) {
+				decodeErr := errors.New("decode boom")
+				populated := valueGroup{key: "k", msgs: []msgin.Message[any]{msgin.New[any](7)}}
+
+				calls, out, err := handleScriptedAdd(t, populated, decodeErr)
+				require.ErrorIs(t, err, decodeErr)
+				assert.NotErrorIs(t, err, msgin.ErrOverflowDropped,
+					"a decode fault must not be reported as — or replaced by — a cap rejection")
+				assert.Zero(t, calls, "the release strategy must never see a non-overflow fault's snapshot")
+				assert.Equal(t, 0, out.count())
+			},
+		},
+		{
+			// R-3's PROVEN shape, kept alongside the row above because it is
+			// the one measured in the field: sql.GroupStore.Add ends `return
+			// s.decodeGroupRows(rows)`, which yields a ZERO-VALUE
+			// sql.groupSnapshot — implicitly converted to a NON-nil
+			// msgin.MessageGroup — beside a header-decode error.
+			name: "a NON-overflow store error with a zero-value snapshot is returned verbatim, never released",
+			assert: func(t *testing.T) {
+				decodeErr := errors.New("decode boom")
+
+				calls, out, err := handleScriptedAdd(t, valueGroup{key: "k"}, decodeErr)
+				require.ErrorIs(t, err, decodeErr)
+				assert.NotErrorIs(t, err, msgin.ErrOverflowDropped)
+				assert.Zero(t, calls)
+				assert.Equal(t, 0, out.count())
+			},
+		},
+		{
+			// R-3, secondary. `group == nil` is an INTERFACE-nil test, so a
+			// typed-nil snapshot walks straight past it and nil-derefs on the
+			// first method call. Handle must treat a typed nil exactly as it
+			// treats an untyped one.
+			name: "over cap: a TYPED-NIL snapshot is returned verbatim, never dereferenced",
+			assert: func(t *testing.T) {
+				overErr := fmt.Errorf("%w: fake.GroupStore.Add: group %q is full", msgin.ErrOverflowDropped, "k")
+				var typedNil msgin.MessageGroup = (*ptrGroup)(nil) //nolint:staticcheck // SA4023: see below
+				// staticcheck's SA4023 ("this comparison is always true") is not a
+				// defect here — it is the PROOF, delivered statically, that a typed
+				// nil in an interface is != nil and so walks past a bare == nil
+				// guard. testify's NotNil reports the opposite (it unwraps with
+				// reflection), which is why the raw comparison is used.
+				require.True(t, typedNil != nil, //nolint:staticcheck // SA4023: "always true" IS the property under test
+					"the fixture is only meaningful while a typed nil is `!= nil`")
+
+				calls, out, err := handleScriptedAdd(t, typedNil, overErr)
+				require.ErrorIs(t, err, overErr)
+				assert.Zero(t, calls, "a typed-nil snapshot must not reach the release strategy")
+				assert.Equal(t, 0, out.count())
+			},
+		},
+		{
+			// R-4. When every member is claimed, memory returns
+			// msgs[claimedLen:] — an EMPTY live snapshot — beside the
+			// rejection. A release strategy that indexes Messages()[0] is a
+			// shape no godoc forbids (defaultRelease does it, modulo a len == 0
+			// guard), and inside a Consumer the resulting panic is recovered as
+			// ErrHandlerPanic, which IsPermanent deliberately EXCLUDES — so it
+			// would be retried forever against the same claimed group.
+			//
+			// Handle therefore skips the release attempt outright: an empty
+			// residual means the claim holder is already draining the group, so
+			// there is nothing to release and the store's transient
+			// classification is exactly right.
+			name: "over cap: a ZERO-MEMBER live snapshot skips the release attempt",
+			assert: func(t *testing.T) {
+				store := cappedStore(t, memberCapFixture)
+				out := &fakeAggChannel{}
+				calls := 0
+				indexFirst := func(g msgin.MessageGroup) (bool, error) {
+					calls++
+					_, ok := g.Messages()[0].Header("never-set") // panics on an empty group
+					return ok, nil
+				}
+				agg := cappedAggOpts(t, store, out, routing.WithReleaseStrategy(indexFirst))
+
+				err := driveToLeasedOverflow(t, store, agg, memberCapFixture)
+				require.ErrorIs(t, err, msgin.ErrOverflowDropped)
+				assert.Equal(t, memberCapFixture, calls,
+					"the strategy saw the four non-empty snapshots and must NOT have seen the empty one")
+				assert.False(t, msgin.IsPermanent(err), "a claim is in flight: the store's arm is transient")
+				assert.Contains(t, err.Error(), "memory.GroupStore.Add",
+					"the store's error is returned UNCHANGED")
+				assert.NotContains(t, err.Error(), "routing.Aggregator.Handle",
+					"nothing drained, so no fresh overflowRetryable may be minted")
 				assert.Equal(t, 0, out.count())
 			},
 		},

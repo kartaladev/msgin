@@ -189,10 +189,14 @@ and round 4 returned a BLOCKER that had survived every previous round.
 >
 > **Consequence 3 — the arm ARITHMETIC changed composition, and the total survived by coincidence** (audit
 > **R4-2**). Revisions 1-4 said *"11 fixed + 1 rejects + 3 deferred + 6 safe = 21."* Plan 032 moved the three
-> `msghttp` byte caps out of `deferred` into `fixed` and **tombstoned the `deferred` arm empty**, so the file now
-> reads `12 + 1 + 6 = 19` and the true post-increment partition is:
+> `msghttp` byte caps out of `deferred` into `fixed` and **tombstoned the `deferred` arm empty**, so at `f39725d`
+> the file read `12 + 1 + 6 = 19`, and Tasks 1 and 5 then took it to `14 + 1 + 0 + 6 = 21`.
 >
-> **14 fixed + 1 rejects + 0 deferred + 6 safe = 21 rows = 19 AST keys + 2 manual rows.**
+> 🔴 **THAT IS NOT THIS INCREMENT'S FINAL PARTITION EITHER, AND NO NUMBER IS WRITTEN HERE FOR IT.** Task 11 added
+> a **third** key — `sql.ValidateMaxMembers`, in the **`rejects`** arm ([ADR 0033
+> **D-AV**](../adrs/0033-group-member-bounds.md)) — after the four audit rounds had settled the arithmetic above.
+> **Re-derive from [Spec 016 §2.1](../specs/016-sizing-option-bounds.md)'s derivation block at the commit you are
+> on.** Every version of this box that spelled the partition out was falsified by the next task in its own plan.
 >
 > `11+1+3+6` and `14+1+0+6` both total 21. **That is the project's `43 ≠ 43` lesson landing on this bundle:
 > reconcile by NAME, never by count.** 🔴 **And `byArm` is built by COUNTING, so the empty arm has NO KEY there —
@@ -603,11 +607,19 @@ test is a delivery blocker):
 | **B1-13e** | **`Handle`: `relErr != nil` ⇒ return the RELEASE error, not the overflow error** | `Handle_over_cap_release_failure_returns_the_release_error` | return the overflow error ⇒ the message assertion fails (an operator would be pointed at the cap, not the output channel) |
 | **B1-14** | **`Handle`: `group == nil` ⇒ unchanged path** | `Handle_store_error_without_snapshot_is_returned_verbatim` (a stub store returning `(nil, err)`) | drop the nil guard ⇒ nil-deref panic |
 
-> 🔴 **B1-13b … B1-13e are NEW in revision 3 (audit N-7).** Spec 017 §3.3a's branch has **six** early returns;
-> revision 2's table named four. [CLAUDE.md](../../CLAUDE.md)'s test-coverage gate makes **every** early-return on
+> 🔴 **B1-13b … B1-13e are NEW in revision 3 (audit N-7).** Revision 2's table named four of the branch's early
+> returns. [CLAUDE.md](../../CLAUDE.md)'s test-coverage gate makes **every** early-return on
 > the hot path a delivery blocker, and two of these are not bookkeeping: **B1-13b** guards against
 > claim-and-releasing a group the strategy *rejected*, and **B1-13d** is a **deliberate divergence** from the
-> success path that revision 2 neither tested nor documented. All six exits are tabulated in Spec 017 §3.3a.1.
+> success path that revision 2 neither tested nor documented. The exits are tabulated in Spec 017 §3.3a.1.
+>
+> 🔴 **THIS TABLE IS THE AS-PLANNED SET AND IS NOW SHORT — read Spec 017 §3.3a.1 for the shipped inventory.**
+> The whole-branch review changed three of the rows above and added three more branches to cover:
+> **B1-14**'s `group == nil` became the shared `isNilGroup` helper and is no longer the branch's entry test
+> (**R-3**); the entry test is now `errors.Is(err, msgin.ErrOverflowDropped)`; a zero-member snapshot is refused
+> before the strategy runs (**R-4**); and **B1-13b**'s *"the store's classification stands"* is **reversed** —
+> a failing strategy now returns `errors.Join(err, rerr)` (**R-10 / D-AW**). *This note said "six early returns"
+> until that sweep; the count is no longer restated anywhere, only derived from the code.*
 
 **Also asserted (AC-2b, both ends):** the full construction-time render, not merely `errors.Is` —
 `"msgin: capacity out of range: memory.WithMaxGroupMembers: 1048577 not in [1, 1048576]"` and the `0` twin.
@@ -1337,18 +1349,30 @@ groupstore_unit_test.go}`, `sizing_option_class_gate_test.go`, **`adapter/databa
       > implementation-specific. **Write §3.7's wording, not this step's summary of it.** This is the fourth
       > ratified instruction in Plan 031 found defective at execution time.
 
-      > 🔴 **THE DOWNGRADE-ONLY CLAUSE IS RESTATED IN REVISION 4 — the revision-3 form is FALSE for two of the six
+      > 🔴 **THE DOWNGRADE-ONLY CLAUSE IS RESTATED IN REVISION 4 — the revision-3 form is FALSE for two of the
       > exits** (audit **NEW-6**). Revision 3 promoted N-7's rule into this paragraph as *"may only ever DOWNGRADE
       > … **on positive evidence that the group drained** … a bug in the drain path costs a retry, **never a
-      > message the implementation marked recoverable**."* But **exits 3 and 5** of Spec §3.3a.1's own table —
-      > `cerr != nil` ⇒ `return cerr` and `relErr != nil` ⇒ `return relErr` — **discard the store's
+      > message the implementation marked recoverable**."* But the **`cerr != nil`** and **`relErr != nil`** exits
+      > of Spec §3.3a.1's own table — `return cerr` and `return relErr` — **discard the store's
       > `Permanent`-marked error and return an unmarked, hence transient, one**, and they do it because the drain
       > **FAILED**: evidence of the opposite of drainage. Under `RetryPolicy{}` that is B-1's unlogged zero-delay
       > spin, for the sub-case *"the release fires but claim/release keeps failing"*. **Write the true rule:**
-      > the Aggregator either **downgrades on positive evidence of drainage** (exits 4 and 6) **or replaces the
-      > overflow error entirely with a distinct fault carrying that fault's own classification** (exits 3 and 5);
-      > it **never upgrades** a transient rejection to permanent; and a **persistently failing claim/release path
-      > therefore RETRIES rather than terminating.** Spec §3.7 carries the wording — copy it, do not paraphrase.
+      > the Aggregator either **downgrades on positive evidence of drainage** (the `claim == nil` and drained
+      > exits) **or replaces the overflow error entirely with a distinct fault carrying that fault's own
+      > classification** (the `cerr != nil` and `relErr != nil` exits); it **never upgrades** a transient rejection
+      > to permanent; and a **persistently failing claim/release path therefore RETRIES rather than terminating.**
+      > Spec §3.7 carries the wording — copy it, do not paraphrase.
+
+      > 🔴 **AND THAT WORDING WAS ITSELF OVERTAKEN AFTER DELIVERY — *"it never upgrades"* IS NOT UNCONDITIONAL.**
+      > **D-AW** (finding **R-10**) made the overflow branch return `errors.Join(err, rerr)` when the release
+      > strategy FAILS. `msgin.IsPermanent` uses `errors.As`, which traverses `Unwrap() []error`, so a
+      > `Permanent`-marked **caller** strategy error makes the reported error permanent even when the store's arm
+      > was transient. **Write *"never upgrades ON ITS OWN ACCOUNT"*** and name the join as the one route by which
+      > a marker the store did not set reaches the consumer (Spec §3.3b, §3.7). The same step must also state the
+      > **three entry gates** **R-3** and **R-4** added — the `ErrOverflowDropped` sentinel, `isNilGroup` (typed
+      > nils included), and the zero-member residual — because the shipped godoc's MAY clause is conditional on
+      > all three. **This is the fifth ratified instruction in Plan 031 found defective, and the first found
+      > defective by the whole-branch review rather than at execution time.**
 - [ ] **Step 3 (AC-7 — ONE named clause, not "§3.7's requirement").** Add one case per first-party store for
       §3.7's **MUST-report** clause, with the store **held in a `msgin.MessageGroupStore` variable** rather than
       its concrete type:
@@ -1457,9 +1481,11 @@ groupstore_unit_test.go}`, `sizing_option_class_gate_test.go`, **`adapter/databa
       >
       > 🔴 **The arm ARITHMETIC also changed composition, not just coordinate.** Revision 4's row 2 read
       > *"9 + 1 + 3 + 6"* and Spec AC-8's twin read *"11 + 1 + 3 + 6 = 21"*. The `deferred` arm is **empty and
-      > tombstoned** since Plan 032; the file reads `12 + 1 + 6 = 19` and the true post-increment partition is
-      > **14 + 1 + 0 + 6 = 21**. `11+1+3+6` also totals 21 — *the total survived by coincidence.* **Reconcile by
-      > name, never by count.**
+      > tombstoned** since Plan 032; at `f39725d` the file read `12 + 1 + 6 = 19`, and Tasks 1 and 5 took it to
+      > `14 + 1 + 0 + 6 = 21`. `11+1+3+6` also totals 21 — *the total survived by coincidence.* **Reconcile by
+      > name, never by count.** 🔴 **And `14 + 1 + 0 + 6` is not the final state either — Task 11 added a
+      > `rejects` row (D-AV). Re-derive from [Spec 016 §2.1](../specs/016-sizing-option-bounds.md); the digits in
+      > this box are a record of what Task 9 walked into, not a target.**
       >
       > 🔴 **And the *"`fixed` ⇒ `1<<30`"* rule is FALSE as a rule** — see Task 1 Step 2's two-dimensional box.
       > When editing the header's literal split, carry *the arm fixes the property; within a reject arm the
@@ -1544,9 +1570,11 @@ AC-5's tabulation, and the plan list).
 - [ ] **Step 3 (§2.1).** Fold `memory.WithMaxGroupMembers` and `sql.WithMaxGroupMembers` into §2.1's table as
       **class members** under §2.1's own criterion (*"n is the sole bound on an accumulation"* — ADR 0032 **D-AB**;
       they are, which is this whole increment's premise), and update any count §2.1 states, **by name**.
-- [ ] **Step 4 (§6 AC-5).** Update AC-5's behavioral-arm tabulation to the re-derived partition — at the time of
-      writing that is **14 fixed / 1 rejects / 0 deferred / 6 safe = 21 rows = 19 AST keys + 2 manual rows**, but
-      **Step 2's output governs, not this sentence.** 🔴 **Carry the `deferred`-is-tombstoned note and the
+- [ ] **Step 4 (§6 AC-5).** Update AC-5's behavioral-arm tabulation to **Step 2's re-derived partition**. 🔴 **No
+      expected partition is written in this step, deliberately** — the one that used to be here
+      (`14 / 1 / 0 / 6 = 21`) was falsified by Task 11 before the increment closed, which is the fifth time on
+      this branch that a written-down partition outlived its truth. **Step 2's output is the only input.**
+      🔴 **Carry the `deferred`-is-tombstoned note and the
       *"`byArm` has NO key for an empty arm"* warning**, so the next increment does not reintroduce `"deferred": 0`.
 - [ ] **Step 5 (TRACEABILITY, both directions).** Add **Plan 031** to Spec 016's *"realized by / amended by"* list
       with a one-line reason, and make the §2.1 and AC-5 edits cite **Spec 017 / ADR 0033 D-AL / Plan 031** so the
@@ -1634,15 +1662,26 @@ green from Tasks 1, 5 and 9, plus the docs-link gate.
       deleted the split that would have made this two half-tests) — is present, non-vacuous (**both** probes: Task
       3 Step 2's value RED and Step 4's not-found RED) and green. **That** is the evidence, and it needs no
       transcribed `grep` output.
-- [ ] **Step 6.** Re-derive, do not transcribe, the figures the artifacts cite: the class-gate key count (expect
-      **19**), method count (expect **27**) and **arm partition** (expect **14 fixed / 1 rejects / 0 deferred /
-      6 safe = 21**, and **no `"deferred"` key in `byArm`**) — all four from **Task 9 Step 3's script**, not from
-      this plan; **confirm Task 9b left Spec 016 §2.1 and §6 AC-5 consistent with that same output**; the
-      `ErrInvalidCapacity` producer count — expect **six**, and
-      reconcile **by option name**: `memory.WithBuffer` (`adapter/memory/memory.go:82`), `memory.WithMaxGroups`
-      (`groupstore.go:105`), `memory.WithCapacity` (`queuestore.go:114`), `routing.WithCompletionSize`
-      (`aggregator.go:354`), plus the two new `WithMaxGroupMembers` sites — and the `ErrOverflowDropped` producer
-      count. **Reconcile by name, never by count** (the project's standing `43 ≠ 43` lesson).
+- [ ] **Step 6.** Re-derive, do not transcribe, the figures the artifacts cite — **from
+      [Spec 016 §2.1](../specs/016-sizing-option-bounds.md)'s derivation block and Task 9 Step 3's script, not
+      from this plan.** 🔴 **This step deliberately states NO expected value except the one the gate pins
+      literally.** Earlier revisions wrote *"expect 19 keys / 14 fixed / 1 rejects / 0 deferred / 6 safe = 21"*
+      and **Task 11 falsified all of them inside this same increment** by adding `sql.ValidateMaxMembers` to the
+      `rejects` arm ([ADR 0033 **D-AV**](../adrs/0033-group-member-bounds.md)); an "expected" figure in a
+      verification step is the defect this step exists to catch. Check:
+      - the class-gate **key count** and **arm partition** against the derivation's output, and that **`byArm`
+        still has no `"deferred"` key**;
+      - the **method count**, which is the one pinned figure — **27**, asserted literally as
+        `require.Equal(t, 27, methodCount, …)`; if it moved, something else is wrong;
+      - that **Task 9b *and* Task 11** left Spec 016 §2.1 and §6 AC-5 consistent with that same output — 🔴 **two
+        Plan 031 tasks amended that delivered spec, not one**;
+      - the `ErrInvalidCapacity` producer set, reconciled **by name, never by count**
+        (`grep -rn 'ErrInvalidCapacity' --include='*.go' . | grep -v _test`): `memory.WithBuffer`,
+        `memory.WithCapacity`, `memory.WithMaxGroups`, `memory.WithMaxGroupMembers`, `routing.WithCompletionSize`,
+        `sql.WithMaxGroupMembers`, **and `sql.ValidateMaxMembers`** — the seventh producer D-AV adds, and the
+        first that is not an option validator;
+      - the `ErrOverflowDropped` producer set, the same way. **Reconcile by name, never by count** (the project's
+        standing `43 ≠ 43` lesson).
 - [ ] **Step 7.** Update `docs/HANDOVER.md`: close §6 backlog item **7**; add the follow-ups Spec 017 §8 records
       (`memory`'s quadratic clone, `sql`'s per-`Add` full-group re-fetch, *cap-without-timeout* diagnostics,
       **`classifyQueryErr`'s extra round-trip — recording that it is bounded ONLY for a NOT-LEASED rejection**,
@@ -1662,6 +1701,13 @@ green from Tasks 1, 5 and 9, plus the docs-link gate.
       revision 5 corrected 41 of the former's coordinates **by hand** after a comment-only commit shifted them.
 - [ ] **Step 8.** Also fix CLAUDE.md's stale `reliability.go:46` citation for `IsPermanent`, which is
       `reliability.go:86-97` (audit m-1 — the same stale citation this bundle inherited).
+      🔴 **AND its stale anchor-link census.** The "Docs links resolve" gate paragraph asserts *"**53** anchor
+      links today, all resolving"*; the tree has **55**. Measured 2026-08-26 during Task 11, and **not** caused by
+      this increment — the sweep that found it added zero anchor links (`git diff` of every `.md` confirms), so it
+      predates this working tree. **Do not transcribe 55 either** — the count is a moving target and the paragraph
+      already says the command is the authority. Prefer deleting the digit and keeping the vacuity-probe
+      instruction, which is the part that has value. (Plan 031 Task 9's *"delete the digits"* remedy, applied to
+      CLAUDE.md itself.)
 - [ ] **Step 9.** Flip the status lines: Spec 017 → DELIVERED, ADR 0033 → ACCEPTED, this plan → DELIVERED — and
       **remove the "without user ratification" banners only if the user has by then ratified them.** If not, leave
       them and say so.
@@ -1718,9 +1764,44 @@ reviewer subagent reviews before delivery. Per-task commits are pre-authorized b
       property, not the string"* lesson**; D-AU's presence is established by its label count and by §3.6a.1
       existing.) **Non-zero in all three artifacts for all three decisions.** Docs-link gate re-run over every
       tracked Markdown file: arm 1 at exactly its **2 known false positives**, arm 2 **zero**.
-- [ ] **Step 2 — implement the three decided changes.** R-7 (`leaseTTL` through the SPI, the three dialects, the
-      harness and every fake dialect), R-15 (sentinel, shared validator, total `selectLimit`), R-10 (`errors.Join`
-      plus the flipped assertion **and** a new row asserting the `Permanent`-escalation arm).
+- [x] **Step 2 — implement the three decided changes. DONE.** R-7 (`leaseTTL` through the SPI, the three dialects,
+      the harness and every fake dialect), R-15 (`UnboundedGroupMembers`, the shared `ValidateMaxMembers`, total
+      `selectLimit`), R-10 (`errors.Join` plus the flipped assertion **and** a row asserting the
+      `Permanent`-escalation arm). **R-3 and R-4 landed with R-10** — they are the same twelve lines, and
+      repairing that branch three times would have been three rewrites of one contract block.
+
+      > **Four things this step turned up that the plan did not predict, recorded so the pattern is visible:**
+      >
+      > 1. **The class-gate quintet fired again.** `sql.ValidateMaxMembers` must be **exported** (three separate
+      >    dialect modules call it), so half 1's AST walk discovers it and root went red the moment it existed.
+      >    Cost: the full five-edit quintet **plus** a second fold-back into delivered **Spec 016** — the same
+      >    Task 9b treatment, on an artifact that is not in this bundle. **D-AL's *"four assertion edits per new
+      >    sizing option"* undercounts: it is per new sizing option OR qualifying exported function.**
+      > 2. **`Handle`'s branch now has NINE exits, not six** — R-3 split entry into three gates and R-10 split
+      >    exit 2. Every ordinal citation across three artifacts was stale; the ordinals were **retired** in
+      >    favour of naming each exit by its condition.
+      > 3. **D-AW falsified the *"NEVER UPGRADES"* promise at SEVEN sites**, including the root SPI godoc that
+      >    tells third-party store authors they may rely on it *"unconditionally"*. All seven now carry the
+      >    qualified form (*"on its own account"*) plus the mechanism — `errors.Join` keeps both causes and
+      >    `errors.As` traverses the join.
+      > 4. **D-AW's own *Rejected* paragraph was internally inconsistent as ratified** and has been rewritten.
+      >    It rejected *"split the two conditions into separate exits"* while the adopted Decision **is** that
+      >    split (*"two statements rather than one unconditional `errors.Join`"*), and it costed the alternative
+      >    by an exit budget that audit **N-7** never established — N-7 was about **uncounted** exits, not a cap
+      >    on how many a branch may have. The alternative actually on the table was *split but still discard
+      >    `rerr`*, and it is now rejected as that. **Found by the reconciling subagent, against text the
+      >    coordinator had written.**
+
+      > 🔴 **R-15's SHARED VALIDATOR IS AN EXPORTED `Recv == nil` FUNCTION WITH AN `int` PARAMETER, SO IT COSTS
+      > THE FULL CLASS-GATE QUINTET** — the same five edits Tasks 1 and 5 made (key, row,
+      > `require.Len(t, tests, …)`, `wantArms`, `byArm`), plus the **Spec 016 §2.1 + §6 AC-5 fold-back** Task 9b
+      > owns. `sql.ValidateMaxMembers` is **not** a class member (D-AB: `maxMembers` *is* the bound), so its row
+      > goes in **`rejects`**, joining `msghttp.WithSuccessStatus` — **the first row that arm has ever gained**.
+      > **This was not anticipated when D-AV was ratified**: the decision was written as an SPI-validation fix and
+      > the gate cost surfaced only at commit time. **The general rule, now recorded in
+      > [ADR 0033 D-AL](../adrs/0033-group-member-bounds.md): the quintet is triggered by any qualifying exported
+      > FUNCTION, not only by a `With…` option.** Do not restate the resulting partition anywhere — re-derive it
+      > from [Spec 016 §2.1](../specs/016-sizing-option-bounds.md).
 - [ ] **Step 3 — the mechanical fixes.** R-6 (discriminate on `classified`, not the raw `err`), R-3 (gate on
       `errors.Is(err, msgin.ErrOverflowDropped)` rather than `group == nil`, and handle a typed-nil snapshot),
       R-12 (`reflect.Indirect` in the harness's `dialectEngine`), R-9 (cover the uncovered `decodeErr` branch —
@@ -1755,7 +1836,7 @@ executor follows.
 
 | Order | Task | Modules that must be GREEN (constraint 8: *compiles against*) | Docker | Rough size |
 |---|---|---|---|---|
-| 1 | 1 | root | no | **large** — store + `Handle` (six exits) + classification + the gate quintet (**five** edits, not two — audit **R4-1**); the correctness core |
+| 1 | 1 | root | no | **large** — store + `Handle`'s multi-exit error branch + classification + the gate quintet (**five** edits, not two — audit **R4-1**); the correctness core |
 | 2 | 2 | root | no | medium — 8 cases over a 5-part fixture, incl. the M-6 regression case |
 | 3 | 4 | root | no | small — godoc + one example |
 | 4 | **5+6** | **root, postgres, mysql, sqlite, `harness`, `dbtest`** | Task 6 verification | **large, and LARGER since revision 4** — a breaking SPI change across 7 sites, 3 enforcement points, the harness call site (audit N-1), **plus the `*CountMembers` live+claimed count, the `locked_by` read and the leased/not-leased classification in all three dialects** (audit **NEW-7**) |

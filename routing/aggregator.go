@@ -2,7 +2,9 @@ package routing
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/jonboulle/clockwork"
@@ -64,6 +66,22 @@ type CorrelationStrategy func(m msgin.Message[any]) (string, error)
 // propagates from Handle so the message is retried or dead-lettered; it never
 // silently reads as "not ready". Use [WithReleaseWhen] for the common case
 // where the decision cannot fail.
+//
+// # Precondition: g MAY HOLD ZERO MEMBERS — check len before indexing
+//
+// g is the group's LIVE (unclaimed) member set, and a store may legitimately
+// have none to report: while another holder's claim covers every member, the
+// live residual is empty. A strategy of the shape
+// `g.Messages()[0].Header(k) != nil` therefore PANICS — and inside a Consumer
+// that panic is recovered as msgin.ErrHandlerPanic, which msgin.IsPermanent
+// deliberately excludes, so it would be retried forever against the same
+// group rather than surfacing. Guard the length, exactly as the default
+// strategy does (a zero-member group never releases).
+//
+// Handle will not call a strategy with an empty group on its overflow path —
+// an empty residual there means the group is already being drained, so there
+// is nothing to release — but that is one call site, not a guarantee about
+// every store. Write the strategy so an empty group is a well-defined "no".
 type ReleaseStrategy func(g msgin.MessageGroup) (bool, error)
 
 // AggregatorOption configures an Aggregator built by NewAggregator.
@@ -112,6 +130,11 @@ func WithCorrelationStrategy(fn CorrelationStrategy) AggregatorOption {
 // propagates from Handle rather than reading as "not ready". Use
 // [WithReleaseWhen] when the decision cannot fail.
 //
+// fn MUST tolerate a ZERO-MEMBER group — see [ReleaseStrategy]'s precondition.
+// The live member set is empty whenever another holder's claim covers every
+// member, so indexing Messages() without a length check panics on a reachable
+// input.
+//
 // The release decision is made against the LIVE snapshot Add returns, but
 // ClaimGroup then freezes whatever the store holds at claim time — the same
 // set for a monotonic strategy (one that only grows more true as members
@@ -151,6 +174,11 @@ func WithReleaseStrategy(fn ReleaseStrategy) AggregatorOption {
 // WithMaxGroupMembers, default 65,536, raisable to 1,048,576), which refuses
 // the next member with msgin.ErrOverflowDropped. See WithReleaseStrategy's
 // godoc for the full note.
+//
+// fn MUST tolerate a ZERO-MEMBER group — see [ReleaseStrategy]'s precondition.
+// Being infallible does not exempt it: a panic is not an error return, and
+// inside a Consumer it is recovered as a TRANSIENT msgin.ErrHandlerPanic and
+// retried forever.
 //
 // A nil fn leaves the release strategy UNSET rather than wrapping the nil, so
 // [NewAggregator] rejects it exactly as it rejects WithReleaseStrategy(nil).
@@ -466,11 +494,32 @@ func boxAggFn[A, B any](fn func(ctx context.Context, group []msgin.Message[A]) (
 // release is not. A store returning (nil, err) keeps the previous behavior
 // exactly — the error is propagated unchanged.
 //
-// DIRECTION RULE for the six exits of that branch, in two clauses:
+// THREE GATES DECIDE WHETHER THE BRANCH IS ENTERED AT ALL, and each returns
+// the store's error unchanged:
 //
-//  1. Handle NEVER UPGRADES the store's classification. A transient rejection
-//     is never turned permanent, on any exit. A store author may rely on this
-//     unconditionally.
+//  1. errors.Is(err, [msgin.ErrOverflowDropped]) — the branch implements the
+//     OVERFLOW contract, so it is gated on that sentinel and not on the
+//     structural accident that a snapshot happened to come back. A store whose
+//     unrelated fault (a corrupt stored header, say) returns its zero-value
+//     snapshot beside the error must not have its group claimed, aggregated,
+//     emitted and settled on the strength of it.
+//  2. The snapshot is neither an untyped nil NOR a TYPED nil — see isNilGroup.
+//     `group == nil` alone is an interface-nil test, and (*yourGroup)(nil)
+//     passes it and then panics.
+//  3. The snapshot holds at least one member. An empty live residual means the
+//     claim holder is already draining the group, so there is nothing to
+//     release; the store's transient classification is then exactly right and
+//     the retry is admitted once the drain completes. It also keeps a
+//     zero-member group away from the release strategy, which no
+//     [ReleaseStrategy] is obliged to survive.
+//
+// DIRECTION RULE for the exits of that branch, in two clauses:
+//
+//  1. Handle NEVER UPGRADES the store's classification ON ITS OWN ACCOUNT: no
+//     exit re-marks a transient rejection permanent. The one way the RETURNED
+//     error can end up permanent while the store's arm was transient is the
+//     join below, where the marker comes from the CALLER's own release
+//     strategy, not from Handle — see that paragraph.
 //  2. Handle either DOWNGRADES on positive evidence of drainage — the group
 //     provably shrank, or another holder is provably draining it, so a fresh
 //     TRANSIENT ErrOverflowDropped is minted — or REPLACES the overflow error
@@ -482,6 +531,21 @@ func boxAggFn[A, B any](fn func(ctx context.Context, group []msgin.Message[A]) (
 //     would dead-letter messages for a cause that has nothing to do with the
 //     cap, and would misattribute it in the operator's sink. Configure
 //     RetryPolicy.Backoff if the retry rate matters.
+//
+// A RELEASE-STRATEGY FAILURE IS JOINED, NOT SWALLOWED. The two conditions the
+// branch once merged are now distinct: a strategy that merely DECLINED
+// (ok == false, no error) yields the store's error with its original identity,
+// while a strategy that FAILED yields errors.Join(err, rerr) so the caller's
+// own fault is not reported as a cap rejection. errors.Is/As traverse join
+// trees, so [msgin.ErrOverflowDropped] still matches.
+//
+// That join can ESCALATE the classification, and it is meant to: a
+// Permanent-marked rerr makes the joined error permanent even when the store's
+// overflow arm was transient, because a strategy that fails permanently fails
+// identically on every redelivery, so retrying buys nothing and costs an
+// unbounded zero-delay spin. It is the sole qualification on clause 1 above:
+// Handle still does not upgrade the STORE's classification — the caller's own
+// error simply carries its own, and errors.As finds it through the join.
 //
 // WHY `claim == nil` RETURNS AN ERROR HERE while the success path below
 // returns nil for the identical condition: on the success path the member is
@@ -498,8 +562,14 @@ func (a *Aggregator) Handle(ctx context.Context, msg msgin.Message[any]) error {
 	}
 	group, err := a.store.Add(ctx, key, msg)
 	if err != nil {
-		if group == nil {
-			return err // unchanged for every store that returns (nil, err)
+		if !errors.Is(err, msgin.ErrOverflowDropped) {
+			return err // not the overflow contract — every other fault propagates unchanged
+		}
+		if isNilGroup(group) {
+			return err // unchanged for every store that returns (nil, err), typed or not
+		}
+		if len(group.Messages()) == 0 {
+			return err // an empty residual means the claim holder is already draining it
 		}
 		// The store rejected the MEMBER and handed back the group's live
 		// snapshot anyway, so the release is still evaluable. Reject the
@@ -508,7 +578,10 @@ func (a *Aggregator) Handle(ctx context.Context, msg msgin.Message[any]) error {
 		// abandoned) into a permanent deadlock, because the redelivery that
 		// would have re-fired the release is now refused at the door.
 		ok, rerr := a.cfg.release(group)
-		if rerr != nil || !ok {
+		if rerr != nil {
+			return errors.Join(err, rerr) // both causes reach the operator (D-AW)
+		}
+		if !ok {
 			return err // nothing to drain — the store's classification stands
 		}
 		claim, cerr := a.store.ClaimGroup(ctx, key)
@@ -523,7 +596,7 @@ func (a *Aggregator) Handle(ctx context.Context, msg msgin.Message[any]) error {
 		}
 		return overflowRetryable(key) // drained — the retry WILL be admitted
 	}
-	if group == nil {
+	if isNilGroup(group) {
 		// SPI contract violation: Add returned a nil snapshot AND a nil error.
 		// Guarded HERE, at the single choke point, rather than inside a release
 		// strategy — a.cfg.release is one of four values (the default,
@@ -549,6 +622,35 @@ func (a *Aggregator) Handle(ctx context.Context, msg msgin.Message[any]) error {
 		return nil // another Handle/process is releasing this group; held
 	}
 	return a.release(ctx, claim)
+}
+
+// isNilGroup reports whether g is unusable as a snapshot: either an UNTYPED
+// nil interface, or a TYPED nil — a (*yourGroup)(nil) whose methods
+// dereference the receiver and panic on first use.
+//
+// A plain `g == nil` catches only the first, and the second is the shape the
+// SPI itself invites: msgin.MessageGroup's conformance idiom is
+// `var _ msgin.MessageGroup = (*yourGroup)(nil)`, so a store whose error path
+// returns its zero snapshot hands Handle an interface that is `!= nil` and
+// panics anyway (Plan 031 finding R-3). Both callers are Handle's two
+// snapshot guards, so the whole class is closed at both entry points rather
+// than at the one the finding named.
+//
+// reflect is used rather than a recover()-guarded probe because the Kind
+// switch CANNOT ITSELF PANIC: reflect.Value.IsNil is defined exactly for the
+// kinds listed, and reflect.ValueOf on an untyped-nil interface yields the
+// Invalid kind, which the g == nil test above has already excluded. It runs on
+// an error/violation path only, never on the hot success path.
+func isNilGroup(g msgin.MessageGroup) bool {
+	if g == nil {
+		return true
+	}
+	switch v := reflect.ValueOf(g); v.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Chan, reflect.Func, reflect.UnsafePointer:
+		return v.IsNil()
+	default:
+		return false
+	}
 }
 
 // overflowRetryable mints the FRESH, transient msgin.ErrOverflowDropped that

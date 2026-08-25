@@ -732,6 +732,36 @@ func TestGroupStore_AddThreadsAndPropagatesTheMemberCap(t *testing.T) {
 		assert.Equal(t, 1<<16, fd.lastAddMaxMembers)
 	})
 
+	// D-AU (Spec 017 §3.6a.1, review finding R-7): AddMember's overflow
+	// classification tests lease EXPIRY, and it can only do that if the store
+	// threads its CONFIGURED lease TTL — exactly as it already does for
+	// ClaimGroup and ExpiredGroups. A zero value here would make every stamped
+	// lease read as expired.
+	t.Run("Add threads the configured lease TTL into AddMember", func(t *testing.T) {
+		t.Parallel()
+		fd := newFakeGroupDialect()
+		store, err := msginsql.NewGroupStore(openDB(t, fakeDriverName), "groups", fd,
+			msginsql.WithGroupLeaseTTL(90*time.Second))
+		require.NoError(t, err)
+
+		_, err = store.Add(t.Context(), "corr-1", msgin.New[any]([]byte("p"), msgin.WithID("m-1")))
+		require.NoError(t, err)
+		assert.Equal(t, 90*time.Second, fd.lastAddLeaseTTL,
+			"the store must pass its CONFIGURED lease TTL, not a literal or the zero value")
+	})
+
+	t.Run("Add threads the 5m default lease TTL when the option is unset", func(t *testing.T) {
+		t.Parallel()
+		fd := newFakeGroupDialect()
+		store, err := msginsql.NewGroupStore(openDB(t, fakeDriverName), "groups", fd)
+		require.NoError(t, err)
+
+		_, err = store.Add(t.Context(), "corr-1", msgin.New[any]([]byte("p"), msgin.WithID("m-1")))
+		require.NoError(t, err)
+		assert.Equal(t, 5*time.Minute, fd.lastAddLeaseTTL,
+			"the same default ClaimGroup gets; AddMember must not see a zero TTL")
+	})
+
 	t.Run("a permanent dialect overflow propagates with its marker and sentinel intact", func(t *testing.T) {
 		t.Parallel()
 		fd := newFakeGroupDialect()

@@ -63,6 +63,13 @@ type fakeGroupDialect struct {
 	// prove the CONFIGURED cap travels rather than a literal.
 	lastAddMaxMembers int
 
+	// lastAddLeaseTTL records the leaseTTL the store threaded into AddMember
+	// (Spec 017 §3.6a.1 — D-AU's signature change). Without it the dialect
+	// cannot tell a CRASHED holder's stranded lease from a live one, so the
+	// store passing its CONFIGURED value — not a zero value, not a literal —
+	// is the whole precondition of the classification.
+	lastAddLeaseTTL time.Duration
+
 	// Error injection, so GroupStore's classifyQueryErr wrap-vs-passthrough
 	// branch is directly testable without a real DB.
 	addMemberErr    error
@@ -145,11 +152,12 @@ func liveMembersLocked(g *fakeGroupState) []msginsql.MemberRow {
 
 // ---- GroupDialect -----------------------------------------------------
 
-func (f *fakeGroupDialect) AddMember(_ context.Context, _ msginsql.Querier, _, groupKey, msgID string, seq int64, headers, payload []byte, maxMembers int) (msginsql.GroupRows, error) {
+func (f *fakeGroupDialect) AddMember(_ context.Context, _ msginsql.Querier, _, groupKey, msgID string, seq int64, headers, payload []byte, maxMembers int, leaseTTL time.Duration) (msginsql.GroupRows, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	f.lastAddMaxMembers = maxMembers
+	f.lastAddLeaseTTL = leaseTTL
 
 	if f.addMemberErr != nil {
 		return f.addMemberRows, f.addMemberErr

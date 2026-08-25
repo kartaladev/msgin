@@ -2,8 +2,97 @@ package sql
 
 import (
 	"context"
+	"fmt"
 	"time"
+
+	msgin "github.com/kartaladev/msgin"
 )
+
+// UnboundedGroupMembers is the ONLY value of GroupDialect.AddMember's
+// maxMembers that requests an UNBOUNDED group — one whose member table may grow
+// without limit. Every other non-positive value, INCLUDING 0, is rejected by
+// ValidateMaxMembers with msgin.ErrInvalidCapacity.
+//
+// # Who would pass it, and what they are accepting
+//
+// A DIRECT caller of the GroupDialect SPI that has not adopted Spec 017's
+// per-group bound — a caller driving AddMember on its own *sql.Tx, or a
+// migration running against groups that already exceed any cap it would choose.
+// sql.GroupStore never passes it: NewGroupStore range-checks WithMaxGroupMembers
+// to [1, 1048576] at construction, so a store-driven flow cannot reach this
+// value at all.
+//
+// The risk is the whole of what Spec 017 exists to close. With no bound, one
+// correlation key whose release never fires accumulates member rows forever;
+// each AddMember re-SELECTs the group's entire live set, so the per-arrival cost
+// is linear in the group and the total cost quadratic. There is no back pressure
+// and no diagnostic — the table simply grows.
+//
+// # Why -1 and not 0 (ADR 0033 D-AV)
+//
+// The zero value must not be the dangerous value. maxMembers is a POSITIONAL
+// SPI parameter, so an omitted or unset-config-field argument arrives as 0 with
+// no signal that anything was omitted; making 0 mean "unbounded" turned that
+// mistake into a silent fail-open. -1 has to be typed on purpose. (Contrast
+// endpoint.WithMaxPayloadBytes, whose `n <= 0 disables` is defensible because it
+// is reached through an OPTION, where omission genuinely means "unset".)
+const UnboundedGroupMembers = -1
+
+// ValidateMaxMembers reports whether maxMembers is a legal
+// GroupDialect.AddMember bound: it must be UnboundedGroupMembers, or in
+// [1, 1048576] (maxGroupMembersCeiling — the same ceiling
+// WithMaxGroupMembers enforces at construction). Anything else is a typed
+// msgin.ErrInvalidCapacity naming site, the offending value, the accepted range
+// and the sentinel.
+//
+// Every GroupDialect implementation MUST call it BEFORE any statement runs —
+// the same validate-before-I/O placement ErrMissingMsgID has. It lives here,
+// once, rather than being copy-pasted into postgres/mysql/sqlite, so the
+// parameter's contract is executable in ONE place instead of prose in three
+// (ADR 0033 D-AV; Spec 017 §3.6a.2). site is the calling dialect's own
+// "msgin/sql/<engine>: AddMember" string, so an operator learns which engine
+// was driven with the bad bound.
+//
+// # It rejects 0, and that is the point
+//
+// maxMembers <= 0 once meant UNBOUNDED, which made the ZERO VALUE the dangerous
+// value on an exported SPI. It now means "invalid"; opting out is spelled
+// UnboundedGroupMembers. This is a behavioral break for a direct dialect caller
+// that passed 0 — loud, one line to fix, and free at pre-v1.
+//
+// # It also makes selectLimit total
+//
+// The three dialects derive their live-member fetch limit as maxMembers+1.
+// Before this check, AddMember(…, math.MaxInt, …) overflowed that sum to
+// math.MinInt: the `limit > 0` guard then emitted no LIMIT clause AND
+// `n > int64(maxMembers)` could never fire, so the largest expressible bound
+// silently delivered NO bound (whole-branch review finding R-15). With
+// maxMembers provably in [1, 1048576] by the time a dialect reaches the sum,
+// +1 cannot overflow.
+//
+// # The rejection is msgin.Permanent, unlike checkRange's constructor arms
+//
+// The other msgin.ErrInvalidCapacity producers are OPTION validators, whose
+// error is handed back at construction and never carried through a
+// MessageHandler, so they stay bare (ADR 0029 D-M). This one is returned from
+// AddMember — a per-message hot-path surface. An invalid constant argument
+// fails identically on every redelivery, so a transient classification would
+// Nack-loop with no delay and no log under the shipped zero-value
+// msgin.RetryPolicy (the B-1 hot spin D-AM and D-AU both exist to prevent).
+// Permanent settles it terminally instead. errors.Is(err,
+// msgin.ErrInvalidCapacity) is unaffected — permanentError unwraps
+// transparently. This mirrors ADR 0031 D-V, which likewise wraps a sizing fault
+// in Permanent when it surfaces at USE time rather than at construction.
+func ValidateMaxMembers(site string, maxMembers int) error {
+	if maxMembers == UnboundedGroupMembers {
+		return nil
+	}
+	if maxMembers >= 1 && maxMembers <= maxGroupMembersCeiling {
+		return nil
+	}
+	return msgin.Permanent(fmt.Errorf("%w: %s: %d not in [%d, %d] and not UnboundedGroupMembers (%d)",
+		msgin.ErrInvalidCapacity, site, maxMembers, 1, maxGroupMembersCeiling, UnboundedGroupMembers))
+}
 
 // GroupRows is one correlation group plus its LIVE (unclaimed) members, as raw
 // framed bytes — the carrier a GroupDialect method returns and sql.GroupStore
@@ -141,21 +230,38 @@ type GroupDialect interface {
 	// every live member, so the next maxMembers arrivals see an empty live
 	// set and the table grows by maxMembers per claim cycle, forever.
 	//
-	// The rejection is classified by the group row's locked_by: NULL (not
-	// leased — nothing will drain the group on its own) MUST be wrapped in
-	// msgin.Permanent, so the runtime settles it terminally instead of
-	// hot-spinning on the shipped zero-value msgin.RetryPolicy; non-NULL (a
-	// claim is in flight, which will drain it) stays a bare, transient error.
+	// The rejection is classified by whether the group's lease is LIVE, using
+	// the SAME predicate the implementation's own ClaimGroup steals on —
+	// locked_by IS NULL OR locked_at <= now() - leaseTTL, evaluated on the DB
+	// SERVER CLOCK, never the app clock. An expired-or-absent lease means
+	// nothing will drain the group on its own, so the error MUST be wrapped
+	// in msgin.Permanent and the runtime settles it terminally instead of
+	// hot-spinning on the shipped zero-value msgin.RetryPolicy; a LIVE lease
+	// means a claim is in flight that will drain it, so the error stays bare
+	// and transient.
+	//
+	// 🔴 TESTING locked_by ALONE IS NOT ENOUGH, and that is why leaseTTL is a
+	// parameter (ADR 0033 D-AU, whole-branch review finding R-7). A non-NULL
+	// locked_by proves a row was STAMPED, not that a holder is alive: a
+	// crashed or stranded releaser leaves the group leased with nothing
+	// draining it, and every subsequent over-cap add is then classified
+	// transient FOREVER — the exact infinite zero-delay Nack loop this
+	// classification exists to prevent.
+	//
 	// The group's remaining LIVE members SHOULD be returned in the GroupRows
 	// ALONGSIDE that error, with the just-upserted member filtered out, so
 	// the Aggregator can re-evaluate its release strategy against a group
 	// that is full but complete (Spec 017 §3.3a).
 	//
-	// A maxMembers of 0 or less means UNBOUNDED — no count is taken. It
-	// cannot arrive from sql.GroupStore, whose constructor rejects anything
-	// outside [1, 1048576]; it exists so a direct dialect caller that has
-	// not opted into a bound keeps the pre-Spec-017 behavior rather than
-	// having every add rejected.
+	// maxMembers MUST be validated with ValidateMaxMembers BEFORE any
+	// statement runs — the same validate-before-I/O placement ErrMissingMsgID
+	// has. The accepted set is UnboundedGroupMembers or [1, 1048576]; 0 is an
+	// ERROR, not a synonym for unbounded (ADR 0033 D-AV). Only
+	// UnboundedGroupMembers skips the count, and it cannot arrive from
+	// sql.GroupStore, whose constructor rejects anything outside
+	// [1, 1048576]; it exists so a direct dialect caller that has not opted
+	// into a bound can keep the pre-Spec-017 behavior — explicitly, and at
+	// the risk UnboundedGroupMembers documents.
 	//
 	// # PRECONDITION: the rollback is only ours when the transaction is
 	//
@@ -170,7 +276,7 @@ type GroupDialect interface {
 	// this is stated rather than engineered away. It does not apply to
 	// sql.GroupStore, which always owns its transaction (see
 	// WithMaxGroupMembers).
-	AddMember(ctx context.Context, q Querier, table, groupKey, msgID string, seq int64, headers, payload []byte, maxMembers int) (GroupRows, error)
+	AddMember(ctx context.Context, q Querier, table, groupKey, msgID string, seq int64, headers, payload []byte, maxMembers int, leaseTTL time.Duration) (GroupRows, error)
 
 	// ClaimGroup atomically leases the group's current members, in ONE
 	// transaction: it bumps the group row's epoch and stamps

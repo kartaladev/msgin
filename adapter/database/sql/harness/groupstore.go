@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 	"sync"
@@ -35,6 +36,20 @@ import (
 // NewGroupStore leaves the option unset and runs under the store's own 65,536
 // default, which no harness case approaches.
 const groupMemberCap = 4
+
+// directAddLeaseTTL is the leaseTTL every harness case that drives
+// kit.Group.AddMember DIRECTLY passes (ADR 0033 D-AU / Spec 017 §3.6a.1).
+//
+// It only ever affects the over-cap rejection's Permanent/transient split — the
+// dialect compares the group row's locked_at against now() - leaseTTL on the DB
+// server clock — so it is deliberately LONG: none of the direct-add cases holds
+// a lease at all, and a long TTL keeps them insensitive to how slowly a
+// container runs. Cases that need the EXPIRED-lease arm set their own short TTL
+// through msginsql.WithGroupLeaseTTL and drive the STORE, so the store and the
+// dialect cannot disagree about which value was used.
+//
+// Unexported for the same reason groupMemberCap is.
+const directAddLeaseTTL = 5 * time.Minute
 
 // mustSubscribe registers h on ch and fails the test if Subscribe errors. Since
 // ADR 0028 Subscribe returns (Subscription, error); these call sites do not need
@@ -324,15 +339,96 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 		// groupMemberCap more rows per claim cycle, forever.
 		over, err := add(t, ctx, s, "k", "overflow", groupMemberCap)
 		require.ErrorIs(t, err, msgin.ErrOverflowDropped, "the CLAIMED set still counts against the cap")
-		// ...and because a claim IS in flight (locked_by IS NOT NULL), the
-		// rejection is TRANSIENT: the in-flight release will drain the group,
-		// so dead-lettering here would discard healthy traffic in a routine
-		// claim window (D-AM).
-		require.False(t, msgin.IsPermanent(err), "a LEASED over-cap rejection is transient (D-AM)")
+		// ...and because a LIVE claim is in flight — the store's default 5m
+		// lease was stamped moments ago, so locked_at is far newer than
+		// now() - leaseTTL — the rejection is TRANSIENT: the in-flight release
+		// will drain the group, so dead-lettering here would discard healthy
+		// traffic in a routine claim window (D-AM). This is the LIVE half of
+		// D-AU's split; MemberCapExpiredLeaseIsPermanent below is the other.
+		require.False(t, msgin.IsPermanent(err), "a LIVE-LEASED over-cap rejection is transient (D-AM/D-AU)")
 		require.Equal(t, overflowRender("k", groupMemberCap+1, groupMemberCap, false), err.Error())
 		require.NotNil(t, over)
 		require.Empty(t, over.Messages(), "the post-rollback LIVE set is empty here: every other member is claimed")
 		require.Equal(t, groupMemberCap, memberCount(t, ctx, table, "k"), "nothing was committed")
+	})
+
+	// D-AU / Spec 017 §3.6a.1 — whole-branch review finding R-7, and the case
+	// the shipped code could not express at all: AddMember had no leaseTTL, so
+	// its discriminator was `locked_by IS NOT NULL`, which is TRUE of a
+	// CRASHED holder's stranded stamp forever. Every over-cap add for that key
+	// was then classified transient, which under the shipped zero-value
+	// msgin.RetryPolicy is an unlogged, zero-delay, infinite Nack loop — the
+	// exact B-1 hot spin D-AM exists to prevent, reintroduced by D-AM's own
+	// discriminator.
+	//
+	// 🔴 THE MUTANT THIS CASE KILLS: revert AddMember's predicate to
+	// `locked_by IS NOT NULL` (dropping the locked_at comparison) and this
+	// subtest fails on IsPermanent while EVERY other member-cap case stays
+	// green — including MemberCapCountsClaimedMembers above, whose lease is
+	// genuinely live. The two together assert the SPLIT, not one side of it.
+	t.Run("MemberCapExpiredLeaseIsPermanent", func(t *testing.T) {
+		ctx := t.Context()
+		table := fresh(ctx)
+		// A short TTL, threaded to the dialect by GroupStore.Add itself — so
+		// the value the classification uses is provably the CONFIGURED one and
+		// not a dialect default.
+		const ttl = 300 * time.Millisecond
+		s := newStore(t, table,
+			msginsql.WithMaxGroupMembers(groupMemberCap), msginsql.WithGroupLeaseTTL(ttl))
+		fillToCap(t, ctx, s, "k")
+
+		claim, err := s.ClaimGroup(ctx, "k")
+		require.NoError(t, err)
+		require.NotNil(t, claim)
+		require.Len(t, claim.Messages(), groupMemberCap)
+
+		// The holder "crashes": it never settles and never abandons, so
+		// locked_by stays stamped and the group cannot drain itself.
+		time.Sleep(ttl + 200*time.Millisecond) // the lease ages out on the DB clock
+
+		over, err := add(t, ctx, s, "k", "overflow", groupMemberCap)
+		require.ErrorIs(t, err, msgin.ErrOverflowDropped, "the CLAIMED set still counts against the cap")
+		require.True(t, msgin.IsPermanent(err),
+			"a STRANDED lease drains nothing: the rejection must be permanent, or it hot-spins forever (D-AU)")
+		require.Equal(t, overflowRender("k", groupMemberCap+1, groupMemberCap, true), err.Error(),
+			"the render must carry the shipped permanentError prefix")
+		require.NotNil(t, over)
+		require.Equal(t, groupMemberCap, memberCount(t, ctx, table, "k"), "nothing was committed")
+	})
+
+	// D-AV / Spec 017 §3.6a.2 — whole-branch review finding R-15, a CLAUDE.md
+	// delivery blocker. The bound is validated at the SPI boundary, against a
+	// REAL engine, so "before any statement runs" is asserted by observing that
+	// nothing was written rather than by reading the source.
+	t.Run("MemberCapRejectsAnInvalidBoundBeforeAnyStatement", func(t *testing.T) {
+		ctx := t.Context()
+		table := fresh(ctx)
+		headers, err := msginsql.EncodeHeaders(
+			msgin.NewHeaders(map[string]any{msgin.HeaderMessageID: "m0", msgin.HeaderSequenceNumber: 0}))
+		require.NoError(t, err)
+		addRaw := func(maxMembers int) error {
+			_, err := kit.Group.AddMember(ctx, db, table, "k", "m0", 0, headers, []byte(`"p"`),
+				maxMembers, directAddLeaseTTL)
+			return err
+		}
+
+		// 0 is the value that used to mean UNBOUNDED — the ZERO VALUE was the
+		// dangerous one. math.MaxInt is the other half of R-15: selectLimit's
+		// maxMembers+1 wrapped to math.MinInt, suppressing BOTH the LIMIT and
+		// the cap comparison, so the largest expressible bound meant NO bound.
+		for _, bad := range []int{0, -2, (1 << 20) + 1, math.MaxInt} {
+			err := addRaw(bad)
+			require.ErrorIsf(t, err, msgin.ErrInvalidCapacity, "maxMembers %d must be refused", bad)
+			require.Truef(t, msgin.IsPermanent(err), "maxMembers %d: the reject is permanent", bad)
+			require.Equalf(t, 0, memberCount(t, ctx, table, "k"),
+				"maxMembers %d: validation must precede I/O — nothing may be written", bad)
+		}
+
+		// The documented opt-out still works, and it is the ONLY non-positive
+		// value that does.
+		require.NoError(t, addRaw(msginsql.UnboundedGroupMembers))
+		require.Equal(t, 1, memberCount(t, ctx, table, "k"),
+			"UnboundedGroupMembers admits the member with no cap taken")
 	})
 
 	t.Run("MemberCapUnderCallerOwnedTx", func(t *testing.T) {
@@ -343,7 +439,8 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 			headers, err := msginsql.EncodeHeaders(
 				msgin.NewHeaders(map[string]any{msgin.HeaderMessageID: id, msgin.HeaderSequenceNumber: int(seq)}))
 			require.NoError(t, err)
-			return kit.Group.AddMember(ctx, q, table, key, id, seq, headers, []byte(`"p"`), groupMemberCap)
+			return kit.Group.AddMember(ctx, q, table, key, id, seq, headers, []byte(`"p"`),
+				groupMemberCap, directAddLeaseTTL)
 		}
 		for i := 0; i < groupMemberCap; i++ {
 			_, err := addRaw(db, "k", fmt.Sprintf("m%d", i), int64(i))
@@ -593,7 +690,8 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 			headers, err := msginsql.EncodeHeaders(
 				msgin.NewHeaders(map[string]any{msgin.HeaderMessageID: id, msgin.HeaderSequenceNumber: int(seq)}))
 			require.NoError(t, err)
-			_, err = kit.Group.AddMember(ctx, db, table, key, id, seq, headers, []byte(`"p"`), groupMemberCap)
+			_, err = kit.Group.AddMember(ctx, db, table, key, id, seq, headers, []byte(`"p"`),
+				groupMemberCap, directAddLeaseTTL)
 			require.NoError(t, err)
 		}
 		addRaw("k", "a", 0)

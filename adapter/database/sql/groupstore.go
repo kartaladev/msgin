@@ -375,19 +375,34 @@ func NewGroupStore(db *stdsql.DB, table string, dialect GroupDialect, opts ...Gr
 // msgin.message-id with ErrMissingMsgID BEFORE any query runs (H3, belt-and-suspenders
 // with GroupDialect.AddMember's own check), and delegates to
 // GroupDialect.AddMember on the pool, threading the configured
-// WithMaxGroupMembers cap. It returns the resulting group snapshot of the LIVE
-// (unclaimed) members, decoded from the dialect's raw framed bytes.
+// WithMaxGroupMembers cap AND the configured WithGroupLeaseTTL — exactly as
+// ClaimGroup and ExpiredGroups already thread the latter (ADR 0033 D-AU). It
+// returns the resulting group snapshot of the LIVE (unclaimed) members, decoded
+// from the dialect's raw framed bytes.
 //
 // # The member-cap rejection carries a snapshot
 //
 // When the dialect refuses the member because the group is at its cap it
-// returns msgin.ErrOverflowDropped — msgin.Permanent-wrapped when the group is
-// not leased, bare while a claim is in flight (WithMaxGroupMembers) — TOGETHER
+// returns msgin.ErrOverflowDropped — msgin.Permanent-wrapped when NO LIVE LEASE
+// is draining the group (no lease at all, or one already aged past
+// WithGroupLeaseTTL on the DB server clock), bare while a live claim is in
+// flight (WithMaxGroupMembers, ADR 0033 D-AU) — TOGETHER
 // with the group's post-rollback live members. Add propagates BOTH, so
 // routing.Aggregator.Handle can re-evaluate the release strategy against a
 // group that is complete but was never re-triggered (Spec 017 §3.3a). Only the
 // overflow rejection carries a snapshot; every other dialect failure keeps the
 // (nil, err) shape, as does an overflow whose members cannot be decoded.
+//
+// That re-evaluation is CONDITIONAL, and this store is written to satisfy the
+// conditions rather than to rely on them (Spec 017 §3.3a.1). Handle acts on a
+// snapshot only when the error carries msgin.ErrOverflowDropped — which is
+// precisely why the (nil, err) shape above is kept for every other fault — and
+// it ignores a snapshot that is nil (TYPED NILS INCLUDED) or that holds zero
+// members, returning the error unchanged in both cases. A zero-member snapshot
+// here is not a defect: while a live claim covers every member the live
+// residual is legitimately empty, and Handle then reports the dialect's
+// transient rejection as-is rather than running the release strategy against
+// an empty group.
 //
 // The error still routes through classifyQueryErr, which costs one extra
 // SchemaExists round-trip. Both the sentinel and the Permanent marker survive
@@ -414,7 +429,8 @@ func (s *GroupStore) Add(ctx context.Context, key string, msg msgin.Message[any]
 		seq = int64(n)
 	}
 
-	rows, err := s.dialect.AddMember(ctx, s.db, s.table, key, msgID, seq, headers, payload, s.maxGroupMembers)
+	rows, err := s.dialect.AddMember(ctx, s.db, s.table, key, msgID, seq, headers, payload,
+		s.maxGroupMembers, s.leaseTTL)
 	if err != nil {
 		classified := s.classifyQueryErr(ctx, err)
 		if !errors.Is(err, msgin.ErrOverflowDropped) {
