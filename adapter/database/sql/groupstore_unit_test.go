@@ -832,4 +832,32 @@ func TestGroupStore_AddThreadsAndPropagatesTheMemberCap(t *testing.T) {
 		require.ErrorIs(t, err, msginsql.ErrSchemaNotReady,
 			"classifyQueryErr's diagnosis wins when the table is genuinely gone")
 	})
+
+	// AC-7 / Spec 017 §3.7, the MUST-REPORT clause ONLY: an Add that would
+	// exceed the bound is reported as msgin.ErrOverflowDropped. The other three
+	// clauses of §3.7 are covered by the subtests above (the MUST-bound by the
+	// two cap-threading cases, the SHOULD by the permanent/transient pair, the
+	// MAY by the snapshot case).
+	//
+	// What this case uniquely buys is the INTERFACE-TYPED drive: the store is
+	// held in a msgin.MessageGroupStore, so the body below is copyable verbatim
+	// by a third-party store author as the executable form of the SPI clause.
+	// A mutant returning a bare, non-wrapping error from Add's dialect-error
+	// arm fails the ErrorIs. This asserts the STORE's propagation contract
+	// against the fake dialect; the real-engine enforcement proof is the
+	// harness conformance suite's.
+	t.Run("the MUST-report clause holds through the msgin.MessageGroupStore interface", func(t *testing.T) {
+		t.Parallel()
+		fd := newFakeGroupDialect()
+		fd.markGroupReady("groups")
+		fd.addMemberErr = msgin.Permanent(overflow("corr-1", 2, 1))
+		s, err := msginsql.NewGroupStore(openDB(t, fakeDriverName), "groups", fd,
+			msginsql.WithMaxGroupMembers(1))
+		require.NoError(t, err)
+
+		var store msgin.MessageGroupStore = s
+
+		_, err = store.Add(t.Context(), "corr-1", msgin.New[any]([]byte("p"), msgin.WithID("m-2")))
+		require.ErrorIs(t, err, msgin.ErrOverflowDropped)
+	})
 }

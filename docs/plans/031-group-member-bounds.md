@@ -1322,8 +1322,20 @@ groupstore_unit_test.go}`, `sizing_option_class_gate_test.go`, **`adapter/databa
       (doc comment `:38-44`, declaration `:45`; revision 1 cited `:41-52`, audit m-2). It carries four clauses:
       the **MUST**-bound requirement, the **MUST**-report-`ErrOverflowDropped` requirement, the **SHOULD**-mark-
       `Permanent`-when-the-group-cannot-drain requirement (naming the default-`RetryPolicy` hot spin as the reason),
-      and the **MAY**-return-the-live-snapshot clause with its D-AN consequence. Plus the D-AF note that the counted
-      set is implementation-specific and must be stated.
+      and the **MAY**-return-the-live-snapshot clause with its D-AN consequence. Plus the D-AF note on the counted
+      set.
+
+      > 🔴 **THIS STEP'S D-AF PHRASING WAS STALE — pre-reversal. Corrected at execution time; §3.7 WINS.** It read
+      > *"the D-AF note that the counted set is **implementation-specific** and must be stated."* **D-AF was
+      > REVERSED in revision 4** (audit NEW-7) — its own heading now reads *"D-AF — BOTH stores count live +
+      > claimed (🔴 REVERSED in revision 4)"*, and **Spec §3.7 requires the opposite half**: the counted set **MUST
+      > include every member the implementation still retains for that group — live AND claimed** — and must be
+      > stated. A bound that ignores the claimed set does not bound, because a claim moves members out of the live
+      > set without removing them.
+      >
+      > The step text was a leftover from the pre-reversal decision, under which the counted set genuinely *was*
+      > implementation-specific. **Write §3.7's wording, not this step's summary of it.** This is the fourth
+      > ratified instruction in Plan 031 found defective at execution time.
 
       > 🔴 **THE DOWNGRADE-ONLY CLAUSE IS RESTATED IN REVISION 4 — the revision-3 form is FALSE for two of the six
       > exits** (audit **NEW-6**). Revision 3 promoted N-7's rule into this paragraph as *"may only ever DOWNGRADE

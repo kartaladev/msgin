@@ -42,6 +42,47 @@ type MessageGroupStore interface {
 	// fresh-residual member, not part of the in-flight claim). Idempotent by msg
 	// id: re-adding an already-stored member is a no-op (a redelivered member
 	// does not double-count toward release — at-least-once).
+	//
+	// # The per-group member bound is part of this contract (Spec 017 §3.7)
+	//
+	// An implementation MUST bound the number of members it retains for a
+	// single group, and MUST report an Add that would exceed that bound as
+	// ErrOverflowDropped rather than growing without limit. The Aggregator's
+	// release strategy cannot supply this bound: three of its four paths are a
+	// caller-supplied closure or a message header — and the store is the only
+	// site that can refuse a member BEFORE retaining it.
+	//
+	// The counted set MUST include every member the implementation still
+	// retains for that group — LIVE AND CLAIMED — and MUST be stated in the
+	// implementation's godoc. Both first-party stores count live + claimed: a
+	// bound that ignores the claimed set does not bound, because a claim moves
+	// members out of the live set without removing them (Spec 017 §3.4).
+	//
+	// An implementation SHOULD mark the rejection Permanent when the group
+	// cannot drain itself, and leave it transient when a claim is in flight
+	// that will drain it (Spec 017 §3.3.1). A bare transient rejection of a
+	// group that will never drain HOT-SPINS under the default RetryPolicy,
+	// which has neither a MaxAttempts nor a Backoff.
+	//
+	// An implementation MAY return the group's current LIVE snapshot ALONGSIDE
+	// the overflow error. When it does, the Aggregator re-evaluates the release
+	// strategy against that snapshot and releases the group if it is ready, so
+	// a full-but-releasable group is not deadlocked by its own bound (Spec 017
+	// §3.3a). Returning (nil, err) remains valid and is what every pre-existing
+	// implementation does.
+	//
+	// When the Aggregator acts on that snapshot it NEVER UPGRADES the
+	// implementation's classification: a transient rejection is never turned
+	// permanent. It either DOWNGRADES the rejection to a fresh transient
+	// overflow error on positive evidence that the group drained (or that
+	// another holder is draining it), OR IT REPLACES the overflow error
+	// entirely with a distinct fault — a claim failure or a release failure —
+	// which carries that fault's own classification, not the implementation's.
+	// An implementation MUST NOT assume its Permanent marker survives to the
+	// consumer on every path: when the Aggregator's claim or release fails, an
+	// unmarked (hence transient) fault is reported instead, so a persistently
+	// failing claim/release path RETRIES rather than terminating (Spec 017
+	// §3.3a.1).
 	Add(ctx context.Context, key string, msg Message[any]) (MessageGroup, error)
 	// ClaimGroup atomically leases the members present now for key and returns
 	// them plus a fence epoch. It returns (nil, nil) when key is absent or is

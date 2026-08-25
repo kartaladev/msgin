@@ -267,6 +267,33 @@ func TestGroupStore(t *testing.T) {
 				require.ErrorIs(t, err, msgin.ErrOverflowDropped)
 			},
 		},
+		{
+			// AC-7 / Spec 017 §3.7, the MUST-REPORT clause ONLY: an Add that
+			// would exceed the bound is reported as msgin.ErrOverflowDropped.
+			// The other three clauses of §3.7 are covered elsewhere (the
+			// MUST-bound by "Add rejects the cap-plus-one member", the SHOULD
+			// by the two classification cases, the MAY by "an over-cap
+			// rejection returns the live snapshot").
+			//
+			// What this case uniquely buys is the INTERFACE-TYPED drive: the
+			// store is held in a msgin.MessageGroupStore, so the body below is
+			// copyable verbatim by a third-party store author as the executable
+			// form of the SPI clause. A mutant returning a bare, non-wrapping
+			// error from Add's overflow arm fails the ErrorIs.
+			name: "the MUST-report clause holds through the msgin.MessageGroupStore interface",
+			assert: func(t *testing.T) {
+				s, err := memory.NewGroupStore(memory.WithMaxGroupMembers(1))
+				require.NoError(t, err)
+
+				var store msgin.MessageGroupStore = s
+
+				_, err = store.Add(t.Context(), "k", msgin.New[any]("a", msgin.WithID("a")))
+				require.NoError(t, err)
+
+				_, err = store.Add(t.Context(), "k", msgin.New[any]("b", msgin.WithID("b")))
+				require.ErrorIs(t, err, msgin.ErrOverflowDropped)
+			},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
