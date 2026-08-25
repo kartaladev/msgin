@@ -15,8 +15,9 @@
 > |---|---|
 > | Branch | **`chore/backlog-sweep-post-029`**, clean. Count: `git rev-list --count main..HEAD` — do not quote a number here, this file's own commit moves it |
 > | `main` / `origin/main` | **`2b2dec1`**, untouched — verify with `git ls-remote origin main`, never `git rev-parse origin/…` |
-> | Working tree | **clean** at `a2cc568` |
-> | Task 10 Step 3 (8 CI steps × 8 modules) | ✅ **ALL GREEN**, run at `a2cc568` — see §6 |
+> | Working tree | **clean.** Derive HEAD with `git rev-parse --short HEAD` — this file's own commits move it |
+> | Last **code** commit | **`a2cc568`** (Task 9b). Everything after it is `docs:` only — verify with `git log --format='%h %s' a2cc568..HEAD` |
+> | Task 10 Step 3 (8 CI steps × 8 modules) | ✅ **ALL GREEN**, run at `a2cc568`; **still valid**, since every commit since is docs-only — see §6 |
 > | Task 10 Step 3b (`GOARCH=386`) | ✅ **vet clean**, root + all 5 touched sql modules |
 > | Task 10 Step 4 (docs links) | ✅ arm 1 at its **2 known false positives**; arm 2 **zero**, vacuity-probed |
 > | Tags | **zero, as always.** Do NOT propose tagging |
@@ -115,6 +116,10 @@ implementer and the coordinator had signed off on. That substitution is *not* eq
 for the **whole-branch** gate. **The user must invoke them.**
 
 ## 6. Gates already run at `a2cc568` — re-run before merging, but these were green
+
+**Why `a2cc568` and not HEAD:** it is the last commit touching a `.go` file. Every commit after it is `docs:`
+only (`git log --format='%h %s' a2cc568..HEAD` to confirm), so these results still hold at HEAD. **Re-derive that
+claim rather than trusting this sentence** — the moment a code commit lands, it stops being true.
 
 | Gate | Result |
 |---|---|
