@@ -1,12 +1,12 @@
 # Plan 031 — whole-branch review findings (Task 10 Steps 1–2)
 
-> ## 🔴 LIVE STATUS — 5 of 15 FIXED (2026-08-26)
+> ## 🔴 LIVE STATUS — 8 of 15 FIXED (2026-08-26). BOTH DELIVERY BLOCKERS ARE CLOSED.
 >
 > | Finding | State |
 > |---|---|
 > | **R-7**, **R-15**, **R-10** | ✅ **DECIDED + FIXED** — [ADR 0033](../adrs/0033-group-member-bounds.md) D-AU / D-AV / D-AW, delivered by [Plan 031](031-group-member-bounds.md) Task 11 Step 2 |
 > | **R-3**, **R-4** | ✅ **FIXED** with R-10 — the same twelve lines of `Handle`; repairing that branch three times would have been three rewrites of one contract block |
-> | **R-6**, **R-9**, **R-12** | ⏭️ next (Task 11 Step 3) — R-9 is a **delivery blocker** |
+> | **R-6**, **R-9**, **R-12** | ✅ **FIXED** — Task 11 Step 3. R-9's hit count re-derived from the coverage profile as **0 → 1**, independently by implementer and coordinator |
 > | **R-1**, **R-5**, **R-8**, **R-11**, **R-14** | ⏭️ Task 11 Step 4 |
 > | **R-2**, **R-13** | ⏭️ **RECOVERED** — the coordinator's first decomposition covered only 13 of the 15; both were re-surfaced by the agent repairing the branch they sit in |
 > | §6's five capped items | ⏭️ Task 11 Step 5. **Item 3 (Spec 017's stale status line) is DONE** |
@@ -115,6 +115,27 @@ Several of these contradict godoc shipped **in this same branch**.
 |---|---|---|
 | **R-12** | `harness/groupstore.go:765` | `dialectEngine` uses `reflect.TypeOf(d).PkgPath()`, which returns **`""` for a pointer-typed dialect** — the exact form `GroupDialect`'s own godoc tells implementers to use (`var _ msginsql.GroupDialect = (*yourDialect)(nil)`). **Measured**: value type → `"main"`, pointer type → `""`. A contributor on pointer receivers gets the whole member-cap conformance suite asserting against `msgin/sql/: AddMember`, failing with a diff blaming *their* error text rather than the harness's derivation. All three shipped dialects use value receivers, so nothing in-repo exercises it. **This is the helper Task 7 added to fix the MariaDB gap.** Fix: `reflect.Indirect(reflect.ValueOf(d)).Type().PkgPath()`, or an explicit `TestKit` field. |
 | **R-14** | `group_member_bound_invariant_test.go:452` | The completeness walk keys on the **literal identifier** `defaultMaxGroupMembers`, so a new first-party store spelling its default any other way is invisible to **both** halves. **Probed both directions**: planting `defaultMaxGroupMembers` in a leaf module correctly turns the gate red; planting `defaultMaxMembersPerGroup` leaves the root package **green**. Renaming an *existing* constant IS caught; adding a *new* one under a new name is not. **This residual was documented in Spec 017 §6 AC-3.3 and ADR 0033 D-AQ at Task 3, but NOT in the file itself**, which otherwise records every limitation exhaustively. The planned `pgx`/`redis`/`nats` adapters each grow a GroupStore. |
+
+## 5b. Raised WHILE FIXING, not by the review — recorded so they are not lost
+
+**New in the fix session.** Neither is a regression; both are pre-existing and were surfaced by an implementer
+working in the neighbourhood.
+
+1. **`decodeErr` is discarded entirely on the overflow path** (`adapter/database/sql/groupstore.go`, the branch
+   R-9 now covers — locate with `grep -n 'decodeErr' adapter/database/sql/groupstore.go`). The operator never
+   learns that a **stored header is corrupt**; the rejection is reported and the decode fault vanishes. The inline
+   comment shows the *suppression* is deliberate (*"a corrupt stored header must not mask the rejection"*) — but
+   suppressing the error's **effect** on control flow is not the same as discarding its **content**, and
+   CLAUDE.md makes the typed-error surface a first-class debuggability constraint. Candidate fix: log it at WARN
+   through the injected `*slog.Logger`, or join it. **Un-triaged.**
+2. **`harness.DialectEngine` is newly EXPORTED** (was `dialectEngine`), because `harness` ships no other route to
+   that code — every `RunXxx` needs a live `*sql.DB` — and CLAUDE.md forbids the whitebox fallback while directing
+   *"export what a test must assert."* Verified not to collide with the root class gate, whose
+   `scanGroupBoundStoreDecls` looks only for a **const** named `defaultMaxGroupMembers` in non-test files. It is
+   also independently useful: the harness godoc already warns third-party dialect authors to reconcile their site
+   prefix. **Flagged because `groupMemberCap`'s godoc argues against public-surface growth in a leaf module** —
+   that argument is scoped to an `int` sizing knob the class gate can discover, which this is not. **Accepted; not
+   escalated to an ADR.**
 
 ## 6. Dropped at the reviewer's 15-finding cap — recorded so they are not lost
 

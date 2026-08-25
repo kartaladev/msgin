@@ -1802,10 +1802,32 @@ reviewer subagent reviews before delivery. Per-task commits are pre-authorized b
       > [ADR 0033 D-AL](../adrs/0033-group-member-bounds.md): the quintet is triggered by any qualifying exported
       > FUNCTION, not only by a `With…` option.** Do not restate the resulting partition anywhere — re-derive it
       > from [Spec 016 §2.1](../specs/016-sizing-option-bounds.md).
-- [ ] **Step 3 — the mechanical fixes.** R-6 (discriminate on `classified`, not the raw `err`), R-3 (gate on
-      `errors.Is(err, msgin.ErrOverflowDropped)` rather than `group == nil`, and handle a typed-nil snapshot),
-      R-12 (`reflect.Indirect` in the harness's `dialectEngine`), R-9 (cover the uncovered `decodeErr` branch —
-      **a delivery blocker**, currently hit count `0` in every module).
+- [x] **Step 3 — the mechanical fixes. DONE.** R-6 (discriminate on `classified`, not the raw `err`), R-12 (the
+      harness's engine derivation), R-9 (cover the `decodeErr` branch — **the second delivery blocker**; hit count
+      re-derived from the coverage profile as **0 before, 1 after**, by the implementer *and independently by the
+      coordinator*). **R-3 landed in Step 2** with R-10.
+
+      > **Three things worth keeping, none of them predicted:**
+      >
+      > 1. **Every cited coordinate in all three findings was STALE** — R-9's `:424` was `:439-442`, R-6's
+      >    `:420`/`:427` were `:436`/`:443`, R-12's `:765` was `:862-863`. The `00bc8b2` commit moved them. **The
+      >    project's *"cite the grep, not the coordinate"* rule earns its keep again; the findings file predates
+      >    the fix that shifted them.**
+      > 2. **🔴 HALF OF R-6 WAS WRONG, and re-deriving is what showed it.** The finding claims the operator gets a
+      >    raw driver *"relation does not exist"* instead of the typed `ErrSchemaNotReady`. False:
+      >    `classifyQueryErr` **REPLACES** rather than wraps (it returns `schemaNotReady()`), and both arms already
+      >    returned `classified`, so the operator always got the typed error. **The real defect was a contract
+      >    violation** — `Add` returned `(non-nil snapshot, ErrSchemaNotReady)` against its own godoc's
+      >    *"every other dialect failure keeps the `(nil, err)` shape"*. That still had to be fixed, and is: the
+      >    discriminator now tests `classified`. **`Handle` was no longer the victim** (Step 2's sentinel gate
+      >    already ignores it), but `MessageGroupStore` is a public SPI and any consumer gating on `group != nil`
+      >    inherited it.
+      > 3. **`reflect.Indirect` — the fix the finding recommends — would PANIC on the shape the SPI godoc
+      >    prescribes.** `reflect.Indirect` of a nil pointer yields the zero `Value`, whose `.Type()` panics, and
+      >    `(*yourDialect)(nil)` is literally the expression `GroupDialect`'s godoc tells implementers to write.
+      >    The implementer unwrapped on the **type** instead, and the RED run proved the adjacent hazard was real
+      >    too: `reflect.TypeOf(nil).PkgPath()` **segfaulted** on the nil-dialect case. **A seventh ratified/
+      >    recommended instruction defeated by running it** — see §2 of `docs/HANDOVER.md`.
 - [ ] **Step 4 — the fixes needing new fixtures.** R-1 (the truncated over-cap snapshot), R-11 (`withoutMember`
       applied unconditionally to an idempotent re-add), R-4 (a zero-member group reaching the release strategy),
       R-5 (`memory`'s inert leased arm, with the assertion it never had), R-8 (the vacuous ceiling-level test),

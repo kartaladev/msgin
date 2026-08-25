@@ -124,7 +124,7 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 	// what "the site names the engine that MINTED the error" actually means.
 	// A dialect outside this module prefixes its own module path instead of
 	// "msgin/sql/", and must reconcile that before running this suite.
-	engine := dialectEngine(kit.Group)
+	engine := DialectEngine(kit.Group)
 	overflowRender := func(key string, n, limit int, permanent bool) string {
 		s := fmt.Sprintf("%s: msgin/sql/%s: AddMember: group %q holds %d members, limit %d",
 			msgin.ErrOverflowDropped.Error(), engine, key, n, limit)
@@ -851,7 +851,7 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 	})
 }
 
-// dialectEngine returns the last element of the GroupDialect implementation's
+// DialectEngine returns the last element of the GroupDialect implementation's
 // package path — "postgres", "mysql" or "sqlite" for the built-ins — which is
 // the engine token each dialect substitutes into the member-cap rejection's
 // site string ("msgin/sql/<engine>: AddMember"). It is derived from the
@@ -859,8 +859,31 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 // runner may override (the shipped MariaDB runner sets Name "mariadb" while
 // running the mysql dialect), and the site names the package that minted the
 // error.
-func dialectEngine(d msginsql.GroupDialect) string {
-	p := reflect.TypeOf(d).PkgPath()
+//
+// A POINTER-typed dialect derives the same token as its value form. That is
+// not a nicety: GroupDialect's own godoc tells implementers to assert
+// conformance as `var _ msginsql.GroupDialect = (*yourDialect)(nil)`, so a
+// TestKit whose Group is a *yourDialect is the documented shape, and
+// reflect.Type.PkgPath is "" for a pointer type. A nil dialect, or a nil
+// pointer of a named type, is handled without panicking for the same reason
+// (Plan 031 Task 11, review finding R-12).
+//
+// It is exported so the derivation is assertable from a blackbox test (this
+// module ships no other way to reach it) and so a dialect author outside this
+// module can see the exact token the member-cap assertions will expect.
+func DialectEngine(d msginsql.GroupDialect) string {
+	rt := reflect.TypeOf(d)
+	if rt == nil {
+		return "" // TestKit.Group unset; let the caller's own nil fail, not a reflect panic
+	}
+	// Unwrap on the TYPE, not through reflect.Indirect(reflect.ValueOf(d)):
+	// Indirect of a nil pointer yields the zero Value, whose Type() panics —
+	// and (*yourDialect)(nil) is exactly the value a stateless dialect is
+	// legitimately built from.
+	for rt.Kind() == reflect.Pointer {
+		rt = rt.Elem()
+	}
+	p := rt.PkgPath()
 	if i := strings.LastIndex(p, "/"); i >= 0 {
 		return p[i+1:]
 	}

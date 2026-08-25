@@ -820,6 +820,39 @@ func TestGroupStore_AddThreadsAndPropagatesTheMemberCap(t *testing.T) {
 		assert.Equal(t, "m-1", group.Messages()[0].ID())
 	})
 
+	// R-9 (Plan 031 Task 11 Step 3), the CLAUDE.md hot-path gate: the overflow
+	// path's own decode-failure early return. Add's godoc promises the (nil, err)
+	// shape for "an overflow whose members cannot be decoded" — a corrupt stored
+	// header must not mask the rejection, and must not hand Handle a
+	// half-decoded group to run a release strategy against.
+	//
+	// The table must EXIST for this branch to be reachable at all: with the
+	// table gone, classifyQueryErr replaces the error and the discriminator
+	// above exits before any decode is attempted (R-6).
+	t.Run("an overflow whose snapshot cannot be decoded keeps the rejection and drops the group", func(t *testing.T) {
+		t.Parallel()
+		fd := newFakeGroupDialect()
+		fd.markGroupReady("groups")
+		fd.addMemberErr = msgin.Permanent(overflow("corr-1", 2, 1))
+		fd.addMemberRows = msginsql.GroupRows{
+			GroupKey: "corr-1",
+			Members: []msginsql.MemberRow{
+				{MsgID: "m-1", Headers: []byte("{not json"), Payload: []byte("p1")},
+			},
+		}
+		store, err := msginsql.NewGroupStore(openDB(t, fakeDriverName), "groups", fd,
+			msginsql.WithMaxGroupMembers(1))
+		require.NoError(t, err)
+
+		group, err := store.Add(t.Context(), "corr-1", msgin.New[any]([]byte("p2"), msgin.WithID("m-2")))
+		assert.Nil(t, group,
+			"a member whose framed headers are corrupt must not yield a partial group (R-9)")
+		require.ErrorIs(t, err, msgin.ErrOverflowDropped,
+			"the decode fault must not MASK the rejection the caller has to act on")
+		assert.True(t, msgin.IsPermanent(err),
+			"the dialect's not-leased classification survives the decode failure too")
+	})
+
 	t.Run("a NON-overflow dialect error still returns a nil group", func(t *testing.T) {
 		t.Parallel()
 		fd := newFakeGroupDialect()
@@ -850,17 +883,41 @@ func TestGroupStore_AddThreadsAndPropagatesTheMemberCap(t *testing.T) {
 			"Spec 017 §6 AC-4c: with the table present the error passes through unchanged")
 	})
 
-	t.Run("a MISSING table still reclassifies the overflow as ErrSchemaNotReady", func(t *testing.T) {
+	// R-6 (Plan 031 Task 11 Step 3): the overflow branch is discriminated on the
+	// CLASSIFIED error, not on the raw dialect one, so a classifyQueryErr rewrite
+	// takes the snapshot with it. A member table dropped by a bad migration
+	// CONCURRENTLY with an over-cap Add reclassifies to ErrSchemaNotReady — which
+	// carries neither msgin.ErrOverflowDropped nor the Permanent marker — and a
+	// snapshot must not ride out beside an error that no longer states the
+	// overflow contract (Add's godoc: "every other dialect failure keeps the
+	// (nil, err) shape").
+	t.Run("a MISSING table reclassifies the overflow as ErrSchemaNotReady AND drops the snapshot", func(t *testing.T) {
 		t.Parallel()
+		headers, err := msginsql.EncodeHeaders(
+			msgin.NewHeaders(map[string]any{msgin.HeaderMessageID: "m-1"}))
+		require.NoError(t, err)
+
 		fd := newFakeGroupDialect() // markGroupReady NOT called: the probe reports the table absent
 		fd.addMemberErr = msgin.Permanent(overflow("corr-1", 5, 4))
+		// A NON-empty snapshot, so "nil" below cannot be satisfied by accident:
+		// the zero GroupRows decodes to a valid zero-member group, which is a
+		// non-nil msgin.MessageGroup.
+		fd.addMemberRows = msginsql.GroupRows{
+			GroupKey: "corr-1",
+			Members:  []msginsql.MemberRow{{MsgID: "m-1", Headers: headers, Payload: []byte("p1")}},
+		}
 		store, err := msginsql.NewGroupStore(openDB(t, fakeDriverName), "groups", fd,
 			msginsql.WithMaxGroupMembers(4))
 		require.NoError(t, err)
 
-		_, err = store.Add(t.Context(), "corr-1", msgin.New[any]([]byte("p"), msgin.WithID("m-5")))
+		group, err := store.Add(t.Context(), "corr-1", msgin.New[any]([]byte("p"), msgin.WithID("m-5")))
 		require.ErrorIs(t, err, msginsql.ErrSchemaNotReady,
 			"classifyQueryErr's diagnosis wins when the table is genuinely gone")
+		assert.NotErrorIs(t, err, msgin.ErrOverflowDropped,
+			"the schema diagnosis REPLACES the rejection; it does not wrap it")
+		assert.Nil(t, group,
+			"the snapshot rides out only with an error that still carries the overflow "+
+				"sentinel — discriminate on the CLASSIFIED error, not the raw one (R-6)")
 	})
 
 	// AC-7 / Spec 017 §3.7, the MUST-REPORT clause ONLY: an Add that would

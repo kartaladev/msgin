@@ -407,7 +407,11 @@ func NewGroupStore(db *stdsql.DB, table string, dialect GroupDialect, opts ...Gr
 // The error still routes through classifyQueryErr, which costs one extra
 // SchemaExists round-trip. Both the sentinel and the Permanent marker survive
 // it while the table exists; a genuinely dropped table wins and surfaces as
-// ErrSchemaNotReady, which is the correct diagnosis.
+// ErrSchemaNotReady, which is the correct diagnosis. Because that diagnosis
+// REPLACES the rejection rather than wrapping it, the snapshot goes with it:
+// the whole branch is gated on the CLASSIFIED error, so a table dropped
+// concurrently with an over-cap Add returns (nil, ErrSchemaNotReady) and never
+// pairs a group with an error that no longer states the overflow contract.
 func (s *GroupStore) Add(ctx context.Context, key string, msg msgin.Message[any]) (msgin.MessageGroup, error) {
 	msgID := msg.ID()
 	if msgID == "" {
@@ -433,7 +437,12 @@ func (s *GroupStore) Add(ctx context.Context, key string, msg msgin.Message[any]
 		s.maxGroupMembers, s.leaseTTL)
 	if err != nil {
 		classified := s.classifyQueryErr(ctx, err)
-		if !errors.Is(err, msgin.ErrOverflowDropped) {
+		// Discriminate on the CLASSIFIED error, never on the raw one: classified
+		// is what the caller receives, and classifyQueryErr REPLACES (does not
+		// wrap) the dialect error when the probe finds the table gone. Testing
+		// the raw err would pair a snapshot with an ErrSchemaNotReady that
+		// carries neither the sentinel nor the Permanent marker (R-6).
+		if !errors.Is(classified, msgin.ErrOverflowDropped) {
 			return nil, classified
 		}
 		snap, decodeErr := s.decodeGroupRows(rows)
