@@ -85,7 +85,10 @@ any other work.** Highlights:
   the *"whole-branch review catches what per-task misses"* lesson holding for the second time.
 - **Two findings are in code delivered THIS session**: `dialectEngine` (Task 7) returns `""` for a pointer-typed
   dialect — the form the SPI godoc recommends — and Task 8's godoc claim *"unmarked, hence transient"* is false
-  when the aggregate error is itself `Permanent`.
+  when the aggregate error is itself `Permanent`. 🔴 **BOTH ARE NOW CLOSED** (R-12 in Task 11 Step 3; R-2 in Task
+  11 Step 4b under [ADR 0033](adrs/0033-group-member-bounds.md) **D-AX**, which re-mints the release failure as a
+  fresh transient `ErrOverflowDropped`). The paragraph above records the state at the review, not the state now —
+  see [`docs/plans/031-review-findings.md`](plans/031-review-findings.md)'s LIVE STATUS block, **15 of 15**.
 
 **Three design decisions must be made and recorded in ADR 0033 BEFORE any code is written** (findings file §7):
 does `AddMember` gain `leaseTTL`; does the SPI reject `maxMembers <= 0` with a typed error plus an explicit

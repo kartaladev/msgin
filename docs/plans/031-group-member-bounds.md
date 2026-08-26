@@ -1373,6 +1373,24 @@ groupstore_unit_test.go}`, `sizing_option_class_gate_test.go`, **`adapter/databa
       > nils included), and the zero-member residual — because the shipped godoc's MAY clause is conditional on
       > all three. **This is the fifth ratified instruction in Plan 031 found defective, and the first found
       > defective by the whole-branch review rather than at execution time.**
+
+      > 🔴 **AND OVERTAKEN A THIRD TIME, BY FINDINGS R-2 AND R-13** (Task 11 Step 4b;
+      > [ADR 0033](../adrs/0033-group-member-bounds.md) **D-AX**).
+      > Both halves of the "true rule" written above are now wrong:
+      >
+      > 1. **`relErr != nil` no longer replaces — it DOWNGRADES**, minting a fresh **transient**
+      >    `ErrOverflowDropped` that interpolates the release fault's text with `%v`. Returning `relErr` verbatim
+      >    let a `Permanent`-marked aggregate or `Send` **terminally settle a member the store never persisted**.
+      >    **Exactly one exit replaces now: `cerr != nil`.**
+      > 2. ***"On positive evidence of drainage"* was never true of `claim == nil`** — a nil claim proves a lease
+      >    is **held**, not that the group drains. **The classification is UPHELD ON CORRECTED GROUNDS; nothing
+      >    about that exit's behaviour changed.** `overflowRetryable` now takes a `reason` so each of the three
+      >    minting exits states what actually happened; a single hard-coded *"drained by this release"* was false
+      >    at two of them and sent the investigation at the wrong process.
+      >
+      > **Spec §3.3a.1 and §3.7 carry the corrected wording — copy it, do not paraphrase, and do not copy this
+      > step.** This is the **sixth** ratified instruction in Plan 031 found defective, and the second found by
+      > the whole-branch review.
 - [ ] **Step 3 (AC-7 — ONE named clause, not "§3.7's requirement").** Add one case per first-party store for
       §3.7's **MUST-report** clause, with the store **held in a `msgin.MessageGroupStore` variable** rather than
       its concrete type:
@@ -1855,10 +1873,37 @@ reviewer subagent reviews before delivery. Per-task commits are pre-authorized b
       > instead, and the discriminator's margin was **measured before it was trusted** — exactly 2 types match
       > repo-wide, nearest non-match 3 of 7, probed in three directions including a deliberate near-miss that
       > correctly did **not** fire. A gate that false-reds gets deleted rather than fixed.
-- [ ] **Step 5 — triage the five capped findings** (§6 of the findings file), each fixed or triaged **with a
-      written rationale**: the ~120 lines of triplicated dialect logic; `ErrOverflowDropped`'s godoc naming 2 of 5
-      producers; Spec 017's stale status line (**done in revision 6**); `ExampleWithReleaseWhen`'s dead channel
-      wiring; the `memory` group-**count** arm carrying R-5's asymmetry.
+- [x] **Step 4b — the two RECOVERED findings, R-2 and R-13. DONE. 🔴 NEW: this step did not exist when Task 11
+      was written.** The coordinator's Step 2–4 decomposition covered only **13 of the 15**; both were re-surfaced
+      by the agent repairing the branch they sit in — `Handle`'s over-cap exits. **R-2 needed a design decision
+      first**, taken and ratified **2026-08-27** as [ADR 0033](../adrs/0033-group-member-bounds.md) **D-AX**
+      (revision 7), with spec twins at [Spec 017](../specs/017-group-member-bounds.md) **§3.3a** and **§3.3a.1**.
+
+      | Finding | Disposition | Behaviour change? |
+      |---|---|---|
+      | **R-2** | The release-failure exit re-mints a fresh **transient** `ErrOverflowDropped` interpolating `relErr` with **`%v`, not `%w`** — transient by construction, `errors.Is(…, ErrOverflowDropped)` still matches, both causes readable | ✅ **YES.** A `Permanent` aggregate/`Send` fault previously **terminally settled a member the store never persisted** |
+      | **R-13** | `overflowRetryable` gains a `reason string`; the three minting exits each say what happened. `Handle`'s DIRECTION RULE clause 2 corrected — a held lease is **not** proof of drainage | ❌ **NO. UPHELD ON CORRECTED GROUNDS, NOT REVERSED.** The classification stands; the *grounds* and the error **text** changed |
+
+      > 🔴 **THE TRAP IN THIS STEP IS THAT D-AX AND D-AW LOOK CONTRADICTORY.** They sit **ten lines apart** in the
+      > same branch: D-AW deliberately lets a `Permanent` release-**strategy** fault escalate to terminal; D-AX
+      > deliberately stops a `Permanent` aggregate/`Send` fault from doing so. Both carry the reciprocal sentence,
+      > and D-AX carries the discriminating table. **Neither generalises to the other exit** — the inconsistency
+      > is between the *faults*, not the decisions. Do not "make them consistent."
+      >
+      > **Do not restore the `%v` to `%w`.** Losing `errors.Is`/`As` reachability to the release cause at that one
+      > exit is the **mechanism**, not a side effect: the chain is what carried the permanence. Spec 017 §6 AC-9
+      > rows **12d** and **12d′** carry the mutants, including the `ErrPayloadTooLarge` arm that a
+      > marker-unwrapping "fix" would fail.
+
+- [x] **Step 5 — triage the five capped findings. DONE 2026-08-27** (§6 of the findings file), each fixed or
+      triaged **with a written rationale**: the ~120 lines of triplicated dialect logic (**triaged** — separate Go
+      modules, most of it engine-specific SQL, and D-AV already lifted the one shared *contract* into
+      `sql.ValidateMaxMembers`); `ErrOverflowDropped`'s godoc naming 2 of 5 producers (**fixed** — and the finding
+      **undercounted**: six sites re-derived, so the godoc now names **classes** plus the locating `grep`, and
+      calls out that the Aggregator is the only site that **mints** the sentinel fresh); Spec 017's stale status
+      line (**done in revision 6**, confirmed); `ExampleWithReleaseWhen`'s dead channel wiring (**triaged** — real
+      and cheap, deferred out of a docs-only pass; the fix is described in the findings file); the `memory`
+      group-**count** arm carrying R-5's asymmetry (**fixed in Step 4**, confirmed).
 - [ ] **Step 6 — re-run the gate.** Task 10 Steps 3/3b/4 again (they were green at `a2cc568`, and **Step 2 lands
       the first code commit since**, so those results expire the moment it does), then **ask the user to re-invoke
       `/code-review` and `/security-review`** over `main..HEAD`. The model cannot run them.

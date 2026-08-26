@@ -14,6 +14,14 @@
     **D-AU and D-AV change an exported SPI signature and contract after the fact; D-AW reverses a shipped test
     assertion.** All three are free at pre-v1 — no tags, no consumers — which is the only reason this is a
     revision rather than a migration.
+  - **🔴 REVISION 7 — D-AX, ratified 2026-08-27**, is the disposition of the last of those findings, **R-2**: the
+    overflow branch returned a release failure verbatim, so a `Permanent`-marked aggregate or output `Send`
+    **terminally settled — and lost — a member the store never persisted**. It is recorded separately from
+    revision 6 because it **narrows D-AW**, ratified two days earlier: D-AW lets a `Permanent` release-**strategy**
+    fault escalate to terminal, D-AX forbids a `Permanent` aggregate/`Send` fault from doing so, and the two sit
+    ten lines apart in the same branch. **Both carry the reciprocal sentence**, because a reader who finds only
+    one of them will read it as an inconsistency to be tidied away. Revision 7 also folds in **R-13**, which is a
+    correction to the *stated grounds* for two downgrades and **not** a behaviour change — see D-AN's annotation.
   - **How it was ratified.** The decisions were taken while the user was away, which is why each carries a
     `REVERSIBILITY:` line. Presented back as four load-bearing choices rather than eighteen — **D-AC** (the bound
     lives at the store), **D-AG** (the expensive one: in-transaction SQL enforcement, six modules), **D-AF**
@@ -619,12 +627,22 @@ if err != nil {
 >
 > The current exit inventory lives in **Spec 017 §3.3a.1**, keyed by condition rather than by ordinal.
 
-`overflowRetryable` mints a fresh **transient** error rather than unwrapping D-AM's permanent marker:
+`overflowRetryable` mints a fresh **transient** error rather than unwrapping D-AM's permanent marker, and takes a
+`reason` naming what actually happened at the minting exit — **the signature gained that parameter after
+delivery** (finding **R-13**), because a single hard-coded phrase was false at two of the three exits:
 
 ```go
-fmt.Errorf("%w: routing.Aggregator.Handle: group %q drained by this release; retry to admit the rejected member",
-    msgin.ErrOverflowDropped, key)
+func overflowRetryable(key, reason string) error {
+    return fmt.Errorf(
+        "%w: routing.Aggregator.Handle: group %q %s; retry to admit the rejected member",
+        msgin.ErrOverflowDropped, key, reason)
+}
 ```
+
+The three `reason` values are `"drained by this release"`, `"is held by another holder, whose lease is draining
+it"`, and — since **D-AX** — `fmt.Sprintf("was claimed but its release FAILED (%v), so it did not drain", relErr)`.
+`reason` is interpolated with `%s` and the release fault with `%v`, **never `%w`**; see D-AX for why that severance
+is the point. Spec 017 §3.3a.1 carries the per-exit table.
 
 **Why an error is still returned when the drain succeeds.** The member was never stored. Returning `nil` would make
 the source **Ack a message that was never aggregated** — the delivery-guarantee violation Spec 017 §5 rejects under
@@ -650,6 +668,15 @@ than terminating** — accepted, because marking a store fault or a channel faul
 reached through an overflow would dead-letter on the wrong cause and misattribute it in the operator's sink.
 Recorded as a residual hazard in Spec 017 §3.3a.1 and §8 item 6. D-AH's MAY clause carries this wording, which is
 where a third-party store author reads it.
+
+> 🔴 **BOTH HALVES OF THAT SENTENCE — AND THE *"why the classification direction is safe"* PARAGRAPH ABOVE IT —
+> WERE CORRECTED AFTER DELIVERY. See D-AX and finding R-13.** The membership is
+> wrong: **`relErr != nil` no longer replaces, it DOWNGRADES**, so `cerr != nil` is the only replacing exit
+> (**D-AX**). And *"positive evidence of drainage"* was never true of `claim == nil`: a nil claim proves a lease is
+> **held**, and a holder ending in `AbandonGroup` leaves the group exactly as full (**R-13**). **The
+> classification at `claim == nil` is UPHELD ON CORRECTED GROUNDS — nothing about its behaviour changed** — the
+> grounds are now the bounded cost of being wrong (one redelivery), not proof. Spec 017 §3.3a.1 and §3.7, and
+> `groupstore.go`'s SPI godoc, carry the corrected form.
 
 > 🔴 **"ON ITS OWN ACCOUNT" IS NOT A HEDGE — IT IS THE QUALIFICATION D-AW ADDED, AND THIS PARAGRAPH READ WITHOUT
 > IT UNTIL THEN.** `Handle` still adds no `Permanent` marker of its own anywhere in the branch. But **D-AW**'s
@@ -1148,6 +1175,23 @@ declaration is `:45`) gains:
 > can surface as permanent. **Two successive revisions weakened this same sentence, each time because a new exit
 > was reachable that the sentence had not been written against — which is the argument for stating the mechanism
 > (`errors.As` traverses joins) rather than a reassurance about the outcome.**
+
+> 🔴 **AND A THIRD TIME, IN REVISION 7 — THE QUOTED GODOC BLOCK ABOVE IS NO LONGER WHAT `groupstore.go` SAYS.
+> READ THE CODE.** Two corrections, both post-delivery:
+>
+> 1. **`relErr != nil` no longer "replaces the overflow error with a distinct fault"** — it re-mints a fresh,
+>    **transient** `msgin.ErrOverflowDropped` carrying the release fault's rendered **text** (`%v`, not `%w`), so
+>    no `Permanent` marker on that fault can terminally settle a member the store never persisted (**D-AX**,
+>    finding **R-2**). **Exactly one exit replaces now: `cerr != nil`.**
+> 2. ***"On positive evidence that the group drained (or that another holder is draining it)"* was never true of
+>    the `claim == nil` exit** (finding **R-13**). A nil claim proves a lease is **held**; a holder ending in
+>    `AbandonGroup` leaves the group exactly as full. **The classification is UPHELD ON CORRECTED GROUNDS — no
+>    behaviour changed there** — the grounds are now the bounded cost of being wrong (one redelivery) rather than
+>    proof.
+>
+> The live wording is in `groupstore.go`'s `Add` godoc and Spec 017 §3.7; this box is a decision record, so it is
+> annotated rather than rewritten. **Four successive revisions have now weakened this same clause** — each time
+> because an exit was reachable that the clause had not been written against.
 
 **Why the MAY rather than a MUST.** A store that cannot cheaply produce the live set on the rejection path (a
 broker-backed store, say) must not be forced to. The Aggregator's nil-snapshot arm keeps such a store working
@@ -1918,7 +1962,106 @@ fault in front of the operator.
 >    debt, not control-flow budget. Citing it as a cost of adding a well-tested exit inverts it. Spec 017 §3.3a.1
 >    now keys exits by condition and derives the count from the code, which retires the whole class of argument.
 
+> 🔴 **THIS ESCALATION IS THE MIRROR IMAGE OF D-AX, TEN LINES AWAY IN THE SAME BRANCH, AND THE TWO LOOK
+> CONTRADICTORY UNTIL YOU ASK WHAT EACH FAULT IS *ABOUT*.** Here a `Permanent`-marked **release-strategy** error is
+> allowed to escalate the member to terminal. There a `Permanent`-marked **aggregate/`Send`** error is explicitly
+> prevented from doing so. The distinction: a failing release **strategy** is a predicate over *this* group, and it
+> fails identically on every redelivery, so escalation ends a spin that buys nothing. A failing **aggregate or
+> `Send`** is about the *other, already-claimed* members' payloads; the refused member is unrelated collateral and
+> must stay redeliverable. **Neither decision generalises to the other exit.** See D-AX.
+
 **REVERSIBILITY:** free — one statement and one test assertion, no signature or storage change.
+
+### D-AX — a RELEASE failure is re-minted as a fresh TRANSIENT `ErrOverflowDropped`; the marker chain is severed on purpose
+
+**NEW in revision 7. This is the disposition of whole-branch review finding R-2
+([`031-review-findings.md`](../plans/031-review-findings.md) §3). It AMENDS D-AN's exit inventory and narrows
+D-AW's escalation to the exit D-AW is actually about. Ratified by the user 2026-08-27.**
+
+**The defect.** `Handle`'s overflow branch read `if relErr := a.release(ctx, claim); relErr != nil { return relErr
+}` — the release fault, verbatim. `a.release` runs the caller's aggregate function and then `Send`s the aggregate
+to the output channel, so `relErr` is whatever those returned. When that is a `msgin.Permanent`-marked error — or
+one merely wrapping `msgin.ErrPayloadTooLarge`, which `msgin.IsPermanent` matches **with no marker at all** (locate
+with `grep -n 'func IsPermanent' -A 12 reliability.go`) — the whole return is permanent, so the runtime's
+**single-shot divert settles the refused member terminally**. That member was **never stored**: the store rejected
+it, which is why an error is being returned at all. A terminal settle therefore **loses it outright**, where the
+transient path Nacks and redelivers.
+
+**And it is lost for a fault in OTHER messages.** The aggregate/`Send` that failed operated on the group's
+*already-claimed* members. The refused member contributed nothing to it. It is destroyed as collateral of a fault
+in someone else's payload.
+
+**The code contradicted its own contract block.** `Handle`'s DIRECTION RULE already argued, in as many words, that
+marking a store or channel fault permanent because it was reached through an overflow *"would dead-letter messages
+for a cause that has nothing to do with the cap, and would misattribute it in the operator's sink"* — and then the
+branch fifty lines below did exactly that. The godoc's claim that these faults are *"unmarked, hence transient"* is
+true of `cerr` and was **false of `relErr`**.
+
+**Decision.** The release-failure exit returns a **fresh, TRANSIENT** `msgin.ErrOverflowDropped` minted by
+`overflowRetryable`, interpolating `relErr`'s **rendered text** with `%v`:
+
+```go
+if relErr := a.release(ctx, claim); relErr != nil {
+    return overflowRetryable(key,
+        fmt.Sprintf("was claimed but its release FAILED (%v), so it did not drain", relErr))
+}
+```
+
+Three properties follow, all of them required:
+
+1. **Transient by construction.** A freshly minted error carries no marker and wraps nothing markable, so no
+   `Permanent` and no permanence-bearing sentinel can reach `msgin.IsPermanent` through it. This is the same
+   property `overflowRetryable` already had at its other two exits, now extended to the third.
+2. **`errors.Is(err, msgin.ErrOverflowDropped)` still matches.** The member *was* refused by the cap and still is;
+   that is what the caller must see and act on.
+3. **Both causes stay readable.** The release fault's text is in the message verbatim, so the Nack still names the
+   **output channel** and an operator debugging a full group is not sent at the cap. That requirement predates this
+   decision and survives it.
+
+**The ACCEPTED COST, stated plainly: `errors.Is` and `errors.As` cannot reach the release cause at this one exit.**
+A caller cannot `errors.Is(err, mySendErr)` on it, and cannot type-assert the channel's error out of it. **That is
+not a regrettable side effect — it is the mechanism.** The chain is exactly what carried the permanence, and
+severing it is the fix. **Do not "restore" the `%v` to `%w`.** A test asserts `NotErrorIs(err, sendErr)` precisely
+so the next reader cannot make that repair silently; Spec 017 §6 AC-9 rows **12d** and **12d′** carry the mutants,
+including the `ErrPayloadTooLarge` arm that a marker-unwrapping fix would fail.
+
+**🔴 THE CONTRAST WITH D-AW IS THE PART THAT MUST NOT BE LOST.** D-AW, ten lines above this exit in the same
+branch, deliberately **allows** a `Permanent`-marked release-**strategy** error to escalate the member to terminal
+through `errors.Join`. This decision deliberately **prevents** a `Permanent`-marked aggregate/`Send` error from
+doing the same. Read side by side they look contradictory; they are not, and the discriminator is **what the fault
+is a statement about**:
+
+| | D-AW — the release STRATEGY failed | D-AX — the AGGREGATE or `Send` failed |
+|---|---|---|
+| What the fault is about | a predicate evaluated over **this group** | the payloads of the **other, already-claimed** members |
+| On redelivery | fails **identically** — the same group, the same predicate | may well succeed; nothing about the refused member caused it |
+| So retrying | buys nothing, and costs B-1's unbounded zero-delay spin | is the only path that can still deliver the member |
+| Therefore | **escalate** — put both causes at the invalid-message sink | **stay transient** — the member is unrelated collateral |
+
+**Neither generalises to the other exit.** A future reader tempted to make them consistent should change nothing:
+the inconsistency is between the *faults*, not between the decisions. D-AW carries the reciprocal sentence.
+
+**Rejected — a public `msgin.Transient(err)` marker.** The obvious "clean" fix: keep `%w` and wrap the result in an
+explicit transient marker that outranks `Permanent`. It grows the **root module's exported API** for a single call
+site; it requires a specified interaction with `msgin.Permanent` (which wins when both are present? does
+`IsPermanent` consult it, or does a new `IsTransient` exist alongside?); and that specification is an
+architectural decision of its own, needing its own ADR and its own audit. **The severance achieves the same
+outcome with no new public surface**, and the reachability it gives up is reachability the marker fix exists to
+neutralise anyway.
+
+**Rejected — keep `relErr` verbatim and correct the godoc instead.** Zero code change; it makes the documents
+honest by writing down that a `Permanent` aggregate/`Send` fault silently loses the refused member. **It
+documents a data-loss path rather than closing it.** The whole reason the branch returns an error instead of `nil`
+is that the member was never stored; accepting a terminal settle on that member concedes the point the branch
+exists to defend.
+
+**Rejected — return `errors.Join(overflowErr, relErr)`, matching D-AW's shape.** Superficially the consistent
+choice, and it does preserve both causes for `errors.Is`. But `errors.As` traverses `Unwrap() []error`, so the
+join propagates the `Permanent` marker just as verbatim propagation did — it reproduces the defect while looking
+like a fix. The join is right for D-AW **because** escalation is wanted there; here it is wrong for the same
+reason.
+
+**REVERSIBILITY:** free — one statement, no signature or storage change. Reversing it restores R-2.
 
 ## Consequences
 
@@ -1970,6 +2113,18 @@ fault in front of the operator.
 - **🔴 REVISION 6 — a release-strategy fault is no longer reported as a cap rejection** (D-AW). `errors.Join`
   keeps both causes, transparent to `errors.Is`/`As`, aligning the overflow branch with the success path 25 lines
   below it.
+- **🔴 REVISION 7 — a `Permanent` aggregate or `Send` fault can no longer destroy a member the store never
+  stored** (D-AX, whole-branch finding **R-2**). The release-failure exit re-mints a fresh, **transient**
+  `ErrOverflowDropped` carrying the fault's rendered text, so the refused member is Nacked and redelivered instead
+  of being single-shot-diverted and lost as collateral of a fault in *other* messages' payloads. It also makes the
+  branch's own contract block true: `Handle` argued that marking a store or channel fault permanent *"would
+  dead-letter messages for a cause that has nothing to do with the cap"* while doing exactly that fifty lines
+  below.
+- **🔴 REVISION 7 — the three downgrading exits now SAY WHICH ONE THEY ARE** (finding **R-13**).
+  `overflowRetryable` takes a `reason`; a single hard-coded *"drained by this release"* was false at two of the
+  three and **sent the investigation at the wrong process**. The transient classification at those exits is
+  **upheld on corrected grounds, not reversed** — the grounds are now the bounded cost of being wrong, stated per
+  exit, rather than a proof of drainage that two of them never had.
 - **🔴 REVISION 6 — D-AQ's completeness gate NO LONGER KEYS ON A CONSTANT'S SPELLING** (whole-branch finding
   **R-14**, Task 11 Step 4). A new **half 3** reads `msgin.MessageGroupStore`'s method set **out of the AST** and
   asserts that the set of packages declaring a covering type equals the known-sites list, in both directions — so
@@ -2106,6 +2261,16 @@ fault in front of the operator.
 - **🔴 REVISION 6 — a shipped test assertion is REVERSED** (D-AW): `NotErrorIs(err, strategyErr)` becomes
   `ErrorIs`. The original was deliberate and defensible; it is being re-litigated against CLAUDE.md's
   debuggability gate and losing. **Recorded here so a future reader does not "restore" it as a regression.**
+- **🔴 REVISION 7 — `errors.Is`/`errors.As` cannot reach the release cause at the release-failure exit** (D-AX).
+  The chain is severed with `%v`, so a caller cannot match or type-assert the aggregate/`Send` fault out of the
+  returned error; only its **text** survives. **That is the mechanism, not a side effect** — the chain is what
+  carried the permanence. **Do not restore the `%w`.** It also means this one exit reads as the *opposite* of
+  D-AW's join ten lines above it; the discriminator is in D-AX's table, and both decisions carry the reciprocal
+  sentence so neither is "made consistent" with the other by a future reader.
+- **🔴 REVISION 7 — a second shipped test assertion is REVERSED** (D-AX): the release-failure row's
+  `ErrorIs(err, sendErr)` + `NotErrorIs(err, msgin.ErrOverflowDropped)` become their negations. The row could not
+  survive the fix, because verbatim propagation **is** the defect. **Recorded here so a future reader does not
+  "restore" it as a regression.**
 
 **Neutral / to watch.**
 

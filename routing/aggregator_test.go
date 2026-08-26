@@ -1171,6 +1171,11 @@ func TestAggregator_Handle(t *testing.T) {
 				assert.False(t, msgin.IsPermanent(err),
 					"the group provably just drained, so the retry provably succeeds")
 				assert.Contains(t, err.Error(), "routing.Aggregator.Handle")
+				// R-13: each exit must state what ACTUALLY happened. This one
+				// really did drain, so it — and only it — may say so. Paired
+				// with the NotContains on the claim==nil row below, this kills
+				// any mutant that re-hard-codes one phrase for both exits.
+				assert.Contains(t, err.Error(), "drained by this release")
 				assert.Equal(t, 1, out.sentCount(), "the release re-fired and succeeded")
 
 				// And the retry IS admitted — an error was still returned
@@ -1305,7 +1310,13 @@ func TestAggregator_Handle(t *testing.T) {
 			// (aggregator.go's "another Handle/process is releasing this
 			// group; held"); here the member was never stored, so nil would
 			// Ack an unstored message. The divergence is deliberate.
-			name: "over cap: a claim taken by another holder is a transient overflow, never nil",
+			//
+			// 🔴 R-13: the message this exit mints used to be hard-coded to
+			// "group %q drained by this release" — FALSE here, because nothing
+			// drained; a lease is merely held. That sent the investigation at
+			// the wrong process. The wording is now per-exit and asserted both
+			// ways, so the two exits cannot collapse back onto one phrase.
+			name: "over cap: a claim taken by another holder is a transient overflow naming the LEASE, never nil",
 			assert: func(t *testing.T) {
 				out := &fakeAggChannel{}
 				agg := cappedAgg(t, 4, out, declineThenRelease(4, nil),
@@ -1318,15 +1329,30 @@ func TestAggregator_Handle(t *testing.T) {
 				}
 				err := agg.Handle(t.Context(), corrMsg(9, "m9", "k", nil))
 				require.ErrorIs(t, err, msgin.ErrOverflowDropped)
-				assert.False(t, msgin.IsPermanent(err))
+				assert.False(t, msgin.IsPermanent(err),
+					"a lease is in flight, so a drain is in progress; being wrong costs ONE redelivery, "+
+						"because an abandoning holder leaves the group unleased and the next Add takes the Permanent arm")
 				assert.Contains(t, err.Error(), "routing.Aggregator.Handle")
+				assert.Contains(t, err.Error(), "held by another holder")
+				assert.NotContains(t, err.Error(), "drained by this release",
+					"nothing drained at this exit — see Plan 031 finding R-13")
+				assert.Equal(t, 0, out.count())
 			},
 		},
 		{
-			// B1-13e / exit 5 — the release itself failed. The Nack must name
-			// the OUTPUT CHANNEL, not the cap, or an operator debugging a full
-			// group is pointed at the wrong subsystem.
-			name: "over cap: a release failure returns the release error, not the overflow error",
+			// B1-13e / exit 5 — the release itself failed. REWRITTEN for D-AX
+			// (Plan 031 finding R-2): the release fault used to be returned
+			// VERBATIM, and this row used to assert exactly that
+			// (`ErrorIs(err, sendErr)` + `NotErrorIs(err, ErrOverflowDropped)`).
+			// It could not survive the fix, because verbatim propagation is the
+			// defect: it carries any Permanent marker on the release fault
+			// straight onto a member the store NEVER STORED.
+			//
+			// The new contract severs the chain. The Nack must still name the
+			// OUTPUT CHANNEL — an operator debugging a full group must not be
+			// pointed at the cap — so the fault's TEXT is preserved verbatim in
+			// the message; only its errors.Is/As reachability is given up.
+			name: "over cap: a release failure keeps the release fault's TEXT but severs its error chain",
 			assert: func(t *testing.T) {
 				sendErr := errors.New("send boom")
 				out := &fakeAggChannel{sendErr: sendErr}
@@ -1336,8 +1362,86 @@ func TestAggregator_Handle(t *testing.T) {
 					require.NoError(t, agg.Handle(t.Context(), corrMsg(i, "m"+strconv.Itoa(i), "k", nil)))
 				}
 				err := agg.Handle(t.Context(), corrMsg(9, "m9", "k", nil))
-				require.ErrorIs(t, err, sendErr)
-				assert.NotErrorIs(t, err, msgin.ErrOverflowDropped)
+				require.ErrorIs(t, err, msgin.ErrOverflowDropped,
+					"the member was refused by the cap and is still refused; that is what the caller must see")
+				assert.NotErrorIs(t, err, sendErr,
+					"D-AX: the chain is severed with %v so no marker on the release fault can travel up it")
+				assert.Contains(t, err.Error(), "send boom",
+					"severing the CHAIN must not lose the TEXT — the operator still needs the real cause")
+				assert.Contains(t, err.Error(), "release FAILED")
+				assert.False(t, msgin.IsPermanent(err))
+			},
+		},
+		{
+			// 🔴 R-2 / D-AX, arm 1 — the defect the sever exists to close. A
+			// Permanent-marked output Send made the whole return permanent, so
+			// the runtime's SINGLE-SHOT divert settled — and LOST — a member the
+			// store never persisted, for a fault that has nothing to do with the
+			// cap. Handle's own contract block already argued that marking a
+			// store or channel fault permanent "would dead-letter messages for a
+			// cause that has nothing to do with the cap"; this row is that claim
+			// made true.
+			//
+			// It is deliberately UNLIKE the D-AW escalation asserted above: a
+			// failing RELEASE STRATEGY is a predicate over this group and fails
+			// identically on every redelivery, so escalating ends a pointless
+			// spin. A failing aggregate/Send is about the OTHER, claimed
+			// members' payloads, and the refused member is unrelated collateral.
+			name: "over cap: a PERMANENT release failure must NOT settle the never-stored member terminally",
+			assert: func(t *testing.T) {
+				sendErr := msgin.Permanent(errors.New("send boom"))
+				require.True(t, msgin.IsPermanent(sendErr), "fixture check: the release fault IS permanent")
+
+				out := &fakeAggChannel{sendErr: sendErr}
+				agg := cappedAgg(t, 4, out, declineThenRelease(4, nil), nil)
+
+				for i := range 4 {
+					require.NoError(t, agg.Handle(t.Context(), corrMsg(i, "m"+strconv.Itoa(i), "k", nil)))
+				}
+				err := agg.Handle(t.Context(), corrMsg(9, "m9", "k", nil))
+				assert.False(t, msgin.IsPermanent(err),
+					"the refused member was NEVER STORED, so a terminal settle loses it outright")
+				assert.ErrorIs(t, err, msgin.ErrOverflowDropped)
+				assert.Contains(t, err.Error(), "send boom")
+			},
+		},
+		{
+			// 🔴 R-2 / D-AX, arm 2 — and the arm that pins the fix's SHAPE. A
+			// fix that merely unwrapped msgin.Permanent would pass arm 1 and
+			// fail here: ErrPayloadTooLarge is permanent WITHOUT any marker,
+			// because msgin.IsPermanent matches it by sentinel. Only severing
+			// the chain outright is transient BY CONSTRUCTION.
+			//
+			// The fault is raised by the AGGREGATE FUNCTION rather than the
+			// channel, so the two arms also cover both of releaseOnce's
+			// pre-settle failure points.
+			name: "over cap: an ErrPayloadTooLarge aggregate failure must NOT settle the never-stored member terminally",
+			assert: func(t *testing.T) {
+				tooLarge := fmt.Errorf("%w: routing.Aggregator: aggregate output is 9 MiB", msgin.ErrPayloadTooLarge)
+				require.True(t, msgin.IsPermanent(tooLarge),
+					"fixture check: ErrPayloadTooLarge is permanent with NO Permanent wrapper (reliability.go IsPermanent)")
+
+				out := &fakeAggChannel{}
+				aggFn := func(context.Context, []msgin.Message[int]) (msgin.Message[int], error) {
+					return msgin.New(0), tooLarge
+				}
+				agg, err := routing.NewAggregator[int, int](cappedStore(t, 4), aggFn,
+					routing.WithOutputChannel(out),
+					routing.WithCorrelationStrategy(fixedKey),
+					routing.WithReleaseStrategy(declineThenRelease(4, nil)))
+				require.NoError(t, err)
+
+				for i := range 4 {
+					require.NoError(t, agg.Handle(t.Context(), corrMsg(i, "m"+strconv.Itoa(i), "k", nil)))
+				}
+				err = agg.Handle(t.Context(), corrMsg(9, "m9", "k", nil))
+				assert.False(t, msgin.IsPermanent(err),
+					"a sentinel-borne permanence must be severed too, not just an explicit marker")
+				assert.NotErrorIs(t, err, msgin.ErrPayloadTooLarge,
+					"the sentinel itself must not travel up: it is what IsPermanent matches on")
+				assert.ErrorIs(t, err, msgin.ErrOverflowDropped)
+				assert.Contains(t, err.Error(), "9 MiB")
+				assert.Equal(t, 0, out.count())
 			},
 		},
 		{

@@ -1,6 +1,6 @@
 # Spec 017 — A message group's member count is bounded at the store, not at the release decision
 
-- **Status:** **APPROVED AND SUBSTANTIALLY DELIVERED — revision 6.** Revisions 1–5 were written before any code,
+- **Status:** **APPROVED AND SUBSTANTIALLY DELIVERED — revision 7.** Revisions 1–5 were written before any code,
   per [CLAUDE.md](../../CLAUDE.md)'s design-time gate; revision 5 was approved and
   [Plan 031](../plans/031-group-member-bounds.md) delivered **9 of its 10 tasks** on branch
   `chore/backlog-sweep-post-029` (nothing merged, nothing tagged).
@@ -9,6 +9,15 @@
     [`docs/plans/031-review-findings.md`](../plans/031-review-findings.md). `/code-review max` over `main..HEAD`
     returned **15** findings; `/security-review` returned **0**. Two of the fifteen are CLAUDE.md delivery
     blockers. **The branch must not merge while any of them is un-dispositioned.** See §3.3b, §3.6a and §8.
+  - **🔴 REVISION 7 FOLDS IN THE LAST TWO FINDINGS — R-2 and R-13 — closed 2026-08-27.** **R-2 needed a decision**
+    and is [ADR 0033](../adrs/0033-group-member-bounds.md) **D-AX**: the over-cap branch's release-failure exit
+    stopped returning the fault verbatim (which **terminally settled a member the store never persisted** whenever
+    the aggregate fn or output `Send` was `msgin.Permanent`) and now re-mints a fresh **transient**
+    `ErrOverflowDropped` interpolating the fault's text with `%v`. **R-13 changed no behaviour** — the transient
+    classification at `claim == nil` is **upheld on corrected grounds**; what changed is the stated grounds (a held
+    lease is not proof of drainage) and the error text (`overflowRetryable` now takes a `reason`). See §3.3a,
+    §3.3a.1, §3.7 and §6 AC-9 rows 12c/12d/12d′. **All 15 findings and all five §6 capped items are now
+    dispositioned.**
   - **The revision-5 status line read *"DRAFT … NOT approved for implementation"* while its `feat` commits had
     already shipped.** That contradiction was itself recorded as [`031-review-findings.md`](../plans/031-review-findings.md)
     §6 item 3 and is corrected here — an instance of the project's *"docs can contradict the code they describe"*
@@ -769,12 +778,29 @@ if err != nil {
 > wrote. **The same block, with the same wrong call, is in
 > [ADR 0033 D-AN](../adrs/0033-group-member-bounds.md).**
 
-`overflowRetryable` mints a fresh **transient** error rather than unwrapping the permanent marker:
+`overflowRetryable` mints a fresh **transient** error rather than unwrapping the permanent marker, and takes a
+`reason` naming **what actually happened at the minting exit** — the three exits differ, and a single hard-coded
+phrase was false at two of them (finding **R-13**):
 
 ```go
-fmt.Errorf("%w: routing.Aggregator.Handle: group %q drained by this release; retry to admit the rejected member",
-    msgin.ErrOverflowDropped, key)
+func overflowRetryable(key, reason string) error {
+    return fmt.Errorf(
+        "%w: routing.Aggregator.Handle: group %q %s; retry to admit the rejected member",
+        msgin.ErrOverflowDropped, key, reason)
+}
 ```
+
+The three `reason` values, one per minting exit:
+
+| Exit | `reason` |
+|---|---|
+| drained (fall-through) | `"drained by this release"` |
+| `claim == nil` | `"is held by another holder, whose lease is draining it"` |
+| `relErr != nil` | `fmt.Sprintf("was claimed but its release FAILED (%v), so it did not drain", relErr)` |
+
+**`reason` is interpolated with `%s`, and `relErr` with `%v` — never `%w`.** `reason` is library-authored text and
+carries no error identity of its own; the release fault's **text** is preserved while its **chain is severed**, so
+no `msgin.Permanent` marker on it can reach the member the store never stored (**ADR 0033 D-AX**; finding **R-2**).
 
 #### 3.3a.1 🔴 EVERY exit of the branch is a hot-path branch — and each one is named by its CONDITION, never by an ordinal
 
@@ -810,13 +836,13 @@ fmt.Errorf("%w: routing.Aggregator.Handle: group %q drained by this release; ret
 |---|---|---|---|
 | `!errors.Is(err, msgin.ErrOverflowDropped)` | `err` | *"a NON-overflow store error with a POPULATED snapshot is returned verbatim"* and its zero-value-snapshot twin | **finding R-3.** The branch implements the OVERFLOW contract, so it is gated on the sentinel, not on the structural accident that a snapshot came back. `sql.GroupStore.Add` ends in `decodeGroupRows`, which returns a **non-nil** `msgin.MessageGroup` (a `sql.groupSnapshot` value) beside a header-decode fault; under the old `group == nil` test that fault got the group claimed, aggregated, emitted and settled |
 | `isNilGroup(group)` | `err` | AC-1's cases via a `(nil, err)` stub store, plus *"a TYPED-nil snapshot is caught by the same guard"* | the compatibility arm every pre-existing store takes — **widened by R-3's secondary hole** to TYPED nils. `group == nil` is an interface-nil test, and `(*yourGroup)(nil)` — the value this spec's own conformance idiom produces — passes it and then nil-derefs |
-| `len(group.Messages()) == 0` | `err` | *"over cap: a ZERO-MEMBER live snapshot skips the release attempt"* | **finding R-4.** An empty live residual means another holder's claim covers every member and is draining the group, so there is nothing to release and the store's transient classification is exactly right. It also keeps a zero-member group away from a release strategy that is not obliged to survive one (`g.Messages()[0]` panics, and inside a Consumer that panic is recovered as the *transient* `ErrHandlerPanic` and retried forever) |
+| `len(group.Messages()) == 0` | `err` | *"over cap: a ZERO-MEMBER live snapshot skips the release attempt"* | **finding R-4.** An empty live residual means another holder's claim covers every member, so there is nothing left here to release and the store's own classification stands. *(**R-13**: that is evidence the group is **LEASED**, not proof it drains — a holder ending in `AbandonGroup` leaves it exactly as full. Nothing turns on the difference at a gate that returns `err` unchanged either way; it matters only at the exits that classify.)* It also keeps a zero-member group away from a release strategy that is not obliged to survive one (`g.Messages()[0]` panics, and inside a Consumer that panic is recovered as the *transient* `ErrHandlerPanic` and retried forever) |
 | `rerr != nil` (the strategy FAILED) | `errors.Join(err, rerr)` | *"a release-strategy failure is JOINED with the store's error, not swallowed"* + the two escalation rows | **§3.3b / D-AW.** A strategy's error is not a "no": the group must not be claimed and released, **and** the caller's own fault must not be reported as a cap rejection. See §3.3b for the intended `IsPermanent` escalation |
 | `!ok` (the strategy DECLINED) | `err`, unchanged | AC-1 | declining is not a fault; the store's D-AM classification is the whole story, and the error keeps its original identity rather than becoming a single-element join |
-| `cerr != nil` (`ClaimGroup` failed) | `cerr` | AC-9's `ClaimGroup`-failure case | returning `cerr` **discards the overflow classification**: the caller loses `ErrOverflowDropped` and sees a store error instead — **and, because `cerr` carries no `Permanent` marker, a TRANSIENT one.** Deliberate; assert it. **See the direction rule below: this is one of the two exits that do NOT downgrade on evidence of drainage** |
-| `claim == nil` (another holder) | `overflowRetryable(key)` | AC-9's another-holder case | **a deliberate divergence from the success path**, which returns **`nil`** for the identical condition (*"another Handle/process is releasing this group; held"*). Here the member was never stored, so `nil` would Ack an unstored message — hence retryable. **Say so in the godoc**, or the next reader "fixes" it |
-| `relErr != nil` (the release failed) | `relErr` | AC-9's release-failure case | the Nack then names the **output channel**, not the cap. An operator debugging a full group is pointed at the wrong subsystem unless the error is asserted. **`relErr` is likewise unmarked, hence transient — the second exit that does not downgrade on evidence of drainage** |
-| drained (fall-through) | `overflowRetryable(key)` | AC-1b steps 3-4 | the self-healing path |
+| `cerr != nil` (`ClaimGroup` failed) | `cerr` | AC-9's `ClaimGroup`-failure case | returning `cerr` **discards the overflow classification**: the caller loses `ErrOverflowDropped` and sees a store error instead — **and, because `cerr` carries no `Permanent` marker, a TRANSIENT one.** Deliberate; assert it. **See the direction rule below: this is the ONLY exit that replaces the overflow error with a distinct fault** |
+| `claim == nil` (another holder) | `overflowRetryable(key, "is held by another holder, whose lease is draining it")` | AC-9's another-holder case | **a deliberate divergence from the success path**, which returns **`nil`** for the identical condition (*"another Handle/process is releasing this group; held"*). Here the member was never stored, so `nil` would Ack an unstored message — hence retryable. **Say so in the godoc**, or the next reader "fixes" it. 🔴 **This exit's evidence is the WEAKEST of the three that downgrade** (finding **R-13**): a nil claim proves a lease is HELD, not that the group drains — a holder ending in `AbandonGroup` leaves it exactly as full. The downgrade is upheld anyway, because being wrong costs **one redelivery** (the abandoned group is unleased, so the next `Add` takes the store's `Permanent` arm) where dead-lettering a member of a group that IS draining is unrecoverable |
+| `relErr != nil` (the release failed) | `overflowRetryable(key, fmt.Sprintf("was claimed but its release FAILED (%v), so it did not drain", relErr))` | AC-9's release-failure case | 🔴 **CHANGED by finding R-2 / D-AX — it used to return `relErr` verbatim, and used to be described here as *"the second exit that does not downgrade"*. It now DOWNGRADES, always.** Returning `relErr` verbatim **terminally settled a member the store never stored** whenever the aggregate fn or the output `Send` returned a `msgin.Permanent` error — or one merely wrapping `ErrPayloadTooLarge`, which `IsPermanent` matches with no marker at all — so the runtime's single-shot divert **lost** it. The fresh mint is **transient by construction**. The Nack must still name the **output channel** and not the cap, so `relErr`'s text is interpolated verbatim with **`%v`**; only its `errors.Is`/`errors.As` reachability is given up, deliberately |
+| drained (fall-through) | `overflowRetryable(key, "drained by this release")` | AC-1b steps 3-4 | the self-healing path, and the **only** exit whose evidence is proof: this `Handle` claimed the group and released it |
 
 **Killing mutants** are in §6 AC-9 rows 12a-12h, one per row above that is not already covered by row 12.
 
@@ -843,11 +869,27 @@ drain FAILED**, which is evidence of the opposite of drainage. **The true rule, 
    > reaches the consumer as transient"* was reading a promise the Aggregator does not make. **State the
    > qualification wherever the clause is stated**; §3.7 and `groupstore.go`'s SPI godoc both carry it.
 
-2. **It either DOWNGRADES on positive evidence of drainage** — the `claim == nil` and drained exits, which mint a
-   fresh transient `overflowRetryable` because the group provably just shrank or is provably being drained by
-   another holder — **or REPLACES the overflow error entirely with a distinct fault, carrying that fault's own
-   classification** — the `cerr != nil` and `relErr != nil` exits, where the reported failure is no longer *"the
-   group is full"* but *"the claim failed"* / *"the release failed"*.
+2. **It either DOWNGRADES, minting a fresh transient `overflowRetryable`** — the `claim == nil`, `relErr != nil`
+   and drained exits — **or REPLACES the overflow error entirely with a distinct fault, carrying that fault's own
+   classification**, which **exactly one** exit does: `cerr != nil`, where the reported failure is no longer
+   *"the group is full"* but *"the claim failed"*, and masking a store fault behind `ErrOverflowDropped` would
+   point an operator at the cap.
+
+   > 🔴 **THIS CLAUSE READ *"DOWNGRADES on positive evidence of drainage … or REPLACES … (the `cerr != nil` and
+   > `relErr != nil` exits)"* UNTIL FINDING R-13 AND FINDING R-2, AND BOTH HALVES WERE WRONG.**
+   >
+   > **The evidence half (R-13).** The three downgrading exits rest on evidence of three different **strengths**,
+   > and only one of them is proof. Strongest: the group **provably drained** — this `Handle` claimed it and
+   > released it. Weakest: a claim **refused** because another holder's lease is in flight — that is evidence a
+   > drain is *in progress*, **not** proof one completes, since a holder ending in `AbandonGroup` leaves the group
+   > exactly as full. Third: a claim that succeeded and a **release that then failed**, which is evidence of the
+   > *opposite* of drainage. **The classification of all three is UPHELD — nothing about the behaviour changed at
+   > the first two — but the stated grounds were false and are now stated per exit**, in the code as well
+   > (`overflowRetryable` takes a `reason`).
+   >
+   > **The membership half (R-2 / D-AX).** `relErr != nil` no longer replaces; it downgrades. Returning the
+   > release fault verbatim let a `Permanent`-marked aggregate or `Send` **terminally settle a member the store
+   > never persisted**. See the exit table above and **[ADR 0033 D-AX](../adrs/0033-group-member-bounds.md)**.
 
 **The consequence, stated rather than left to be discovered: a persistently failing claim/release path RETRIES
 rather than terminating.** Under the zero-value `RetryPolicy` that is an unlogged, zero-delay Nack loop — B-1's
@@ -865,13 +907,19 @@ the source **Ack a message that was never aggregated** — the delivery-guarante
 the over-cap member silently."* Transient is right here and does not re-litigate §3.3.1: the group provably just
 shrank, so the retry provably succeeds.
 
-**Why the direction is safe, scoped to the exits it is true of.** For the `claim == nil` and drained exits the
-store's default is the conservative one (permanent, no spin) and only **positive evidence of drainability**
-downgrades it, so a bug in the *drain-detection* logic costs a dead-letter rather than a production-down spin.
-**That sentence does not extend to the `cerr != nil` and `relErr != nil` exits** (audit **NEW-6**): there the
-overflow error is replaced by a store or channel fault whose own classification governs, and a persistently
-failing claim/release path therefore retries. Revision 3's unqualified *"a bug in the drain path costs a
-dead-letter, not a production-down spin"* is deleted.
+**Why the direction is safe, scoped to the exits it is true of.** For the **drained** exit the store's default is
+the conservative one (permanent, no spin) and genuine **proof of drainability** downgrades it, so a bug in the
+*drain-detection* logic costs a dead-letter rather than a production-down spin. **That sentence does not extend to
+the `cerr != nil` exit** (audit **NEW-6**): there the overflow error is replaced by a store fault whose own
+classification governs, and a persistently failing claim path therefore retries. Revision 3's unqualified *"a bug
+in the drain path costs a dead-letter, not a production-down spin"* is deleted.
+
+**The other two downgrading exits are safe for a DIFFERENT reason, and it is a BOUNDED COST rather than proof**
+(findings **R-13** and **R-2**). At `claim == nil` the cost of being wrong is **one redelivery**: an abandoning
+holder leaves the group unleased, so the very next `Add` takes the store's `Permanent` arm and dead-letters
+properly. At `relErr != nil` the cost of *not* downgrading is **outright loss** of a member that was never
+persisted, which is strictly worse than a retry against a group that is still full. Neither rests on evidence of
+drainage, and neither pretends to (**D-AX**).
 
 **Scope, measured — and why `sql` implements it anyway.** The deadlock is `memory`-only and id-less-only: with a
 non-empty id the dedup branch returns the snapshot with a **nil** error and `Handle` reaches the predicate anyway,
@@ -1524,13 +1572,28 @@ defect (ADR 0033 **D-AH**):
 > any **other** fault is never acted on; the snapshot must be non-nil, **typed nils included** (a
 > `(*yourGroup)(nil)`, the value the conformance idiom produces, is rejected exactly like an untyped nil); and the
 > snapshot must hold **at least one member**, an empty live residual meaning another holder's claim already covers
-> the group and is draining it.
+> the group — evidence it is **leased**, not proof it drains, though nothing turns on the difference at a gate that
+> returns the error unchanged either way.
 >
 > When the Aggregator does act on that snapshot it **NEVER UPGRADES** the implementation's classification **on its
 > own account**: no path of its own re-marks a transient rejection permanent. It either **downgrades** the
-> rejection to a fresh transient overflow error **on positive evidence that the group drained** (or that another
-> holder is draining it), **or it replaces the overflow error entirely with a distinct fault — a claim failure or a
-> release failure — which carries that fault's own classification, not the implementation's.**
+> rejection to a fresh, **transient** overflow error, **or it replaces the overflow error entirely with the
+> distinct fault it hit**, which then carries that fault's own classification, not the implementation's.
+>
+> **The downgrade is NOT always backed by proof of drainage**, and an implementation must not design against it as
+> though it were (finding **R-13**). Three exits downgrade, on evidence of three different strengths: the group
+> **provably drained**, because the Aggregator claimed it and released it; a claim was **refused** because another
+> holder's lease is in flight, which is evidence a drain is in progress and not proof one completes, since a holder
+> ending in `AbandonGroup` leaves the group exactly as full; or the claim **succeeded and the release then
+> failed**, which is evidence of the opposite of drainage.
+>
+> **Exactly one exit replaces:** a failing `ClaimGroup`, whose store fault is returned verbatim, because masking a
+> store fault behind `msgin.ErrOverflowDropped` would point an operator at the cap. **A failing RELEASE does not
+> replace.** The Aggregator re-mints a fresh, **transient** `ErrOverflowDropped` carrying the release fault's
+> rendered **text** and not the fault itself, so `errors.Is`/`errors.As` cannot reach that cause through the
+> returned error. Severing the chain is the point: propagating the fault verbatim let a `msgin.Permanent`-marked
+> aggregate or output `Send` **terminally settle a member the implementation never stored**, losing it, for a fault
+> in the *other, already-claimed* members' payloads (**ADR 0033 D-AX**; finding **R-2**).
 >
 > **That is not an unconditional promise.** When the **caller's** release strategy FAILS, the Aggregator returns
 > `errors.Join(overflowErr, strategyErr)`; `msgin.IsPermanent` uses `errors.As`, which traverses the join, so a
@@ -2295,8 +2358,9 @@ gate, each of these is a hot-path or typed-error branch needing a named covering
 | **12** | **`Handle`'s snapshot-with-error branch re-fires the release** | `routing/aggregator.go`, §3.3a | delete the branch (`return err` unconditionally) ⇒ **AC-1b** fails |
 | **12a** | **`rerr != nil` — the release STRATEGY FAILED ⇒ `errors.Join(err, rerr)`** | same, §3.3a.1's `rerr != nil` exit; §3.3b | **(a)** restore the merged `if rerr != nil \|\| !ok { return err }` ⇒ the join case's `ErrorIs(err, strategyErr)` fails; **(b)** `return rerr` alone ⇒ the same case's `ErrorIs(err, msgin.ErrOverflowDropped)` fails. **Both were executed and both killed** |
 | **12b** | **`cerr != nil` — `ClaimGroup` failed ⇒ return `cerr`** | same, the `cerr != nil` exit | return `err` instead ⇒ the case's assertion on the `ClaimGroup` error fails (the overflow classification would mask a store fault) |
-| **12c** | **`claim == nil` — another holder ⇒ TRANSIENT, diverging from the success path's `nil`** | same, the `claim == nil` exit | return `nil` ⇒ the member is silently lost and no other case notices |
-| **12d** | **`relErr != nil` — the release failed ⇒ return the RELEASE error** | same, the `relErr != nil` exit | return the overflow error ⇒ the case's message assertion fails (an operator would be pointed at the cap, not the output channel) |
+| **12c** | **`claim == nil` — another holder ⇒ TRANSIENT, diverging from the success path's `nil`** | same, the `claim == nil` exit | return `nil` ⇒ the member is silently lost and no other case notices. 🔴 **Second mutant added for finding R-13**: re-hard-code `reason` to `"drained by this release"` at this exit ⇒ the case's `NotContains` fails. Paired with the drained exit's own `Contains`, it kills any collapse of the three `reason` values back onto one phrase |
+| **12d** | 🔴 **REWRITTEN for finding R-2 / D-AX. `relErr != nil` — the release failed ⇒ mint a fresh TRANSIENT `ErrOverflowDropped` carrying `relErr`'s TEXT** | same, the `relErr != nil` exit | **(a)** restore `return relErr` ⇒ the case's `ErrorIs(err, msgin.ErrOverflowDropped)` fails; **(b)** change the `%v` back to `%w` ⇒ the case's `NotErrorIs(err, sendErr)` fails, and the `Permanent`-release row's `False(IsPermanent(err))` fails — the defect itself, restored; **(c)** drop `relErr` from `reason` altogether ⇒ the `Contains(err.Error(), "send boom")` fails and an operator is pointed at the cap instead of the output channel. **The pre-D-AX row asserted the OPPOSITE** (`ErrorIs(err, sendErr)` + `NotErrorIs(err, msgin.ErrOverflowDropped)`) and could not survive the fix, because verbatim propagation *is* the defect |
+| **12d′** | **a PERMANENT release fault must NOT settle the never-stored member terminally** (finding **R-2**) | same exit, two arms | **(a)** an output `Send` returning `msgin.Permanent(err)` ⇒ `IsPermanent(err)` must stay **false**; **(b)** the AGGREGATE FN returning an error wrapping `msgin.ErrPayloadTooLarge`, which `IsPermanent` matches **with no marker at all** ⇒ same, plus `NotErrorIs(err, msgin.ErrPayloadTooLarge)`. Arm (b) exists because a fix that merely *unwrapped* `msgin.Permanent` would pass (a) and fail (b) — it pins the fix's SHAPE, not just its outcome. Between them the two arms also cover **both** of `releaseOnce`'s pre-settle failure points |
 | **12e** | **the branch is entered on the `msgin.ErrOverflowDropped` SENTINEL, not on `group != nil`** (finding **R-3**) | same, §3.3a.1's first gate | revert the gate to `if group == nil` ⇒ *"a NON-overflow store error with a POPULATED snapshot is returned verbatim"* fails: a header-decode fault gets its group claimed, aggregated, emitted and settled |
 | **12f** | **`isNilGroup` rejects a TYPED nil, at BOTH snapshot guards** (finding **R-3**, secondary) | same, the overflow-path guard **and** the success-path `(nil, nil)` guard | replace either call with `group == nil` ⇒ the matching typed-nil case nil-derefs. **Two mutants, one per call site, both executed and both killed** — a single-site mutant would have left the other guard's regression invisible |
 | **12g** | **the zero-member residual is refused BEFORE the release strategy runs** (finding **R-4**) | same, §3.3a.1's third gate | **(a)** delete the guard ⇒ *"a ZERO-MEMBER live snapshot skips the release attempt"* fails (an indexing strategy panics); **(b)** weaken `len(…) == 0` to `len(…) < 0` ⇒ the guard is dead code and the same case fails. **(b) exists because a deleted guard and a neutered one are different defects** |
@@ -2533,7 +2597,11 @@ starts. **Item 5 is new in revision 2 and is now the most consequential of them.
    records**: findings **R-3** and **R-4** showed the branch was entered on the wrong condition entirely and could
    hand a zero-member group to a caller's strategy, and **R-10 / D-AW** added a joined exit whose classification
    *escalates* (§3.3b). *The exits are no longer numbered anywhere — §3.3a.1 keys them by condition, because the
-   three new gates shifted every ordinal these artifacts had cited.*
+   three new gates shifted every ordinal these artifacts had cited.* 🔴 **And the two-clause rule NEW-6 produced
+   was itself wrong twice over, closed by findings R-13 and R-2 (D-AX): `relErr != nil` no longer replaces — it
+   DOWNGRADES, always, because returning the release fault verbatim terminally settled a member the store never
+   stored — and the surviving downgrades rest on evidence of three different STRENGTHS, only one of which is
+   proof.** §3.3a.1 and §3.7 carry the corrected form; **only `cerr != nil` replaces.**
 7. **🔴 NEW in revision 3 — named `defaultMaxGroupMembers` constants deviate from a shipped precedent**
    (§3.2, ADR 0033 **D-AR**). `adapter/memory` declares its default as a bare `maxGroups: 1024` literal; this
    increment declares both new defaults as `const`s so §6 AC-3.3 has something to parse. *Recommendation: accept —

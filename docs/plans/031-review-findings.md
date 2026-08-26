@@ -1,8 +1,13 @@
 # Plan 031 — whole-branch review findings (Task 10 Steps 1–2)
 
-> ## 🔴 LIVE STATUS — 13 of 15 FIXED (2026-08-26). BOTH DELIVERY BLOCKERS ARE CLOSED.
+> ## 🔴 LIVE STATUS — 15 of 15 FIXED (2026-08-27). ALL §6 ITEMS DISPOSITIONED. BOTH DELIVERY BLOCKERS ARE CLOSED.
 >
-> **Remaining: R-2 and R-13 only**, plus §6's capped items. Nothing merged, nothing pushed.
+> **Nothing remains un-dispositioned.** §6's five capped items are each **fixed or triaged with a written
+> rationale** in §6 below, as CLAUDE.md requires before merge. Nothing merged, nothing pushed.
+>
+> **Every status line BELOW this block is an older stratum** — this file annotates rather than rewrites, so
+> *"Status: OPEN — 5 of 15 fixed"* further down is a record of a past state, not a live claim. **This block is the
+> live one.**
 >
 > | Finding | State |
 > |---|---|
@@ -10,8 +15,16 @@
 > | **R-3**, **R-4** | ✅ **FIXED** with R-10 — the same twelve lines of `Handle`; repairing that branch three times would have been three rewrites of one contract block |
 > | **R-6**, **R-9**, **R-12** | ✅ **FIXED** — Task 11 Step 3. R-9's hit count re-derived from the coverage profile as **0 → 1**, independently by implementer and coordinator |
 > | **R-1**, **R-5**, **R-8**, **R-11**, **R-14** | ✅ **FIXED** — Task 11 Step 4, run as two agents on disjoint modules. R-1 and R-11 both **reproduced against live engines** before being fixed and are proven on all four runners; R-5's premise was **refuted** (see §5a) |
-> | **R-2**, **R-13** | ⏭️ **RECOVERED** — the coordinator's first decomposition covered only 13 of the 15; both were re-surfaced by the agent repairing the branch they sit in |
-> | §6's five capped items | ⏭️ Task 11 Step 5. **Item 3 (Spec 017's stale status line) is DONE** |
+> | **R-2**, **R-13** | ✅ **FIXED** — Task 11 Step 4b, in `Handle`'s overflow branch. R-2 needed a decision: **[ADR 0033](../adrs/0033-group-member-bounds.md) D-AX**, ratified 2026-08-27. **They were RECOVERED, not planned** — the coordinator's first decomposition covered only 13 of the 15, and both were re-surfaced by the agent repairing the branch they sit in |
+> | §6's five capped items | ✅ **DISPOSITIONED** — 3 fixed (items 2, 3, 5), 2 triaged with rationale (items 1, 4). See §6 |
+>
+> **🔴 READ THIS BEFORE ASSUMING R-13 CHANGED BEHAVIOUR — IT DID NOT.** R-2 is a **behaviour change**: the
+> release-failure exit stopped returning the fault verbatim and now re-mints a fresh transient
+> `ErrOverflowDropped`. **R-13 is not.** Its transient classification at `claim == nil` was **UPHELD ON CORRECTED
+> GROUNDS, not reversed** — the *stated grounds* (*"positive evidence the group is being drained"*) were false,
+> the *classification* was right, and what changed is the error **text** (`overflowRetryable` now takes a
+> `reason`) and the prose in three artifacts. A reader who records R-13 as a reversal will go looking for a
+> behavioural regression that does not exist.
 >
 > **Two corrections to THIS document, both found while fixing it — the record is evidence, so they are annotated,
 > not rewritten:**
@@ -104,6 +117,40 @@ Several of these contradict godoc shipped **in this same branch**.
 | **R-13** | `routing/aggregator.go:519` | The `claim == nil` exit downgrades the store's `Permanent` rejection on the stated grounds that *"another holder is provably draining it"* — but `ClaimGroup` returning nil proves only that a lease is **held**, and a lease ending in `AbandonGroup` leaves the group exactly as full. `Handle`'s own DIRECTION RULE clause 2 asserts *"positive evidence"* this exit does not have. Compounding it, `overflowRetryable` hard-codes *"group %q drained by this release"* — false here, **sending the investigation at the wrong process**. |
 | **R-10** | `routing/aggregator.go:511` | `if rerr != nil \|\| !ok { return err }` merges *"the strategy DECLINED"* with *"the strategy FAILED"* and **discards `rerr` entirely**, so a release-strategy fault is reported as the store's cap rejection — diverging from the success path 25 lines below, which propagates it. `errors.Join(err, rerr)` preserves both and is transparent to `errors.Is`/`As`. **Note: `routing/aggregator_test.go:1067` deliberately asserts `assert.NotErrorIs(t, err, strategyErr)`** — so this is a *designed choice being re-litigated* against CLAUDE.md's debuggability gate, not an oversight. **Decide explicitly; do not silently flip it.** |
 
+### 3a. 🔴 DISPOSITION of R-2 and R-13 (2026-08-27) — annotations, the rows above stand as written
+
+**These two closed last, in Task 11 Step 4b, and they closed differently from each other.** Recorded here because
+the difference is the thing a later reader will get wrong.
+
+| Finding | Disposition | What actually changed |
+|---|---|---|
+| **R-2** | ✅ **FIXED — behaviour changed.** Needed a design decision first: **[ADR 0033 D-AX](../adrs/0033-group-member-bounds.md)**, ratified 2026-08-27 | The release-failure exit no longer returns `relErr`. It returns `overflowRetryable(key, fmt.Sprintf("was claimed but its release FAILED (%v), so it did not drain", relErr))` — **`%v`, not `%w`**. The result is **transient by construction** (it wraps nothing markable), `errors.Is(err, msgin.ErrOverflowDropped)` still matches, and `relErr`'s text is preserved so the Nack still names the output channel. **Accepted cost:** `errors.Is`/`As` can no longer reach the release cause at that exit — *that is the mechanism*, the chain is what carried the permanence |
+| **R-13** | ✅ **FIXED — 🔴 the downgrade was UPHELD ON CORRECTED GROUNDS, NOT REVERSED.** No behaviour changed at this exit | `overflowRetryable` gained a `reason string`; the three minting exits now each say what happened (`"drained by this release"` / `"is held by another holder, whose lease is draining it"` / the release-failure phrase above). `Handle`'s DIRECTION RULE clause 2 was corrected: a held lease is **not** proof of drainage. The transient classification stands on a **bounded-cost** argument instead — an abandoning holder leaves the group unleased, so the very next `Add` takes the store's `Permanent` arm and the cost of being wrong is **one redelivery**, against unrecoverable loss if a genuinely draining group's member is dead-lettered |
+
+**Two corrections to R-2's own row, established by running things, not by re-reading.** Both leave the
+substantive complaint intact.
+
+1. **`groupstore.go:78-86` never contained *"may rely on this unconditionally."*** Already recorded at the head of
+   this file: `git log -S` puts that phrase only in `routing/aggregator.go`'s DIRECTION RULE. The root SPI godoc
+   did make an unqualified never-upgrades promise, in different words.
+2. **The Task 8 godoc's *"unmarked, hence transient"* was not wholly false — it was false of `relErr` and TRUE of
+   `cerr`.** The `ClaimGroup`-failure exit still returns the store fault verbatim, still unmarked, still
+   transient, and that is deliberate. Only the release exit was wrong, and it is now the one exit that does **not**
+   propagate a fault's own classification. The godoc has been split accordingly at all three sites that carried
+   the merged claim (`groupstore.go`, Spec 017 §3.3a.1 and §3.7).
+
+**🔴 TWIN OF R-13's OVERSTATEMENT — three sites, TWO fixed, ONE still OPEN.** The same *"an empty live residual
+means the claim holder is already draining the group"* claim sits at **gate 3** of the overflow branch, and gate 3
+is described in three places. It is **harmless in effect** everywhere — gate 3 returns the store's error unchanged
+and makes no classification decision — but *"fix the class, not the instance"* is a standing project rule and this
+would be caught at the next review.
+
+| Site | State |
+|---|---|
+| `groupstore.go`'s gate-3 bullet (root SPI godoc) | ✅ **FIXED** — now says the empty residual is evidence the group is **LEASED**, not proof it drains, and notes that nothing turns on the difference *at a gate that returns the error unchanged either way* |
+| [Spec 017](../specs/017-group-member-bounds.md) §3.3a.1's exit table + §3.7 | ✅ **FIXED** — same correction |
+| **`routing/aggregator.go`'s gate 3 inline comment** — `// an empty residual means the claim holder is already draining it` (locate with `grep -n 'empty residual' routing/aggregator.go`) | ⚠️ **OPEN.** It was outside the scope of the doc pass that fixed the other two. **Suggested fix — comment only, no logic:** *"an empty residual means another holder's claim covers every member, so there is nothing left HERE to release; that is evidence the group is leased, not proof it drains (R-13), but nothing turns on it at a gate that returns `err` unchanged either way."* |
+
 ## 4. Tests that cannot fail
 
 | # | Site | Defect |
@@ -173,15 +220,77 @@ working in the neighbourhood.
    that argument is scoped to an `int` sizing knob the class gate can discover, which this is not. **Accepted; not
    escalated to an ADR.**
 
-## 6. Dropped at the reviewer's 15-finding cap — recorded so they are not lost
+## 6. Dropped at the reviewer's 15-finding cap — DISPOSITIONED 2026-08-27
 
-Correctness outranks cleanup, so these were cut. **They are un-triaged, not dismissed.**
+Correctness outranks cleanup, so these were cut from the 15. **CLAUDE.md requires every one fixed or explicitly
+triaged with a written rationale before the branch merges.** The five original lines are preserved verbatim; the
+disposition follows each.
 
-1. ~120 lines of triplicated dialect logic across `postgres`/`mysql`/`sqlite` with a **prose-only** contract.
-2. `ErrOverflowDropped`'s root godoc names **2 of 5** producers.
-3. `docs/specs/017` still reads **"NOT approved for implementation"** while its `feat` commits shipped (Task 10 Step 5 owns this).
-4. `ExampleWithReleaseWhen`'s hard-coded `false` predicate leaves its channel wiring **dead**.
-5. The `memory` group-**count** arm carries the same asymmetry as R-5.
+1. **~120 lines of triplicated dialect logic across `postgres`/`mysql`/`sqlite` with a prose-only contract.**
+
+   ⏸️ **TRIAGED — deliberately not fixed on this branch.** Three reasons, in order of weight:
+
+   - **The three dialects are separate Go modules**, so "de-duplicate" means either moving logic up into the
+     shared `adapter/database/sql` package — enlarging what every dialect must conform to — or creating a new
+     shared module. Both are structural changes with their own ADR, not a cleanup.
+   - **[ADR 0031](../adrs/0031-nil-option-elements.md) D-R already tolerates independent copies across packages**
+     rather than growing shared surface to reach them — its `nilOptionAt` helper is *"duplicated, not shared"* in
+     eight packages, precisely because sharing it would mean new exported surface reachable from eight modules.
+     The same shape of argument applies here, and most of the ~120 lines are **engine-specific SQL that cannot be
+     shared anyway**. ⚠️ **Cite it honestly: D-R's copy is 3 lines and this is ~120**, and D-R's own text warns
+     that Spec 014 §3.3 is *"cited as precedent, not as a stated general rule."* It is a supporting argument, not
+     the deciding one — the deciding one is the module boundary above.
+   - **Task 11 already made the down-payment where it counts.** D-AV moved `maxMembers` validation out of the
+     three copies into one shared `sql.ValidateMaxMembers`, so the parameter with the actual fail-open defect
+     stopped being prose-only. That is the pattern to repeat: **lift the CONTRACT, leave the SQL.**
+
+   **What would justify revisiting:** a fourth dialect (the planned `pgx` group store is the likely trigger); a
+   correctness bug that has to be fixed three times — **R-1 and R-11 on this branch were each exactly that**, and a
+   third occurrence is the signal; or any further shared *semantics* (not syntax) landing in `AddMember`. Until one
+   of those, the reviewer's own ordering holds: correctness outranks cleanup.
+
+2. **`ErrOverflowDropped`'s root godoc names 2 of 5 producers.**
+
+   ✅ **FIXED** in `errors.go`. **The finding UNDERCOUNTS — re-derived at HEAD there are six producing sites**
+   (`grep -rn 'ErrOverflowDropped' --include='*.go' . | grep -v _test.go`): the streaming-source overflow policy in
+   `endpoint`'s consumer; `memory.QueueStore.Enqueue` under `OverflowReject`; the **same** `Enqueue` under
+   `OverflowDropOldest` when nothing is evictable; `memory.GroupStore`'s **group-count** arm; its **member-cap**
+   arm; the three SQL dialects' `AddMember` via `sql.GroupStore.Add`; and `routing.Aggregator`'s
+   `overflowRetryable`.
+
+   **The godoc now names CLASSES, not a count** — consumer flow control, bounded channel stores, bounded group
+   stores, the Aggregator — with the locating `grep` inline, because a count in a doc comment rots on the next
+   store. **Two things it calls out that the old text got wrong or omitted:**
+   - The old *"It is NOT returned for the silent Drop\* policies"* was **false**. `OverflowDropOldest` returns it
+     when nothing is evictable (every entry in flight). Only `DropNewest` is silent.
+   - **The Aggregator is the one producer that MINTS the sentinel fresh** rather than propagating a store's, and
+     it is **always transient by construction** (D-AX). A caller reading the sentinel as "the store said so" would
+     be wrong at that one site.
+
+3. **`docs/specs/017` still reads "NOT approved for implementation" while its `feat` commits shipped.**
+
+   ✅ **DONE — confirmed at HEAD.** Fixed in Spec 017 revision 6 (Task 10 Step 5). Verify with
+   `grep -n 'NOT approved' docs/specs/017-group-member-bounds.md` — the only hits are historical annotations
+   describing the old state, not the live status line.
+
+4. **`ExampleWithReleaseWhen`'s hard-coded `false` predicate leaves its channel wiring dead.**
+
+   ⏸️ **TRIAGED — real, cheap, and deferred only because it lives in `routing/`, outside the scope of the
+   documentation pass that dispositioned this section.** It is a **vacuity defect in a runnable example**, which is
+   the project's own recurring lesson: an example whose `// Output:` cannot change is documentation that compiles
+   rather than documentation that demonstrates. Nothing about the fix is contested.
+
+   **The fix, for whoever picks it up:** give the predicate a real condition so the release actually fires — e.g.
+   release when the group reaches a stated size, or when a header marks the last member — and extend `// Output:`
+   to show the aggregate arriving on the output channel. That exercises the wiring the example currently only
+   declares. **Not a merge blocker under CLAUDE.md** (no untested hot-path branch, no incorrect exported
+   behaviour), but it should not survive the next `routing` increment.
+
+5. **The `memory` group-count arm carries the same asymmetry as R-5.**
+
+   ✅ **FIXED — confirmed.** Closed in Task 11 Step 4 alongside R-5 itself, in the owning package. §5a records it:
+   *"§6 item 5's group-**count** twin reproduced fully and is also asserted now."* The missing **assertion** was the
+   real defect in both arms; a cross-package accident is not a contract.
 
 ## 7. Suggested sequencing for the fix session
 

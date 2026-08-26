@@ -520,17 +520,34 @@ func boxAggFn[A, B any](fn func(ctx context.Context, group []msgin.Message[A]) (
 //     error can end up permanent while the store's arm was transient is the
 //     join below, where the marker comes from the CALLER's own release
 //     strategy, not from Handle — see that paragraph.
-//  2. Handle either DOWNGRADES on positive evidence of drainage — the group
-//     provably shrank, or another holder is provably draining it, so a fresh
-//     TRANSIENT ErrOverflowDropped is minted — or REPLACES the overflow error
-//     entirely with a distinct fault (a ClaimGroup failure, a release
-//     failure) carrying that fault's own classification. Those faults are
-//     unmarked, hence transient, so a persistently failing claim/release path
-//     RETRIES rather than terminating. That is deliberate: marking a store or
-//     channel fault permanent because it was reached through an overflow
-//     would dead-letter messages for a cause that has nothing to do with the
-//     cap, and would misattribute it in the operator's sink. Configure
-//     RetryPolicy.Backoff if the retry rate matters.
+//  2. Handle either DOWNGRADES, minting a FRESH, TRANSIENT
+//     ErrOverflowDropped (three exits, see below), or REPLACES the overflow
+//     error entirely with a distinct fault. The one exit that replaces is a
+//     ClaimGroup FAILURE, which returns the store fault verbatim: masking a
+//     store fault behind ErrOverflowDropped would point an operator at the
+//     cap. It is unmarked, hence transient, so a persistently failing claim
+//     path RETRIES rather than terminating. That is deliberate: marking a
+//     store or channel fault permanent because it was reached through an
+//     overflow would dead-letter messages for a cause that has nothing to do
+//     with the cap, and would misattribute it in the operator's sink.
+//     Configure RetryPolicy.Backoff if the retry rate matters.
+//
+// THE THREE DOWNGRADING EXITS REST ON EVIDENCE OF THREE DIFFERENT STRENGTHS,
+// and each states in its own words which one it is — a single hard-coded
+// phrase across all three sent the investigation at the wrong process
+// (finding R-13). The strongest is a group that PROVABLY drained: this Handle
+// claimed it and released it. The weakest is a claim refused because another
+// holder's lease is in flight — that is evidence a drain is IN PROGRESS, and
+// NOT proof one completes, since a holder ending in AbandonGroup leaves the
+// group exactly as full. (This paragraph claimed such proof until finding
+// R-13; it never had it.) The downgrade is nonetheless right, because its cost
+// when wrong is BOUNDED AT ONE REDELIVERY — an abandoned group is unleased, so
+// the very next Add takes the store's unleased arm and returns the Permanent
+// rejection this exit declined to pass on — whereas dead-lettering a member
+// whose group is draining right now is unrecoverable. The third is a claim
+// that succeeded and a RELEASE that then failed; see "A RELEASE FAILURE SEVERS
+// THE MARKER CHAIN" below, which is the one place Handle deliberately declines
+// to propagate a fault's own classification.
 //
 // A RELEASE-STRATEGY FAILURE IS JOINED, NOT SWALLOWED. The two conditions the
 // branch once merged are now distinct: a strategy that merely DECLINED
@@ -546,6 +563,29 @@ func boxAggFn[A, B any](fn func(ctx context.Context, group []msgin.Message[A]) (
 // unbounded zero-delay spin. It is the sole qualification on clause 1 above:
 // Handle still does not upgrade the STORE's classification — the caller's own
 // error simply carries its own, and errors.As finds it through the join.
+//
+// # A RELEASE FAILURE SEVERS THE MARKER CHAIN, DELIBERATELY (D-AX)
+//
+// When the claim SUCCEEDED and a.release then failed, Handle returns a fresh
+// TRANSIENT ErrOverflowDropped carrying the release fault's TEXT — rendered
+// with %v — and NOT the fault itself. Propagating it verbatim (what this
+// branch did until finding R-2) settles the refused member TERMINALLY whenever
+// the aggregate fn or the output Send returns a [msgin.Permanent] error, or
+// one wrapping [msgin.ErrPayloadTooLarge], which [msgin.IsPermanent] matches
+// with no marker at all. That member was NEVER STORED, so the runtime's
+// single-shot divert LOSES it, where the transient path Nacks and redelivers.
+//
+// The ACCEPTED, DELIBERATE COST is that errors.Is/As can no longer reach the
+// underlying release cause AT THIS ONE EXIT — that reachability is precisely
+// the chain being severed, and the cause's text is preserved verbatim in the
+// message so an operator still sees both. Do not "fix" the %v back to %w.
+//
+// THIS IS THE OPPOSITE OF THE JOIN ABOVE, ten lines away, and the difference
+// is what the error is ABOUT. A failing RELEASE STRATEGY is a predicate over
+// THIS group: it fails identically on every redelivery, so escalating to
+// terminal ends a spin that buys nothing. A failing AGGREGATE or Send is about
+// the OTHER, already-claimed members' payloads; the refused member is
+// unrelated collateral and must stay redeliverable.
 //
 // WHY `claim == nil` RETURNS AN ERROR HERE while the success path below
 // returns nil for the identical condition: on the success path the member is
@@ -589,12 +629,23 @@ func (a *Aggregator) Handle(ctx context.Context, msg msgin.Message[any]) error {
 			return cerr
 		}
 		if claim == nil {
-			return overflowRetryable(key) // another holder is releasing it
+			// A lease is HELD — that, and only that, is what a nil claim
+			// proves; a holder ending in AbandonGroup leaves the group exactly
+			// as full. Still transient: see "THE THREE DOWNGRADING EXITS" above
+			// for why the cost of being wrong is bounded at one redelivery
+			// (R-13).
+			return overflowRetryable(key, "is held by another holder, whose lease is draining it")
 		}
 		if relErr := a.release(ctx, claim); relErr != nil {
-			return relErr
+			// %v, NOT %w — the marker chain is severed on purpose so no
+			// Permanent marker (nor a bare ErrPayloadTooLarge, which
+			// msgin.IsPermanent matches unmarked) can terminally settle a
+			// member the store never stored. See "A RELEASE FAILURE SEVERS THE
+			// MARKER CHAIN" above for the full rationale, and for why this is
+			// the opposite of the errors.Join escalation ten lines up (D-AX).
+			return overflowRetryable(key, fmt.Sprintf("was claimed but its release FAILED (%v), so it did not drain", relErr))
 		}
-		return overflowRetryable(key) // drained — the retry WILL be admitted
+		return overflowRetryable(key, "drained by this release") // the retry WILL be admitted
 	}
 	if isNilGroup(group) {
 		// SPI contract violation: Add returned a nil snapshot AND a nil error.
@@ -654,21 +705,31 @@ func isNilGroup(g msgin.MessageGroup) bool {
 }
 
 // overflowRetryable mints the FRESH, transient msgin.ErrOverflowDropped that
-// Handle returns when a rejected member's group provably drained (or is
-// provably being drained by another holder).
+// Handle returns at each of the three exits of its over-cap branch that end in
+// a retry — see Handle's DIRECTION RULE clause 2.
 //
-// It deliberately takes no cause and wraps nothing. The store's rejection is
-// msgin.Permanent-wrapped whenever the group was unleased, and wrapping it
-// would carry that marker straight through errors.As — turning the downgrade
-// into a no-op and dead-lettering a member the retry is now guaranteed to
-// admit. A fresh error is the only shape that can be transient.
+// It deliberately WRAPS NOTHING. The store's rejection is msgin.Permanent-
+// wrapped whenever the group was unleased, and wrapping it would carry that
+// marker straight through errors.As — turning the downgrade into a no-op and
+// dead-lettering a member the retry is now guaranteed to admit. A fresh error
+// is the only shape that can be TRANSIENT BY CONSTRUCTION, which is also why
+// the release-failure exit passes its cause's rendered TEXT through reason
+// rather than wrapping the cause (D-AX; finding R-2).
+//
+// reason states WHAT ACTUALLY HAPPENED at the minting exit, and it is a
+// parameter rather than a constant because the three exits differ: one drained
+// the group itself, one found another holder's lease, one failed its release.
+// A single hard-coded "drained by this release" was FALSE at two of the three
+// and sent the investigation at the wrong process (finding R-13). It is
+// interpolated with %s and never with %w: reason is library-authored text, so
+// it introduces no error identity of its own.
 //
 // An error rather than nil is returned because the member was never stored:
 // nil would make the source Ack a message that was never aggregated.
-func overflowRetryable(key string) error {
+func overflowRetryable(key, reason string) error {
 	return fmt.Errorf(
-		"%w: routing.Aggregator.Handle: group %q drained by this release; retry to admit the rejected member",
-		msgin.ErrOverflowDropped, key)
+		"%w: routing.Aggregator.Handle: group %q %s; retry to admit the rejected member",
+		msgin.ErrOverflowDropped, key, reason)
 }
 
 // releaseOnce aggregates a claimed group, forwards it to the output channel,
