@@ -97,8 +97,9 @@ func WithClock(c clockwork.Clock) QueueStoreOption { return func(cfg *config) { 
 //
 // A nil ELEMENT of opts is a bare [msgin.ErrNilFunc] naming the element's
 // 0-based index ("memory.NewQueueStore: nil option at index 1"), not a panic
-// — checked as opts is applied (the loop is the first statement), so it runs
-// BEFORE the WithCapacity validation below, which runs after the loop and so
+// — checked as opts is applied (the loop is the first statement that can fail,
+// preceded only by the config-defaults initializer, which cannot fail), so it
+// runs BEFORE the WithCapacity validation below, which runs after the loop and so
 // loses to it.
 func NewQueueStore(opts ...QueueStoreOption) (*QueueStore, error) {
 	cfg := config{clock: clockwork.NewRealClock()}

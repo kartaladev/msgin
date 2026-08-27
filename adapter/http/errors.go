@@ -12,11 +12,13 @@ var (
 	ErrNilTarget = errors.New("msghttp: target channel is nil")
 
 	// ErrInvalidMaxBodyBytes is returned by NewConfig when an explicit
-	// WithMaxBodyBytes is <= 0. Leaving WithMaxBodyBytes unset takes the 1
-	// MiB default instead of hitting this error — only an explicit
-	// non-positive value is rejected (the set-flag pattern distinguishes
-	// "unset" from "explicit invalid").
-	ErrInvalidMaxBodyBytes = errors.New("msghttp: max body bytes must be > 0")
+	// WithMaxBodyBytes is outside [1, 2147483647]. Leaving WithMaxBodyBytes
+	// unset takes the 1 MiB default instead of hitting this error — only an
+	// explicit out-of-range value is rejected (the set-flag pattern
+	// distinguishes "unset" from "explicit invalid"). The upper bound is the
+	// largest cap exactly representable as a []byte length on every GOARCH;
+	// see WithMaxBodyBytes's own godoc.
+	ErrInvalidMaxBodyBytes = errors.New("msghttp: max body bytes out of range")
 
 	// ErrInvalidStatusCode is returned by NewConfig when an explicit
 	// WithSuccessStatus falls outside [100,599]. Leaving WithSuccessStatus
@@ -70,11 +72,13 @@ var (
 	ErrInvalidURL = errors.New("msghttp: outbound URL is invalid")
 
 	// ErrInvalidMaxResponseBytes is returned by NewConfig when an explicit
-	// WithMaxResponseBytes is <= 0. Leaving WithMaxResponseBytes unset takes
-	// the 1 MiB default instead of hitting this error — the set-flag pattern
-	// distinguishes "unset" from "explicit invalid", mirroring
-	// ErrInvalidMaxBodyBytes.
-	ErrInvalidMaxResponseBytes = errors.New("msghttp: max response bytes must be > 0")
+	// WithMaxResponseBytes is outside [1, 2147483647]. Leaving
+	// WithMaxResponseBytes unset takes the 1 MiB default instead of hitting
+	// this error — the set-flag pattern distinguishes "unset" from "explicit
+	// invalid", mirroring ErrInvalidMaxBodyBytes. The upper bound is the
+	// largest cap exactly representable as a []byte length on every GOARCH;
+	// see WithMaxResponseBytes's own godoc.
+	ErrInvalidMaxResponseBytes = errors.New("msghttp: max response bytes out of range")
 
 	// ErrReplyTooLarge is returned by an Exchange when the remote response body
 	// exceeds the WithMaxResponseBytes cap (default 1 MiB).
@@ -130,12 +134,14 @@ var (
 	ErrEventTooLarge = errors.New("msghttp: SSE event exceeds max event bytes")
 
 	// ErrInvalidMaxEventBytes is returned by NewConfig (and so by
-	// NewSSEParser) when an explicit WithMaxEventBytes is <= 0. Leaving
-	// WithMaxEventBytes unset takes the 1 MiB default instead of hitting
-	// this error — the set-flag pattern distinguishes "unset" from
-	// "explicit invalid", mirroring ErrInvalidMaxBodyBytes /
-	// ErrInvalidMaxResponseBytes.
-	ErrInvalidMaxEventBytes = errors.New("msghttp: max event bytes must be > 0")
+	// NewSSEParser) when an explicit WithMaxEventBytes is outside
+	// [1, 2147483647]. Leaving WithMaxEventBytes unset takes the 1 MiB
+	// default instead of hitting this error — the set-flag pattern
+	// distinguishes "unset" from "explicit invalid", mirroring
+	// ErrInvalidMaxBodyBytes / ErrInvalidMaxResponseBytes. The upper bound is
+	// the largest cap exactly representable as a []byte length on every
+	// GOARCH; see WithMaxEventBytes's own godoc.
+	ErrInvalidMaxEventBytes = errors.New("msghttp: max event bytes out of range")
 
 	// ErrInvalidMaxConnections is returned by NewConfig when an explicit
 	// WithMaxConnections value is outside its documented [lo, hi] range

@@ -152,10 +152,42 @@ var (
 	// ErrInvalidAttemptTTL is returned when WithAttemptTTL is given a non-positive
 	// duration (ADR 0009 D3).
 	ErrInvalidAttemptTTL = errors.New("msgin: attempt TTL must be > 0")
-	// ErrOverflowDropped is the cause carried to OnRetry/logs when a streaming
-	// source's overflow policy sheds a message, AND is returned by a bounded
-	// ChannelStore.Enqueue (e.g. memory.QueueStore) when OverflowReject rejects a
-	// full-buffer Send. It is NOT returned for the silent Drop* policies.
+	// ErrOverflowDropped reports that a message was refused or shed because a
+	// BOUND was reached. Every bound in the library that can refuse an
+	// individual message reports it through this one sentinel, so a caller has a
+	// single errors.Is target for "capacity, not corruption".
+	//
+	// The producers are named by CLASS rather than enumerated, because the list
+	// grows with every new bounded store and a count in a doc comment rots.
+	// Locate them with:
+	//
+	//	grep -rn 'ErrOverflowDropped' --include='*.go' . | grep -v _test.go
+	//
+	//   - CONSUMER FLOW CONTROL — a streaming source's overflow policy sheds a
+	//     delivery under credit contention. Here it is the CAUSE handed to the
+	//     OnRetry hook and the logs, not a returned error (endpoint's consumer).
+	//   - BOUNDED CHANNEL STORES — a full-buffer Enqueue. Under OverflowReject
+	//     always; under OverflowDropOldest ONLY when nothing is evictable
+	//     (every entry in flight), which is the one Drop* path that reports
+	//     rather than drops silently. OverflowDropNewest never reports.
+	//   - BOUNDED GROUP STORES — an over-cap Add, from either bound: too many
+	//     GROUPS, or too many MEMBERS in one group. Wrapped with the site, the
+	//     key and the counts, and Permanent-wrapped when the group cannot drain
+	//     itself (see MessageGroupStore.Add). This covers the first-party memory
+	//     store and every SQL dialect's AddMember, and it is the shape a
+	//     third-party GroupStore must match.
+	//   - THE AGGREGATOR, which is the one producer that MINTS this sentinel
+	//     FRESH rather than propagating a store's. When an over-cap Add hands
+	//     back a live snapshot and the re-fired release drains the group — or
+	//     tries to and fails — Handle returns a newly built ErrOverflowDropped
+	//     naming what happened. That error is ALWAYS TRANSIENT BY CONSTRUCTION:
+	//     it wraps nothing, so no Permanent marker and no permanence-bearing
+	//     sentinel from the store or from the caller's own aggregate/Send can
+	//     travel up it and terminally settle a member the store never stored
+	//     (ADR 0033 D-AX).
+	//
+	// So errors.Is(err, ErrOverflowDropped) means the bound spoke; it does NOT
+	// by itself tell you whether the message is retryable. Ask IsPermanent.
 	ErrOverflowDropped = errors.New("msgin: message dropped by overflow policy")
 	// ErrInvalidPollInterval is returned when WithPollInterval is given a
 	// non-positive duration.

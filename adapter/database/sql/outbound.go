@@ -54,8 +54,9 @@ type Outbound struct {
 // A nil ELEMENT of opts is a bare [msgin.ErrNilFunc] naming the element's
 // 0-based index ("sql.NewOutboundAdapter: nil option at index 1"), not a panic
 // — checked as opts is applied. The apply loop is this constructor's first
-// statement, so the nil-option check runs BEFORE every other validation here —
-// the ErrNilResolver check, then the nil-db/nil-dialect/table checks — and wins
+// statement that can fail, preceded only by the config-defaults initializer,
+// which cannot fail, so the nil-option check runs BEFORE every other validation
+// here — the ErrNilResolver check, then the nil-db/nil-dialect/table checks — and wins
 // over all of them.
 func NewOutboundAdapter(db *stdsql.DB, table string, dialect LeaseDialect, opts ...Option) (*Outbound, error) {
 	cfg := config{logger: discardLogger()}

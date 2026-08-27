@@ -29,12 +29,16 @@
     the typed runtime owns `PayloadCodec[T]`; header framing is the type-agnostic adapter concern.
   - [ADR 0003 — Multi-module layout](0003-multi-module-repository-layout.md) — the heavy-client-adapter-as-separate-module
     precedent (`database/pgx`) applied to the gin binding.
-- **Scoped follow-on ADR:** **ADR 0024** — the `gin` dependency justification (authored with **Plan 028**,
-  Phase 5). This ADR fixes the *architecture* that keeps gin isolated; ADR 0024 fixes the *dependency
-  admission*. *(Corrected 2026-07-28, audit round 6 finding M-4: this read "Plan 027", which is now the
-  [core package layout](../plans/027-core-package-layout.md) window. Round-1 finding D3 renumbered the gin
-  phase to 028 but was applied only in [Spec 011 §8](../specs/011-http-adapter.md). Neither ADR 0024 nor
-  Plan 028 exists yet — both are forward references.)*
+- **Scoped follow-on ADR:** **ADR 0024** — the `gin` dependency justification. **Its number is reserved and the
+  artifact is unwritten**, authored with the Phase-5 plan, which is **unnumbered until that increment is written**.
+  This ADR fixes the *architecture* that keeps gin isolated; ADR 0024 would fix the *dependency admission* — and
+  **that admission is an open decision, not a scheduled one**: writing ADR 0024 *is* the decision to take
+  `github.com/gin-gonic/gin` as a direct dependency, so it stays with the user (CLAUDE.md Dependency policy).
+  *(Corrected 2026-08-22, [Plan 030](../plans/030-post-029-maintenance.md) Task 3. This read "authored with
+  **Plan 028**, Phase 5 … Neither ADR 0024 nor Plan 028 exists yet". The phase was numbered 027 → corrected to 028
+  by audit round 6 M-4 / round-1 D3 → and **028 was then consumed by**
+  [nil option elements](../plans/028-nil-option-elements.md), so both halves went false. A third concrete number
+  would re-arm the same staleness, so none is substituted.)*
 
 ## Context
 
@@ -197,11 +201,15 @@ statement, and both constructors' godoc point at it.
   wrinkle at import sites.
 - The type-agnostic reply constraint (reply payload must be `[]byte`/`string`) pushes response encoding onto the flow;
   convenient typed-response sugar is deferred (could be a later typed helper over the adapter, not in it).
-- `gin` remains a *future* admitted dependency (ADR 0024); this ADR only guarantees it can be isolated when admitted.
+- `gin` remains a *candidate* dependency whose admission is still **undecided** (ADR 0024 — number reserved,
+  unwritten); this ADR only guarantees it can be isolated **if** admitted.
 
 **Follow-ups**
-- ADR 0024 admits `github.com/gin-gonic/gin` to the `adapter/http/gin` module (**Plan 028** — corrected
-  2026-07-28, audit round 6 M-4; this read "Plan 027", now the core-package-layout window).
+- ADR 0024 would admit `github.com/gin-gonic/gin` to the `adapter/http/gin` module. **Number reserved, artifact
+  unwritten, and the admission is an open user decision** (CLAUDE.md Dependency policy). The plan that carries it is
+  **unnumbered until the increment is written** — *corrected 2026-08-22,
+  [Plan 030](../plans/030-post-029-maintenance.md) Task 3; this read "**Plan 028**", which
+  [nil option elements](../plans/028-nil-option-elements.md) has since consumed, and before that "Plan 027".*
 - The async-callback request-reply variant (cross-instance Return Address) is a named future increment.
 - [Plan 023](../plans/023-producer-outbound-retry.md) resolved the outbound-retry open point (§5); Plan 024 (Addendum B)
   delivers the O1/O2 adapters that consume it.

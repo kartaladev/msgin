@@ -16,37 +16,149 @@ package msgin_test
 //     "func With..." parameter — resilience.NewTokenBucket's positional
 //     `burst` is why). Fail if that set differs from sizingConformanceKeys in
 //     EITHER direction.
-//  2. CONFORMANCE (behavioral). Every one of the 17 AST-discovered keys, plus
-//     2 MANUAL rows for the class members the Recv == nil boundary excludes
+//  2. CONFORMANCE (behavioral). Every AST-discovered key in
+//     sizingConformanceKeys, plus 2 MANUAL rows for the class members the
+//     Recv == nil boundary excludes
 //     but a root test can still construct, gets an executable row — never a
 //     declaration string — in one of FOUR arms. The arms are BEHAVIORAL and are
 //     NOT a relabelling of Spec 016 §2.1's three classification verdicts; §2.1's
 //     "classification arms ≠ AC-5 behavioral arms" note is normative for the
 //     split, and §6 AC-5 tabulates it:
-//       - "fixed"    (9) — the fault is reported through the surface Spec 016
-//                          §3 names for it: the constructor's return, or the
-//                          first use of the object it produced.
-//       - "rejects"  (1) — msghttp.WithSuccessStatus. It is safe (a) by §2.1's
-//                          criterion and NOTHING HERE FIXES IT; it rejects
-//                          1<<62 only through its own pre-existing [100,599]
-//                          check. It gets an arm of its own because it belongs
-//                          in neither "fixed" (not a class member) nor "safe"
-//                          (which asserts ACCEPTS).
-//       - "deferred" (3) — accepts 1<<62, annotated so it never reads as a
-//                          safety certificate.
-//       - "safe"     (6) — accepts 1<<62 AND its product is usable.
-//     9 + 1 + 3 + 6 = 19 rows = 17 AST keys + 2 manual rows.
+//       - "fixed"    — the fault is reported through the surface Spec 016 §3
+//                      names for it: the constructor's return, or the first use
+//                      of the object it produced. 9 were bounded by Spec 016 /
+//                      Plan 029; memory.WithMaxGroupMembers AND
+//                      sql.WithMaxGroupMembers by Spec 017 / Plan 031; the 3
+//                      msghttp byte caps joined them from "deferred" at
+//                      Spec 018 / Plan 032.
+//       - "rejects"  — an exported int-parameter function that is NOT a class
+//                      member yet still refuses an absurd value through a check
+//                      of its own. It belongs in neither "fixed" (which asserts
+//                      a class member's remedy) nor "safe" (which asserts
+//                      ACCEPTS). Two members:
+//                        * msghttp.WithSuccessStatus — safe (a) by §2.1's
+//                          criterion, and NOTHING HERE FIXES IT; it rejects
+//                          1<<30 only through its own pre-existing [100,599]
+//                          check.
+//                        * sql.ValidateMaxMembers — the SPI-boundary check
+//                          ADR 0033 D-AV adds to GroupDialect.AddMember's
+//                          maxMembers. Not a class member for the reason the
+//                          methodCount section below already states for
+//                          AddMember itself: under D-AB's criterion maxMembers
+//                          IS the bound, not a quantity bounded by something
+//                          else. It is nonetheless an exported, Recv == nil
+//                          function with an int parameter, so half 1 discovers
+//                          it and it needs a row. Its rejection is
+//                          msgin.Permanent — alone among the ErrInvalidCapacity
+//                          producers here — because it is returned from a
+//                          per-message hot path, not from a constructor.
+//       - "deferred" — no members as of Plan 032; see Spec 018. The arm is
+//                      retained so a future knob with a genuinely deferred
+//                      remedy has it, and so this file keeps documenting four
+//                      arms rather than silently dropping the vocabulary.
+//                      NOTE: byArm below is built by COUNTING, so an empty arm
+//                      has NO KEY there — it is absent, not zero.
+//       - "safe"     — accepts math.MaxInt AND its product is usable.
+//
+// # THE PER-ARM COUNTS ARE NOT RESTATED HERE — ON PURPOSE (Plan 031 Task 9)
+//
+// Four successive rounds patched an ever-growing list of stale per-arm digits
+// in this header (7 -> 12 -> 14 -> 16 -> 17 sites), and each round was
+// overtaken, because a digit in a comment is a hand-maintained copy of
+// something the test already computes. The bullets above therefore carry NO
+// counts. The authority is executable and lives at the foot of
+// TestSizingOptionClass_Conformance:
+//
+//   - wantArms — the key->arm MAPPING, a require. Pairwise-swap-proof.
+//   - byArm    — the per-arm COUNTS, a require, derived by counting the rows.
+//   - require.Len(t, tests, ...) — the row total.
+//
+// Read those three literals for the split; do not re-copy them up here. As of
+// this increment they read 14 fixed + 2 rejects + 0 deferred + 6 safe = 22
+// rows = 20 AST keys + 2 manual rows (ADR 0033 D-AL, D-AV) — stated ONCE, in
+// prose that names its own source, rather than spread across the arm bullets.
+// 🔴 Reconcile by NAME, never by total: 11+2+3+6 and 14+2+0+6 BOTH total 22,
+// and revisions 1-4 of ADR 0033 shipped the wrong partition for exactly that
+// reason.
+//
+// # THE OVERSIZED LITERAL IS TWO-DIMENSIONAL (Plan 030 Task 2; Plan 032)
+//
+// Every row above previously passed the literal 1<<62, which does not fit an
+// int on GOARCH=386 and made this whole test binary fail to COMPILE there.
+// The replacement is NOT "one value per arm" — a blanket rewrite to one value
+// would leave rows green while probing nothing. Read it in two dimensions, in
+// this order:
+//
+// DIMENSION 1 — THE ARM FIXES THE REQUIRED PROPERTY.
+//
+//   - "safe": the value must be ACCEPTED and must stay MAXIMALLY absurd ⇒
+//     math.MaxInt, and nothing else. The parameter type does NOT get a vote
+//     here — every row in this arm is int-typed, and demoting them to a
+//     reject-arm literal would silently disable the probe (see below).
+//   - "fixed" and "rejects": the value must be OUT OF RANGE and must
+//     render an architecture-INDEPENDENT decimal, because these rows assert an
+//     EqualError against a rendered decimal. That fixed decimal is the whole
+//     point; math.MaxInt here would render differently on 386 and 64-bit and
+//     break the assertions.
+//
+// DIMENSION 2 — ONLY WITHIN THE REJECT ARMS ("fixed" / "rejects") DOES THE
+// PARAMETER TYPE CHOOSE THE LITERAL.
+//
+//   - int-typed → 1<<30 = 1,073,741,824. It fits an int32 yet still exceeds
+//     every INT-TYPED ceiling in the codebase (the largest of those is 1<<20 =
+//     1,048,576), so it selects the identical out-of-range branch on both
+//     architectures while keeping the expected decimal — 1073741824 —
+//     architecture-INDEPENDENT.
+//
+//   - int64-typed → 1<<62. The three msghttp byte caps (WithMaxBodyBytes,
+//     WithMaxEventBytes, WithMaxResponseBytes) are `func(n int64)`, so 1<<62
+//     is in range on EVERY architecture, compiles fine on 386, and was never
+//     part of that defect. 🔴 DO NOT "finish the job" by converting them to an
+//     int-sized literal. 1<<30 in particular CANNOT be used for them:
+//     byteCapCeiling is an int64 ceiling of 2,147,483,647, which is ABOVE
+//     1<<30, so those rows would be ACCEPTED and every require.ErrorIs would
+//     fail. And on 386 math.MaxInt would shrink the value to exactly
+//     2,147,483,647 — the ceiling itself, hence in range — leaving the row
+//     green while asserting nothing.
+//
+// AND THE WARNING DIMENSION 2 DOES NOT REACH — CARRIED FORWARD VERBATIM:
+//
+//   - "safe" → math.MaxInt. These rows assert require.NoError plus a
+//     product-usable check and carry NO decimal string, so architecture
+//     dependence is harmless — and the value must stay MAXIMALLY absurd,
+//     because that is the row's entire purpose (see the arm's comment at the
+//     "safe" section: the knob is exercised "past the point where a buggy
+//     comparison, e.g. an int32 truncation, would misbehave"). 1<<30 IS an
+//     int32 value, so demoting these rows to it would leave every assertion
+//     green while the int32-truncation probe silently stopped running. Worse,
+//     if an implementation regressed to make([]T, n), math.MaxInt fails fast
+//     whereas 1<<30 quietly allocates ~1 GiB.
+//
+//     ACCEPTED, RECORDED LIMITATION: on GOARCH=386 no int value exceeds int32,
+//     so the int32-truncation probe the "safe" rows exist to run is
+//     UNACHIEVABLE there by any choice of magnitude. math.MaxInt keeps the
+//     probe intact where it is meaningful (64-bit) and degrades to a tautology
+//     where it cannot be (32-bit). Do not "fix" that by picking a smaller
+//     number — that would disable the probe on BOTH architectures.
 //
 // # The Recv == nil boundary — a decision, not an omission (Spec 016 §2.0)
 //
 // In go/ast a method is a *ast.FuncDecl with a non-nil Recv, so "every
 // exported function with an int/int64 parameter" reads two ways. Measured on
-// this tree: Recv == nil yields 17 keys, every one constructible from a root
-// blackbox test; ANY FuncDecl yields 44, of which 22 sit on UNEXPORTED
-// receivers (mysqlDialect.Claim, postgresGroupDialect.AddMember, ... — 21 in
-// leaf modules, plus msghttp's own responseTracker.WriteHeader) that a
-// root-module blackbox test cannot construct at all, which would make half 2
-// unsatisfiable for those keys. So: functions only.
+// this tree: Recv == nil yields exactly sizingConformanceKeys — half 1 LOGS
+// that count rather than this comment restating it — and every one of those is
+// constructible from a root blackbox test. ANY FuncDecl would additionally
+// admit the excluded METHODS, whose count half 1 both logs and hard-asserts
+// below (27 today), of which 22 sit on UNEXPORTED receivers
+// (mysqlDialect.Claim, postgresGroupDialect.AddMember, ... — 21 in leaf
+// modules, plus msghttp's own responseTracker.WriteHeader) that a root-module
+// blackbox test cannot construct at all, which would make half 2 unsatisfiable
+// for those keys. So: functions only.
+//
+// The 22/21 decomposition is hand-derived, but it CANNOT rot silently: it
+// partitions methodCount, and require.Equal(t, 27, methodCount, ...) below goes
+// red the moment that population moves, with a message telling its reader to
+// re-derive this paragraph rather than bump the number.
 //
 // The exclusion costs nothing once membership is derived from a stated
 // criterion (Spec 016 §2.1 / ADR 0032 D-AB: "n is the sole bound on an
@@ -65,12 +177,34 @@ package msgin_test
 //
 //   - ROOT-MODULE IMPORT BOUNDARY. Half 1 sees all 8 modules (a filesystem
 //     walk needs no go.mod); half 2 is a root-module test and can only import
-//     root-module packages. All 17 keys live in root-module packages today
-//     (endpoint, adapter/http, adapter/memory, channel, resilience, routing),
-//     so both halves cover all of them. A sizing option added to expr, one of
-//     the sql dialects, or another leaf module FAILS half 1 and cannot be
-//     added to half 2 — a deliberate gate failure demanding a spec revision,
-//     not a silent pass.
+//     root-module packages. Every key in sizingConformanceKeys — and both
+//     manual rows — lives in a root-module PACKAGE today: endpoint,
+//     adapter/database/sql, adapter/http, adapter/memory, channel, resilience,
+//     routing. So both halves cover all of them. 🔴 adapter/database/sql is a
+//     PACKAGE IN THE ROOT MODULE, not a module (`find . -name go.mod` lists
+//     eight and it is not among them); it was missing from this list until
+//     Plan 031 Task 9, which made the bullet a FALSE claim about the gate's own
+//     coverage from the moment sql.WithMaxGroupMembers landed. A sizing option
+//     added to expr, one of the sql DIALECT modules, or another leaf module
+//     FAILS half 1 and cannot be added to half 2 — a deliberate gate failure
+//     demanding a spec revision, not a silent pass. That failure is not
+//     hypothetical: Spec 017 AC-10 requires it to be PROBED, by planting a
+//     throwaway sizing option in adapter/database/sql/postgres (a real leaf
+//     module) and confirming half 1 reports exactly one extra key that half 2
+//     cannot adopt. Re-run that probe before trusting this bullet.
+//
+//     🔴 AND MIND WHICH BUILD YOU PROBE UNDER — measured, Plan 031 Task 9. The
+//     probe above shows half 1 going red with exactly one extra key
+//     ("postgres.WithProbeSizeA"). But "half 2 cannot import it" is only true
+//     of the MODULE build: under GOWORK=off — how CI builds each module, and
+//     how any consumer builds this one — the import fails with "no required
+//     module provides package …/adapter/database/sql/postgres", and adding the
+//     require would invert this repo's dependency direction (that module
+//     requires root, so root requiring it is a module cycle). Under the
+//     repo-root go.work the very same import RESOLVES and `go vet .` is silent.
+//     So a probe run only inside the workspace will conclude, wrongly, that
+//     half 2 could adopt a leaf-module key. The unsatisfiability is real; the
+//     workspace hides it.
 //   - The Recv == nil boundary above: two excluded class members, both
 //     covered by the manual rows — no uncovered residue.
 //   - A NAMED integer type is INVISIBLE. hasIntOrInt64Param looks through
@@ -88,14 +222,59 @@ package msgin_test
 //     whole class — clock.After(d) with a variable duration is a further,
 //     unaudited five sites (Spec 016 §3.7.4 / ADR 0032 D-AA). Do not read a
 //     green run of THIS file as saying anything about time.Duration.
+//   - A BOUND THAT DOES NOT ARRIVE AS AN INTEGER PARAMETER IS INVISIBLE to
+//     half 1 (ADR 0033 D-AL, the fifth limitation, added by Plan 031 Task 9):
+//     a func-typed option (*ast.FuncType), a named func type (*ast.Ident — the
+//     same path as `type Bytes int64` above), or a threshold read from a
+//     MESSAGE HEADER (no parameter at all). Spec 017 §1.4 enumerates the three
+//     that exist today — routing.WithReleaseWhen (*ast.FuncType),
+//     routing.WithReleaseStrategy (a named func type) and routing's
+//     header-driven defaultRelease (not a function at all) — and moves their
+//     enforcement to the STORE, which observes every member regardless of how
+//     the threshold arrived. The store is therefore their enforcement site;
+//     this gate is not, and cannot be made to be.
+//
+//     🔴 WHY THE SCAN IS NOT WIDENED. Catching *ast.FuncType would find
+//     WithReleaseWhen and MISS WithReleaseStrategy (a named type), and could
+//     never express defaultRelease (no parameter). It would also have to decide
+//     WHICH func-typed options are sizing knobs — a judgement go/ast cannot
+//     make without go/types and a loadable build of all 8 modules, the exact
+//     coupling the filesystem walk exists to avoid (ADR 0032 D-AA). A gate that
+//     covers one of three while READING as complete is worse than a stated
+//     limitation; that is the same inversion D-AB was written to stop.
+//
+// # methodCount STAYS 27 — GroupDialect.AddMember DOES NOT MOVE IT (D-AL/D-AB)
+//
+// Plan 031 gave GroupDialect.AddMember a new `int` parameter (the per-group
+// member cap). Two independent reasons that changes nothing here, both stated
+// so the next reader neither re-derives them nor bumps the assertion to make
+// the gate pass:
+//
+//  1. IT IS A METHOD, excluded by the ratified Recv == nil boundary above. And
+//     all three shipped dialect implementations ALREADY carry a `seq int64`
+//     parameter, so they were ALREADY inside methodCount before the new
+//     parameter existed — this header names one of them,
+//     postgresGroupDialect.AddMember, in the boundary section. Adding a
+//     parameter to an already-matching method is a no-op for the count.
+//     🔴 DO NOT bump require.Equal(t, 27, methodCount, ...). Re-derived by
+//     Plan 031 Task 9 on this tree: 19 functions / 27 methods.
+//  2. IT IS NOT A CLASS MEMBER under ADR 0032 D-AB's criterion ("n is the sole
+//     bound on an accumulation"): maxMembers IS the bound, not a quantity
+//     bounded by something else. So it needs no manual conformance row either —
+//     the Recv == nil boundary's "exactly two excluded class members"
+//     (memory.QueueStore.Claim, channel.QueueChannel.Poll) still holds.
 
 import (
 	"context"
+	stdsql "database/sql"
+	"database/sql/driver"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -108,6 +287,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/msgin"
+	msginsql "github.com/kartaladev/msgin/adapter/database/sql"
 	msghttp "github.com/kartaladev/msgin/adapter/http"
 	"github.com/kartaladev/msgin/adapter/memory"
 	"github.com/kartaladev/msgin/channel"
@@ -120,20 +300,25 @@ import (
 // Half 1 — completeness (AST)
 // ---------------------------------------------------------------------------
 
-// sizingConformanceKeys is Spec 016 §2's conformance key set: the 16 exported
-// `With...` sizing options that take an int/int64 PLUS
+// sizingConformanceKeys is Spec 016 §2's conformance key set: EVERY exported
+// `With...` sizing option that takes an int/int64, PLUS
 // resilience.NewTokenBucket's positional `burst` (§2's note — the scan is
-// "any position", not "first", precisely so this one is not invisible).
+// "any position", not "first", precisely so this one is not invisible). Its
+// length is deliberately not restated in prose; len(sizingConformanceKeys) is
+// the number, and half 1 logs the AST-derived figure it must equal.
 //
 // RE-DERIVED, not copied, from a go/ast walk of all 8 modules — two prior
 // revisions of Spec 016 printed a stale count (16 under a 17-row table) that
 // would have made this gate fail on its first run (Spec 016 §2, revision-2
-// BLOCKER-1). Re-derive with:
+// BLOCKER-1). 🔴 Those two digits are a HISTORICAL fact about that spec's
+// revision history, NOT a count of this tree — a count sweep must leave them
+// alone, and every sweep so far has had to re-decide that. Re-derive the LIVE
+// figure with:
 //
 //	git ls-files '*.go' | grep -v _test | xargs grep -hnE \
-//	  '^func With[A-Za-z]+(\[[^]]*\])?\([a-z]+ (int|int64)\)' | wc -l   # → 16 `With...` options
+//	  '^func With[A-Za-z]+(\[[^]]*\])?\([a-z]+ (int|int64)\)' | wc -l   # → the `With...` options
 //
-// and cross-check the full 17 (including the positional burst) against
+// then add the positional burst and cross-check the total against
 // TestSizingOptionClass_Completeness's own output below, which is the
 // authoritative source — not this comment, not the spec.
 var sizingConformanceKeys = []string{
@@ -144,6 +329,8 @@ var sizingConformanceKeys = []string{
 	"memory.WithBuffer",
 	"memory.WithCapacity",
 	"memory.WithMaxGroups",
+	"memory.WithMaxGroupMembers",
+	"sql.WithMaxGroupMembers",
 	"msghttp.WithConnectionBuffer",
 	"msghttp.WithMaxConnections",
 	"msghttp.WithReplayBuffer",
@@ -154,6 +341,10 @@ var sizingConformanceKeys = []string{
 	"routing.WithCompletionSize",
 	"resilience.WithBreakerThreshold",
 	"resilience.NewTokenBucket", // positional `burst`, not a `With...` option
+	// The SPI-boundary validator ADR 0033 D-AV adds — a positional
+	// `maxMembers int`, not an option, and in the "rejects" arm for the reason
+	// that arm's bullet gives.
+	"sql.ValidateMaxMembers",
 }
 
 // hasIntOrInt64Param reports whether ft declares an int or int64 typed
@@ -167,8 +358,9 @@ var sizingConformanceKeys = []string{
 // `WithSizes(ns ...int)` be silently invisible to half 1 while the file
 // header, Spec 016 §6 AC-5 and ADR 0032 D-AA all promise the scan fails in
 // EITHER direction for an int parameter in ANY position. No such declaration
-// exists in the tree today (the key set is unchanged at 17 with the unwrap in
-// place, which is itself the evidence), so this closes a latent hole rather
+// exists in the tree today (the key set is unchanged BY the unwrap — adding it
+// reclassified nothing, which is itself the evidence), so this closes a latent
+// hole rather
 // than reclassifying anything. A NAMED type — `type Bytes int64` — remains
 // invisible, and is stated as an accepted limitation in the header rather
 // than silently assumed away: resolving it needs go/types, not go/ast.
@@ -278,10 +470,14 @@ func TestSizingOptionClass_Completeness(t *testing.T) {
 	t.Logf("=== EXPORTED METHODS with int/int64 param: %d (excluded by the Recv==nil boundary, Spec 016 §2.0)",
 		methodCount)
 
+	// The key count in this message is FORMATTED FROM len(want), never typed:
+	// a hand-typed "18-key" here went stale the moment Plan 031 appended two
+	// keys, and an assertion message never fails, so nothing caught it
+	// (Plan 031 Task 9).
 	assert.Equal(t, want, found, "the AST-discovered set of exported sizing-shaped functions must match "+
-		"Spec 016 §2's 17-key conformance set in BOTH directions (ADR 0032 D-AA). A new sizing option must be "+
+		"Spec 016 §2's %d-key conformance set in BOTH directions (ADR 0032 D-AA). A new sizing option must be "+
 		"folded into sizingConformanceKeys AND given a row in TestSizingOptionClass_Conformance — this diff "+
-		"alone is not the gate, it is half of it.")
+		"alone is not the gate, it is half of it.", len(want))
 
 	// The Recv == nil boundary (Spec 016 §2.0) is a ratified, DO-NOT-RELITIGATE
 	// decision — this assertion does not move it. It exists so a change to the
@@ -332,6 +528,69 @@ func (s *onceByteSource) Poll(context.Context, int) ([]msgin.Delivery, error) {
 	return out, nil
 }
 
+// ---------------------------------------------------------------------------
+// sql.WithMaxGroupMembers fixtures (Spec 017 §6 AC-8, Plan 031 Task 5)
+// ---------------------------------------------------------------------------
+//
+// msginsql.NewGroupStore takes THREE required positional arguments (a non-nil
+// *sql.DB, a valid table identifier and a non-nil GroupDialect) and validates
+// them BEFORE it range-checks any option value, so — unlike every other row in
+// this file — the sql row cannot be driven with zero-value arguments. The two
+// stubs below supply the minimum that reaches the checkRange arm under test.
+// Neither is ever used: the constructor never opens a connection and never
+// calls a dialect method.
+//
+// Deliberately NOT reordered in production to spare this file the stubs: a row
+// that passed a nil db and still expected ErrInvalidCapacity would silently
+// pin "the member-cap check beats the nil-db check" as a contract.
+
+// nullConnector is a database/sql driver.Connector (and driver.Driver) that
+// never connects, so stdsql.OpenDB yields a non-nil *sql.DB with no registered
+// driver and no I/O. Close() stops the connectionOpener goroutine, which is
+// why every use below defers it (main_test.go's goleak).
+type nullConnector struct{}
+
+func (nullConnector) Connect(context.Context) (driver.Conn, error) {
+	return nil, errors.New("nullConnector: never connects")
+}
+func (c nullConnector) Driver() driver.Driver            { return c }
+func (c nullConnector) Open(string) (driver.Conn, error) { return c.Connect(context.Background()) }
+
+// nullGroupDialect is a msginsql.GroupDialect whose methods are never called:
+// NewGroupStore only checks it for nil. It exists because GroupDialect is an
+// exported SPI with no first-party implementation inside the root module — the
+// three shipped dialects are separate modules that IMPORT root, so this
+// (root-module, blackbox) file cannot reach them.
+type nullGroupDialect struct{}
+
+func (nullGroupDialect) AddMember(context.Context, msginsql.Querier, string, string, string, int64, []byte, []byte, int, time.Duration) (msginsql.GroupRows, error) {
+	return msginsql.GroupRows{}, nil
+}
+
+func (nullGroupDialect) ClaimGroup(context.Context, msginsql.Querier, string, string, string, time.Duration) (*msginsql.ClaimedGroup, error) {
+	return nil, nil
+}
+
+func (nullGroupDialect) SettleGroup(context.Context, msginsql.Querier, string, string, string, int64) (bool, error) {
+	return false, nil
+}
+
+func (nullGroupDialect) AbandonGroup(context.Context, msginsql.Querier, string, string, string, int64) (bool, error) {
+	return false, nil
+}
+
+func (nullGroupDialect) ExpiredGroups(context.Context, msginsql.Querier, string, time.Time, time.Duration, int) ([]msginsql.GroupRows, error) {
+	return nil, nil
+}
+
+func (nullGroupDialect) EnsureGroupSchema(context.Context, msginsql.Querier, string) error {
+	return nil
+}
+
+func (nullGroupDialect) SchemaExists(context.Context, msginsql.Querier, string) (bool, error) {
+	return false, nil
+}
+
 // runAndStop starts c.Run(ctx) in its own goroutine and returns a stop func
 // that cancels ctx and joins Run, so every row that starts a Consumer leaves
 // no goroutine behind for main_test.go's goleak.VerifyTestMain to catch.
@@ -350,15 +609,16 @@ func runAndStop(t *testing.T, run func(ctx context.Context) error) (stop func())
 	}
 }
 
-// sizingConformanceCase is one of the 19 rows Spec 016 §6 AC-5 half 2
-// requires: 17 AST-discovered keys (matching sizingConformanceKeys) plus 2
-// manual rows for the Recv == nil boundary's two excluded class members.
+// sizingConformanceCase is one of the rows Spec 016 §6 AC-5 half 2 requires:
+// one per AST-discovered key (the table's key set must equal
+// sizingConformanceKeys) plus 2 manual rows for the Recv == nil boundary's two
+// excluded class members. require.Len(t, tests, ...) below carries the total.
 // assert is a closure, never a want/wantErr field pair (project table-test
 // rule) — each row's construction differs too much (different packages,
 // different constructor shapes) to share one SUT call.
 type sizingConformanceCase struct {
 	key    string // matches a sizingConformanceKeys entry, or "(manual) ..." for the two excluded methods
-	arm    string // "fixed" | "rejects" | "deferred" | "safe" — Spec 016 §6 AC-5's four BEHAVIORAL arms, not §2.1's three classification verdicts
+	arm    string // "fixed" | "rejects" | "deferred" (no members as of Plan 032 — see Spec 018) | "safe" — Spec 016 §6 AC-5's four BEHAVIORAL arms, not §2.1's three classification verdicts
 	assert func(t *testing.T)
 }
 
@@ -366,17 +626,22 @@ type sizingConformanceCase struct {
 // half 1 discovers is EXECUTABLE, never a declaration string (round-1 M-4).
 func TestSizingOptionClass_Conformance(t *testing.T) {
 	tests := []sizingConformanceCase{
-		// ---- arm: fixed — the 9 class members this increment bounds ----
+		// ---- arm: fixed — the class members bounded here: 9 by Spec 016 /
+		// Plan 029, memory.WithMaxGroupMembers AND sql.WithMaxGroupMembers by
+		// Spec 017 / Plan 031, then the 3 msghttp byte caps that moved out of
+		// "deferred" at Spec 018 / Plan 032 (the three int64-typed rows at the
+		// end). The arm's SIZE is byArm's, asserted at the foot of this
+		// function — not restated here (Plan 031 Task 9) ----
 		{
 			key: "endpoint.WithMaxInFlight",
 			arm: "fixed",
 			assert: func(t *testing.T) {
 				h := func(context.Context, msgin.Message[any]) error { return nil }
-				_, err := endpoint.NewConsumer[any](discardPollingSource{}, h, endpoint.WithMaxInFlight[any](1<<62))
+				_, err := endpoint.NewConsumer[any](discardPollingSource{}, h, endpoint.WithMaxInFlight[any](1<<30))
 				require.ErrorIs(t, err, msgin.ErrInvalidMaxInFlight)
 				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
 				assert.EqualError(t, err,
-					"msgin: max in-flight out of range: endpoint.WithMaxInFlight: 4611686018427387904 not in [1, 1048576]")
+					"msgin: max in-flight out of range: endpoint.WithMaxInFlight: 1073741824 not in [1, 1048576]")
 			},
 		},
 		{
@@ -384,22 +649,22 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 			arm: "fixed",
 			assert: func(t *testing.T) {
 				h := func(context.Context, msgin.Message[any]) error { return nil }
-				_, err := endpoint.NewConsumer[any](discardPollingSource{}, h, endpoint.WithConcurrency[any](1<<62))
+				_, err := endpoint.NewConsumer[any](discardPollingSource{}, h, endpoint.WithConcurrency[any](1<<30))
 				require.ErrorIs(t, err, msgin.ErrInvalidConcurrency)
 				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
 				assert.EqualError(t, err,
-					"msgin: concurrency out of range: endpoint.WithConcurrency: 4611686018427387904 not in [1, 65536]")
+					"msgin: concurrency out of range: endpoint.WithConcurrency: 1073741824 not in [1, 65536]")
 			},
 		},
 		{
 			key: "msghttp.WithConnectionBuffer",
 			arm: "fixed",
 			assert: func(t *testing.T) {
-				_, err := msghttp.NewConfig(msghttp.WithConnectionBuffer(1 << 62))
+				_, err := msghttp.NewConfig(msghttp.WithConnectionBuffer(1 << 30))
 				require.ErrorIs(t, err, msghttp.ErrInvalidConnectionBuffer)
 				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
 				assert.EqualError(t, err,
-					"msghttp: connection buffer out of range: msghttp.WithConnectionBuffer: 4611686018427387904 not in [1, 65536]")
+					"msghttp: connection buffer out of range: msghttp.WithConnectionBuffer: 1073741824 not in [1, 65536]")
 			},
 		},
 		{
@@ -408,46 +673,71 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 			assert: func(t *testing.T) {
 				// R2 (Spec 016 §3.2): New has no error return, so the fault must
 				// surface at the object's first use — Send — not at New itself.
-				b := memory.New(memory.WithBuffer(1 << 62))
+				b := memory.New(memory.WithBuffer(1 << 30))
 				require.NotNil(t, b, "New must not panic")
 				err := b.Send(t.Context(), msgin.New[any]("x"))
 				require.ErrorIs(t, err, msgin.ErrInvalidCapacity)
 				assert.True(t, msgin.IsPermanent(err), "R2: latched and reported wrapped in Permanent (ADR 0031 D-V)")
 				assert.EqualError(t, err,
-					"msgin: permanent: msgin: capacity out of range: memory.WithBuffer: 4611686018427387904 not in [0, 1048576]")
+					"msgin: permanent: msgin: capacity out of range: memory.WithBuffer: 1073741824 not in [0, 1048576]")
 			},
 		},
 		{
 			key: "memory.WithCapacity",
 			arm: "fixed",
 			assert: func(t *testing.T) {
-				_, err := memory.NewQueueStore(memory.WithCapacity(1 << 62))
+				_, err := memory.NewQueueStore(memory.WithCapacity(1 << 30))
 				require.ErrorIs(t, err, msgin.ErrInvalidCapacity)
 				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
 				assert.EqualError(t, err,
-					"msgin: capacity out of range: memory.WithCapacity: 4611686018427387904 not in [1, 1048576]")
+					"msgin: capacity out of range: memory.WithCapacity: 1073741824 not in [1, 1048576]")
 			},
 		},
 		{
 			key: "memory.WithMaxGroups",
 			arm: "fixed",
 			assert: func(t *testing.T) {
-				_, err := memory.NewGroupStore(memory.WithMaxGroups(1 << 62))
+				_, err := memory.NewGroupStore(memory.WithMaxGroups(1 << 30))
 				require.ErrorIs(t, err, msgin.ErrInvalidCapacity)
 				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
 				assert.EqualError(t, err,
-					"msgin: capacity out of range: memory.WithMaxGroups: 4611686018427387904 not in [1, 1048576]")
+					"msgin: capacity out of range: memory.WithMaxGroups: 1073741824 not in [1, 1048576]")
+			},
+		},
+		{
+			key: "memory.WithMaxGroupMembers",
+			arm: "fixed",
+			assert: func(t *testing.T) {
+				_, err := memory.NewGroupStore(memory.WithMaxGroupMembers(1 << 30))
+				require.ErrorIs(t, err, msgin.ErrInvalidCapacity)
+				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
+				assert.EqualError(t, err,
+					"msgin: capacity out of range: memory.WithMaxGroupMembers: 1073741824 not in [1, 1048576]")
+			},
+		},
+		{
+			key: "sql.WithMaxGroupMembers",
+			arm: "fixed",
+			assert: func(t *testing.T) {
+				db := stdsql.OpenDB(nullConnector{})
+				defer db.Close()
+				_, err := msginsql.NewGroupStore(db, "groups", nullGroupDialect{},
+					msginsql.WithMaxGroupMembers(1<<30))
+				require.ErrorIs(t, err, msgin.ErrInvalidCapacity)
+				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
+				assert.EqualError(t, err,
+					"msgin: capacity out of range: sql.WithMaxGroupMembers: 1073741824 not in [1, 1048576]")
 			},
 		},
 		{
 			key: "msghttp.WithMaxConnections",
 			arm: "fixed",
 			assert: func(t *testing.T) {
-				_, err := msghttp.NewConfig(msghttp.WithMaxConnections(1 << 62))
+				_, err := msghttp.NewConfig(msghttp.WithMaxConnections(1 << 30))
 				require.ErrorIs(t, err, msghttp.ErrInvalidMaxConnections)
 				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
 				assert.EqualError(t, err,
-					"msghttp: max connections out of range: msghttp.WithMaxConnections: 4611686018427387904 not in [1, 65536]")
+					"msghttp: max connections out of range: msghttp.WithMaxConnections: 1073741824 not in [1, 65536]")
 			},
 		},
 		{
@@ -459,92 +749,162 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 				fn := func(context.Context, []msgin.Message[int]) (msgin.Message[int], error) {
 					return msgin.New(0), nil
 				}
-				_, err = routing.NewAggregator[int, int](store, fn, routing.WithCompletionSize(1<<62))
+				_, err = routing.NewAggregator[int, int](store, fn, routing.WithCompletionSize(1<<30))
 				require.ErrorIs(t, err, msgin.ErrInvalidCapacity)
 				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
 				assert.EqualError(t, err,
-					"msgin: capacity out of range: routing.WithCompletionSize: 4611686018427387904 not in [1, 65536]")
+					"msgin: capacity out of range: routing.WithCompletionSize: 1073741824 not in [1, 65536]")
 			},
 		},
 		{
 			key: "msghttp.WithReplayBuffer",
 			arm: "fixed",
 			assert: func(t *testing.T) {
-				_, err := msghttp.NewConfig(msghttp.WithReplayBuffer(1 << 62))
+				_, err := msghttp.NewConfig(msghttp.WithReplayBuffer(1 << 30))
 				require.ErrorIs(t, err, msghttp.ErrInvalidReplayBuffer)
 				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
 				assert.EqualError(t, err,
-					"msghttp: replay buffer out of range: msghttp.WithReplayBuffer: 4611686018427387904 not in [1, 65536]")
-			},
-		},
-		// ---- arm: rejects — 1 row that is NOT a class member and is NOT fixed here ----
-		// M2 (Task 7 review): this row previously sat in the arm labelled "fixed",
-		// where a reader re-deriving Spec 016 §2.1 counted 10 class members against
-		// the spec's 9 — the exact count drift that spec fought through six
-		// revisions. It is "safe (a)" by §2.1's criterion (a pure comparison over a
-		// scalar; nothing accumulates), and it rejects 1<<62 only through its OWN
-		// pre-existing [100,599] check, which this increment did not add and does
-		// not touch. It cannot sit in "safe" either, because that arm asserts the
-		// knob ACCEPTS 1<<62. Hence an arm of its own — Spec 016 §6 AC-5.
-		{
-			key: "msghttp.WithSuccessStatus",
-			arm: "rejects",
-			assert: func(t *testing.T) {
-				_, err := msghttp.NewConfig(msghttp.WithSuccessStatus(1 << 62))
-				require.ErrorIs(t, err, msghttp.ErrInvalidStatusCode)
-				assert.EqualError(t, err, "msghttp: status code must be in [100,599]")
+					"msghttp: replay buffer out of range: msghttp.WithReplayBuffer: 1073741824 not in [1, 65536]")
 			},
 		},
 
-		// ---- arm: deferred — 3 class members whose ceiling is DEFERRED (Spec 016 §3.8) ----
-		// Each is the sole bound on a REMOTE-PEER-DRIVEN read retained in memory,
-		// which CLAUDE.md's Sensible-defaults gate names as the one case where no
-		// library-picked ceiling can be safe. The assertion is deliberately just
-		// "accepts" — asserting "and its product is usable" here would certify an
-		// unbounded remote-driven read as conformant, which is the exact inversion
-		// ADR 0032's round-5 BLOCKER-1 was about.
+		// The three int64-typed byte caps, moved here from the "deferred" arm
+		// by Spec 018 / ADR 0034 / Plan 032. Each is the sole bound on a
+		// REMOTE-PEER-DRIVEN read retained in memory; each is now bounded at
+		// byteCapCeiling = math.MaxInt32 = 2,147,483,647 — a REPRESENTABILITY
+		// ceiling (the largest cap exactly expressible as a []byte length on
+		// every GOARCH), not a guess about the caller's payload, which is what
+		// CLAUDE.md's Sensible-defaults gate forbids and why Spec 016 §3.8
+		// deferred them.
 		//
-		// 🔴 WHEN §3.8's CEILING LANDS, THIS GATE WILL GO RED, AND THAT IS CORRECT.
-		// M1 (Task 7 review): a contributor who bounds WithMaxBodyBytes meets a red
-		// row here and the tempting repair is to weaken the production check back
-		// to "accepts 1<<62" so the gate passes. Do NOT. The repair is to MOVE the
-		// row into the "fixed" arm above and rewrite its assertion to the fixed
-		// shape (require.ErrorIs on the knob's sentinel + the §3.1 rendered
-		// string), exactly as WithReplayBuffer's row was moved when revision 5
-		// reclassified it. Do not delete the assertion, and do not relax the
-		// bound — a red row here means the remedy landed, not that it broke.
+		// 🔴 THEY KEEP THE 1<<62 LITERAL — see the file header's dimension 2.
+		// 1<<30 is BELOW byteCapCeiling and would be ACCEPTED, turning every
+		// require.ErrorIs below into a failure; on 386, math.MaxInt lands
+		// exactly ON the ceiling and would be accepted too. The literal is
+		// chosen by the PARAMETER TYPE within a reject arm, not by the arm.
 		{
 			key: "msghttp.WithMaxBodyBytes",
-			arm: "deferred", // class member, remedy deferred — Spec 016 §3.8
+			arm: "fixed",
 			assert: func(t *testing.T) {
-				cfg, err := msghttp.NewConfig(msghttp.WithMaxBodyBytes(1 << 62))
-				require.NoError(t, err)
-				require.NotNil(t, cfg)
+				_, err := msghttp.NewConfig(msghttp.WithMaxBodyBytes(1 << 62))
+				require.ErrorIs(t, err, msghttp.ErrInvalidMaxBodyBytes)
+				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
+				assert.EqualError(t, err,
+					"msghttp: max body bytes out of range: msghttp.WithMaxBodyBytes: 4611686018427387904 not in [1, 2147483647]")
 			},
 		},
 		{
 			key: "msghttp.WithMaxEventBytes",
-			arm: "deferred", // class member, remedy deferred — Spec 016 §3.8
+			arm: "fixed",
 			assert: func(t *testing.T) {
-				cfg, err := msghttp.NewConfig(msghttp.WithMaxEventBytes(1 << 62))
-				require.NoError(t, err)
-				require.NotNil(t, cfg)
+				_, err := msghttp.NewConfig(msghttp.WithMaxEventBytes(1 << 62))
+				require.ErrorIs(t, err, msghttp.ErrInvalidMaxEventBytes)
+				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
+				assert.EqualError(t, err,
+					"msghttp: max event bytes out of range: msghttp.WithMaxEventBytes: 4611686018427387904 not in [1, 2147483647]")
 			},
 		},
 		{
 			key: "msghttp.WithMaxResponseBytes",
-			arm: "deferred", // class member, remedy deferred — Spec 016 §3.8
+			arm: "fixed",
 			assert: func(t *testing.T) {
-				cfg, err := msghttp.NewConfig(msghttp.WithMaxResponseBytes(1 << 62))
-				require.NoError(t, err)
-				require.NotNil(t, cfg)
+				_, err := msghttp.NewConfig(msghttp.WithMaxResponseBytes(1 << 62))
+				require.ErrorIs(t, err, msghttp.ErrInvalidMaxResponseBytes)
+				assert.False(t, msgin.IsPermanent(err), "R1 constructor error stays bare (ADR 0029 D-M)")
+				assert.EqualError(t, err,
+					"msghttp: max response bytes out of range: msghttp.WithMaxResponseBytes: 4611686018427387904 not in [1, 2147483647]")
+			},
+		},
+		// ---- arm: rejects — rows that are NOT class members and are NOT fixed here ----
+		// M2 (Task 7 review): this row previously sat in the arm labelled "fixed",
+		// where a reader re-deriving Spec 016 §2.1 counted 10 class members against
+		// the spec's 9 — the exact count drift that spec fought through six
+		// revisions. It is "safe (a)" by §2.1's criterion (a pure comparison over a
+		// scalar; nothing accumulates), and it rejects the oversized value only through its OWN
+		// pre-existing [100,599] check, which this increment did not add and does
+		// not touch. It cannot sit in "safe" either, because that arm asserts the
+		// knob ACCEPTS an oversized value. Hence an arm of its own — Spec 016 §6 AC-5.
+		{
+			key: "msghttp.WithSuccessStatus",
+			arm: "rejects",
+			assert: func(t *testing.T) {
+				_, err := msghttp.NewConfig(msghttp.WithSuccessStatus(1 << 30))
+				require.ErrorIs(t, err, msghttp.ErrInvalidStatusCode)
+				assert.EqualError(t, err, "msghttp: status code must be in [100,599]")
+			},
+		},
+		// The second "rejects" row, added by ADR 0033 D-AV. Same shape as the
+		// one above and for the same reason: half 1 discovers it (exported,
+		// Recv == nil, `maxMembers int`), but it is not a Spec 016 class member
+		// — under ADR 0032 D-AB's criterion maxMembers IS the bound, not a
+		// quantity bounded by something else, which is exactly what the
+		// methodCount section of this header says about GroupDialect.AddMember,
+		// the method this function guards.
+		//
+		// 🔴 IT IS THE ONE ErrInvalidCapacity PRODUCER IN THIS FILE THAT IS
+		// msgin.Permanent, and the assertion below is deliberate, not a copy
+		// slip. Every other row here is an OPTION validated at construction, so
+		// ADR 0029 D-M keeps it bare. This one is returned from
+		// GroupDialect.AddMember, a per-message hot path: an invalid constant
+		// argument fails identically on every redelivery, so a transient
+		// classification is B-1's unlogged zero-delay Nack loop under the
+		// shipped zero-value msgin.RetryPolicy.
+		{
+			key: "sql.ValidateMaxMembers",
+			arm: "rejects",
+			assert: func(t *testing.T) {
+				err := msginsql.ValidateMaxMembers("msgin/sql/postgres: AddMember", 1<<30)
+				require.ErrorIs(t, err, msgin.ErrInvalidCapacity)
+				assert.True(t, msgin.IsPermanent(err),
+					"a hot-path sizing reject is Permanent, unlike the constructor arms (ADR 0031 D-V)")
+				assert.EqualError(t, err,
+					"msgin: permanent: msgin: capacity out of range: msgin/sql/postgres: AddMember: "+
+						"1073741824 not in [1, 1048576] and not UnboundedGroupMembers (-1)")
 			},
 		},
 
+		// ---- arm: deferred — NO MEMBERS as of Spec 018 / Plan 032 ----
+		// TOMBSTONE, deliberately retained. The arm held 3 rows —
+		// msghttp.WithMaxBodyBytes, WithMaxEventBytes and WithMaxResponseBytes,
+		// each the sole bound on a REMOTE-PEER-DRIVEN read retained in memory,
+		// each asserting only "accepts 1<<62" because asserting "and its
+		// product is usable" would have certified an unbounded remote-driven
+		// read as conformant (ADR 0032's round-5 BLOCKER-1). Spec 018 / ADR
+		// 0034 bounded all three at byteCapCeiling, so all three MOVED into the
+		// "fixed" arm above, keeping the 1<<62 literal.
+		//
+		// The name stays, and the file header still documents FOUR arms, so a
+		// future knob whose remedy is genuinely deferred has an arm to sit in
+		// and does not have to re-invent the vocabulary and its warnings.
+		// 🔴 byArm below is built by COUNTING, so this arm has NO KEY there —
+		// absent, not zero. A "deferred": 0 entry FAILS that assertion.
+		//
+		// 🔴 THE WARNING THAT MADE THE MOVE HAPPEN, GENERALISED AND KEPT.
+		// M1 (Task 7 review) told a contributor who bounded one of these knobs
+		// that the red row they met here was CORRECT, and that the repair was
+		// to MOVE the row into "fixed" and rewrite its assertion to the fixed
+		// shape (require.ErrorIs on the knob's sentinel + the §3.1 rendered
+		// string) — never to weaken the production check back to "accepts"
+		// so the gate passes. Plan 032 is that event, and it took that repair.
+		// The instruction is not spent: it governs EVERY future row in this
+		// file. Whenever bounding a knob turns a row red, the repair is to move
+		// the row and rewrite its assertion. Do not delete the assertion, and
+		// do not relax the bound — a red row here means the remedy landed, not
+		// that it broke.
+
 		// ---- arm: safe — 4 AST rows + 2 manual rows ----
-		// Each accepts 1<<62 AND its product is proven usable, not merely
+		// Each accepts math.MaxInt AND its product is proven usable, not merely
 		// constructed: a comparison-only knob is exercised past the point where a
 		// buggy comparison (e.g. an int32 truncation) would misbehave.
+		//
+		// math.MaxInt, NOT any reject-arm literal (Plan 030 Task 2; Plan 032 —
+		// since the three int64-typed byte caps joined "fixed", the reject arms
+		// carry TWO literals, 1<<30 for their int-typed rows and 1<<62 for
+		// their 3 int64-typed ones, so naming just one of them here would go
+		// stale): 1<<30 IS an int32 value, so it would leave every
+		// require.NoError below green while the int32-truncation probe stopped
+		// running. See the file header for the full two-dimensional split and
+		// its accepted 32-bit limitation.
 		{
 			key: "endpoint.WithPollMaxBatch",
 			arm: "safe",
@@ -565,9 +925,9 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 					return nil
 				}
 				c, err := endpoint.NewConsumer[any](qc, h,
-					endpoint.WithPollMaxBatch[any](1<<62),
+					endpoint.WithPollMaxBatch[any](math.MaxInt),
 					endpoint.WithPollInterval[any](time.Millisecond))
-				require.NoError(t, err, "accepts 1<<62 — derivatively safe: held is bounded by "+
+				require.NoError(t, err, "accepts math.MaxInt — derivatively safe: held is bounded by "+
 					"min(pollMaxBatch, free credits), and free credits are maxInFlight's own ceiling (Spec 016 §2.1)")
 
 				stop := runAndStop(t, c.Run)
@@ -577,21 +937,21 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 					defer mu.Unlock()
 					return seen == 2
 				}, 2*time.Second, time.Millisecond,
-					"product usable: both queued messages must still be delivered under a 1<<62 poll-batch cap")
+					"product usable: both queued messages must still be delivered under a math.MaxInt poll-batch cap")
 			},
 		},
 		{
 			key: "resilience.WithBreakerThreshold",
 			arm: "safe",
 			assert: func(t *testing.T) {
-				b, err := resilience.NewCircuitBreaker(resilience.WithBreakerThreshold(1 << 62))
-				require.NoError(t, err, "accepts 1<<62 — the option silently ignores n < 1 and never rejects "+
+				b, err := resilience.NewCircuitBreaker(resilience.WithBreakerThreshold(math.MaxInt))
+				require.NoError(t, err, "accepts math.MaxInt — the option silently ignores n < 1 and never rejects "+
 					"(Spec 016 §2.1 safety cause (a): a pure comparison over a scalar counter)")
 				for range 1000 {
 					b.Record(false)
 				}
 				assert.True(t, b.Allow(),
-					"product usable: 1,000 consecutive failures must not trip a breaker whose threshold is 1<<62")
+					"product usable: 1,000 consecutive failures must not trip a breaker whose threshold is math.MaxInt")
 			},
 		},
 		{
@@ -609,9 +969,9 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 				}
 				c, err := endpoint.NewConsumer[[]byte](src, h,
 					endpoint.WithConsumerCodec[[]byte](msgin.BytesPayloadCodec{}),
-					endpoint.WithMaxPayloadBytes[[]byte](1<<62),
+					endpoint.WithMaxPayloadBytes[[]byte](math.MaxInt),
 					endpoint.WithPollInterval[[]byte](time.Millisecond))
-				require.NoError(t, err, "accepts 1<<62 — the option never validates n at all "+
+				require.NoError(t, err, "accepts math.MaxInt — the option never validates n at all "+
 					"(Spec 016 §2.1 safety cause (b): len(b) is already-materialised)")
 
 				stop := runAndStop(t, c.Run)
@@ -621,7 +981,7 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 					defer mu.Unlock()
 					return got != nil
 				}, 2*time.Second, time.Millisecond,
-					"product usable: a normal payload must still be decoded and delivered under a 1<<62 byte cap")
+					"product usable: a normal payload must still be decoded and delivered under a math.MaxInt byte cap")
 				mu.Lock()
 				assert.Equal(t, []byte("hello"), got)
 				mu.Unlock()
@@ -631,8 +991,19 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 			key: "resilience.NewTokenBucket",
 			arm: "safe",
 			assert: func(t *testing.T) {
-				rl, err := resilience.NewTokenBucket(1, 1<<62) // burst is the 17th key, positional
-				require.NoError(t, err, "accepts 1<<62 — burst is a scalar comparison, safety cause (a)")
+				// `burst` arrives POSITIONALLY, not through a With... option —
+				// sizingConformanceKeys' one non-`With...` key, and the reason
+				// half 1 scans "any position" rather than "the first parameter".
+				// (From 3569d16 until Plan 031 Task 9 this comment instead gave
+				// burst's ORDINAL POSITION in sizingConformanceKeys — a
+				// hand-maintained index, true only while nothing was inserted
+				// ahead of it. Tasks 1 and 5 inserted two keys and it silently
+				// became wrong; nothing could have caught it, since the index
+				// was asserted nowhere. The PROPERTY is stable, the ordinal
+				// never was, so state the property and keep the index out of
+				// the file entirely.)
+				rl, err := resilience.NewTokenBucket(1, math.MaxInt)
+				require.NoError(t, err, "accepts math.MaxInt — burst is a scalar comparison, safety cause (a)")
 				require.NoError(t, rl.Wait(t.Context()),
 					"product usable: a bucket that starts full at burst tokens must admit immediately")
 			},
@@ -644,8 +1015,8 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 				store, err := memory.NewQueueStore()
 				require.NoError(t, err)
 				require.NoError(t, store.Enqueue(t.Context(), msgin.New[any]("payload")))
-				ds, err := store.Claim(t.Context(), 1<<62)
-				require.NoError(t, err, "accepts 1<<62 — capacity is min(max, len(s.ready)), never max itself, "+
+				ds, err := store.Claim(t.Context(), math.MaxInt)
+				require.NoError(t, err, "accepts math.MaxInt — capacity is min(max, len(s.ready)), never max itself, "+
 					"so it is safe by construction regardless of max (Spec 016 §2.0)")
 				require.Len(t, ds, 1, "product usable: the one enqueued message must still be delivered")
 				assert.Equal(t, "payload", ds[0].Msg.Payload())
@@ -663,8 +1034,8 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 				// Poll forwards verbatim into QueueStore.Claim (Spec 016 §2.0) — this
 				// row and the one above exercise the same underlying safety property
 				// through msgin's two different public entry points to it.
-				ds, err := qc.Poll(t.Context(), 1<<62)
-				require.NoError(t, err, "accepts 1<<62 — delegates into QueueStore.Claim's safety")
+				ds, err := qc.Poll(t.Context(), math.MaxInt)
+				require.NoError(t, err, "accepts math.MaxInt — delegates into QueueStore.Claim's safety")
 				require.Len(t, ds, 1, "product usable: the one enqueued message must still be delivered")
 				assert.Equal(t, "payload", ds[0].Msg.Payload())
 			},
@@ -693,12 +1064,20 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 	require.Equal(t, want, astKeys,
 		"every key in sizingConformanceKeys must have exactly one conformance row — half 2 must be executable "+
 			"for every key half 1 discovers, never a declaration string (Spec 016 §6 AC-5)")
-	require.Len(t, tests, 19,
-		"17 AST rows + 2 manual rows (memory.QueueStore.Claim, channel.QueueChannel.Poll — Spec 016 §2.0)")
+	// The literal 21 stays literal — ADR 0033 D-AL ratifies FOUR executable
+	// assertions a new sizing option must edit, and this is one of them; making
+	// it len(sizingConformanceKeys)+2 would silently drop it to three. Only the
+	// MESSAGE is derived, because a message never fails and so can rot unseen.
+	require.Len(t, tests, 22,
+		"%d AST rows + 2 manual rows (memory.QueueStore.Claim, channel.QueueChannel.Poll — Spec 016 §2.0)",
+		len(sizingConformanceKeys))
 
 	// The ARM PARTITION is normative, so assert it rather than merely naming it
 	// in a subtest prefix. Spec 016 §2.1's arm table and §6 AC-5 both fix the
-	// split at 9/1/3/6; without this, a contributor could move a row between
+	// split — the one the byArm literal below states, moved most recently when
+	// Spec 017 added memory.WithMaxGroupMembers AND sql.WithMaxGroupMembers and
+	// Spec 018 moved the three msghttp byte caps out of
+	// "deferred"; without this, a contributor could move a row between
 	// arms — precisely the reclassification that round-4 BLOCKER-1
 	// (WithReplayBuffer, safe -> class member) and round-5 BLOCKER-1
 	// (WithMaxResponseBytes, safe -> deferred) each were — and the suite would
@@ -706,7 +1085,7 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 	// the subtest name. A verdict nothing asserts is a comment.
 	//
 	// Asserted as a key->arm MAPPING, not a per-arm COUNT (Task 8 review M-1):
-	// a count map (map[string]int{"fixed": 9, ...}) is blind to a PAIRWISE
+	// a count map (map[string]int{"fixed": N, ...}) is blind to a PAIRWISE
 	// swap — relabel two keys' arms in opposite directions and every count
 	// stays put, so the gate would stay green through exactly the
 	// reclassification this comment describes. Binding each key to its own
@@ -718,13 +1097,16 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 		"memory.WithBuffer":                  "fixed",
 		"memory.WithCapacity":                "fixed",
 		"memory.WithMaxGroups":               "fixed",
+		"memory.WithMaxGroupMembers":         "fixed",
+		"sql.WithMaxGroupMembers":            "fixed",
 		"msghttp.WithMaxConnections":         "fixed",
 		"routing.WithCompletionSize":         "fixed",
 		"msghttp.WithReplayBuffer":           "fixed",
 		"msghttp.WithSuccessStatus":          "rejects",
-		"msghttp.WithMaxBodyBytes":           "deferred",
-		"msghttp.WithMaxEventBytes":          "deferred",
-		"msghttp.WithMaxResponseBytes":       "deferred",
+		"sql.ValidateMaxMembers":             "rejects",
+		"msghttp.WithMaxBodyBytes":           "fixed",
+		"msghttp.WithMaxEventBytes":          "fixed",
+		"msghttp.WithMaxResponseBytes":       "fixed",
 		"endpoint.WithPollMaxBatch":          "safe",
 		"resilience.WithBreakerThreshold":    "safe",
 		"endpoint.WithMaxPayloadBytes":       "safe",
@@ -739,13 +1121,17 @@ func TestSizingOptionClass_Conformance(t *testing.T) {
 		byArm[tc.arm]++
 	}
 	require.Equal(t, wantArms, gotArms,
-		"Spec 016 §2.1's arm table and §6 AC-5 fix EVERY key's arm, not just the per-arm counts: 9 class "+
-			"members fixed here, 1 that rejects without being a class member (msghttp.WithSuccessStatus), "+
-			"3 with a deferred ceiling (§3.8), 6 safe (4 AST + 2 manual). Moving a row between arms is a "+
+		"Spec 016 §2.1's arm table and §6 AC-5 fix EVERY key's arm, not just the per-arm counts: 14 class "+
+			"members fixed here (9 by Spec 016/Plan 029, 2 by Spec 017/Plan 031, 3 by Spec 018/Plan 032), "+
+			"2 that reject without "+
+			"being class members (msghttp.WithSuccessStatus, sql.ValidateMaxMembers), 0 deferred (the arm "+
+			"is a tombstone since "+
+			"Spec 018), 6 safe (4 AST + 2 manual). Moving a row between arms is a "+
 			"SPEC change — update §2.1 and §6 AC-5, do not just edit this map")
-	require.Equal(t, map[string]int{"fixed": 9, "rejects": 1, "deferred": 3, "safe": 6}, byArm,
+	require.Equal(t, map[string]int{"fixed": 14, "rejects": 2, "safe": 6}, byArm,
 		"the per-arm counts follow from wantArms above; a mismatch here means wantArms itself drifted "+
-			"from Spec 016 §2.1's 9/1/3/6 split")
+			"from Spec 016 §2.1's split, now 14/2/0/6. NOTE: byArm is built by COUNTING, so the empty "+
+			"\"deferred\" arm has NO KEY here — do not add \"deferred\": 0, it would fail")
 
 	for _, tc := range tests {
 		t.Run(tc.arm+"/"+tc.key, func(t *testing.T) {

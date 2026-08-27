@@ -2,6 +2,7 @@ package endpoint_test
 
 import (
 	"context"
+	"math"
 	"runtime"
 	"testing"
 
@@ -15,8 +16,9 @@ import (
 // TestZeroSizeElementChannel_AnyCapacitySucceeds pins the language-level
 // property that two "safe" sizing sites silently rest on: a channel whose
 // element type is the zero-size `struct{}` never trips runtime.makechan's
-// size-out-of-range panic, at ANY capacity — including 1<<62, far above every
-// ceiling either site is ever configured with (Spec 016 §1.1). credit.go:21
+// size-out-of-range panic, at ANY capacity — including math.MaxInt, the
+// largest capacity the language admits and far above every ceiling either
+// site is ever configured with (Spec 016 §1.1). credit.go:21
 // (endpoint's creditGate) and queuestore.go's `sem` field (adapter/memory,
 // the QueueStore's occupancy semaphore) both rely on exactly this fact to
 // justify shipping with NO upper bound of their own (Spec 016 §2.1, §4).
@@ -26,10 +28,32 @@ import (
 // memory, so it cannot be made unexecutable by a future change to either
 // (Spec 016 §6 AC-4 — revision 1's version of this test depended on a
 // consumer whose credit gate WAS the ceiling-capped maxInFlight, and could
-// never reach 1<<62 after Task 1 landed).
+// never reach math.MaxInt after Task 1 landed).
+//
+// # Why math.MaxInt and not a fixed literal (Plan 030 Task 2)
+//
+// This case previously used the literal 1<<62 (and its decimal expansion
+// 4611686018427387904), which does not fit an int on GOARCH=386 and made the
+// whole endpoint test binary fail to COMPILE there. math.MaxInt is the
+// architecture-widest capacity by definition, so it keeps the demonstration
+// maximal on 64-bit while remaining a legal int on 32-bit — the one
+// replacement that is both portable and does not weaken the claim.
+//
+// A smaller fixed literal (e.g. 1<<30) would be WRONG here: with a non-empty
+// element type 1<<30 may still succeed, so the make would stop discriminating
+// zero-size from non-zero-size elements and the test would pass for reasons
+// unrelated to the property it exists to pin. With math.MaxInt the mutant is
+// decisive — see below.
+//
+// MUTATION-PROVEN (Plan 030 Task 2): changing `chan struct{}` to `chan byte`
+// makes runtime.makechan compute mem = 1 × math.MaxInt > maxAlloc and panic
+// with "makechan: size out of range", failing this test. The panic is
+// recoverable and immediate — no allocation is attempted — so the mutant is
+// cheap to reproduce, unlike adapter/memory/sizing_bounds_test.go's (see that
+// file's header).
 func TestZeroSizeElementChannel_AnyCapacitySucceeds(t *testing.T) {
-	ch := make(chan struct{}, 1<<62)
-	assert.Equal(t, 4611686018427387904, cap(ch))
+	ch := make(chan struct{}, math.MaxInt)
+	assert.Equal(t, math.MaxInt, cap(ch))
 }
 
 // TestConsumer_MaxInFlightCeiling_AllocationDelta is Spec 016 §6 AC-4's

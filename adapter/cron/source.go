@@ -166,7 +166,8 @@ func WithLocker(l Locker) Option {
 // a Source emitting factory(fireTime) on each fire. A nil ELEMENT of opts is a
 // bare [msgin.ErrNilFunc] naming the element's 0-based index ("cron.NewSource:
 // nil option at index 1"), not a panic — checked as opts is applied (the loop
-// is the first statement), so it runs BEFORE every check below (an
+// is the first statement that can fail, preceded only by the config-defaults
+// initializer, which cannot fail), so it runs BEFORE every check below (an
 // unparseable spec, a nil factory, an unsatisfiable schedule, a conflicting
 // coordinator, …) and beats all of them. An unparseable spec, OR a
 // syntactically valid spec with no future occurrence (e.g. "0 0 30 2 *"), is

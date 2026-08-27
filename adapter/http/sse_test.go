@@ -1007,8 +1007,8 @@ func (r *failingSSEReader) Read(p []byte) (int, error) {
 
 // TestNewSSEParser_maxEventBytesValidation covers WithMaxEventBytes'
 // construction-time validation: the set-flag pattern distinguishes an
-// explicit non-positive value (rejected) from unset (default) or an
-// explicit valid boundary value (accepted).
+// explicit value outside [1, byteCapCeiling] (rejected) from unset (default)
+// or an explicit valid boundary value (accepted).
 func TestNewSSEParser_maxEventBytesValidation(t *testing.T) {
 	t.Parallel()
 

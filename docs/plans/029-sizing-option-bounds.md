@@ -1,5 +1,14 @@
 # Plan 029 — Sizing options must not panic or fatally exhaust memory
 
+> 🔴 **SUPERSEDED IN ONE RESPECT — 2026-08-22, by [Plan 032](032-byte-cap-ceilings.md)
+> ([Spec 018](../specs/018-byte-cap-ceilings.md) / [ADR 0034](../adrs/0034-byte-cap-ceilings.md)).** Every
+> statement below about the **`deferred` arm** — the census `9 fixed + 3 deferred + 4 safe`, the three
+> *"class member, remedy deferred"* gate rows, and the *"accepts, deferred"* verdict row — records this plan's
+> delivered state and is **no longer the tree's state**. Plan 032 bounded `msghttp.WithMaxBodyBytes`,
+> `WithMaxEventBytes` and `WithMaxResponseBytes` at `byteCapCeiling = math.MaxInt32`, moved all three rows into
+> the `fixed` arm (partition now **12 / 1 / 0 / 6**), and delivered [Spec 016 §3.8](../specs/016-sizing-option-bounds.md)
+> item 2's **hazard-disclosure godoc**, which this plan never scheduled. Nothing else here changes.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: `superpowers:subagent-driven-development` (the project default) or
 > `superpowers:executing-plans`. Steps use checkbox (`- [ ]`) syntax.
 >

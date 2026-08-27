@@ -3,6 +3,12 @@
 - **Status:** **ACCEPTED (2026-08-22)** — revision 6 was written before any code, per CLAUDE.md's design-time
   gate, and every decision below is now **implemented and gate-cleared** on `fix/sizing-option-bounds`
   (Plan 029 Tasks 1–8: nine knobs bounded, class gate shipped, exported-surface delta zero, 8×8 CI matrix green).
+  🔴 **D-AB's DEFERRAL IS DISCHARGED by [ADR 0034](0034-byte-cap-ceilings.md) / [Spec 018](../specs/018-byte-cap-ceilings.md)
+  / [Plan 032](../plans/032-byte-cap-ceilings.md).** The three byte caps D-AB classified as class members with a
+  **deferred** remedy are now bounded at `byteCapCeiling = math.MaxInt32`, and the class gate's census is
+  **12 fixed + 1 rejects + 0 deferred + 4 safe (+2 manual) = 19 rows**. Census lines below that read
+  *"9 fixed + 3 deferred"* record the state at revision 6 and are **superseded, not wrong for their date**;
+  D-AB's own deferral paragraph carries the discharge note.
   **D-X carries an as-delivered addendum** (see D-X): the render is unchanged, but it is produced by a
   per-package `checkRange` helper rather than nine inline `fmt.Errorf` calls.
   - Decisions **D-W** through **D-AB** were settled with the user. **D-AB has now been amended twice**: safety
@@ -31,7 +37,8 @@
 ## Context
 
 Every `WithX(n int)` in the workspace that reaches an allocation *or bounds a growing structure* validates only its
-lower bound. **NINE are defective and fixed here; two more are class members whose remedy is deferred (D-AB).**
+lower bound. **NINE are defective and fixed here; three more are class members whose remedy is deferred (D-AB)
+— and that deferral is now discharged by [ADR 0034](0034-byte-cap-ceilings.md).**
 Of the nine, **four panic**, and five leave a bounded structure unbounded. All were
 reproduced on this tree (Go 1.25.13, darwin/arm64) and independently re-reproduced across three audit rounds — see
 [Spec 016 §1](../specs/016-sizing-option-bounds.md). **Three of the four panics fire *after* construction:**
@@ -239,9 +246,18 @@ Instead, two halves:
 2. **Conformance (behavioral).** **Every key is executable** — 17 AST-discovered rows plus **2 manual rows**
    (below), in **three arms matching Spec §2.1's three verdicts**: a **class member fixed here** asserts the fault
    is **reported through the surface Spec §3 names for it — the constructor's return, or the first use of the
-   object it produced**; a **class member with a deferred remedy** asserts it *accepts* `1<<62` and carries an
-   annotation naming it a class member, so the row never reads as a safety certificate; a **safe** knob asserts it
+   object it produced**; ~~a **class member with a deferred remedy** asserts it *accepts* `1<<62` and carries an
+   annotation naming it a class member, so the row never reads as a safety certificate~~; a **safe** knob asserts it
    *accepts* `1<<62` and its product is usable.
+
+   > 🔴 **The middle arm has NO MEMBERS since [ADR 0034](0034-byte-cap-ceilings.md) / [Spec 018](../specs/018-byte-cap-ceilings.md)
+   > / [Plan 032](../plans/032-byte-cap-ceilings.md).** Its three rows — the `msghttp` byte caps — took exactly
+   > the repair this decision anticipated: bounded at `byteCapCeiling`, moved into the **fixed** arm, assertion
+   > rewritten to `require.ErrorIs` on the knob's own sentinel plus the §3.1 render at `1<<62` plus
+   > `assert.False(msgin.IsPermanent(err))`. The arm **keeps its name as a tombstone** (ADR 0034 **D-AS**) so a
+   > future knob with a genuinely deferred remedy has somewhere to sit; the gate's `byArm` map is built by
+   > COUNTING, so an empty arm has **no key** there. Live partition: **12 fixed / 1 rejects / 0 deferred /
+   > 6 safe = 19 rows**.
 
    > **Phrased over the SURFACE, not "rejects `1<<62`"** (round-3 **m3-5**). That older wording **cannot be
    > written for `memory.WithBuffer`**, which returns no error — the fault surfaces at `Send`/`Stream`.
@@ -307,6 +323,20 @@ conformance row — the 17th. *(b)* Half 2 was behavioral for 4 keys of 16 and a
 
 ### D-AB — class membership is decided by a stated CRITERION, and the byte-ceiling remedy is deferred
 
+> 🔴 **THE DEFERRAL IS DISCHARGED — [ADR 0034](0034-byte-cap-ceilings.md) /
+> [Spec 018](../specs/018-byte-cap-ceilings.md) / [Plan 032](../plans/032-byte-cap-ceilings.md).** D-AB's
+> **criterion is unchanged and was not amended**: all three byte caps satisfy *"`n` is the sole bound on an
+> accumulation"* exactly as recorded below, so no row is reclassified and no fourth safety cause is added.
+> What changed is the **remedy**, not the membership: ADR 0034 **D-AM** keeps them in this class and gives them a
+> ceiling — `byteCapCeiling = math.MaxInt32`, justified by **representability** (the largest cap exactly
+> expressible as a `[]byte` length on every `GOARCH`) rather than by a guess about the caller's payload, which
+> is what the Sensible-defaults objection restated below is actually about. **ADR 0034 D-AN(b) also rejected the
+> "explicit opt-in unbounded state" this decision anticipated** — `-1` and `0` are already spoken for by the
+> typed rejection, so an off-state would cost new exported surface whose only purpose is to re-enable the
+> hazard. The class gate's arm partition is now **12 fixed / 1 rejects / 0 deferred / 6 safe**; the `deferred`
+> arm is retained as a tombstone (ADR 0034 **D-AS**). Read the paragraphs below as the record of why the
+> deferral was correct in revision 6, not as a live to-do.
+
 **New in revision 4** (round-3 **BLOCKER-1**), and it exists because the same defect returned three times: rounds
 1 and 3 both found a partition asserted "with no residual" that was not complete. The root cause was never the
 census effort — it was that §2.1's **verdict strings were not discriminators**. The *same* string was true for one
@@ -353,6 +383,10 @@ all ten; or narrow the contract and defer all three):
   `msghttp.WithMaxResponseBytes` get a corrected verdict, a godoc hazard disclosure, and a DEFERRED ceiling**
   (Spec 016 §3.8). None is certified safe — that false verdict is precisely what both BLOCKER-1s were about, and
   it would have made AC-5 ship a gate asserting an unbounded remote-driven read is conformant.
+  🔴 **The ceiling landed at [ADR 0034](0034-byte-cap-ceilings.md) (`byteCapCeiling = math.MaxInt32`), and
+  the godoc hazard disclosure landed WITH it — Plan 029 never scheduled the disclosure** (`grep -c 'hazard
+  disclosure' docs/plans/029-sizing-option-bounds.md` → `0`), so of the three things promised in this bullet,
+  only the corrected verdict shipped in Plan 029.
 
 **Why the byte knobs are genuinely different, not just deprioritised.** CLAUDE.md's Sensible-defaults gate names
 this case verbatim: *"If **no** value can be safe for an unknown caller (e.g. **a byte cap that depends on the
@@ -361,6 +395,15 @@ rather than guessing a default."* A ceiling in messages is a statement about wha
 **bytes** is a statement about the caller's payload, which the library cannot know — 1 GiB is absurd for a JSON
 API and too small for a file upload. The right remedy is a different shape (an explicit opt-in unbounded state),
 and choosing it needs its own brainstorm.
+
+> 🔴 **That brainstorm happened, and it landed on a THIRD shape neither alternative anticipated
+> ([Spec 018 §3.2](../specs/018-byte-cap-ceilings.md), [ADR 0034 D-AN/D-AO](0034-byte-cap-ceilings.md)).** The
+> paragraph above is right that a **policy** ceiling in bytes (1 GiB, 4 GiB) is a payload guess wearing a
+> ceiling's clothes. It is wrong that this exhausts the options: `math.MaxInt32` is justified by a property of
+> the **language** — it is the largest cap for which `int(n)` is lossless on every `GOARCH` this module builds
+> for — and mentions the caller's payload nowhere. The opt-in unbounded state was then rejected on its own
+> terms (D-AN(b)): a caller who genuinely needs a >2 GiB single in-memory payload is not served by this API
+> shape at all, and the sentinel values that would carry "off" are already taken by the typed rejection.
 
 **What the follow-up actually inherits — revision 4 recorded this WRONG** (round-4 **M4-2**). It claimed
 `maxBody()` back-fills the default for `n <= 0`, so *"`WithMaxBodyBytes(-1)` today means use 1 MiB"* and *"there

@@ -18,8 +18,9 @@ import (
 // msghttp is the plan's most delegator-heavy package: ONE Option type
 // (options.go:407) feeds one folded guard (NewConfig, which actually applies the
 // options) and FIVE delegators (NewExchange, NewOutbound, NewSSEServer,
-// NewSSEClient, NewSSEParser), each of which calls NewConfig(opts...) as its
-// first statement. So one option type must yield SIX DISTINCT position strings.
+// NewSSEClient, NewSSEParser), each of which runs its own nil pre-check first,
+// then forwards to msghttp.NewConfig. So one option type must yield SIX DISTINCT
+// position strings.
 //
 // Every case therefore asserts the FULL position string, and each delegator case
 // additionally asserts the message does NOT name msghttp.NewConfig. An
@@ -44,8 +45,8 @@ func TestNilOptionElement(t *testing.T) {
 		// ---------------------------------------------------------------
 		// msghttp.NewConfig — the FOLDED guard (the constructor that
 		// actually applies the options). Spec 015 §3.5 classifies it
-		// LOOP-FIRST: `cfg := &Config{}` then the apply loop is its first
-		// statement, so every value check below the loop
+		// LOOP-FIRST: `cfg := &Config{}` then the apply loop, which is its
+		// first statement that can fail, so every value check below the loop
 		// (ErrInvalidMaxBodyBytes, ErrInvalidStatusCode, …) is unreachable
 		// once a nil element is found.
 		// ---------------------------------------------------------------
@@ -97,8 +98,9 @@ func TestNilOptionElement(t *testing.T) {
 		},
 
 		// ---------------------------------------------------------------
-		// msghttp.NewExchange — DELEGATOR (exchange.go: NewConfig(opts...)
-		// is its first statement, validateURL second).
+		// msghttp.NewExchange — DELEGATOR (exchange.go: the standalone nil
+		// pre-check is its first statement, then NewConfig(opts...), then
+		// validateURL).
 		// ---------------------------------------------------------------
 		{
 			name: "NewExchange: nil element alone names the delegator",

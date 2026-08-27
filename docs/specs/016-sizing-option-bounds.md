@@ -2,9 +2,48 @@
 
 - **Status:** **DELIVERED (2026-08-22)** — revision 6 was written before any code, per CLAUDE.md's design-time
   gate; realized by [`plans/029-sizing-option-bounds.md`](../plans/029-sizing-option-bounds.md) Tasks 1–8 on
-  `fix/sizing-option-bounds`, whole-branch gate green. Two corrections landed at the delivery gate: §2.1's
+  `fix/sizing-option-bounds`, whole-branch gate green.
+  🔴 **FINISHED BY [Spec 018](018-byte-cap-ceilings.md) / [ADR 0034](../adrs/0034-byte-cap-ceilings.md) /
+  [Plan 032](../plans/032-byte-cap-ceilings.md):** §3.8's **deferred** byte-ceiling class —
+  `msghttp.WithMaxBodyBytes`, `WithMaxEventBytes`, `WithMaxResponseBytes` — is **CLOSED**. All three are bounded
+  at `byteCapCeiling = math.MaxInt32` and their class-gate rows moved from the `deferred` arm to `fixed`, so the
+  arm partition **became, at that point,** **12 fixed / 1 rejects / 0 deferred / 6 safe** (§2.1, §6 AC-5, both
+  amended in place). **That split has since moved again — see the next bullet; re-derive before citing it.**
+  §3.8 item 2's undelivered **hazard-disclosure godoc** shipped in the same increment. Two corrections landed at the delivery gate: §2.1's
   `WithSuccessStatus` row (classification arms ≠ AC-5 behavioral arms — see §2.1) and §3.1/§3.3's as-delivered
   `checkRange` notes. Revision-6 text below is otherwise unchanged.
+  🔴 **EXTENDED BY [Spec 017](017-group-member-bounds.md) / [ADR 0033 D-AL](../adrs/0033-group-member-bounds.md) /
+  [Plan 031](../plans/031-group-member-bounds.md):** that increment adds **two new sizing options** —
+  `memory.WithMaxGroupMembers` and `sql.WithMaxGroupMembers` — which are **class members by §2.1's criterion**
+  (each is the sole bound on ONE correlation group's member list) and which **ship bounded from birth**, closing
+  §1.4's *"nothing else bounds group members"* gap **at the store**. They are **not** defects this spec left open:
+  they are new surface, so the **census totals move** (16 → **18** options, 17 → **19** conformance keys) and the
+  **arm partition becomes 14 fixed / 1 rejects / 0 deferred / 6 safe = 21 rows** (§2.1, §6 AC-5, both amended in
+  place by Plan 031 Task 9b). **Every figure in this bullet was re-derived from
+  `sizing_option_class_gate_test.go` at `acdeea5`, not transcribed** — see §2.1's Plan-031 note for the commands.
+  **🔴 THAT SPLIT HAS SINCE MOVED AGAIN — see the next bullet. This one is a historical marker, not the current
+  state.**
+  🔴 **EXTENDED A SECOND TIME BY [ADR 0033 D-AV](../adrs/0033-group-member-bounds.md) /
+  [Plan 031](../plans/031-group-member-bounds.md) Task 11:** the whole-branch delivery gate's finding **R-15**
+  forced a validator — `sql.ValidateMaxMembers` — onto `GroupDialect.AddMember`'s `maxMembers`. It is an
+  **exported, `Recv == nil` function with an `int` parameter in a root-module package**, so §6 AC-5 half 1's AST
+  walk discovers it and it **must** carry a row. It is **not** a class member (under
+  [ADR 0032](../adrs/0032-sizing-option-bounds.md) **D-AB**'s criterion `maxMembers` *is* the bound, not a
+  quantity bounded by something else — the same reasoning §2.1 already applies to `AddMember` itself), so it joins
+  `WithSuccessStatus` in the **`rejects`** arm. The census becomes **20 conformance keys**, and the arm partition
+  **14 fixed / 2 rejects / 0 deferred / 6 safe = 22 rows = 20 AST keys + 2 manual rows** (§2.1, §6 AC-5, both
+  amended in place). **It is the FIRST row added to the `rejects` arm since that arm was created**, and the first
+  amendment to this spec driven by a *review finding* rather than by a planned increment.
+  - **🔴 Re-derived from the gate, not transcribed** (the commands §2.1's Plan-031 note gives):
+    `wantArms` → `14 fixed / 2 rejects / 6 safe`, 22 entries; `sizingConformanceKeys` → **20**;
+    `byArm` literal → `{"fixed": 14, "rejects": 2, "safe": 6}`; `require.Len(t, tests, 22)`. **`byArm` still has
+    NO `deferred` key** — the arm is empty and it is built by counting, so writing `"deferred": 0` fails the
+    assertion.
+  - **This is the SECOND time a Plan 031 task has had to amend this delivered spec**, and the second time the
+    amendment was nearly missed: Task 9b existed only because audit **R4-1** caught the first one, and this one
+    was caught by the coordinator at commit time, **not** by the implementer, who checked Spec 017 / ADR 0033 /
+    Plan 031 and stopped there. **The gate's arm rows have a FOURTH artifact — this file — and it is not in the
+    obvious bundle.** Recorded here so the next row-adder looks for it.
   - **Revision 6** folds round-5 findings ([`029-audit-round-5.md`](../plans/029-audit-round-5.md)): 2 BLOCKERs,
     5 MAJORs, 8 MINORs. Round 5's verdict on the *previous* fold-in was the cleanest of five —
     **11 LANDED · 5 LANDED-BUT-FLAWED · 0 NOT LANDED · 0 REGRESSED**, and the first round in which the ADR
@@ -34,6 +73,22 @@
     hand-maintained census with a criterion**. §1's reproductions and §1.1's two-regime table have been
     re-attacked in **all five rounds** and **held verbatim**. **Verification pass pending.**
 - **Realized by:** [Plan 029](../plans/029-sizing-option-bounds.md).
+- **Amended by** (later increments that changed this spec's own tables, newest first — a delivered spec is amended
+  in place, never forked, so this list is the only record that its numbers have moved):
+  - [Plan 031](../plans/031-group-member-bounds.md) Task 11 — added `sql.ValidateMaxMembers` to §2.1's AC-5 arm
+    table and to §6 AC-5's **`rejects`** arm, the first row that arm has gained since it was created, and the
+    first key that is a **function rather than an option**. Governed by
+    [ADR 0033 **D-AV**](../adrs/0033-group-member-bounds.md); prompted by the whole-branch review finding
+    **R-15**, not by a planned increment. The resulting figures are in the header bullet above and in §2.1 — both
+    re-derived from the gate, never incremented.
+  - [Plan 031](../plans/031-group-member-bounds.md) Task 9b — added `memory.WithMaxGroupMembers` and
+    `sql.WithMaxGroupMembers` as class members to §2.1 and to §6 AC-5's `fixed` arm, moving the census to
+    **18 options / 19 conformance keys** and the arm partition to **14/1/0/6 = 21 rows**. Governed by
+    [Spec 017](017-group-member-bounds.md) and [ADR 0033 **D-AL**](../adrs/0033-group-member-bounds.md), which
+    ratifies that a new sizing option amends **this** spec rather than diverging from it silently.
+  - [Plan 032](../plans/032-byte-cap-ceilings.md) — moved the three `msghttp` byte caps from the `deferred` arm
+    to `fixed` and tombstoned `deferred` empty. Governed by [Spec 018](018-byte-cap-ceilings.md) and
+    [ADR 0034](../adrs/0034-byte-cap-ceilings.md).
 - **Decided by:** [ADR 0032](../adrs/0032-sizing-option-bounds.md).
 - **Builds on:** [Spec 015](015-nil-option-elements.md) — this spec reuses its **R1/R2 reporting families** and its
   **latch** verbatim rather than inventing a second mechanism; and
@@ -258,26 +313,47 @@ changing.** Cause (c) had exactly one member; with that member reclassified, **c
 
 ## 2. The inventory (measured, not transcribed)
 
-**16 exported options take a numeric size; the conformance key set is 17.** The two numbers are different things
-and revision 2 conflated them, printing 16 in four places for a set that is 17 (round-2 **BLOCKER-1**). Keep them
-apart:
+**18 exported options take a numeric size; the conformance key set is larger — do not read one off the other.**
+The two numbers are different things and revision 2 conflated them, printing 16 in four places for a set that was
+then 17 (round-2 **BLOCKER-1**). Keep them apart:
 
-- **16** — exported `With…` options with an `int`/`int64` parameter. This is what the `grep` census below counts.
-- **17** — the **conformance key set** of §6 AC-5: those 16 **+ `NewTokenBucket`'s positional `burst`**.
+- **18** — exported `With…` options with an `int`/`int64` parameter. This is what the `grep` census below counts.
+- **the conformance key set** of §6 AC-5 — those 18, **+ `NewTokenBucket`'s positional `burst`**, **+ every other
+  exported `Recv == nil` function with an `int`/`int64` parameter that is not a `With…` option** (today:
+  `sql.ValidateMaxMembers`). It is therefore *not* "options + 1" and must not be derived by adding to the census.
+  🔴 **Re-derive it; do not cite a number from this file:**
+  `GOTOOLCHAIN=go1.25.13 go test -count=1 -run TestSizingOptionClass_Completeness -v .` prints it (half 1's
+  `EXPORTED FUNCTIONS` line), and so does
+  `awk '/^var sizingConformanceKeys = \[\]string\{/,/^\}$/' sizing_option_class_gate_test.go | grep -cE '^\s*"'`.
+
+> 🔴 **BOTH NUMBERS MOVED FROM 16/17 — [Plan 031](../plans/031-group-member-bounds.md) Task 9b, per
+> [ADR 0033 D-AL](../adrs/0033-group-member-bounds.md).** `memory.WithMaxGroupMembers` and
+> `sql.WithMaxGroupMembers` ([Spec 017](017-group-member-bounds.md)) are both `func WithX(n int)` in root-module
+> packages, so they land in the `grep` census **and** in the AST scan. Note that Plan 032 moved neither number —
+> it moved rows *between arms* without changing membership; **Plan 031 is the first increment since revision 6 to
+> change the totals themselves.**
+>
+> 🔴 **AND THE KEY SET MOVED AGAIN, WITHOUT THE OPTION CENSUS MOVING** —
+> [ADR 0033 **D-AV**](../adrs/0033-group-member-bounds.md) / [Plan 031](../plans/031-group-member-bounds.md)
+> Task 11 added `sql.ValidateMaxMembers`, which is a **function, not an option**: the `grep` census below is
+> unchanged at **18**, while half 1's function count went up by one. **That divergence is the whole reason the two
+> figures are listed separately above** — re-run the gate rather than adding one to the other.
 
 > **Regenerate before citing.** The `^func With` anchor is load-bearing. Both int widths must be matched —
 > `WithMaxBodyBytes` and two siblings take `int64`.
 
 ```bash
 git ls-files '*.go' | grep -v _test | xargs grep -hnE \
-  '^func With[A-Za-z]+(\[[^]]*\])?\([a-z]+ (int|int64)\)' | wc -l          # → 16 options
+  '^func With[A-Za-z]+(\[[^]]*\])?\([a-z]+ (int|int64)\)' | wc -l          # → 18 options (was 16 pre-Plan-031)
 ```
 
 **This command has a known blind spot, and the class gate closes it, not this command** (round-1 **M-5**): an
 exported **positional** sizing parameter is not a `With…` option and is invisible here. One exists —
 `resilience.NewTokenBucket(rps float64, burst int, …)` (`ratelimit.go:42`). `burst` is stored as `float64` and
 reaches no allocation *today*, which is precisely the fact a class gate must stop depending on. §6 AC-5 half 1
-therefore scans **any position**, and `burst` carries the 17th conformance row.
+therefore scans **any position**, and `burst` carries a conformance row of its own. *(This once named `burst`'s
+**ordinal** — "the 17th row". A hand-maintained ordinal goes stale on every key added anywhere in the set, and
+this one did; it is deliberately not restated.)*
 
 ### 2.0 Functions or methods? — the gate's boundary, stated
 
@@ -287,8 +363,18 @@ this tree, the two readings differ by 27 keys:
 
 | Reading | Keys | Consequence |
 |---|---|---|
-| **`Recv == nil` only — CHOSEN** | **17** | All 17 constructible from a root blackbox test. Maintainable. |
-| any `FuncDecl` | 44 | 27 method rows, **22 of them on unexported receivers** (`mysqlDialect.Claim`, `postgresGroupDialect.AddMember`, … — 21 in leaf modules, plus `responseTracker.WriteHeader` in root) that a root-module blackbox test **cannot construct** ⇒ half 2 unsatisfiable ⇒ a verbatim repeat of round-1 BLOCKER-1. |
+| **`Recv == nil` only — CHOSEN** | half 1's `EXPORTED FUNCTIONS` count | All of them constructible from a root blackbox test. Maintainable. |
+| any `FuncDecl` | that count **+ 27** | 27 method rows, **22 of them on unexported receivers** (`mysqlDialect.Claim`, `postgresGroupDialect.AddMember`, … — 21 in leaf modules, plus `responseTracker.WriteHeader` in root) that a root-module blackbox test **cannot construct** ⇒ half 2 unsatisfiable ⇒ a verbatim repeat of round-1 BLOCKER-1. |
+
+> 🔴 **THE FUNCTION COLUMN IS DELIBERATELY NOT A DIGIT HERE.** It has moved three times (**17 → 19**,
+> [Plan 031](../plans/031-group-member-bounds.md) Task 9b, adding the two `WithMaxGroupMembers` options
+> ([Spec 017](017-group-member-bounds.md), [ADR 0033 **D-AL**](../adrs/0033-group-member-bounds.md)); then again
+> at Task 11, adding `sql.ValidateMaxMembers` ([ADR 0033 **D-AV**](../adrs/0033-group-member-bounds.md))) and each
+> move left a stale copy behind in this file. **The method count did NOT move on any of them and is still
+> `27`**, which the gate asserts literally (`require.Equal(t, 27, methodCount, …)`) — **do not bump it.** **The
+> difference between the two readings is therefore still exactly 27**; that gap is the boundary's cost, and it is
+> unchanged. Both figures are printed by the gate itself, so re-derive with
+> `GOTOOLCHAIN=go1.25.13 go test -count=1 -run TestSizingOptionClass_Completeness -v .` rather than adding two.
 
 **The boundary is `Recv == nil`, and it is a stated limitation, not an oversight** — see ADR 0032 D-AA. The
 exclusion is not free: **four** of the 27 methods are genuine members of the class §3 names (*"reachability of an
@@ -381,40 +467,150 @@ per row and AC-4 pins the two that rest on a structural property.
 | `WithBuffer` | `memory` | `make(chan msgin.Message[any], n)` `memory.go:43` | **DEFECTIVE — fixed here** · panic, struct element |
 | `WithCapacity` | `memory` | `append` gated by the semaphore `queuestore.go:132` | **DEFECTIVE — fixed here** · sole bound on `s.ready` (§1.3) |
 | `WithMaxGroups` | `memory` | `len(s.groups) >= n` `groupstore.go:108` | **DEFECTIVE — fixed here** · sole bound on `s.groups` (§1.3) |
+| **`WithMaxGroupMembers`** | `memory` | `len(g.msgs) >= s.maxGroupMembers` in `GroupStore.Add` (`adapter/memory/groupstore.go`) | **CLASS MEMBER — bounded AT INTRODUCTION by [Spec 017](017-group-member-bounds.md)** ([Plan 031](../plans/031-group-member-bounds.md)) · sole bound on **ONE correlation group's members**, closing §1.4's gap **at the store**. **Never shipped unbounded** — see the note below |
+| **`WithMaxGroupMembers`** | `sql` | `dialect.AddMember(…, s.maxGroupMembers)`, enforced **inside the dialect transaction** (`adapter/database/sql/groupstore.go`) | **CLASS MEMBER — bounded AT INTRODUCTION by [Spec 017](017-group-member-bounds.md)** ([Plan 031](../plans/031-group-member-bounds.md)) · the **durable twin** of the row above — same criterion, same ceiling, same default |
 | `WithMaxConnections` | `msghttp` | `len(s.conns) >= n` `sse_server.go:182` | **DEFECTIVE — fixed here** · sole bound on `s.conns` (§1.3) |
 | **`WithCompletionSize`** | `routing` | `len(g.Messages()) >= n` `aggregator.go:134` | **DEFECTIVE — fixed here** · **sole bound on group MEMBERS** (§1.4) — *was certified "safe — comparison only" through revision 3* |
-| **`WithMaxBodyBytes`** | `msghttp` | `io.ReadAll(http.MaxBytesReader(…, cfg.maxBody()))` `encode.go:102` | **DEFECTIVE — ceiling DEFERRED** (§3.8) · sole bound on a **remote-driven** full read |
-| **`WithMaxEventBytes`** | `msghttp` | `p.dataBuf.WriteString(value)` then `> p.maxEventBytes` `sse.go:384-389` | **DEFECTIVE — ceiling DEFERRED** (§3.8) · sole bound on a **remote-driven** `bytes.Buffer` |
+| **`WithMaxBodyBytes`** | `msghttp` | `io.ReadAll(http.MaxBytesReader(…, cfg.maxBody()))` `encode.go:102` | **DEFECTIVE — ceiling DELIVERED by [Spec 018](018-byte-cap-ceilings.md)** (§3.8) · sole bound on a **remote-driven** full read |
+| **`WithMaxEventBytes`** | `msghttp` | `p.dataBuf.WriteString(value)` then `> p.maxEventBytes` `sse.go:384-389` | **DEFECTIVE — ceiling DELIVERED by [Spec 018](018-byte-cap-ceilings.md)** (§3.8) · sole bound on a **remote-driven** `bytes.Buffer` |
 | **`WithReplayBuffer`** | `msghttp` | `appendRing` `sse_server.go:466-476`, evicting **at `n`** | **DEFECTIVE — fixed here** · **sole bound on retained events** (§1.5) — *was certified safe in revisions 1–4, most recently as cause (c)* |
 | `WithPollMaxBatch` | `endpoint` | `held < c.pollMaxBatch` `poller.go:36` | safe **(a)** — loop bound ≤ free credits; **derivatively** safe, see note |
 | `WithBreakerThreshold` | `resilience` | `b.fails >= b.threshold` `breaker.go:164` | safe **(a)** — scalar counter, accumulates nothing |
-| **`WithMaxResponseBytes`** | `msghttp` | **`io.ReadAll(io.LimitReader(resp.Body, max))`** `exchange.go:130-131` | **DEFECTIVE — ceiling DEFERRED** (§3.8) · sole bound on a **remote-driven** read whose body is **RETAINED** as the reply payload — *`drainBounded` is only 5 of its 6 reads* |
+| **`WithMaxResponseBytes`** | `msghttp` | **`io.ReadAll(io.LimitReader(resp.Body, max))`** `exchange.go:130-131` | **DEFECTIVE — ceiling DELIVERED by [Spec 018](018-byte-cap-ceilings.md)** (§3.8) · sole bound on a **remote-driven** read whose body is **RETAINED** as the reply payload — *`drainBounded` is only 5 of its 6 reads* |
 | `WithMaxPayloadBytes` | `endpoint` | `len(b) > c.maxPayloadBytes` `consumer.go:1199` | safe **(b)** — `b` is already materialised |
 | `WithSuccessStatus` | `msghttp` | HTTP status code | safe **(a)** — **already range-checked**, `[100,599]`. **Its AC-5 row is the `rejects` arm, not the `safe` arm** — it is the one safe knob that does *not* accept `1<<62`; see the note below |
 | **+ `NewTokenBucket`'s `burst`** | `resilience` | `float64(burst)` `ratelimit.go:48-49` | safe **(a)** — **positional, not an option**; carries a conformance row (§2 note) |
 
-**9 fixed here + 3 deferred + 4 safe = 16 options; + 1 positional (`burst`) = 17 conformance keys.** The table has
-17 rows for that reason. §6 AC-5 keys on **17**. **Re-derive this line before citing it** — it has been wrong in
+**9 fixed here + 3 deferred + 4 safe = 16 options; + 1 positional (`burst`) = 17 conformance keys.** **Re-derive
+this line before citing it** — it has been wrong in
 **every** prior revision (7/9 → 8/2/6 → 9/2/5 → **9/3/4**), which is precisely why §2.1 now leads with a criterion instead of
 a list.
 
+**As of [Plan 031](../plans/031-group-member-bounds.md) that census line is HISTORY, not the current tree.** It
+records **this** spec's own scope — *"fixed **here**"* means fixed by Plan 029 — and is kept verbatim for that
+reason (the same treatment [Plan 032](../plans/032-byte-cap-ceilings.md) received; see the two notes below).
+**The current totals are: 18 options, and the table above has 19 rows (those 18 + the positional `burst`). §6
+AC-5's conformance key set is LARGER than either** — it also carries every exported `Recv == nil` function with an
+`int`/`int64` parameter that is not a `With…` option (today `sql.ValidateMaxMembers`, per
+[ADR 0033 **D-AV**](../adrs/0033-group-member-bounds.md)). 🔴 **Re-derive that key count from the gate (§2's
+commands); do not compute it as "options + 1" and do not cite a digit from this line.**
+
+> 🔴 **The `3 deferred` term is SPENT — [Spec 018](018-byte-cap-ceilings.md) / [ADR 0034](../adrs/0034-byte-cap-ceilings.md)
+> / [Plan 032](../plans/032-byte-cap-ceilings.md).** The census line above is kept **verbatim** because it
+> records this spec's own scope — *"fixed **here**"* means fixed by Plan 029 — and because the totals (16
+> options, 17 conformance keys) are unchanged. **Membership did not change either:** D-AB's criterion still
+> classes all three byte caps as class members, and no fourth safety cause was added. What changed is the
+> **remedy**: the three are now bounded at `byteCapCeiling = math.MaxInt32`, so read the line as
+> **9 fixed here + 3 fixed by Spec 018 + 4 safe**. The AC-5 behavioral partition that follows is amended in
+> place.
+
+> 🔴 **AND THE TOTALS THEMSELVES HAVE NOW MOVED — [Spec 017](017-group-member-bounds.md) /
+> [ADR 0033 D-AL](../adrs/0033-group-member-bounds.md) / [Plan 031](../plans/031-group-member-bounds.md)
+> Task 9b.** Plan 032 moved rows *between arms* and left the totals alone; **Plan 031 adds two options that did
+> not exist when this spec was delivered**, so this is the first amendment where the census arithmetic itself
+> changes: **16 → 18 options, 17 → 19 conformance keys**.
+>
+> **`memory.WithMaxGroupMembers` and `sql.WithMaxGroupMembers` are CLASS MEMBERS under D-AB's criterion**, and
+> the criterion is what admits them, not their name: for each, `n` is the **sole bound on an accumulation** —
+> the member list of ONE correlation group, which `GroupStore.Add` grows per message. That is §1.4's finding
+> (*"`WithCompletionSize` bounds group MEMBERS — and nothing else does"*) answered **at the store** instead of at
+> the release decision, which is [Spec 017](017-group-member-bounds.md)'s whole premise.
+>
+> **They are NOT defects this spec left open, and their verdict says so.** Every other class member here shipped
+> unbounded and was *repaired*; these two were **born with their bound** — `NewGroupStore` (both packages)
+> `checkRange`s them against `maxGroupMembersCeiling` (`1 << 20`, default `1 << 16`) in the very commit that
+> introduced them, because half 1 of the class gate is **exact set equality** and goes red the moment the option
+> exists on disk (D-AL). **No safety cause was added and none was emptied** — the (a)/(b)/(c)/(d) table is
+> untouched.
+>
+> **Generated, never incremented** — 🔴 **this block is THE canonical derivation of the arm partition for this
+> whole spec, and for [Spec 017](017-group-member-bounds.md), [Spec 018](018-byte-cap-ceilings.md),
+> [ADR 0033](../adrs/0033-group-member-bounds.md) and [Plan 031](../plans/031-group-member-bounds.md). Run it.
+> Do not transcribe its output into a comment here or anywhere else** — every prior copy of the numbers went
+> stale within one increment:
+>
+> ```bash
+> # the arm partition and the row total, straight out of wantArms
+> awk '/wantArms := map\[string\]string\{/,/^\t\}$/' sizing_option_class_gate_test.go \
+>   | grep -oE '"[^"]+": *"[a-z]+"' | sed -E 's/.*: *"([a-z]+)"/\1/' | sort | uniq -c
+>
+> # the AST key count, and the two literals the gate asserts
+> awk '/^var sizingConformanceKeys = \[\]string\{/,/^\}$/' sizing_option_class_gate_test.go | grep -cE '^\s*"'
+> grep -n 'require.Len(t, tests\|require.Equal(t, map\[string\]int' sizing_option_class_gate_test.go
+> ```
+>
+> 🔴 **`byArm` HAS NO KEY FOR AN EMPTY ARM.** It is built by **counting**, so the tombstoned `deferred` arm
+> contributes nothing to it: its literal carries **three** entries for a **four**-arm partition. **Adding
+> `"deferred": 0` FAILS the assertion.** Written here because the partition below spells the empty arm as a `0`
+> and an implementer reading that `0` will reach for a fourth map entry. *(The literal's own values are
+> deliberately not restated — the last command above prints them.)*
+
 > **CLASSIFICATION arms ≠ AC-5 BEHAVIORAL arms — they are two different partitions of the same rows, and
 > conflating them was a live self-contradiction in revisions 1–6.** The census above partitions by *why* a knob
-> is or is not a class member. §6 AC-5 partitions by *what a row asserts at `1<<62`*. The two agree on 16 of the
-> 17 keys and disagree on exactly one: **`WithSuccessStatus` is `safe (a)` by the criterion** — a pure comparison
-> over a scalar, nothing accumulates — **but it does not `accept 1<<62`**, which is what AC-5's `safe` arm
-> asserts. Its behavioral row therefore sits in a `rejects` arm of its own. **Derive AC-5's arms from this
-> line, not from the verdict column:**
+> is or is not a class member. §6 AC-5 partitions by *what a row asserts at `1<<62`*. **They agree on every key
+> but the two in the `rejects` arm** — both are non-members by the criterion yet reject rather than accept, so
+> neither `fixed` (not class members) nor `safe` (which asserts *accepts*) can hold them:
+>
+> - **`WithSuccessStatus` is `safe (a)` by the criterion** — a pure comparison over a scalar, nothing accumulates
+>   — **but it does not `accept 1<<62`**, because of its pre-existing `[100,599]` range check.
+> - **`sql.ValidateMaxMembers` is not a class member either** (`maxMembers` *is* the bound), **but it rejects**
+>   — [ADR 0033 **D-AV**](../adrs/0033-group-member-bounds.md).
+>
+> *(This once read "agree on 18 of the 19 keys and disagree on exactly one". Both halves of that sentence went
+> stale in a single increment. The count is not restated; the `rejects` arm's membership below is the statement.)*
+> **Derive AC-5's arms from this line, not from the verdict column:**
 >
 > | AC-5 arm | Rows | Which keys |
 > |---|---|---|
-> | `fixed` | **9** | the 9 class members this increment bounds |
-> | `rejects` | **1** | `WithSuccessStatus` — safe by the criterion, but pre-existing `[100,599]` makes it reject |
-> | `deferred` | **3** | `WithMaxBodyBytes`, `WithMaxEventBytes`, `WithMaxResponseBytes` |
+> | `fixed` | **14** | the 9 class members this increment bounds, **+ the 3 byte caps [Spec 018](018-byte-cap-ceilings.md) bounded**, **+ the 2 `WithMaxGroupMembers` options [Spec 017](017-group-member-bounds.md) introduced already-bounded** |
+> | `rejects` | **2** | `WithSuccessStatus` — safe by the criterion, but pre-existing `[100,599]` makes it reject — **+ `sql.ValidateMaxMembers`**, added by [ADR 0033 **D-AV**](../adrs/0033-group-member-bounds.md): discovered by half 1 (exported, `Recv == nil`, `int` param) but not a class member, since `maxMembers` **is** the bound. 🔴 **It is the one row in this file whose rejection is `msgin.Permanent`** — every other is an option validated at *construction*, which [ADR 0029](../adrs/0029-eip-lexical-alignment.md) **D-M** keeps bare; this one returns from `GroupDialect.AddMember`, a **per-message hot path**, where a bare error is B-1's zero-delay Nack loop under the shipped zero-value `RetryPolicy` |
+> | `deferred` | **0** | *(empty since Spec 018; the arm is retained as a tombstone — see [Spec 018](018-byte-cap-ceilings.md) / [ADR 0034](../adrs/0034-byte-cap-ceilings.md) **D-AS**. 🔴 **`byArm` has NO key for an empty arm** — do not add `"deferred": 0`)* |
 > | `safe` | **6** | `WithPollMaxBatch`, `WithBreakerThreshold`, `WithMaxPayloadBytes`, `burst`, + the **2 manual** rows |
 >
-> **9 + 1 + 3 + 6 = 19 rows = 17 AST keys + 2 manual rows.** Both totals are re-derivable from the census line
-> above; neither is incremented from a prior revision.
+> **14 + 2 + 0 + 6 = 22 rows = 20 AST keys + 2 manual rows.** Both totals are re-derivable from the census line
+> above; neither is incremented from a prior revision. *(This read `14 + 1 + 0 + 6 = 21 = 19 + 2` until
+> [ADR 0033 **D-AV**](../adrs/0033-group-member-bounds.md) added `sql.ValidateMaxMembers` to the `rejects` arm —
+> re-derived from `wantArms`, `sizingConformanceKeys` and `require.Len`, not incremented.)*
+>
+> 🔴 **THE TOTAL IS NOT THE PARTITION, AND THIS ROW PROVES IT** ([ADR 0033 **D-AL**](../adrs/0033-group-member-bounds.md),
+> audit R4-2). Before Plan 032 the split was `11 + 1 + 3 + 6`; immediately after Plan 031 Task 9b it read
+> `14 + 1 + 0 + 6`. **Both totalled 21** — the total survived the byte-cap move **by coincidence**, and Plan 031
+> carried the stale composition through four revisions precisely because the sum still checked out. **Reconcile by
+> NAME, never by count** (this project's `43 ≠ 43` rule). *(Both splits above are historical markers. The current
+> one is the arm table above, and it is re-derived, not incremented.)*
+>
+> 🔴 **AMENDED BY [Spec 018](018-byte-cap-ceilings.md) / [Plan 032](../plans/032-byte-cap-ceilings.md).** The
+> table above read `fixed 9 / deferred 3` while this spec's own §3.8 remedy was outstanding. Spec 018 bounded
+> `WithMaxBodyBytes`, `WithMaxEventBytes` and `WithMaxResponseBytes` at a representability ceiling
+> (`math.MaxInt32`), so all three moved from `deferred` into `fixed`. **This table was re-derived from
+> `sizing_option_class_gate_test.go`'s own `wantArms` / `byArm` values after the move, not transcribed from a
+> plan.** The `deferred` arm keeps its name and its documentation so a future knob with a genuinely deferred
+> remedy has somewhere to sit; note that `byArm` is built by COUNTING, so an empty arm has **no key** there.
+
+> 🔴 **AMENDED AGAIN BY [Spec 017](017-group-member-bounds.md) /
+> [ADR 0033 D-AL](../adrs/0033-group-member-bounds.md) /
+> [Plan 031](../plans/031-group-member-bounds.md) Task 9b.** `fixed` moved **12 → 14** and the row total **19 →
+> 21**, because two options were **added**, not moved: `memory.WithMaxGroupMembers` and `sql.WithMaxGroupMembers`.
+> **The AST key set moved with them (17 → 19); the 2 manual rows did not change.** This table was likewise
+> re-derived from `wantArms` / `byArm` after the change, not transcribed from Plan 031 — which matters here,
+> because the plan itself carried a stale `11 + 1 + 3 + 6` through four revisions.
+>
+> **D-AL is the standing instruction for the next increment:** a new sizing option costs **four** executable
+> assertion edits in `sizing_option_class_gate_test.go` — the conformance key, its row, `require.Len(t, tests, N)`,
+> and **both** `wantArms` (a key→arm mapping, `require`) and `byArm` (a count map, `require`) — **and** an
+> amendment to this section and to §6 AC-5. The gate's own failure message says so: *"Moving a row between arms is
+> a **SPEC change** — update §2.1 and §6 AC-5, do not just edit this map."* **Treat that message as an
+> instruction, not a description.**
+
+> ⚠️ **STALE `file:line` CITATIONS IN THE TABLE ABOVE — measured, unfixed, out of Plan 031 Task 9b's scope.**
+> Re-checked at `acdeea5`: **8 of the 16 pre-existing coordinates no longer name the cited expression** —
+> `consumer.go:384`, `consumer.go:457-459`, `memory.go:43`, `queuestore.go:132`, `groupstore.go:108`,
+> `aggregator.go:134`, `sse.go:384-389` and `consumer.go:1199` (e.g. `groupstore.go:108` is now a comment; the
+> `len(s.groups) >= n` it names sits at `:241`). The **expressions** are all still correct and still locate their
+> site by `grep`; only the line numbers rotted, exactly as this project's *"citations are stale when written"*
+> lesson predicts. **The two Plan 031 rows therefore cite `file` + expression and NO line number, deliberately.**
+> Repairing the other eight is a mechanical follow-up, tracked as a backlog item rather than folded into a
+> documentation task that must not touch unrelated rows.
 
 **Note how narrowly the safe rows escape.** `WithBreakerThreshold` shares row-shape with `WithCompletionSize` and
 is safe only because `b.fails` is a scalar; `WithMaxPayloadBytes` shares a verdict string with `WithMaxBodyBytes`
@@ -702,6 +898,19 @@ This is a behavioral change to shipped, non-crashing code — free at pre-v1 wit
 
 ### 3.8 The byte-ceiling class is DEFERRED, with a stated reason — not called "safe"
 
+> 🔴 **DELIVERED — the deferral this section opened is CLOSED by [Spec 018](018-byte-cap-ceilings.md) /
+> [ADR 0034](../adrs/0034-byte-cap-ceilings.md) / [Plan 032](../plans/032-byte-cap-ceilings.md).** All three
+> knobs now carry a finite upper bound, `byteCapCeiling = math.MaxInt32`, enforced by `NewConfig` through the
+> same `checkRange` render this spec's §3.1 fixes. **The remedy is not the "explicit opt-in unbounded state"
+> this section anticipated:** Spec 018 §3.4 rejected an off-state (`-1` and `0` are already spoken for by the
+> typed rejection, so one would cost new exported surface whose only purpose is to re-enable the hazard), and
+> answered the Sensible-defaults objection restated below with a ceiling justified by **representability** —
+> the largest cap exactly expressible as a `[]byte` length on every `GOARCH` — rather than by a guess about
+> the caller's payload. **The section below is retained as the record of why the deferral was correct at the
+> time; read it against Spec 018 §3.2, not as a live to-do.** Item 2 of *"What this increment DOES do for
+> them"* below was **never delivered by [Plan 029](../plans/029-sizing-option-bounds.md)** and is delivered by
+> Plan 032 instead.
+
 `msghttp.WithMaxBodyBytes`, `msghttp.WithMaxEventBytes` and — added in revision 6 — **`msghttp.WithMaxResponseBytes`**
 **are class members** by §2.1's criterion: each is the sole bound on an accumulation, and — worse than any knob in
 §1.3 — the accumulation is driven by a **remote peer**, not by the caller. Measured:
@@ -767,12 +976,18 @@ negative `n` is already taken by the rejection, so it would need a new sentinel 
 
 **What this increment DOES do for them**, at zero risk and zero exported-surface change:
 1. §2.1 records them as **class members with a deferred remedy**, with the true reason replacing the false
-   *"limit, never allocated"*.
+   *"limit, never allocated"*. *(Since [Spec 018](018-byte-cap-ceilings.md): **class members, bounded** — the
+   `deferred` arm is empty.)*
 2. Their **godoc gains the hazard disclosure**: the knob is the only bound on a remote-driven read, the default is
-   safe, and a large explicit value removes the protection.
-3. AC-5 half 2 puts them in an arm that asserts **acceptance without claiming safety** (§6 AC-5).
+   safe, and a large explicit value removes the protection. 🔴 **This one was PROMISED HERE AND NEVER SCHEDULED
+   — Plan 029 has no task for it** (`grep -c 'hazard disclosure' docs/plans/029-sizing-option-bounds.md` → `0`).
+   It is delivered by [Plan 032](../plans/032-byte-cap-ceilings.md) instead, in the superseding form: the
+   honest disclosure after the ceiling lands is *"bounded at the ceiling, and the ceiling is not a safety
+   guarantee"*, not *"unbounded"*.
+3. AC-5 half 2 puts them in an arm that asserts **acceptance without claiming safety** (§6 AC-5). *(Since
+   Spec 018: the `fixed` arm, asserting rejection at `1<<62`.)*
 
-Tracked as `docs/HANDOVER.md` §8 backlog item 6.
+Tracked as `docs/HANDOVER.md` §8 backlog item 6 — **CLOSED** by Spec 018 / ADR 0034 / Plan 032.
 
 ### 3.9 `WithCompletionSize` needs a config field before it can be validated
 
@@ -958,15 +1173,27 @@ plain and under `-race`, with a no-op noise floor of exactly `0` bytes.
    repo root, so it reaches all 8 modules without `go.work` — and collect every exported function
    (**`Recv == nil`; §2.0 states and justifies that boundary**) with an `int`/`int64` parameter **in any position**
    (§2's note: `NewTokenBucket`'s `burst` is why "any position", not "first"). Fail if that set differs from the
-   conformance table's key set in **either** direction. **The set is 17** (§2.1) — measured, not assumed:
+   conformance table's key set in **either** direction. **The set size is measured, not assumed, and is not
+   restated here** (§2.1) — the gate prints it, so run it rather than reading a digit:
 
    ```
-   $ go run ./scan <repo-root>          # go/ast, all 8 modules, non-test files
-   === EXPORTED FUNCTIONS (Recv==nil) with int/int64 param in ANY position: 17
+   $ GOTOOLCHAIN=go1.25.13 go test -count=1 -run TestSizingOptionClass_Completeness -v .
+   === EXPORTED FUNCTIONS (Recv==nil) with int/int64 param in ANY position: <printed>
    === EXPORTED METHODS with int/int64 param: 27          ← excluded by the Recv==nil boundary
    ```
 
-2. **Conformance (behavioral) — every key is executable, none is a declaration.** **17 AST-discovered rows + 2
+   > **The function count has moved twice since revision 6 and both moves left stale copies in this file.**
+   > **17 → 19**, [Plan 031](../plans/031-group-member-bounds.md) Task 9b ([Spec 017](017-group-member-bounds.md),
+   > [ADR 0033 **D-AL**](../adrs/0033-group-member-bounds.md)): `memory.WithMaxGroupMembers` and
+   > `sql.WithMaxGroupMembers`. Then **+1 again** at [Plan 031](../plans/031-group-member-bounds.md) Task 11
+   > ([ADR 0033 **D-AV**](../adrs/0033-group-member-bounds.md)): `sql.ValidateMaxMembers`, a **function that is
+   > not an option** — which is why half 1's count is no longer the option census plus one. **The method count did
+   > NOT move on either** — it is still `27`, asserted literally as `require.Equal(t, 27, methodCount, …)`; **do
+   > not bump it.** Half 1 is **exact set equality in both directions**, so the moment a qualifying function
+   > exists on disk this root-module test goes red — which is why each conformance key ships in the **same
+   > commit** as the option or function it describes (D-AL).
+
+2. **Conformance (behavioral) — every key is executable, none is a declaration.** **Every AST-discovered row + 2
    manual rows** for the class members the `Recv == nil` boundary excludes but that a root test *can* construct
    (`memory.QueueStore.Claim`, `channel.QueueChannel.Poll` — §2.0). **FOUR arms — behavioral, and NOT a
    relabelling of §2.1's three verdicts** (see §2.1's "classification arms ≠ AC-5 behavioral arms" note, which is
@@ -975,11 +1202,30 @@ plain and under `-race`, with a no-op noise floor of exactly `0` bytes.
    | Arm | Rows | Assertion |
    |---|---|---|
    | **class member, fixed here** (9) | the 7 + `WithCompletionSize` + `WithReplayBuffer` | **reports the fault through the surface §3 names for it** — the constructor's return, **or the first use of the object it produced** |
-   | **rejects, but not a class member** (1) | `WithSuccessStatus` | **rejects** `1<<62` through its **pre-existing** `[100,599]` check. It is `safe (a)` by §2.1's criterion and **nothing here fixes it** — the arm exists because it cannot honestly sit in either the `fixed` arm (it is not a class member) or the `safe` arm (which asserts *accepts*) |
-   | **class member, ceiling deferred** (3) | `WithMaxBodyBytes`, `WithMaxEventBytes`, `WithMaxResponseBytes` | **accepts** `1<<62`, and the row is annotated *"class member, remedy deferred — §3.8"* so it never reads as a safety certificate. **When §3.8's ceiling lands, MOVE the row to the `fixed` arm — do not weaken the production check to keep the gate green** |
+   | **rejects, but not a class member** (2) | `WithSuccessStatus`, **`sql.ValidateMaxMembers`** | **reject** an absurd value through a check of their own. `WithSuccessStatus` rejects `1<<62` via its **pre-existing** `[100,599]`; it is `safe (a)` by §2.1's criterion and **nothing here fixes it**. **`sql.ValidateMaxMembers`** is 🔴 **ADDED BY [ADR 0033 D-AV](../adrs/0033-group-member-bounds.md) / [Plan 031](../plans/031-group-member-bounds.md) Task 11** in response to whole-branch finding **R-15**; it rejects `1<<30` with `msgin.ErrInvalidCapacity`, **wrapped in `msgin.Permanent`** — the only such row here, because it is the only one reached from a per-message hot path rather than a constructor. The arm exists because neither can honestly sit in `fixed` (not class members) or `safe` (which asserts *accepts*) |
+   | ~~**class member, ceiling deferred** (3)~~ → **fixed** (0 deferred) | `WithMaxBodyBytes`, `WithMaxEventBytes`, `WithMaxResponseBytes` | 🔴 **SUPERSEDED BY [Spec 018](018-byte-cap-ceilings.md) / [Plan 032](../plans/032-byte-cap-ceilings.md).** Each row USED to assert it *accepts* `1<<62`, annotated *"class member, remedy deferred — §3.8"* so it never read as a safety certificate, under the standing instruction *"when §3.8's ceiling lands, MOVE the row to the `fixed` arm — do not weaken the production check to keep the gate green"*. **Spec 018 is that event and took exactly that repair:** each row now asserts `require.ErrorIs` on its own sentinel + the §3.1 render at `1<<62` + `assert.False(msgin.IsPermanent(err))`, in the `fixed` arm. The instruction is not spent — it governs every future row |
+   | **class member, bounded at introduction** (2) | `memory.WithMaxGroupMembers`, `sql.WithMaxGroupMembers` | 🔴 **ADDED BY [Spec 017](017-group-member-bounds.md) / [ADR 0033 D-AL](../adrs/0033-group-member-bounds.md) / [Plan 031](../plans/031-group-member-bounds.md).** These are **new options**, not rows moved from another arm — the first amendment to change the key set rather than re-partition it. Both sit in the **`fixed`** arm and assert the same thing its other 12 rows do: **the fault is reported through the surface §3 names for it** (here, `NewGroupStore`'s own return, via `checkRange` against `maxGroupMembersCeiling = 1 << 20`). They never shipped unbounded, so *"fixed"* names the **arm**, not a repair |
    | **safe** (3 + `burst` + the 2 manual rows = 6) | §2.1's safe rows **minus `WithSuccessStatus`** | **accepts** `1<<62` and its product is usable |
 
-   **9 + 1 + 3 + 6 = 19 rows.** Re-derive from §2.1's arm table; do not increment.
+   **By provenance: 9 + 2 + 3 + 2 + 6 = 22 rows.** As the gate's own four-arm partition that is
+   **14 `fixed` + 2 `rejects` + 0 `deferred` + 6 `safe` = 22 rows = 20 AST keys + 2 manual rows.**
+   Re-derive from §2.1's arm table; do not increment.
+
+   > 🔴 **Both new rows are `func(n int)`, so both assert the decimal `1073741824` (`1<<30`), NOT `1<<62`**
+   > ([ADR 0033 **D-AL**](../adrs/0033-group-member-bounds.md)). The literal is chosen in **two dimensions**: the
+   > **arm** fixes the required property (`safe` ⇒ must be *accepted* and maximally absurd ⇒ `math.MaxInt`;
+   > `fixed`/`rejects` ⇒ must be *out of range* and render an architecture-independent decimal), and **within a
+   > reject arm the PARAMETER TYPE chooses the literal** — `int`-typed ⇒ `1<<30` (fits an `int32`, so the file
+   > still compiles on `GOARCH=386`, while exceeding every int-typed ceiling in the codebase, the largest being
+   > `1<<20`); `int64`-typed ⇒ `1<<62`. **The three `msghttp` byte caps in this same `fixed` arm keep `1<<62`
+   > precisely because they are `int64`** — `1<<30` is *below* their `byteCapCeiling` (`math.MaxInt32`) and would
+   > be **accepted**, failing every `require.ErrorIs` on those rows. **Do not "finish the job" by converting them.**
+
+   > 🔴 **`byArm` HAS NO KEY FOR THE EMPTY `deferred` ARM.** Its literal carries **three** entries for a
+   > **four**-arm partition, because it is built by **counting** and nothing counts into a tombstone. **Adding
+   > `"deferred": 0` FAILS the assertion.** Stated in both §2.1 and here, because the `0` in the four-term
+   > partition above invites exactly that edit. *(The literal's values are not restated — §2.1's derivation block
+   > has the `grep` that prints them. This note carried a stale copy through two increments.)*
 
    > **The defective arm is phrased over the SURFACE, not over "rejects"** (round-3 **m3-5**). Revision 3 said
    > *"a defective knob asserts it **rejects** `1<<62` with a typed error"* — which **cannot be written for
@@ -993,7 +1239,11 @@ plain and under `-race`, with a no-op noise floor of exactly `0` bytes.
 > nil error, `WithSuccessStatus` rejects (`msghttp: status code must be in [100,599]`), and `WithCompletionSize` is
 > **accepted** — the error a bare call returns is a *fixture* gap, not a rejection, so its row belongs in the
 > **accepts** arm, not alongside `WithSuccessStatus`. That turns half 2 into a real element-type tripwire for
-> `queuestore.go:108` and `groupstore.go:94`, and gives AC-6 probe (b) 19 plantable rows.
+> `queuestore.go:108` and `groupstore.go:94`, and gives AC-6 probe (b) 19 plantable rows. *(The "16"/"17"/"19"
+> in this note are revision-1-era figures, kept verbatim as the record of what round-1 M-4 found. **Both have
+> moved since — the key set at [Plan 031](../plans/031-group-member-bounds.md) Tasks 9b and 11, and AC-6 probe
+> (b)'s plantable rows with the gate's row total. Re-derive both from §2.1's derivation block; they are
+> deliberately not restated here.**)*
 
 **Two of the 17 rows are not one-liners, and the plan must size them** (round-2 **M2-6**):
 
@@ -1006,8 +1256,8 @@ plain and under `-race`, with a no-op noise floor of exactly `0` bytes.
    | Arm | Keys | Fixture needed |
    |---|---|---|
    | rejects `1<<62` | `WithConnectionBuffer`, `WithMaxConnections`, **`WithReplayBuffer`** (all newly), `WithSuccessStatus` (already) | `NewConfig` only — one line each |
-   | accepts, deferred (§3.8) | `WithMaxBodyBytes`, `WithMaxEventBytes`, **`WithMaxResponseBytes`** | `NewConfig` only |
-   | accepts, safe | *(none — `WithMaxResponseBytes` moved to the deferred arm in revision 6)* | — |
+   | ~~accepts, deferred (§3.8)~~ → **rejects, fixed** ([Spec 018](018-byte-cap-ceilings.md)) | `WithMaxBodyBytes`, `WithMaxEventBytes`, **`WithMaxResponseBytes`** | `NewConfig` only |
+   | accepts, safe | *(none — `WithMaxResponseBytes` moved to the deferred arm in revision 6, then to `fixed` by Spec 018)* | — |
 
    **After revision 5's BLOCKER-1 fix, NO row needs a live `SSEServer` at all.** `WithReplayBuffer` — the one
    candidate revision 4 identified — moves into the **rejects** arm, where `NewConfig` alone suffices. So the

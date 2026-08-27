@@ -206,8 +206,8 @@ type SSEParser struct {
 // NewSSEParser builds an SSEParser reading from r. opts configures the same
 // shared Config/Option surface as the rest of this package; only
 // WithMaxEventBytes applies here. NewConfig's validation runs first, so an
-// explicit WithMaxEventBytes(n<=0) returns ErrInvalidMaxEventBytes and a nil
-// *SSEParser before r is touched.
+// explicit WithMaxEventBytes(n) outside [1, byteCapCeiling] returns
+// ErrInvalidMaxEventBytes and a nil *SSEParser before r is touched.
 //
 // A single leading UTF-8 byte order mark (U+FEFF) on r is consumed here, at
 // construction, if present — it is never treated as part of the stream's

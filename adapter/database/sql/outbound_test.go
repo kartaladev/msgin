@@ -132,7 +132,8 @@ func TestOutbound_NotLiveValueSource(t *testing.T) {
 // TestNewOutboundAdapter_NilOptionElement proves a nil ELEMENT of opts is a bare
 // ErrNilFunc naming the computed 0-based index (Spec 015 §3.1, family R1) rather
 // than a panic. NewOutboundAdapter is LOOP-FIRST (Spec 015 §3.5): the apply loop
-// is the constructor's first statement, so a nil option beats the ErrNilResolver
+// is the constructor's first statement that can fail, preceded only by the
+// config-defaults initializer, which cannot fail, so a nil option beats the ErrNilResolver
 // check AND newAdapterBase's db/table/dialect validation, all of which run after
 // it.
 func TestNewOutboundAdapter_NilOptionElement(t *testing.T) {

@@ -87,8 +87,9 @@ type Source struct {
 // A nil ELEMENT of opts is a bare [msgin.ErrNilFunc] naming the element's
 // 0-based index ("sql.NewPollingSource: nil option at index 1"), not a panic —
 // checked as opts is applied. The apply loop is this constructor's first
-// statement, so the nil-option check runs BEFORE every other validation here —
-// the nil-db/nil-dialect/table checks named above, the strategy and
+// statement that can fail, preceded only by the config-defaults initializer,
+// which cannot fail, so the nil-option check runs BEFORE every other validation
+// here — the nil-db/nil-dialect/table checks named above, the strategy and
 // lock-dialect checks, and the WithLeaseTTL range check — and wins over all of
 // them.
 func NewPollingSource(db *stdsql.DB, table string, dialect LeaseDialect, opts ...Option) (*Source, error) {

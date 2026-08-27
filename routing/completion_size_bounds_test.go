@@ -90,7 +90,11 @@ func TestNewAggregator_CompletionSizeCeilingAccepts(t *testing.T) {
 func TestNewAggregator_CompletionSizeValidatedEvenWhenReleaseStrategyOverwritten(t *testing.T) {
 	t.Parallel()
 
-	const n = 1 << 62
+	// 1<<30 (not 1<<62): it exceeds every ceiling in the codebase (the largest
+	// is 1<<20) so it selects the identical out-of-range branch, while fitting
+	// an int32 so this file compiles on GOARCH=386 (Plan 030 Task 2, reject
+	// arm). :103 renders n with %d, so the expected string follows the constant.
+	const n = 1 << 30
 	store := newIntStore(t)
 	_, err := routing.NewAggregator[int, int](store, sumFn,
 		routing.WithOutputChannel(&fakeAggChannel{}),

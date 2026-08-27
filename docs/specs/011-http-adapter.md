@@ -23,7 +23,7 @@
   `ChannelExchange.Exchange` now reclaims the slot on every exit path, including a panic unwind.
 - **Design status (pre-implementation):** Draft (2026-07-21) — brainstormed with the user; scope, phasing, and the dominant design forks settled
   interactively (see "Decisions settled with the user"). ADR 0023 (HTTP adapter architecture) authored; ADR 0024 (gin
-  dependency) deferred to Phase 5; Plan 020 (Phase 1) authored, Plans 024–027 to follow per phase (021 was taken by Spec 012, and 022/023 by Spec 013's producer-retry increment). **Phase-1
+  dependency) **not written — number reserved, and admitting `gin` is an open dependency decision, not a scheduled one**; Plan 020 (Phase 1) authored, then [024](../plans/024-http-outbound.md)/025/026 per phase (021 was taken by Spec 012, and 022/023 by Spec 013's producer-retry increment), with **Phase 5 (gin) unnumbered until it is written** *(this read "Plans 024–027 to follow per phase", which bound gin to 027 — corrected 2026-08-22, [Plan 030](../plans/030-post-029-maintenance.md) Task 3; see §6(a))*. **Phase-1
   adversarial design audit round 1 folded** (Opus, SOUND-WITH-NITS): **H1** the request→message path uses `msgin.New`
   (not `NewMessage`) — a spec-only error that would have failed every I2 request with 400, corrected in §3.2; **M1**
   I2 success status pinned to `200`, `WithSuccessStatus` scoped to I1 only (§3.3); **M4** the inbound-payload-is-`[]byte`
@@ -89,10 +89,17 @@
   - **ADR 0023 — HTTP channel adapter architecture:** the framework-agnostic-core + stdlib/gin split, the per-mode SPI
     mapping, the **Return-Address-by-construction** reasoning for synchronous HTTP request-reply and the multi-instance
     boundary, the outbound response→error classification (`4xx = Permanent`), and the per-mode delivery guarantees.
-  - **ADR 0024 — `gin` dependency (isolated module):** justifies adding `github.com/gin-gonic/gin` as a direct
-    dependency of the **`adapter/http/gin` module only**, following the Dependency-policy rule that every dependency is
-    ADR-justified and the heavy-client-adapter-as-separate-module precedent (ADR 0003). Authored with **Plan 028**
-    (Phase 5). **Neither ADR 0024 nor Plan 028 exists yet** — both are forward references to unwritten artifacts.
+  - **ADR 0024 — `gin` dependency (isolated module):** **the number is reserved; the artifact is unwritten.** It would
+    justify adding `github.com/gin-gonic/gin` as a direct dependency of the **`adapter/http/gin` module only**,
+    following the Dependency-policy rule that every dependency is ADR-justified and the
+    heavy-client-adapter-as-separate-module precedent (ADR 0003). It is authored with the Phase-5 plan, which is
+    **unnumbered until that increment is written**. **Admitting `gin` is an open dependency decision, not a scheduled
+    one** — writing ADR 0024 *is* the decision, so it stays with the user.
+    *(Corrected 2026-08-22 by [Plan 030](../plans/030-post-029-maintenance.md) Task 3. This read "Authored with
+    **Plan 028** (Phase 5). **Neither ADR 0024 nor Plan 028 exists yet**" — doubly false, because Plan 028 was
+    pencilled in for gin and then consumed by [nil option elements](../plans/028-nil-option-elements.md), which has
+    shipped. No replacement number is substituted: a third concrete number would re-arm the identical staleness the
+    moment it too is consumed.)*
 
 ## 1. Motivation
 
@@ -474,7 +481,10 @@ reuses the exported `msgin.ErrNilExchange`.
 
 **Phase 2 added set** (Plan 024 — `adapter/http/errors.go` + `options.go`). **Six new sentinels:** **`ErrEmptyURL`**
 and **`ErrInvalidURL`** (`validateURL` at construction — empty/whitespace, and a parse failure / non-{http,https}
-scheme / empty host respectively); **`ErrInvalidMaxResponseBytes`** (an explicit `WithMaxResponseBytes(n <= 0)`);
+scheme / empty host respectively); **`ErrInvalidMaxResponseBytes`** (an explicit `WithMaxResponseBytes(n)` **outside
+`[1, 2147483647]`** — *this read `n <= 0` until [Plan 032](../plans/032-byte-cap-ceilings.md) added the
+`byteCapCeiling = math.MaxInt32` upper arm, 2026-08-22; the `<= 0` clause was never wrong, only narrower than the
+contract. See [Spec 018](018-byte-cap-ceilings.md) / [ADR 0034](../adrs/0034-byte-cap-ceilings.md)*);
 **`ErrReplyTooLarge`** (O2 reply body over the cap, INV-6); **`ErrOutboundStatus`** (the sentinel `StatusError` unwraps
 to — a non-2xx classification, INV-3); and **`ErrOutboundTransport`** (the redacted wrapper for a `(*http.Client).Do`
 transport failure, INV-5). Outbound reuses `msgin.Permanent` / `msgin.RetryAfter` for retry classification (no new
@@ -493,7 +503,8 @@ value); **`ErrEventTooLarge`** (per-event cap exceeded, C6); **`ErrInvalidMaxCon
 **`ErrInvalidConnectionBuffer`**, **`ErrInvalidReplayBuffer`**, **`ErrInvalidHeartbeat`**,
 **`ErrInvalidWriteTimeout`** (server construction-time validation — explicit non-positive values, the set-flag
 pattern; `WithWriteTimeout` is the per-write stalled-reader reap, audit BLOCKER-1); **`ErrInvalidMaxEventBytes`**
-(an explicit `WithMaxEventBytes(n <= 0)` — the `ErrInvalidMaxResponseBytes` precedent);
+(an explicit `WithMaxEventBytes(n)` **outside `[1, 2147483647]`** — the `ErrInvalidMaxResponseBytes` precedent, upper
+arm included; *the `<= 0` form this read until 2026-08-22 was narrowed by [Plan 032](../plans/032-byte-cap-ceilings.md)*);
 **`ErrInvalidSlowClientPolicy`** (an unknown `WithSlowClientPolicy` enum value); **`ErrSSEServerClosed`** (a `Send`
 after `Close`, classified `msgin.Permanent`). *Client:* **`ErrNotEventStream`** (a 2xx whose `Content-Type` is not
 `text/event-stream`, C3 — **terminal**); **`ErrInvalidReconnectBackoff`** (non-positive or `min > max`);
@@ -627,11 +638,16 @@ the *client* retries on `5xx`. A body-write failure after the committed `200` is
 | **2** ✅ **DELIVERED** | [024](../plans/024-http-outbound.md) | `adapter/http` outbound (O1 webhook `OutboundAdapter`, O2 `RequestReplyExchange`); ADR 0023 (+ Addendum B) | Phase 1; Plan 023 (`WithProducerRetry`) |
 | **3** | 025 | `adapter/http` (`msghttp`): shared SSE core (`sse.go`) + SSE server (S-out, `sse_server.go` — Addendum C8, not `stdlib`); ADR 0023 (+ Addendum C) | Phase 1 |
 | **4** | 026 | `adapter/http` (`msghttp`) SSE client (S-in, `EventDrivenSource`, `sseclient.go` — Addendum C7, not `stdlib`) | Phase 3 (the `sse.go` core + Addendum C) |
-| **5** | **028** | `adapter/http/gin` module — gin bindings for I1/I2/S-out + `RegisterRoutes`; ADR 0024 (gin dependency) | Phases 1, 3 |
+| **5** | *unnumbered* | `adapter/http/gin` module — gin bindings for I1/I2/S-out + `RegisterRoutes`; ADR 0024 (gin dependency — number reserved, unwritten) | Phases 1, 3 |
 
-> **Two corrections to this table, 2026-07-28.**
-> **(a) Phase 5 is Plan 028, not 027** (audit round 1 finding D3; round 2 §D9 found this row still stale
-> after the §8 note below had already been corrected — the file contradicted itself). Plan 027 is the
+> **Two corrections to this table.**
+> **(a) Phase 5 carries NO plan number — it is assigned when the increment is written**
+> *(2026-08-22, [Plan 030](../plans/030-post-029-maintenance.md) Task 3; supersedes the 2026-07-28 correction here,
+> which read "Phase 5 is Plan 028, not 027")*. The row was numbered **027**, renumbered to **028** by audit round 1
+> finding D3 (round 2 §D9 found it *still* stale after the §8 note had already been corrected — the file
+> contradicted itself), and **028 was then consumed by [nil option elements](../plans/028-nil-option-elements.md)**.
+> Twice-stale is a **class** defect, not two instances: a third concrete number goes stale the same way the moment
+> it too is consumed, so none is substituted and nothing cites one until the increment exists. Plan 027 is the
 > [core package layout](../plans/027-core-package-layout.md) window, sequenced first; see §8.
 > **(b) `StreamingSource` is now `EventDrivenSource`** ([ADR 0029 §1](../adrs/0029-eip-lexical-alignment.md)).
 > `adapter/http/sseclient.go` implements the renamed interface.
@@ -682,17 +698,20 @@ precedent).
   [ADR 0022](../adrs/0022-messaging-gateway.md) / [Spec 010](010-messaging-gateway.md).
 - **New ADRs:** [ADR 0023](../adrs/0023-http-channel-adapter.md) (HTTP adapter architecture — with Plan 020; **Addendum
   A** records the Phase-1 review-driven design changes, **Addendum B** the Phase-2 outbound delivery decisions,
-  **Addendum C** the Phases-3+4 SSE design decisions C1–C6), ADR 0024 (gin dependency — with Plan 028; *not yet
-  written*).
+  **Addendum C** the Phases-3+4 SSE design decisions C1–C6), ADR 0024 (gin dependency — **number reserved, artifact
+  unwritten**; authored with the Phase-5 plan, which is unnumbered until that increment is written).
 
-  > **Plan renumber, 2026-07-27 (audit round 1, finding D3).** This spec's Phase 5 (gin) was numbered **027**.
-  > That number is now taken by [Plan 027 — Core package layout](../plans/027-core-package-layout.md), the
-  > pre-v1 breaking window, which is sequenced **first**, ahead of the feature roadmap
-  > ([ADR 0027](../adrs/0027-core-package-restructure.md)). **The gin binding becomes Plan 028.** Until this
-  > edit the renumber existed only in `docs/HANDOVER.md` and inside Plan 027 itself.
+  > **Phase 5 (gin) is UNNUMBERED — final position, 2026-08-22**
+  > ([Plan 030](../plans/030-post-029-maintenance.md) Task 3). It was numbered **027**; that number was taken by
+  > [Plan 027 — Core package layout](../plans/027-core-package-layout.md), the pre-v1 breaking window sequenced
+  > **first**, ahead of the feature roadmap ([ADR 0027](../adrs/0027-core-package-restructure.md)), so audit round 1
+  > finding D3 (2026-07-27) moved gin to **028**. **028 was then consumed by**
+  > [nil option elements](../plans/028-nil-option-elements.md), leaving every citation of "gin = Plan 028" false.
+  > Rather than pick a third number that would go stale identically, **the increment now carries no number until it
+  > is written** — the state that cannot go stale.
 - **Plans:** [020](../plans/020-http-adapter-inbound.md) (Phase 1 — **delivered**),
-  [024](../plans/024-http-outbound.md) (Phase 2), 025 (Phase 3), 026 (Phase 4), **028** (Phase 5 — gin,
-  renumbered from 027). Plan 021 is
+  [024](../plans/024-http-outbound.md) (Phase 2), 025 (Phase 3), 026 (Phase 4), and Phase 5 (gin) —
+  **unnumbered, assigned when written**. Plan 021 is
   [Spec 012](012-exchange-panic-safe-cleanup.md) — the core `ChannelExchange` panic-safe-cleanup fix, which lands first
   and tightens the `RequestReplyExchange` contract Phase 2's O2 implements.
 - **Spawned follow-up, now resolved:** [Spec 012 — panic-safe `ChannelExchange` cleanup](012-exchange-panic-safe-cleanup.md)

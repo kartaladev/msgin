@@ -16,9 +16,9 @@ import (
 // constructor the CALLER invoked (Spec 015 §3.1, family R1) rather than the
 // laundered "msghttp.NewConfig" position the underlying delegate would report.
 //
-// Both NewInbound and NewInboundGateway forward opts to msghttp.NewConfig as
-// their first statement (Task 6 already guards that entry point on its own
-// behalf, naming ITSELF). Without a standalone pre-check here, a nil element
+// Both NewInbound and NewInboundGateway run their own nil pre-check first, then
+// forward opts to msghttp.NewConfig (Task 6 already guards that entry point on
+// its own behalf, naming ITSELF). Without a standalone pre-check here, a nil element
 // handed to stdlib.NewInbound would surface "msghttp.NewConfig: nil option at
 // index 0" — a function the caller never called (ADR 0031 D-R). So every case
 // below asserts the FULL position string and that it does NOT name NewConfig.
