@@ -1,5 +1,24 @@
 # Plan 031 — A message group's member count is bounded at the store
 
+- **Status: DELIVERED (2026-08-27) — Tasks 1–11 complete, on `chore/backlog-sweep-post-029`. NOT MERGED, NOT
+  PUSHED, NOT TAGGED.** Realizes [Spec 017](../specs/017-group-member-bounds.md) under
+  [ADR 0033](../adrs/0033-group-member-bounds.md) (D-AC…D-AX).
+  - **Tasks 1–9b** were delivered in earlier sessions, in execution order `1 → 2 → 4 → 5+6 → 3 → 7 → 8 → 9 → 9b`,
+    **not** task-number order (D-AT).
+  - **Task 10** is the whole-branch delivery gate. Steps 1–2 produced
+    [`031-review-findings.md`](031-review-findings.md) — **15 findings, 0 security**. **Steps 5–10 are the only
+    thing still open**, and Step 10's approval gate has not been reached.
+  - **Task 11 — NEW in revision 6, and it did not exist when this plan was written.** Task 10 Steps 1–2 produced
+    it. It works the review findings and is **complete**: all 15, plus 5 capped items, plus a **second**
+    `/code-review` round's 3 findings. Four decisions were ratified mid-flight — **D-AU, D-AV, D-AW, D-AX**.
+  - 🔴 **`/security-review` has run ONCE, before any of Task 11's fixes existed. It must run again before merge**
+    — see [`docs/HANDOVER.md`](../HANDOVER.md) §5. `/code-review` has run twice.
+  - 🔴 **This plan's own instructions were defeated by execution repeatedly.** Six ratified instructions in the
+    first pass, then five more claims refuted and one recommended fix that would have panicked in Task 11 — every
+    one found by **running**, none by reading. Two ratified decisions were superseded by findings that arrived
+    after them (**D-AV** part 3 by R-1; **D-AS**'s mechanism by CR2-1). **Read every instruction below as a
+    hypothesis.**
+
 > **For agentic workers:** REQUIRED SUB-SKILL: `superpowers:subagent-driven-development` (the project default) or
 > `superpowers:executing-plans`. Steps use checkbox (`- [ ]`) syntax.
 >
@@ -1717,8 +1736,15 @@ green from Tasks 1, 5 and 9, plus the docs-link gate.
       `adapter/database/sql/groupstore.go` and `routing/aggregator.go` the same *cite-the-grep-not-the-line*
       treatment Global constraint 12 gave the class-gate file — they are this bundle's two most-cited files and
       revision 5 corrected 41 of the former's coordinates **by hand** after a comment-only commit shifted them.
-- [ ] **Step 8.** Also fix CLAUDE.md's stale `reliability.go:46` citation for `IsPermanent`, which is
-      `reliability.go:86-97` (audit m-1 — the same stale citation this bundle inherited).
+- [x] **Step 8. DONE (2026-08-27).** CLAUDE.md's stale figures, all four fixed **by deleting the digit where it
+      will keep rotting**, not by writing a fresher one:
+
+      | Figure | Was | Fix |
+      |---|---|---|
+      | `IsPermanent` citation | `reliability.go:46` | replaced with **the grep that locates it**. It was stale for three increments; a fresh coordinate would rot the same way |
+      | Plan **files** | 56 | **58** — kept, since the row's own command is right beside it |
+      | Plan 031's satellite count | `031 (4)` | **`031 (6)`**, and the sentence now names *review rounds* as a second source of satellites, not just audit rounds |
+      | Anchor-link census | *"**53** anchor links today"* | **digit deleted.** The tree held **56**; the sweep that found the drift added none of them. The vacuity-probe instruction — the part with value — is kept |
       🔴 **AND its stale anchor-link census.** The "Docs links resolve" gate paragraph asserts *"**53** anchor
       links today, all resolving"*; the tree has **55**. Measured 2026-08-26 during Task 11, and **not** caused by
       this increment — the sweep that found it added zero anchor links (`git diff` of every `.md` confirms), so it
@@ -1726,9 +1752,12 @@ green from Tasks 1, 5 and 9, plus the docs-link gate.
       already says the command is the authority. Prefer deleting the digit and keeping the vacuity-probe
       instruction, which is the part that has value. (Plan 031 Task 9's *"delete the digits"* remedy, applied to
       CLAUDE.md itself.)
-- [ ] **Step 9.** Flip the status lines: Spec 017 → DELIVERED, ADR 0033 → ACCEPTED, this plan → DELIVERED — and
-      **remove the "without user ratification" banners only if the user has by then ratified them.** If not, leave
-      them and say so.
+- [x] **Step 9. DONE (2026-08-27).** Spec 017 → **APPROVED AND SUBSTANTIALLY DELIVERED** (revision 6, corrected in
+      Task 11 Step 0 — it had read *"DRAFT … NOT approved for implementation"* while its `feat` commits had
+      shipped, which was itself [`031-review-findings.md`](031-review-findings.md) §6 item 3). ADR 0033 →
+      **ACCEPTED**, revision 7, D-AC…D-AX. **This plan gained a Status block, which it had never had** — Step 9
+      said "flip", but there was nothing to flip. **The ratification banners are removed because the user DID
+      ratify**: D-AC…D-AT on 2026-08-23, D-AU/D-AV/D-AW on 2026-08-25, D-AX on 2026-08-27.
 - [ ] **Step 10.** Stage, show the diff, and **wait for explicit approval** before the final commit. `git push`, the
       merge and the branch deletion each need their own approval (Global constraint 9).
 
