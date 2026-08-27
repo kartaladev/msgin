@@ -196,18 +196,20 @@ VALUES (?, ?, ?, ?, ?, NULL)`, mt),
 		}
 		// UNLIMITED, exactly like ClaimGroup's and ExpiredGroups' fetches: a
 		// member set the caller ACTS ON must never be truncated (ADR 0033 D-AS).
-		// This call used to pass maxMembers+1, which is sound only while the
-		// group holds at most that many rows — false the moment the cap is
-		// LOWERED beneath a group's existing size, by a rolling deploy or by two
-		// instances configured differently. It then returned a truncated
+		// This call used to bound the fetch to maxMembers+1, which is sound only
+		// while the group holds at most that many rows — false the moment the
+		// cap is LOWERED beneath a group's existing size, by a rolling deploy or
+		// by two instances configured differently. It then returned a truncated
 		// snapshot that the release predicate reads as an incomplete group, so
 		// the member is dead-lettered AND the complete group never releases —
 		// the deadlock this snapshot exists to prevent (review finding R-1).
+		// mysqlSelectMembers no longer takes a limit at all, so the bound cannot
+		// be reintroduced at this call site; see its godoc.
 		//
 		// It costs no new ceiling: ClaimGroup already pulls this same group's
 		// full member set with no LIMIT from this same table, and
 		// UnboundedGroupMembers already made this very fetch unlimited.
-		members, err := mysqlSelectMembers(ctx, tx, mt, groupKey, "claimed_epoch IS NULL", 0)
+		members, err := mysqlSelectMembers(ctx, tx, mt, groupKey, "claimed_epoch IS NULL")
 		if err != nil {
 			return err
 		}
@@ -266,7 +268,7 @@ WHERE group_key = ? AND (claimed_epoch IS NULL OR claimed_epoch < ?)`, mt),
 			newEpoch, groupKey, newEpoch); err != nil {
 			return err
 		}
-		members, err := mysqlSelectMembers(ctx, tx, mt, groupKey, fmt.Sprintf("claimed_epoch = %d", newEpoch), 0)
+		members, err := mysqlSelectMembers(ctx, tx, mt, groupKey, fmt.Sprintf("claimed_epoch = %d", newEpoch))
 		if err != nil {
 			return err
 		}
@@ -403,7 +405,7 @@ LIMIT ?`, gt, mysqlNowMicros),
 
 	out := make([]msginsql.GroupRows, 0, len(cands))
 	for _, c := range cands {
-		members, err := mysqlSelectMembers(ctx, q, mt, c.key, "claimed_epoch IS NULL", 0)
+		members, err := mysqlSelectMembers(ctx, q, mt, c.key, "claimed_epoch IS NULL")
 		if err != nil {
 			return nil, err
 		}
@@ -520,20 +522,25 @@ func withoutMember(members []msginsql.MemberRow, msgID string) []msginsql.Member
 // injection-safe fragment built by the caller: "claimed_epoch IS NULL" or
 // "claimed_epoch = <int64>"), ordered by seq then msg_id.
 //
-// limit caps the number of rows fetched; 0 means UNLIMITED and emits no LIMIT
-// clause. Only AddMember passes a non-zero value (maxMembers+1, enough for the
-// over-cap snapshot). ClaimGroup and ExpiredGroups MUST pass 0: a LIMIT on the
-// claimed set would release an incomplete aggregate, and a LIMIT on the
-// recovery set would make the reaper drop members — neither is visible without
-// the harness cases that assert the full sets (ADR 0033 D-AS).
-func mysqlSelectMembers(ctx context.Context, q msginsql.Querier, mt, groupKey, claimedWhere string, limit int) ([]msginsql.MemberRow, error) {
-	limitClause := ""
-	if limit > 0 {
-		limitClause = fmt.Sprintf(" LIMIT %d", limit)
-	}
+// The fetch is UNLIMITED, and no caller can ask for anything else. All three —
+// AddMember, ClaimGroup and ExpiredGroups — ACT ON the set they get back, and
+// ADR 0033 D-AS's rule is that such a set is never truncated: a LIMIT on the
+// claimed set releases an incomplete aggregate, and a LIMIT on the recovery set
+// makes the reaper drop members.
+//
+// The helper used to take a private limit int (0 = unlimited) so AddMember
+// could pass maxMembers+1. Review finding R-1 removed that bound — a cap
+// LOWERED beneath a group's stored size returned a truncated snapshot, which
+// the release predicate reads as an incomplete group, so the member was
+// dead-lettered AND the complete group never released — leaving all three
+// callers passing 0. The parameter is deleted rather than left dead so D-AS's
+// rule is enforced structurally: there is no longer any way to express the
+// truncation (D-AS's MECHANISM is superseded, its RULE is not; Spec 017
+// §3.6.3, §3.6a.3).
+func mysqlSelectMembers(ctx context.Context, q msginsql.Querier, mt, groupKey, claimedWhere string) ([]msginsql.MemberRow, error) {
 	rows, err := q.QueryContext(ctx,
 		fmt.Sprintf(`SELECT msg_id, seq, headers, payload FROM %s
-WHERE group_key = ? AND %s ORDER BY seq, msg_id%s`, mt, claimedWhere, limitClause),
+WHERE group_key = ? AND %s ORDER BY seq, msg_id`, mt, claimedWhere),
 		groupKey)
 	if err != nil {
 		return nil, err

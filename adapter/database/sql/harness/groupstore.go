@@ -373,14 +373,16 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 		s := newStore(t, table, msginsql.WithMaxGroupMembers(groupMemberCap))
 		fillToCap(t, ctx, s, "k")
 
-		// D-AS: ClaimGroup passes limit = 0 to the dialect's member SELECT, so
-		// the claimed set is COMPLETE. A LIMIT leaking into that call site
-		// releases a partial aggregate — silent data corruption no other case
-		// notices, because every other group here is smaller than the cap.
+		// D-AS: the dialect's member SELECT is UNLIMITED, so the claimed set is
+		// COMPLETE. A LIMIT leaking into that helper releases a partial
+		// aggregate — silent data corruption no other case notices, because
+		// every other group here is smaller than the cap. Since finding R-1 the
+		// helper takes no limit parameter at all, so the only way to reintroduce
+		// the truncation is to edit its SQL; that is what this case guards.
 		claim, err := s.ClaimGroup(ctx, "k")
 		require.NoError(t, err)
 		require.NotNil(t, claim)
-		require.Len(t, claim.Messages(), groupMemberCap, "ClaimGroup must return EVERY claimed member (limit = 0, D-AS)")
+		require.Len(t, claim.Messages(), groupMemberCap, "ClaimGroup must return EVERY claimed member (unlimited fetch, D-AS)")
 
 		// AC-4.7: the claim stamped its epoch on every live member, so the LIVE
 		// count is now 0 — and the add is STILL refused, because the bound
@@ -686,9 +688,9 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 		table := fresh(ctx)
 		s := newStore(t, table)
 
-		// D-AS's OTHER half: ExpiredGroups passes limit = 0 to the dialect's
-		// member SELECT, so the reaper's recovery set is COMPLETE. A LIMIT
-		// leaking into THAT call site makes the reaper silently drop every
+		// D-AS's OTHER half: the dialect's member SELECT is UNLIMITED here too,
+		// so the reaper's recovery set is COMPLETE. A LIMIT leaking into that
+		// helper makes the reaper silently drop every
 		// member of an expired group past the first — and no other case here
 		// notices, because no other Expired case asserts a group with more than
 		// one member. The group is UNLEASED and aged past the cutoff, so its
@@ -718,7 +720,7 @@ func RunGroupStore(t *testing.T, kit TestKit, db *sql.DB) {
 			}
 		}
 		require.NotNil(t, got, "the aged-out unleased group must be returned")
-		require.Len(t, got.Messages(), members, "the reaper's recovery set must hold EVERY member (limit = 0, D-AS)")
+		require.Len(t, got.Messages(), members, "the reaper's recovery set must hold EVERY member (unlimited fetch, D-AS)")
 	})
 
 	t.Run("ConcurrentFirstAddCompletionDetection_H1", func(t *testing.T) {

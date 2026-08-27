@@ -230,11 +230,20 @@ func WithGroupLockedBy(id string) GroupStoreOption {
 // snapshot is returned ALONGSIDE the error so routing.Aggregator.Handle can
 // still re-evaluate the release: the member is rejected, the release is not.
 //
-// CLASSIFICATION — the rejection is classified by CAUSE, from the group row's
-// locked_by (Spec 017 §3.3.1):
+// CLASSIFICATION — the rejection is classified by CAUSE, from whether a LIVE
+// LEASE is draining the group. The discriminator is
+// "locked_by IS NOT NULL AND locked_at > now() - WithGroupLeaseTTL", evaluated
+// in SQL on the DB SERVER clock by the same statement that reads created_at, at
+// zero extra round-trips (ADR 0033 D-AU, review finding R-7; Spec 017 §3.6a.1).
 //
-//   - locked_by IS NULL, the group is NOT leased: nothing drains an unleased
-//     group without an expiry cutoff (with no routing.WithGroupTimeout the
+// A non-NULL locked_by ALONE is NOT the test, and this godoc said it was until
+// R-7: that reading calls a CRASHED holder's stranded lease "live" forever and
+// classifies every subsequent over-cap add transient — the unlogged, zero-delay
+// Nack loop the permanent arm exists to prevent.
+//
+//   - NO LIVE LEASE — no lease at all, or one already aged past
+//     WithGroupLeaseTTL: nothing is draining the group, so nothing drains it
+//     without an expiry cutoff (with no routing.WithGroupTimeout the
 //     reaper's cutoff is zero and ExpiredGroups returns crashed-lease groups
 //     only). The error is msgin.Permanent-wrapped, which the runtime settles
 //     TERMINALLY — one attempt at the invalid-message sink, or the dead-letter
@@ -248,27 +257,57 @@ func WithGroupLockedBy(id string) GroupStoreOption {
 //     and then ACKs — so the source DROPS the message. Configure
 //     endpoint.WithInvalidMessageSink (or RetryPolicy.DeadLetter) to turn that
 //     loss into a capture; the library cannot supply one.
-//   - locked_by IS NOT NULL, the group IS leased: a claim is in flight and
-//     Settle/Abandon runs on every release path, so the retry genuinely
-//     succeeds afterwards. The error stays transient (unwrapped). Under the
-//     zero-value RetryPolicy that retry is a busy-wait for the width of the
-//     claim window; set RetryPolicy.Backoff if that matters.
+//   - A LIVE LEASE is in flight: a claim is running and Settle/Abandon runs on
+//     every release path, so the retry genuinely succeeds afterwards. The error
+//     stays transient (unwrapped). Under the zero-value RetryPolicy that retry
+//     is a busy-wait for the width of the claim window; set
+//     RetryPolicy.Backoff if that matters.
 //
-// HOW LONG THE TRANSIENT ARM CAN LAST: normally one release round-trip. Its
-// tail is a CRASHED releaser's lease, and that tail is UP TO 2 x leaseTTL —
-// about 10 minutes at the shipped defaults, not 5. Two terms compose:
-// ELIGIBILITY, at t0 + leaseTTL, when ExpiredGroups' locked_at <= now -
-// leaseTTL arm first matches; and DISCOVERY, at the first reaper tick AT OR
-// AFTER that moment. Aggregator.Run builds its ticker at Run's own start time
-// on an interval that, with no WithGroupTimeout, equals RecoverInterval() —
-// this store's lease TTL — so eligibility landing just after a tick waits a
-// further full interval. Both terms presume go agg.Run(ctx) is running at
-// all; without it the window has no upper bound (see GroupStore's "go
-// agg.Run(ctx) is REQUIRED" section).
+// A CRASHED RELEASER TAKES BOTH ARMS IN TURN, and the second one DISCARDS. Take
+// a holder that dies mid-release at t0 on a full group:
+//
+//   - t0 .. t0+leaseTTL — the stranded lease still reads LIVE, so over-cap adds
+//     are TRANSIENT and retried. No holder is left to settle it, so that retry
+//     cannot succeed until the lease ages out; this is the transient arm's tail,
+//     and it is bounded by leaseTTL (5 minutes at the shipped default).
+//   - t0+leaseTTL onward — the lease reads DEAD, so the arms SWAP and every
+//     arriving member for that key is msgin.Permanent-wrapped and terminally
+//     settled. On the shipped defaults (zero-value msgin.RetryPolicy, no
+//     endpoint.WithInvalidMessageSink, no RetryPolicy.DeadLetter) that is a
+//     WARN and an Ack — the messages are DROPPED, not held. This lasts until
+//     the reaper recovers the group, up to t0 + 2 x leaseTTL (about 10 minutes
+//     at the shipped defaults). Two terms compose: ELIGIBILITY, at
+//     t0 + leaseTTL, when ExpiredGroups' locked_at <= now - leaseTTL arm first
+//     matches; and DISCOVERY, at the first reaper tick AT OR AFTER that moment.
+//     Aggregator.Run builds its ticker at Run's own start time on an interval
+//     that, with no WithGroupTimeout, equals RecoverInterval() — this store's
+//     lease TTL — so eligibility landing just after a tick waits a further full
+//     interval. Both terms presume go agg.Run(ctx) is running at all; without
+//     it the group is never recovered and the permanent arm has NO upper bound
+//     (see GroupStore's "go agg.Run(ctx) is REQUIRED" section).
+//
+// Configuring a sink is what turns that second window from a drop into a
+// capture; shortening WithGroupLeaseTTL is what shortens the window itself.
 //
 // A group that is full and unreleasable stays full: this option bounds
 // growth, it does not provide liveness. Set routing.WithGroupTimeout to have
 // the reaper expire such a group.
+//
+// 🔴 LOWERING n BELOW A CONFIGURED routing.WithCompletionSize DEADLOCKS THE
+// GROUP, and nothing rejects the pair. The two options live in different
+// packages, so neither constructor can see the other: n = 10 with
+// WithCompletionSize(20) constructs cleanly, then refuses every arrival past
+// the 10th while the release predicate declines at 10 < 20 — each refused
+// member dead-lettered, or DROPPED outright with neither
+// endpoint.WithInvalidMessageSink nor RetryPolicy.DeadLetter configured, and
+// the group never releasing. The default cap is >= routing's
+// completionSizeCeiling precisely so this cannot happen unless you lower it
+// (see defaultMaxGroupMembers' INVARIANT). Keep n at or above the completion
+// size; routing.WithGroupTimeout is the liveness escape if you cannot. This
+// store's RecoverInterval is its lease TTL rather than 0, so its reaper DOES
+// sweep by default — but with no WithGroupTimeout the age cutoff is zero and
+// the sweep surfaces crashed-lease groups only, never an unleased full one, so
+// the deadlock is exactly as permanent here as in adapter/memory.
 func WithMaxGroupMembers(n int) GroupStoreOption {
 	return func(c *groupStoreConfig) { c.maxGroupMembers = n }
 }
@@ -399,10 +438,16 @@ func NewGroupStore(db *stdsql.DB, table string, dialect GroupDialect, opts ...Gr
 // precisely why the (nil, err) shape above is kept for every other fault — and
 // it ignores a snapshot that is nil (TYPED NILS INCLUDED) or that holds zero
 // members, returning the error unchanged in both cases. A zero-member snapshot
-// here is not a defect: while a live claim covers every member the live
-// residual is legitimately empty, and Handle then reports the dialect's
-// transient rejection as-is rather than running the release strategy against
-// an empty group.
+// here is not a defect: while a claim covers every member the live residual is
+// legitimately empty, and Handle then reports the dialect's rejection as-is
+// rather than running the release strategy against an empty group.
+//
+// That pass-through carries WHICHEVER classification the dialect chose, which
+// is NOT always the transient one. A claim that covers every member but whose
+// holder has CRASHED leaves the same empty residual, and once its lease ages
+// past WithGroupLeaseTTL the dialect classifies as msgin.Permanent — so the
+// error Handle passes through terminally settles the member (see
+// WithMaxGroupMembers' CLASSIFICATION section for the full timeline).
 //
 // The error still routes through classifyQueryErr, which costs one extra
 // SchemaExists round-trip. Both the sentinel and the Permanent marker survive

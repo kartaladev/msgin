@@ -1,9 +1,15 @@
 # Plan 031 — whole-branch review findings (Task 10 Steps 1–2)
 
-> ## 🔴 LIVE STATUS — 15 of 15 FIXED (2026-08-27). ALL §6 ITEMS DISPOSITIONED. BOTH DELIVERY BLOCKERS ARE CLOSED.
+> ## 🔴 LIVE STATUS — 15 of 15 FIXED, PLUS 3 of 3 FROM A SECOND PASS (2026-08-27). ALL §6 ITEMS DISPOSITIONED. BOTH DELIVERY BLOCKERS ARE CLOSED.
 >
 > **Nothing remains un-dispositioned.** §6's five capped items are each **fixed or triaged with a written
 > rationale** in §6 below, as CLAUDE.md requires before merge. Nothing merged, nothing pushed.
+>
+> **🔴 A SECOND `/code-review high` PASS RAN AFTER THE 15 WERE CLOSED, AND IT IS RECORDED IN [§8](#8--second-code-review-pass-2026-08-27--3-findings-all-documentation-all-fixed) — NOT HERE.**
+> It returned **3 findings, no security issues**, all confirmed independently and **all fixed**; all three were
+> **documentation** defects (`CR2-1` a dead `limit` parameter now deleted, `CR2-2` a stale `locked_by`
+> discriminator, `CR2-3` an over-broad `WithCompletionSize` claim). §§0–7 below describe the FIRST pass only and
+> are unchanged; **the 15-finding tables in this block are not a total for the branch.**
 >
 > **Every status line BELOW this block is an older stratum** — this file annotates rather than rewrites, so
 > *"Status: OPEN — 5 of 15 fixed"* further down is a record of a past state, not a live claim. **This block is the
@@ -302,3 +308,103 @@ disposition follows each.
 > **Mutation discipline applies to every fix here.** A mutant that does not compile reports as a KILL; one that
 > fails to apply reports as a SURVIVAL. Both happened repeatedly on this branch. Require the mutation to **apply**
 > and the tree to **build** before recording either outcome — see [`docs/HANDOVER.md`](../HANDOVER.md) §8.
+
+## 8. 🔴 SECOND `/code-review` PASS (2026-08-27) — 3 findings, ALL DOCUMENTATION, ALL FIXED
+
+**A new stratum, not a revision of §§0–7.** Everything above records the FIRST whole-branch pass (15 findings).
+This section records a **second** `/code-review high` over `main...HEAD`, run after those 15 were closed at
+`ac15650`.
+
+**Result: 3 findings, NO security issues.** Everything else green — all 11 root packages `-race`,
+`golangci-lint` 0 issues, `routing` 100% coverage. **All three were confirmed independently by the coordinator,
+and all three are DOCUMENTATION defects, not logic bugs** — the project's recorded pattern that *docs can
+contradict the code they describe*. **No behavioural change ships in this pass**, with one structural exception
+noted in CR2-1 (a dead parameter is deleted; no shipped call site changes what it does).
+
+| Id | Sev | Defect | Fix |
+|---|---|---|---|
+| **CR2-1** | medium | a **dead** `limit` parameter whose godoc instructs a maintainer to reintroduce a fixed deadlock | **DELETE** the parameter and the `limitClause` machinery from all three helpers and all nine call sites |
+| **CR2-2** | medium | `sql.WithMaxGroupMembers`' `CLASSIFICATION` godoc documents the **pre-D-AU** discriminator | rewrite the prose to match the shipped `leaseLive` predicate |
+| **CR2-3** | low | a `WithCompletionSize` godoc claim that holds only at the **default** store cap | qualify the claim; warn on **both** `WithMaxGroupMembers` godocs |
+
+### CR2-1 — the dead `limit` on `*SelectMembers` (medium)
+
+**Confirmed.** `grep -rn "SelectMembers(ctx"` returns **nine** call sites across the three dialects, **every one
+passing `0`**, so `if limit > 0 { … " LIMIT %d" … }` was unreachable and untested. The godoc still read *"Only
+`AddMember` passes a non-zero value (`maxMembers+1`, enough for the over-cap snapshot)"* — **exactly what finding
+R-1 removed** — while the `AddMember` call site twenty lines away carried a comment saying the opposite.
+
+**FIXED by deleting the parameter**, not by correcting the sentence. A dead branch plus a godoc instructing its
+restoration is a **live trap**: restoring `maxMembers+1` reintroduces R-1's proven deadlock (a cap lowered below a
+group's stored size returns a truncated live set; the release predicate reads the group as incomplete; the
+refused member is dead-lettered **and** the complete group never releases). Deletion removes the trap
+structurally.
+
+🔴 **This supersedes the MECHANISM of [ADR 0033](../adrs/0033-group-member-bounds.md) D-AS, not its RULE.** D-AS
+introduced the parameter because *"one shared helper serves three callers with different bounds"*; after R-1 all
+three callers want unlimited, so the premise is spent. D-AS's rule — *a member set the caller acts on is never
+truncated* — is now enforced by there being **no way to express truncation at all**. Recorded in D-AS's own
+supersession box, and in [Spec 017](../specs/017-group-member-bounds.md) §3.6.3.
+
+**The coordinator's push-back check was run and found nothing to push back on:** `GroupDialect.ExpiredGroups`'
+`limit` is a **different** parameter — a group-count bound on the *groups* table (`LIMIT $4`), fed
+`defaultExpiredGroupsLimit = 100` — and is live, load-bearing and untouched. No call site needed a bound.
+
+**Gate impact.** §6 AC-9 rows **15 / 15b**'s mutant is no longer applicable (the fault has no representation); the
+replacement mutant is *"bake a `LIMIT` into the shared helper's SQL"* and the two harness cases still kill it.
+Both cases are kept, comments corrected.
+
+### CR2-2 — the `CLASSIFICATION` godoc documents the pre-D-AU discriminator (medium)
+
+**Confirmed.** `adapter/database/sql/groupstore.go`'s `WithMaxGroupMembers` godoc classified *"from the group
+row's `locked_by`"*, with *"`locked_by IS NOT NULL`, the group IS leased: … The error stays transient
+(unwrapped)."* The shipped dialects discriminate on **`leaseLive`** —
+`locked_by IS NOT NULL AND locked_at > now() - leaseTTL` (the D-AU / R-7 fix) — so **a stranded lease from a
+crashed releaser takes the PERMANENT arm**, the opposite of what the godoc promised. `Add`'s own godoc stated the
+**correct** contract, so the file contradicted itself.
+
+**FIXED in the prose; the code is correct and unchanged.** The section now names the real predicate, says
+explicitly that a non-NULL `locked_by` alone is *not* the test and why, and replaces the misattributed timeline.
+
+**Also found stale while fixing — same defect, same paragraph.** *"HOW LONG THE TRANSIENT ARM CAN LAST … its tail
+is a CRASHED releaser's lease, and that tail is UP TO 2 x leaseTTL"* was wrong in a second way: post-D-AU the
+**transient** arm ends at `t0 + leaseTTL`, and the window that runs to `t0 + 2 x leaseTTL` is the **permanent**
+one, in which members are discarded. Rewritten as an explicit two-phase timeline. The empty-snapshot paragraph
+(*"Handle then reports the dialect's transient rejection as-is"*) had the same defect on the same shape and is
+qualified.
+
+🔴 **Scope was checked, not assumed: `adapter/memory`'s equivalent godoc is CORRECT and was NOT changed.**
+`memory`'s lease is *"UNCONDITIONAL — no wall-clock TTL"*, so *"the group IS leased ⇒ transient"* is true there.
+D-AU is `sql`-only — the same scoping the LIVE STATUS block already records for R-7.
+
+### CR2-3 — a godoc claim that holds only at the default cap (low)
+
+**Confirmed, and measured.** `WithCompletionSize` claimed *"That default is deliberately not smaller than
+`completionSizeCeiling`, so an n this option accepts can always reach its own release."* True at the **default**
+cap; nothing validates a caller-configured pair, and neither `WithMaxGroupMembers` warned. A throwaway probe
+against the shipped tree (run, then deleted) confirmed the whole chain: `WithMaxGroupMembers(10)` +
+`WithCompletionSize(20)` both construct with a nil error, adds 1..10 succeed, and from the **11th** on every
+arrival returns `msgin: permanent: … holds 10 members, limit 10` — `Permanent`-wrapped, hence terminally settled
+or dropped — while the predicate declines at 10 < 20 and the group never releases.
+
+**FIXED as documentation, per the coordinator's instruction not to add validation.** The claim is qualified to the
+default cap, and **both** `WithMaxGroupMembers` godocs now warn, naming `routing.WithGroupTimeout` as the liveness
+escape. `adapter/memory`'s existing *"A group that is full and unreleasable stays full…"* note was **extended, not
+duplicated**; `sql`'s twin additionally records that its reaper sweeps by default yet still never surfaces an
+unleased full group without a timeout, so the deadlock is equally permanent there.
+
+**A runtime check was considered and rejected**, with the seam recorded for a future increment: enforcement needs
+a new SPI method (e.g. `MaxMembers() int` on `msgin.MessageGroupStore`) for `NewAggregator` to compare against —
+a real API change for a misconfiguration. See Spec 017 §3.5's CR2-3 box.
+
+### Artifacts updated in this pass
+
+| Artifact | Change |
+|---|---|
+| `adapter/database/sql/{postgres,mysql,sqlite}/groupdialect.go` | `limit` parameter + `limitClause` deleted; helper godocs and the three `AddMember` call-site comments rewritten |
+| `adapter/database/sql/harness/groupstore.go` | the four *"passes `limit = 0`"* comments/messages corrected to *"unlimited fetch"* |
+| `adapter/database/sql/groupstore.go` | `WithMaxGroupMembers` CLASSIFICATION + timeline rewritten (CR2-2); deadlock warning added (CR2-3); `Add`'s empty-snapshot paragraph qualified |
+| `adapter/memory/groupstore.go` | `WithMaxGroupMembers` liveness note extended with the deadlock warning (CR2-3) |
+| `routing/aggregator.go` | `WithCompletionSize`'s claim qualified to the default cap (CR2-3) |
+| [`docs/adrs/0033-group-member-bounds.md`](../adrs/0033-group-member-bounds.md) | D-AS supersession box (CR2-1) |
+| [`docs/specs/017-group-member-bounds.md`](../specs/017-group-member-bounds.md) | §3.6.3 box (CR2-1), §3.3.1 box (CR2-2), §3.5 box (CR2-3), AC-9 rows 15/15b annotated |

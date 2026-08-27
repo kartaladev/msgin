@@ -155,6 +155,20 @@ const maxGroupMembersCeiling = 1 << 20
 // A group that is full and unreleasable stays full: this option bounds
 // growth, it does not provide liveness. Set routing.WithGroupTimeout to have
 // the reaper expire such a group.
+//
+// 🔴 LOWERING n BELOW A CONFIGURED routing.WithCompletionSize DEADLOCKS THE
+// GROUP, and nothing rejects the pair. The two options live in different
+// packages, so neither constructor can see the other: n = 10 with
+// WithCompletionSize(20) constructs cleanly, then refuses every arrival past
+// the 10th while the release predicate declines at 10 < 20 — each refused
+// member dead-lettered, or DROPPED outright with neither
+// endpoint.WithInvalidMessageSink nor RetryPolicy.DeadLetter configured, and
+// the group never releasing. The default cap is >= routing's
+// completionSizeCeiling precisely so this cannot happen unless you lower it
+// (see defaultMaxGroupMembers' INVARIANT). Keep n at or above the completion
+// size; routing.WithGroupTimeout is the liveness escape if you cannot, since
+// this store's RecoverInterval is 0 and without a timeout no reaper sweeps at
+// all.
 func WithMaxGroupMembers(n int) GroupStoreOption {
 	return func(c *groupStoreConfig) { c.maxGroupMembers = n }
 }

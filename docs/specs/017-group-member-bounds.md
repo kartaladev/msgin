@@ -656,6 +656,17 @@ It **never consults `MaxAttempts`** and is terminal by construction, so it canno
 non-NULL ⇒ leased ⇒ transient — obtained at **zero extra round-trips** from the statement each dialect already runs
 to read `created_at` (§3.6.1).
 
+> 🔴 **THE `sql` HALF OF THAT SENTENCE IS SUPERSEDED BY §3.6a.1 (D-AU, finding R-7).** `sql` does **not**
+> discriminate on `locked_by` alone; it tests whether the lease is **LIVE** —
+> `locked_by IS NOT NULL AND locked_at > now() - leaseTTL`, on the **DB server clock**. A non-NULL `locked_by`
+> proves only that a row was *stamped*, so the rule above calls a **crashed holder's stranded lease "live"
+> forever** and classifies every subsequent over-cap add transient — the unlogged zero-delay Nack loop the
+> permanent arm exists to prevent. **Under the shipped rule the stranded-lease case takes the PERMANENT arm**
+> from `t0 + leaseTTL` until the reaper recovers the group. **`memory` is unaffected**: its lease is
+> UNCONDITIONAL (no wall-clock TTL), so `g.leased` remains a sound liveness test and D-AU is `sql`-only. *(Flagged
+> again by the second `/code-review` pass, 2026-08-27, after the same stale rule was found still standing in
+> `sql.WithMaxGroupMembers`' godoc — finding CR2-2.)*
+
 > **THE CONVERGENCE, stated deliberately rather than left incidental.** That predicate is *exactly* the premise
 > this section was restated to in revision 3, for an unrelated reason — audit **N-3**, the `sql` reaper sweeping
 > by default where `memory`'s does not:
@@ -1124,6 +1135,34 @@ adapter/memory/groupstore.go              const defaultMaxGroupMembers = 1 << 16
 adapter/database/sql/groupstore.go        const defaultMaxGroupMembers = 1 << 16   (§3.2, D-AR — a NAMED constant)
 ```
 
+> 🔴 **THE INVARIANT BINDS THE *DEFAULT*, AND THE DEADLOCK IS REACHABLE AROUND IT** (2026-08-27, second
+> `/code-review` pass, finding **CR2-3**). The AST test proves `default >= completionSizeCeiling` for both stores.
+> It says nothing about a **caller-configured** pair, and **nothing validates one** — `WithMaxGroupMembers` and
+> `routing.WithCompletionSize` are in different packages and neither constructor can see the other. So the exact
+> silent deadlock this invariant exists to prevent is reachable through two independently-valid public options:
+>
+> ```go
+> store, _ := memory.NewGroupStore(memory.WithMaxGroupMembers(10))
+> agg, _   := routing.NewAggregator(store, fn,
+>     routing.WithCompletionSize(20), routing.WithOutputChannel(out))
+> ```
+>
+> **Measured, not reasoned** (throwaway probe against the shipped tree, then deleted): both constructors return a
+> nil error; adds 1..10 succeed; from the **11th** on every arrival returns
+> `msgin: permanent: msgin: message dropped by overflow policy: memory.GroupStore.Add: group "k" holds 10 members, limit 10`
+> — `msgin.Permanent`-wrapped, so each is terminally settled (dead-lettered, or **dropped** after a WARN with no
+> sink configured), while the release predicate declines at 10 < 20 and the group never releases.
+> `memory.RecoverInterval()` is `0`, so with no `WithGroupTimeout` no reaper breaks it.
+>
+> **DISPOSITION: documentation, not validation.** A runtime check is not feasible without a new coupling —
+> `routing` would have to interrogate the store for its cap through a new SPI method, or the store would have to
+> learn the aggregator's completion size; both are a real API change for a misconfiguration, and this module is
+> pre-v1 with no consumers asking for it. Instead the claim in `WithCompletionSize`'s godoc is **qualified to the
+> default cap only**, and **both** `WithMaxGroupMembers` godocs (memory and sql) now warn that lowering the cap
+> beneath a configured completion size deadlocks the group, naming `routing.WithGroupTimeout` as the liveness
+> escape. If a future increment wants enforcement, the SPI seam to add is a `MaxMembers() int` on
+> `msgin.MessageGroupStore` that `NewAggregator` can compare against `completionSize`.
+
 > 🔴 **REVISION 2 CLOSES THIS. Revision 1's claim that "a blackbox test cannot compare them directly" is FALSE**
 > (audit **M-5**; ADR 0033 **D-AQ**). The two constants are unexported and in different packages — **and neither
 > fact matters to a parser.** `sizing_option_class_gate_test.go` is already a root blackbox test
@@ -1407,6 +1446,25 @@ editing the shared helper's SQL**:
 **`AddMember` is the only caller that passes a non-zero value** (`maxMembers+1`); `ClaimGroup` and `ExpiredGroups`
 pass **`0`** and keep their current, unbounded behavior exactly. The parameter is unexported, so it adds no
 class-gate key (§6 AC-8.7's reasoning, applied to a helper rather than a method).
+
+> 🔴 **THE `limit` PARAMETER IS GONE — DELETED 2026-08-27 (second `/code-review` pass, finding CR2-1).** The
+> paragraph above is the revision-3 mechanism and is kept as the record; **the shipped helpers take no `limit`**.
+> §3.6a.3(a) removed `AddMember`'s `maxMembers+1` (finding **R-1**), which left **all nine call sites passing
+> `0`** and the `if limit > 0` branch **unreachable, untestable, and still documented as something a maintainer
+> should restore** — restoring it reintroduces R-1's proven deadlock. The parameter is deleted so the rule is
+> enforced structurally: **there is no longer any way to express the truncation.**
+>
+> **The RULE is unchanged** — *a member set the caller acts on is never truncated*. Only its enforcement moved,
+> from a convention about argument values to the absence of the argument. See
+> [ADR 0033 D-AS](../adrs/0033-group-member-bounds.md)'s supersession box.
+>
+> **Consequence for §6 AC-9 rows 15 / 15b** (below): their mutant — *"pass a non-zero limit from `ClaimGroup` /
+> `ExpiredGroups`"* — **is no longer applicable**, because the fault it probed no longer has a representation.
+> The surviving mutant is *"bake a `LIMIT` into the shared helper's SQL"*, which both named harness cases still
+> kill. Both cases are **kept**; only their comments changed.
+>
+> **`ExpiredGroups`' own `limit` is a DIFFERENT parameter and is untouched** — a **group-count** bound on the
+> *groups* table (`LIMIT $4`), fed `defaultExpiredGroupsLimit = 100`.
 
 **This is a constraint, not a convention, and §6 AC-9 rows 15 and 15b mutation-prove it** — one row per
 `limit = 0` caller.
@@ -2375,8 +2433,8 @@ gate, each of these is a hot-path or typed-error branch needing a named covering
 > every new assertion"*) a survivor must be either killed or **justified in writing**; this is the justification.
 | **13** | **`Handle` returns a TRANSIENT error after a successful drain** | same | return the store's permanent error ⇒ AC-1b step 4 never runs; return `nil` ⇒ AC-1b's silent-loss assertion fails |
 | **14** | **the `default ≥ completionSizeCeiling` AST invariant, BOTH stores** | root blackbox test, AC-3.3 | change any of the three literals ⇒ fails; rename a constant ⇒ the not-found guard fires; drop the `sql` file from the parse set ⇒ fails |
-| **15** | **`ClaimGroup` passes `limit = 0` to `*SelectMembers`** | `MemberCapCountsClaimedMembers_ClaimSetIsComplete` | `ClaimGroup`'s fetch `0` → **`3`** at cap 4 ⇒ the claimed set is truncated ⇒ fails. **NOT `maxMembers+1`** — see the box below (§3.6.3, audit **N-5**) |
-| **15b** | **`ExpiredGroups` passes `limit = 0` to `*SelectMembers`** | `ExpiredReturnsEveryLiveMember` | `ExpiredGroups`' fetch `0` → **`1`** ⇒ the reaper's recovery set is truncated ⇒ fails. **This row is NEW** — the shipped suite did not cover it |
+| **15** | **`ClaimGroup` passes `limit = 0` to `*SelectMembers`** | `MemberCapCountsClaimedMembers_ClaimSetIsComplete` | `ClaimGroup`'s fetch `0` → **`3`** at cap 4 ⇒ the claimed set is truncated ⇒ fails. **NOT `maxMembers+1`** — see the box below (§3.6.3, audit **N-5**). 🔴 **MUTANT SUPERSEDED 2026-08-27 (CR2-1): the `limit` parameter is DELETED, so this mutation has no representation. Replacement — bake a `LIMIT` into the shared helper's SQL; this same case still kills it. The case is KEPT** |
+| **15b** | **`ExpiredGroups` passes `limit = 0` to `*SelectMembers`** | `ExpiredReturnsEveryLiveMember` | `ExpiredGroups`' fetch `0` → **`1`** ⇒ the reaper's recovery set is truncated ⇒ fails. **This row is NEW** — the shipped suite did not cover it. 🔴 **MUTANT SUPERSEDED 2026-08-27 (CR2-1), exactly as row 15: same deletion, same replacement mutant, case KEPT** |
 | **16** | **the `sql` count includes CLAIMED members** (§3.4, reversed in revision 4) | **AC-4 item 7**, on all three dialects | count `claimed_epoch IS NULL` instead of `count(*)` ⇒ the `cap+1`-th add after a claim is **admitted**, and `cap` more durable rows land per claim cycle, without limit (§3.4's cycle table). **This is the mutant that proves the durable table is bounded at all** (audit **NEW-7**) |
 | **17** | **a LEASED `sql` rejection is TRANSIENT** (`locked_by IS NOT NULL`) | **AC-4 item 7 (ii)** + AC-2c's `sql` leased twin | wrap unconditionally ⇒ a routine claim window dead-letters healthy traffic and both cases fail |
 | **18** | **the `sql` render names the ENGINE, not the store** | **AC-4 item 6**, on all three dialects | render `sql.GroupStore.Add` ⇒ all three fail — and on AC-4b's direct-dialect path that render names a store never involved (audit **NEW-5**) |

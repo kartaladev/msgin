@@ -1641,6 +1641,52 @@ accepted-drift state round 1's M-5 closed. Do not reverse one without the other.
 
 **NEW in revision 3. This is the disposition of audit MAJOR N-5.**
 
+> 🔴 **THE MECHANISM BELOW IS SUPERSEDED — THE RULE IS NOT (2026-08-27, second `/code-review` pass, finding
+> CR2-1).** The `limit int` parameter **has been deleted** from `pgSelectMembers` / `mysqlSelectMembers` /
+> `sqliteSelectMembers` and from all nine call sites. **D-AS's rule — *a member set the caller ACTS ON is never
+> truncated* — stands unchanged, and is now enforced structurally rather than by convention: there is no longer
+> any way to express the truncation.**
+>
+> **Why the mechanism is spent.** D-AS's premise was *"one shared helper serves three callers with different
+> bounds"* — true only while `AddMember` had a bound. Finding **R-1** (§D-AU's sibling; Spec 017 §3.6a.3) removed
+> `AddMember`'s `LIMIT maxMembers+1` because a cap **lowered beneath a group's stored size** returned a truncated
+> snapshot, so the release predicate read a complete group as incomplete and the member was dead-lettered **while
+> the complete group never released**. After R-1 **all three callers want unlimited**, so the parameter had no
+> second value:
+>
+> ```
+> $ grep -rn "SelectMembers(ctx" adapter/database/sql/{postgres,mysql,sqlite}/groupdialect.go
+> ... 9 call sites, every one passing 0
+> ```
+>
+> **Why deleting beats documenting.** The `if limit > 0 { … " LIMIT %d" … }` branch was **unreachable and
+> therefore untestable** — it could not carry a covering test under CLAUDE.md's hot-path rule — and the helper's
+> godoc still instructed a maintainer that *"Only AddMember passes a non-zero value (maxMembers+1, enough for the
+> over-cap snapshot)"*. That is a **live trap**: following the instruction reintroduces R-1's proven deadlock.
+> Deleting the parameter removes the trap structurally instead of documenting around it.
+>
+> **What this costs at the gate.** The mutants in Spec 017 §6 AC-9 rows **15** and **15b** were phrased as *"pass
+> a non-zero limit from `ClaimGroup` / `ExpiredGroups`"*. That mutation **can no longer be applied** — which is
+> the point; it is not a coverage loss but the removal of the fault it probed. The surviving mutation is *"bake a
+> `LIMIT` into the shared helper's SQL"*. Both cases
+> (`MemberCapCountsClaimedMembers_ClaimSetIsComplete`, `ExpiredReturnsEveryLiveMember`) are **kept**, with their
+> comments corrected — they now guard the SQL rather than a call site's argument.
+>
+> **MEASURED, both variants run against real SQLite (`TestSQLiteConformance`), with the mutation confirmed
+> APPLIED and the tree confirmed BUILDING before either outcome was recorded:**
+>
+> | Mutant baked into `sqliteSelectMembers`' SQL | Outcome |
+> |---|---|
+> | `LIMIT 3` | **KILLED** — six `GroupStore` cases fail, incl. `MemberCapCountsClaimedMembers_ClaimSetIsComplete`. **But `ExpiredReturnsEveryLiveMember` SURVIVES**: its group holds exactly 3 members, so `LIMIT 3` is **arithmetically incapable** of truncating it — this bundle's own recorded trap, hit again |
+> | `LIMIT 1` | **KILLED, and this is the variant to use** — both named cases fail |
+>
+> **Use a limit that BITES at both sites (`1`), not one that merely looks smaller than the cap.** The file was
+> restored and re-verified green after each run.
+>
+> **Not to be confused with `ExpiredGroups`' own `limit`.** `GroupDialect.ExpiredGroups(…, limit int)` is a
+> **group-count** bound on the *groups* table (`LIMIT $4`), fed `defaultExpiredGroupsLimit = 100` from
+> `groupstore.go`. It is live, load-bearing, and **untouched**.
+
 **The defect.** D-AP (revision 2) said each dialect's live-member `SELECT` *"gains a `LIMIT maxMembers+1`"*. Those
 `SELECT`s live in **one shared helper per dialect**, and each helper has **three** callers:
 

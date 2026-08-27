@@ -214,11 +214,29 @@ func WithReleaseWhen(fn func(msgin.MessageGroup) bool) AggregatorOption {
 // completionSizeCeiling BOUNDS THIS OPTION'S n, NOT THE GROUP. What bounds a
 // group — whatever release strategy is in force, including the three that
 // never see this check — is the msgin.MessageGroupStore's own member cap:
-// adapter/memory's WithMaxGroupMembers, 65,536 members by default and raisable
-// to 1,048,576. That default is deliberately not smaller than
-// completionSizeCeiling, so an n this option accepts can always reach its own
-// release; a smaller store cap would refuse the completing member before the
-// predicate could fire.
+// adapter/memory's and adapter/database/sql's WithMaxGroupMembers, 65,536
+// members by default and raisable to 1,048,576.
+//
+// AT THE DEFAULT CAP, AND ONLY THERE, n IS GUARANTEED REACHABLE. That default
+// is deliberately not smaller than completionSizeCeiling, so an n this option
+// accepts can always reach its own release. NOTHING VALIDATES A
+// CALLER-CONFIGURED PAIR: the store cap and this option live in different
+// packages and neither constructor can see the other, so
+//
+//	store, _ := memory.NewGroupStore(memory.WithMaxGroupMembers(10))
+//	agg, _ := routing.NewAggregator(store, fn,
+//		routing.WithCompletionSize(20), routing.WithOutputChannel(out))
+//
+// both return a nil error and then DEADLOCK the group. Measured: adds 1..10
+// succeed, and from the 11th on every arrival for that key comes back as
+// "msgin: permanent: msgin: message dropped by overflow policy: … holds 10
+// members, limit 10" — msgin.Permanent-wrapped, so the runtime settles it
+// TERMINALLY: one attempt at the invalid-message sink or dead-letter fallback,
+// and with NEITHER configured a WARN and an Ack, i.e. the message is DROPPED.
+// Meanwhile this predicate declines at 10 < 20, so the group never releases.
+// Keep n <= the store's configured cap, or set WithGroupTimeout so the reaper
+// expires the stuck group (memory's RecoverInterval is 0, so with no timeout
+// there is no sweep at all).
 func WithCompletionSize(n int) AggregatorOption {
 	return func(c *aggregatorConfig) {
 		c.completionSize, c.completionSizeSet = n, true
