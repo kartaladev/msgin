@@ -2,176 +2,236 @@
 
 > **READ FIRST.** Read `CLAUDE.md`, then this file, then the governing spec/plan/ADR named in §3 — and **trust
 > those files and `git log` over this document.** Every count below was measured when written; **re-derive before
-> relying on one.** The sharpest evidence for why: a **comment-only** commit (`de38a95`) silently invalidated
-> **41** `file:line` citations in an in-flight design bundle that had just passed a dedicated mechanical sweep —
-> and the citation *of the finding about stale citations* was itself off by eleven.
+> relying on one.** The sharpest evidence: a **comment-only** commit (`de38a95`) once invalidated **41**
+> `file:line` citations in a bundle that had just passed a dedicated mechanical sweep. In the session that wrote
+> this, **every cited coordinate in three consecutive findings was stale**, and **five documented claims were
+> refuted outright by running them** (§2).
 >
-> ### ✅ Plan 031 is 9 of 10 tasks in. BOTH TASK 10 REVIEWS HAVE NOW RUN. NOTHING MERGED OR PUSHED.
-> ### 🔴 Next: **work the 15 open findings in [`docs/plans/031-review-findings.md`](plans/031-review-findings.md).**
-> ### `/security-review`: **0 findings.** `/code-review max`: **15**, two of them CLAUDE.md delivery blockers.
-> ### **DO NOT MERGE while any finding is un-dispositioned.** Three need design decisions first — see that file §7.
+> ### ✅ ROUND 1: all 15 whole-branch findings fixed, all 5 capped items dispositioned, both blockers closed.
+> ### ✅ ROUND 2: the user re-ran **`/code-review high`** — **3 findings, no security issues, ALL FIXED** (§2b).
+> ### 🔴 NEXT, AND ONLY THE USER CAN DO IT: re-run **`/security-review`** over `main..HEAD` — §5.
+> ### It has **not** run since round 1. Then Task 10 Steps 5–10 (§7).
+> ### NOTHING MERGED, NOTHING PUSHED, NOTHING TAGGED.
 >
 > | | State |
 > |---|---|
-> | Branch | **`chore/backlog-sweep-post-029`**, clean. Count: `git rev-list --count main..HEAD` — do not quote a number here, this file's own commit moves it |
-> | `main` / `origin/main` | **`2b2dec1`**, untouched — verify with `git ls-remote origin main`, never `git rev-parse origin/…` |
-> | Working tree | **clean.** Derive HEAD with `git rev-parse --short HEAD` — this file's own commits move it |
-> | Last **code** commit | **`a2cc568`** (Task 9b). Everything after it is `docs:` only — verify with `git log --format='%h %s' a2cc568..HEAD` |
-> | Task 10 Step 3 (8 CI steps × 8 modules) | ✅ **ALL GREEN**, run at `a2cc568`; **still valid**, since every commit since is docs-only — see §6 |
-> | Task 10 Step 3b (`GOARCH=386`) | ✅ **vet clean**, root + all 5 touched sql modules |
-> | Task 10 Step 4 (docs links) | ✅ arm 1 at its **2 known false positives**; arm 2 **zero**, vacuity-probed |
+> | Branch | **`chore/backlog-sweep-post-029`**, clean. Count: `git rev-list --count main..HEAD` — do not quote a number, this file's own commit moves it |
+> | `main` / `origin/main` | **`2b2dec1`**, untouched — verified with `git ls-remote origin main`, never `git rev-parse origin/…` |
+> | Working tree | **clean.** Derive HEAD with `git rev-parse --short HEAD` |
+> | Last **code** commit | derive it: `git log -1 --diff-filter=ACMR --format='%h %s' -- '*.go'`. Anything after it is docs-only |
+> | 8 CI steps × 8 modules | ✅ **8/8 on all 8**, re-run after the last code commit — §6 |
+> | Workspace build · `GOARCH=386` vet · docs links | ✅ all clean; arm 1 at its 2 known false positives, arm 2 zero |
 > | Tags | **zero, as always.** Do NOT propose tagging |
 
 ## 1. Where things stand
 
-**Plan 031 — the group-member bound — is 9 of 10 tasks delivered.** Execution order was
-`1 → 2 → 4 → 5+6 → 3 → 7 → 8 → 9 → 9b → 10`, not task-number order.
+**Plan 031 Task 11 — working the whole-branch review findings — is COMPLETE.** Task 11 did not exist when the
+plan was written; Task 10 Steps 1–2 produced it. Tasks 1–9b were delivered in earlier sessions.
 
-| Task | State | Commit |
+| Task 11 step | State | Commit |
 |---|---|---|
-| 1, 2, 4, 5+6 | ✅ (earlier sessions) | `7abc9f8` · `18e5dc0` · `12cec15` · `355504e` |
-| 3 — the `default ≥ completionSizeCeiling` AST invariant | ✅ | `7324e85` |
-| 7 — the shared dialect conformance case | ✅ | `920da96` |
-| 8 — the SPI contract + interface-level conformance | ✅ | `02c7804` |
-| 9 — the class gate's blind spot + count sweep | ✅ | `acdeea5` |
-| 9b — fold the two arm rows into Spec 016 | ✅ | `a2cc568` |
-| **10 — whole-branch delivery gate** | **⏭️ Steps 3/3b/4 DONE; Steps 0/1/2/5+ REMAIN** | — |
+| 0 — ratify the three design decisions | ✅ D-AU, D-AV, D-AW | `b78ff09` |
+| 1 — three-artifact reconciliation | ✅ clean, by label **and** by substance | `b78ff09` |
+| 2 — R-7, R-15, R-10 (+ R-3, R-4) | ✅ | `00bc8b2` |
+| 3 — R-6, R-9, R-12 | ✅ | `99f2564` |
+| 4 — R-1, R-11, R-5, R-8, R-14 | ✅ two agents, disjoint modules | `8b5727b` |
+| 4b — R-2, R-13 (+ D-AX) | ✅ | `ac15650` |
+| 5 — §6's five capped items | ✅ 3 fixed, 2 triaged with rationale | `ac15650` |
+| 6 — re-run the gate: 8 CI steps × 8 modules | ✅ **8/8 on all 8** (§6) | — |
+| 6 — re-run `/code-review` (**round 2**) | ✅ user-invoked; 3 findings, all confirmed and fixed | `f7ada02` |
+| **6 — re-run `/security-review`** | ⏭️ **NOT RUN since round 1. NEEDS THE USER** (§5) | — |
 
-## 2. 🔴 READ THIS FIRST: SIX RATIFIED INSTRUCTIONS PROVED DEFECTIVE AT EXECUTION TIME
+**[`docs/plans/031-review-findings.md`](plans/031-review-findings.md) is the disposition list. Its LIVE STATUS
+header block is the current stratum; every status line below it is annotated history, not a live claim.**
 
-**Every single one was found by RUNNING something. None was findable by reading. All had cleared multi-round
-adversarial design audits.** This is the dominant lesson of the increment and it should change how the next
-session reads the remaining plan text: **treat every ratified claim as a hypothesis, and run it.**
+## 2. 🔴 THE DOMINANT LESSON, NOW PROVEN TWICE OVER
 
-| # | Task | The ratified instruction | What was actually true |
-|---|---|---|---|
-| 1 | 3 | B3-1: *"change any of the three literals ⇒ fails"* | **Half the directions must PASS.** All three constants are `1<<16`, so the invariant holds as **equality**; raising a default or lowering the ceiling *strengthens* it. 3 of 6 killed, 3 correctly survived |
-| 2 | 3 | B3-2: a renamed constant yields a vacuous **`0 >= 0`** | **Wrong constant and wrong arithmetic.** Renaming a *store default* still fails (`0 >= 65536`). Only renaming the **ceiling** exposes the guard: **`65536 >= 0`** |
-| 3 | 7 | D-AS: *"pass `maxMembers+1` from `ClaimGroup`"* | **Unimplementable AND incapable.** `ClaimGroup` has no `maxMembers` parameter — D-AS's own point — and `LIMIT 5` cannot truncate 4 rows. **Run: SURVIVED.** Use a limit that bites (`0`→`3`) |
-| 4 | 7 | `ExpiredGroups` was covered | **It had NO mutant at all.** `LIMIT 1` on the reaper — dropping every member of an expired group past the first — **passed all 14 subtests** |
-| 5 | 8 | Step 2: the counted set is *"implementation-specific"* | **Pre-reversal D-AF.** Revision 4 reversed it; §3.7 requires live **AND** claimed |
-| 6 | 9 | Step 3's derivation script **is the remedy** | **The remedy was built out of the defect.** Its selector is a hand-typed number list `N='12\|17\|19\|21\|27\|44\|46'`, blind to 13/18/20/45, and `substr($0,1,2)=="//"` misses indented comments. It **missed 9 stale sites**, including the file's canonical partition line |
+The previous handover recorded **six ratified instructions proved defective at execution time**. This session
+added **five refuted claims and one recommended fix that would have crashed** — all found by *running*, none by
+reading. **Treat every documented claim as a hypothesis and run it.** A finding that no longer reproduces is a
+valid, valuable result.
 
-**Defect 6 is the one to internalise.** The script existed *because* four rounds of hand-patched counts kept
-being overtaken (7 → 12 → 14 → 16 → 17 sites). It was then written from the digits that happened to be wrong
-last time — so it could only find last time's defect. **The fix that shipped is deleting the digits, not a better
-selector:** seven per-arm restatements collapsed to one, two assertion messages now formatted from `len(...)`,
-the hand-maintained ordinal removed. Script arms C, D2 and E now return nothing, permanently.
+| # | The claim | What was actually true |
+|---|---|---|
+| 1 | R-7: `adapter/memory` is a twin of the three dialects | **Not a twin.** `memory` has no lease TTL *by construction*; `!g.leased` is sound there and unsound in `sql`. D-AU is `sql`-only and `memory` was left unchanged |
+| 2 | R-6: *"the operator gets a raw driver error instead of the typed one"* | **False.** `classifyQueryErr` **replaces** rather than wraps, and both arms already returned `classified`. The *contract violation* it also alleged was real and was fixed |
+| 3 | R-12: *"Fix: `reflect.Indirect(...)`"* | **Would PANIC** on `(*yourDialect)(nil)` — the shape the SPI godoc prescribes. The RED run also **segfaulted** on `reflect.TypeOf(nil).PkgPath()` |
+| 4 | R-5: the leased snapshot is *"always empty"* | **False.** `claimedLen == len(msgs)` holds only at the instant `ClaimGroup` returns; `Add` appends beyond it for the width of the lease |
+| 5 | R-2's citation of `groupstore.go:78-86` | `git log -S` shows that phrase **only ever lived in `routing/aggregator.go`**. The substantive complaint was still right |
+
+**And one ratified decision was superseded by its own task.** **D-AV** part 3 was ratified as *"`selectLimit`
+becomes total"*. R-1 then showed the `LIMIT` **was** the defect, not the thing to make safe — and that the
+truncation reached the **success path** too, so any overflow-path-only fix would have been insufficient.
+`selectLimit` is **deleted**. Neither five design-audit rounds nor the delivery-gate reviewer saw this.
+
+> **D-AV is NOT thereby redundant, and both artifacts say so.** R-15 had two independent fail-open routes at
+> `math.MaxInt`; only the LIMIT half became structurally impossible. The **cap comparison** `n > int64(maxMembers)`
+> still cannot fire there, and **nothing but the validator prevents it.** A reader concluding *"R-1 removed the
+> overflow, so drop the validation"* would reopen a delivery blocker.
+
+## 2b. Review round 2 — 3 findings, ALL DOCUMENTATION DEFECTS
+
+The user re-ran **`/code-review high`** over `main...HEAD` after round 1 closed. Everything else was green (all 11
+root packages `-race`, `golangci-lint` 0 issues, `routing` 100%). **All three were confirmed independently by the
+coordinator before any edit, and all three are fixed in `f7ada02`.**
+
+| # | Defect | Fix |
+|---|---|---|
+| **CR2-1** | The `limit` parameter on the three `*SelectMembers` helpers was **DEAD** — all nine call sites pass `0` — while its godoc still read *"Only AddMember passes a non-zero value (`maxMembers+1`)"*, **precisely the truncation R-1 removed** | **Deleted** the parameter rather than correcting the comment. A dead branch plus a comment instructing its restoration is a live trap |
+| **CR2-2** | `sql`'s `WithMaxGroupMembers` godoc documented the **pre-D-AU** discriminator (`locked_by` alone), so it promised transient where the code now returns **Permanent** for a stranded lease | Prose rewritten to match the code, including a two-phase timeline |
+| **CR2-3** | `WithCompletionSize`'s *"can always reach its own release"* holds only at the **default** cap | Claim qualified; both `WithMaxGroupMembers` godocs warn. **No validation code** — see below |
+
+**Every one was godoc, not logic.** The only non-comment change in that commit is the dead-parameter deletion.
+This is the project's *"docs can contradict the code they describe"* lesson, and CR2-2 is the sharpest form of it:
+**D-AU corrected the classification code in this same session and left the option's godoc, two hundred lines
+away, describing the old behaviour.**
+
+> 🔴 **CR2-1 SUPERSEDES THE MECHANISM OF D-AS, NOT ITS RULE.** D-AS introduced the parameter because *"one shared
+> helper serves three callers with different bounds"*. After R-1 all three want unlimited, so the premise is
+> spent — while D-AS's **rule** (*a member set the caller acts on is never truncated*) is now enforced by there
+> being **no way to express truncation at all**. Recorded in D-AS, not silently dropped.
+> **`ExpiredGroups`' `limit` is a DIFFERENT, live parameter** bounding the *groups* table
+> (`defaultExpiredGroupsLimit = 100`) — verified untouched.
+
+> 🔴 **THE REPLACEMENT MUTANT'S OBVIOUS FORM IS A FALSE NEGATIVE, AND IT WAS THE COORDINATOR'S ASSERTION THAT
+> FAILED.** The claim *"the harness cases still kill a re-introduced LIMIT"* was measured rather than assumed:
+> **`LIMIT 3` kills six cases but SURVIVES `ExpiredReturnsEveryLiveMember`**, whose group holds exactly three
+> members — the mutant is arithmetically incapable. **`LIMIT 1` kills both.** This bundle's own recorded trap,
+> catching the person who wrote the warning.
+
+**Deliberately NOT built:** CR2-3's runtime check would need a new `MaxMembers() int` method on the
+`msgin.MessageGroupStore` SPI so `NewAggregator` could compare against it — public API growth to catch a
+misconfiguration. The seam is described in **Spec 017 §3.5**; nothing was built. **This is an open design
+question, not an oversight.**
 
 ## 3. Traceability — read before acting
 
 - `CLAUDE.md` (binding). Its counts are **command-derived** — the command is the authority, never the number.
+  🔴 **Two known-stale figures in it, both logged in Plan 031 Task 10 Step 8:** the `reliability.go:46` citation
+  for `IsPermanent`, and the *"53 anchor links"* census — the tree has **55**, and it is not this increment's doing.
 - **Plan 031 (live):** [`docs/specs/017-group-member-bounds.md`](specs/017-group-member-bounds.md) ·
   [`docs/adrs/0033-group-member-bounds.md`](adrs/0033-group-member-bounds.md) **(ACCEPTED)** ·
-  [`docs/plans/031-group-member-bounds.md`](plans/031-group-member-bounds.md) · audit rounds
+  [`docs/plans/031-group-member-bounds.md`](plans/031-group-member-bounds.md) ·
+  [`docs/plans/031-review-findings.md`](plans/031-review-findings.md) · audit rounds
   [1](plans/031-audit-round-1.md) [2](plans/031-audit-round-2.md) [3](plans/031-audit-round-3.md)
   [4](plans/031-audit-round-4.md) — **immutable**
-- **Amended by this increment:** [`docs/specs/016-sizing-option-bounds.md`](specs/016-sizing-option-bounds.md)
-  (delivered by Plan 029; Task 9b folded in the two new rows and now carries an *"Amended by"* list).
+- **Amended by this increment:** [`docs/specs/016-sizing-option-bounds.md`](specs/016-sizing-option-bounds.md) —
+  **twice**. Task 9b folded in two `fixed` rows; Task 11 folded in a `rejects` row for `sql.ValidateMaxMembers`.
+  **The class gate's arm rows have a FOURTH artifact — that file — and it is not in the obvious bundle.** It was
+  missed again at Task 11 and caught by the coordinator at commit time.
 
-## 3b. 🔴 THE WHOLE-BRANCH GATE HAS RUN — 15 OPEN FINDINGS
+## 4. The four decisions ratified this session
 
-[`docs/plans/031-review-findings.md`](plans/031-review-findings.md) is the disposition list. **Read it before
-any other work.** Highlights:
+All sit in ADR 0033 immediately before `## Consequences`, each with a spec twin.
 
-- **`/security-review`: 0 findings.** 5 candidates raised, 4 refuted at confidence 9, 1 at confidence 2. **No
-  security blockers on this branch.** It examined the same `selectLimit` overflow and `Handle` overflow branch
-  the code review flags and correctly found them not *exploitable* — they remain **correctness** defects. The
-  two gates corroborate; they do not conflict.
-- **Two CLAUDE.md delivery blockers**, both re-verified by the coordinator independently: an uncovered typed-error
-  branch (`sql/groupstore.go:424`, hit count `0`) and `selectLimit(math.MaxInt)` wrapping to `math.MinInt`, which
-  silently disables **both** the cap check and the fetch bound for a caller who opted into the largest bound.
-- **Every per-task adversarial review on this branch came back clean.** These surfaced only at branch level —
-  the *"whole-branch review catches what per-task misses"* lesson holding for the second time.
-- **Two findings are in code delivered THIS session**: `dialectEngine` (Task 7) returns `""` for a pointer-typed
-  dialect — the form the SPI godoc recommends — and Task 8's godoc claim *"unmarked, hence transient"* is false
-  when the aggregate error is itself `Permanent`. 🔴 **BOTH ARE NOW CLOSED** (R-12 in Task 11 Step 3; R-2 in Task
-  11 Step 4b under [ADR 0033](adrs/0033-group-member-bounds.md) **D-AX**, which re-mints the release failure as a
-  fresh transient `ErrOverflowDropped`). The paragraph above records the state at the review, not the state now —
-  see [`docs/plans/031-review-findings.md`](plans/031-review-findings.md)'s LIVE STATUS block, **15 of 15**.
+| ADR | Finding | Substance | Spec |
+|---|---|---|---|
+| **D-AU** | R-7 | `AddMember` gains `leaseTTL`; classify on lease **expiry**, not on `locked_by` being non-NULL. **`sql` only** | §3.6a.1 |
+| **D-AV** | R-15 | `UnboundedGroupMembers = -1`; reject anything outside `{-1} ∪ [1, 1<<20]`, in one shared validator | §3.6a.2 |
+| **D-AW** | R-10 | Release **strategy** failure ⇒ `errors.Join`; decline ⇒ bare `err`. The `IsPermanent` **escalation is intended and asserted** | §3.3b |
+| **D-AX** | R-2 | Release **execution** failure ⇒ a fresh **transient** `ErrOverflowDropped` interpolating the cause with `%v` | §3.3a.1 |
 
-**Three design decisions must be made and recorded in ADR 0033 BEFORE any code is written** (findings file §7):
-does `AddMember` gain `leaseTTL`; does the SPI reject `maxMembers <= 0` with a typed error plus an explicit
-unbounded sentinel; is the *declined*-vs-*failed* merge upheld or reversed (a shipped test asserts the current
-behaviour, so reversing it is a deliberate change, not a fix).
+> 🔴 **D-AW AND D-AX SIT TEN LINES APART IN THE CODE AND LOOK CONTRADICTORY. THEY ARE NOT.** The discriminator,
+> now stated in both: a failing release **strategy** is a predicate about *this* group and fails identically on
+> every redelivery, so escalating to terminal is correct. A failing **aggregate/`Send`** is about the *other,
+> claimed* members' payloads — the refused member is unrelated collateral and must stay redeliverable.
+> **Do not "fix" D-AX's `%v` back to `%w`**; severing the chain is the decision, and a mutant guards it.
 
-## 4. What Task 10 still needs
-
-**Step 0 — THREE-ARTIFACT RECONCILIATION, before any review.** For every finding this bundle dispositions,
-confirm the fix is in **all three** of Spec 017, ADR 0033 and Plan 031. **Diff them; do not spot-check.** This is
-the project's named failure mode and it has recurred in *three separate revisions* — including revision 4, where
-the step was skipped and R4-6 survived because of it. Note that this session amended all three together each
-time a defect from §2 was found, so the delta should be small — **but verify, don't assume.**
-
-**Steps 1 and 2 — ✅ BOTH HAVE RUN** (see §3b). What remains is **working the findings**: fix or explicitly
-triage each with a written rationale, then **re-run both reviews and the `-race` suite**. The reviews are
-user-invocable only (§5), so the fix session must ask the user to re-run them.
-
-**Steps 5+ — status lines.** `docs/specs/017-*` still reads **"DRAFT — revision 5 … NOT approved for
-implementation"** while its code has shipped. Plan 031's own status lines need the same pass.
+**Also settled, without an ADR:** the new `sql.ValidateMaxMembers` rejection is `msgin.Permanent`-wrapped, alone
+among the `ErrInvalidCapacity` producers, because it is the only one returned from a **per-message hot path**
+rather than a constructor (ADR 0031 **D-V**). The sibling `ErrMissingMsgID` at the same site is bare — a genuine
+asymmetry, flagged, not resolved.
 
 ## 5. 🔴 `/code-review` AND `/security-review` ARE USER-INVOCABLE ONLY
 
-The `Skill` tool refuses both with `disable-model-invocation`. **The model cannot run them, and must not claim
-the gate passed when it did not run.** In this session an **adversarial reviewer subagent** was substituted —
-SDD's own prescribed gate — and it earned its keep: it found the Task 3 wiring defect (§7 item 1) that both the
-implementer and the coordinator had signed off on. That substitution is *not* equivalent to the slash commands
-for the **whole-branch** gate. **The user must invoke them.**
+The `Skill` tool refuses both with `disable-model-invocation`. **The model cannot run them and must never claim
+the gate passed when it did not.** Adversarial reviewer **subagents** are SDD's prescribed substitute and earned
+their keep repeatedly — but that is **not** equivalent for the **whole-branch** gate. **The user must invoke them
+over `main..HEAD`, not the last commit.**
 
-## 6. Gates already run at `a2cc568` — re-run before merging, but these were green
+**`/code-review` HAS now run twice** (round 1: 15 findings; round 2: 3, all fixed).
+**`/security-review` has run ONCE, before any of Task 11's fixes existed.** It must run again: the branch has
+since had an SPI signature broken a *second* time, a `Handle` branch grown from six exits to **nine**, two
+functions deleted (`selectLimit`, the `limit` parameter), a new exported `harness.DialectEngine`, and a new AST
+gate half. None of round 2's findings was security-shaped, but that is not evidence about the code round 1's
+security pass never saw.
 
-**Why `a2cc568` and not HEAD:** it is the last commit touching a `.go` file. Every commit after it is `docs:`
-only (`git log --format='%h %s' a2cc568..HEAD` to confirm), so these results still hold at HEAD. **Re-derive that
-claim rather than trusting this sentence** — the moment a code commit lands, it stops being true.
+**Why re-running catches things:** round 1 produced all 15 findings while **every per-task review came back
+clean**, and round 2 then found three more in code that had *just* passed round 1's fixes — including one godoc
+that this session's own D-AU fix had left stale two hundred lines from the code it changed.
+
+## 6. Gates re-run after the last code commit — all green
 
 | Gate | Result |
 |---|---|
-| 8 CI steps × 8 modules, `GOWORK=off` | **8/8 OK on all 8** (build, vet, gofmt, `CGO_ENABLED=0`, `tidy`+diff, `govulncheck`, `golangci-lint`, `test -race -shuffle=on`) |
+| 8 CI steps × 8 modules, `GOWORK=off` | **8/8 on all 8** (build, vet, gofmt, `CGO_ENABLED=0`, `tidy`+diff, `govulncheck`, `golangci-lint`, `test -race -shuffle=on`) |
 | Workspace pass (`GOWORK` unset) | 8/8 build OK |
-| `dbtest` | **ok 112s** — postgres, mysql, **mariadb**, sqlite |
-| `crontest` | ok 46s |
+| `dbtest` | green — postgres, mysql, **mariadb**, sqlite |
 | `GOARCH=386 GOOS=linux go vet` | clean, root + 5 sql modules |
-| Docs links | arm 1 = 2 known FPs; arm 2 = zero, vacuity-probed |
+| Docs links | arm 1 = 2 known FPs; arm 2 = zero |
+| Coverage | `routing` **100%** · `adapter/database/sql` 94.2% · root 95.6% · `adapter/memory` 88.0% |
 
-**`harness` reports `[no test files]` — that is a FALSE PASS, not a green.** Check it with `go vet`.
+> **`harness` is NO LONGER a false pass** — Task 11 Step 3 gave it its first real test file. Still `go vet` it too.
 
-## 7. Carry-forward — open, unscheduled
+## 7. What Task 10 still needs (Steps 5–10)
+
+1. **Steps 5/6 — the derived figures. Re-derive, never transcribe.** The class-gate partition moved again:
+   **20 keys / 14 fixed / 2 rejects / 0 deferred / 6 safe / 22 rows** at the time of writing. `ErrInvalidCapacity`
+   now has **SEVEN** producers — reconcile **by name**; the plan's *"expect six"* was corrected.
+2. **Step 7** — refresh CLAUDE.md's Project status counts and this file's; fold in Spec 017 §8's follow-ups.
+3. **Step 8** — CLAUDE.md's two stale figures (§3). **Delete the digit rather than update it** where you can.
+4. **Step 9 — status lines.** Spec 017 is corrected. **Plan 031 still needs its own pass.**
+5. **Step 10** — stage, show the diff, **wait for explicit approval**. `git push`, the merge and the branch
+   deletion each need their own separate approval.
+
+## 8. Carry-forward — open, unscheduled
 
 | Item | State |
 |---|---|
-| **8 stale `file:line` citations in Spec 016 §2.1's table** | Measured at Task 9b, **not fixed** (out of scope). Expressions are all still correct; only coordinates rotted. **One was broken by Plan 031's own commits** — the `maxGroups` guard cited at `adapter/memory/groupstore.go:108` now sits at `:241` and reads `len(s.groups) >= s.maxGroups`; line 108 is a comment. Re-derive with `grep -n 'len(s.groups) >=' adapter/memory/groupstore.go`, never the coordinate. The two rows Task 9b added deliberately cite *file + expression with no line number* |
-| **B6 mutants ran per-implementation, not 10×3** | Task 7 ran 8 on sqlite, B6-6 on postgres+mysql, B6-10 on sqlite+postgres; the coordinator spot-checked **B6-8 on all three**. A full 10×3 sweep is ~16 more Docker runs. Judged low-yield (the assertions are shared and execute against all four runners) but **not** done |
-| **`AST checker → permanent gate`** | Plan 030 Task 1's throwaway checker. Task 3 shipped a *second* root AST gate (`group_member_bound_invariant_test.go`); a general one is still unwritten |
-| **`WithPollMaxBatch`'s safe-arm row is magnitude-insensitive** | Pre-existing, verified not a regression. Fix: assert on batch **size**, not eventual arrival |
-| **`resilience.NewTokenBucket` ordinal** | **CLOSED** at Task 9 — removed rather than corrected. A hand-maintained index is the defect class, not an instance of it |
+| **`decodeErr`'s content is discarded** | NEW (findings §5b item 1). A corrupt stored header never reaches the operator; suppressing its *effect* on control flow is deliberate, discarding its *content* is a debuggability gap. **Un-triaged** |
+| **`ExampleWithReleaseWhen`'s dead channel wiring** | Triaged, not fixed (findings §6 item 4). Not a merge blocker; should not survive the next `routing` increment |
+| **~120 lines of triplicated dialect logic** | Triaged (findings §6 item 1). Revisit triggers recorded: a fourth dialect, a third bug needing three fixes, or further shared *semantics* in `AddMember` |
+| **`ErrMissingMsgID` is bare where `ValidateMaxMembers` is `Permanent`** | Same validate-before-I/O site, opposite classification. Flagged in §4, not resolved |
+| **8 stale `file:line` citations in Spec 016 §2.1** | Measured at Task 9b, still not fixed. Expressions correct; coordinates rotted |
+| **B6 mutants ran per-implementation, not 10×3** | Unchanged. ~16 more Docker runs; judged low-yield but **not** done |
+| **A general `AST checker → permanent gate`** | Still unwritten. Task 11 added a **third** root AST gate half |
+| **`WithPollMaxBatch`'s safe-arm row is magnitude-insensitive** | Pre-existing, verified not a regression |
 
-## 8. Gotchas — these will bite
+## 9. Gotchas — these will bite
 
-- **A mutant that does not COMPILE reports as a KILL; one that fails to APPLY reports as a SURVIVAL.** Both
-  happened repeatedly this session — three false kills in one Task 3 run (renaming only a `const` breaks the
-  build, so the test never runs), and false survivals in Tasks 3, 8 and 9. **Require the mutation to APPLY
-  (assert the needle was present and the file changed) AND `go build ./...` to pass, BEFORE recording either
-  outcome.** Rename identifiers **file-globally**. Log a value the test computes so a vacuous run is visible.
-- **Check a mutant's ARITHMETIC against the fixture's real magnitudes.** Defects 1, 2 and 3 in §2 are all this.
-- **`git checkout -- <file>` is NOT a revert for an UNTRACKED file** — exits 0, does nothing. It bit an agent in
-  Task 3. Revert from a copied pristine backup, proved with `diff -q` / `git hash-object`.
+- **A mutant that does not COMPILE reports as a KILL; one that fails to APPLY reports as a SURVIVAL.** Require
+  the mutation to **apply** (needle present, file hash changed) **and** `go build ./...` to pass **before**
+  recording either outcome. Rename identifiers **file-globally**. **Check the mutant's arithmetic against the
+  fixture's real magnitudes** — a `LIMIT 5` cannot truncate 4 rows.
+  🔴 **NEW:** a `%v`→`%w` mutant "passes" as a kill only because `fmt.Sprintf` rejects `%w` at **vet** time. The
+  mutant that matters is the one that *genuinely re-wraps* — the shape a reader "fixing it back" would write.
+- **Run the docs-link gate LAST, after the final edit.** A pass taken before the last edit proves nothing — that
+  mistake shipped a broken link in this very session, in the coordinator's own edit.
+- **Verify the COMMIT, not the worktree** — `git diff HEAD --stat` must be empty. **When agents are running,
+  never `git add -A`**: it will sweep in another agent's half-finished edits.
+- **Parallel agents are safe only across a real module seam.** Two agents in the same Go module both run
+  `go test ./...`, and a mid-edit tree makes one debug the other's file. Leaf-vs-root worked because the dialects
+  import neither `adapter/memory` nor `routing`.
+- **`git checkout -- <file>` is NOT a revert for an UNTRACKED file** — exits 0, does nothing.
 - **There is a FOURTH dbtest runner.** `TestMariaDBConformance` sets `kit.Name = "mariadb"` while running the
-  **mysql** dialect. Every anchor list and the plan omitted it; an engine-render assertion keyed on `kit.Name`
-  fails there. Derive the engine from the dialect's package path.
+  **mysql** dialect. **Derive the engine from the dialect's package path — `harness.DialectEngine`, exported at
+  Task 11 Step 3 — never from `kit.Name`.**
+- 🔴 **`GOARCH=386 GOOS=linux go test -run=NONE ./...`** — the form this file used to recommend — reports
+  `exec format error` on darwin/arm64. **That is the binary failing to RUN, not a vet finding.** Use
+  `GOARCH=386 GOOS=linux go vet ./...`, plus `go build -gcflags=all=-e ./...` for the full per-package list.
 - **`adapter/database/sql` is NOT a module.** `find . -name go.mod` lists eight and it is not among them.
-- **A leaf-module import resolves under `go.work` but NOT under `GOWORK=off`.** Task 9's probe A depends on this:
-  a workspace-only probe would wrongly conclude a leaf key is adoptable by a root test.
+- **A leaf-module import resolves under `go.work` but NOT under `GOWORK=off`.**
 - **`byArm` has NO key for an empty arm.** Writing `"deferred": 0` FAILS the assertion.
 - **`apidiff` exits 0 even when it reports changes** — the OUTPUT is the signal. It is blind outside root.
-- **`go vet` aborts after the first error per package.** For the full 386 list use
-  `GOARCH=386 GOOS=linux go test -gcflags=all=-e -run=NONE ./...`.
-- **`govulncheck` lives in `$(go env GOPATH)/bin`**, not on `PATH`.
-- **`*-audit-round-*.md` and `*-derivation-findings.md` are IMMUTABLE.** Delivered plans are not.
+- **`*-audit-round-*.md` and `*-derivation-findings.md` are IMMUTABLE.** A stale number there is *correct* — it
+  records a past state. Delivered plans are not immutable.
 - **`gopls` / the `LSP` tool is NOT available here.** Plans mandate it; substitute `go doc` + greps and say so.
+- **`govulncheck` lives in `$(go env GOPATH)/bin`**, not on `PATH`.
 - `GOTOOLCHAIN=go1.25.13`. `.superpowers/` is git-ignored. Never commit `.claude/settings.json`.
 
-## 9. Pending approvals — nothing here was decided for you
+## 10. Pending approvals — nothing here was decided for you
 
-1. **Adopting `github.com/gin-gonic/gin`.** Untouched. ADR 0024 remains reserved-but-unwritten, deliberately —
+1. **Re-running the two review commands** (§5) — required before merge, and only the user can do it.
+2. **Adopting `github.com/gin-gonic/gin`.** Untouched. ADR 0024 remains reserved-but-unwritten, deliberately —
    writing it decides the dependency by side effect.
-2. **Merge, push, tag, branch deletion.** None taken. **Nothing has left this machine.**
+3. **Merge, push, tag, branch deletion.** None taken. **Nothing has left this machine.**
